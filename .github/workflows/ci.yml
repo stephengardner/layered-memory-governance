@@ -30,7 +30,11 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        # --ignore-scripts skips onnxruntime-node's post-install that
+        # fetches a ~90MB nuget package from api.nuget.org. That fetch
+        # is flaky on the runner (ETIMEDOUT) and the default test
+        # suite doesn't need ONNX (gated behind LAG_REAL_EMBED=1).
+        run: npm ci --ignore-scripts
 
       - name: Typecheck
         run: npm run typecheck
@@ -59,7 +63,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - name: Install
-        run: npm ci
+        # --ignore-scripts skips onnxruntime-node's post-install that
+        # fetches a ~90MB nuget package from api.nuget.org. That fetch
+        # is flaky on the runner (ETIMEDOUT) and the default test
+        # suite doesn't need ONNX (gated behind LAG_REAL_EMBED=1).
+        run: npm ci --ignore-scripts
       - name: Verify no emdashes in source / docs
         # Project convention is no emdashes anywhere. Enforced at CI so a
         # regression is loud.
