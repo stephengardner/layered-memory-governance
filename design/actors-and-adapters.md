@@ -112,8 +112,11 @@ systems that actors touch.
 
 The two boundaries do not cross. An Actor consumes both: a `Host` for
 governance and its declared `ActorAdapter`s for external effects. The
-framework's `runActor` driver gates every external action through
-`Host.auditor` and `checkToolPolicy` before letting the adapter execute.
+framework's `runActor` driver **gates every external action through
+`checkToolPolicy` before the adapter executes** and **audits the
+outcome through `Host.auditor` after**. The contract: policy is the
+pre-action gate; audit is the post-action record. Both are load-bearing
+and their order is observable per the run-order section below.
 
 * **Pro**: D1's intent (no sneaking past governance) is preserved
   *exactly*. We only narrow its **scope**, explicitly and with rationale.
@@ -172,21 +175,34 @@ interface ActorBudget {
 
 ### `runActor` driver (contract, not implementation)
 
-Each iteration, in order:
+Each iteration, in order. The kill-switch is checked at iteration start
+AND before each `apply` so a halt request during a multi-action iteration
+is honored at the earliest safe point (between actions, never mid-
+adapter-call):
+
 1. `killSwitch()` -> if true, halt with status `halted`.
-2. `observe(ctx)`.
-3. `classify(obs, ctx)`.
-4. Convergence guard: if `classify` returns the same class as two
-   iterations ago, emit an escalation signal and halt.
-5. `propose(classified, ctx)`.
-6. For each proposed action: gate via `checkToolPolicy` (52a). If
-   `deny`, skip. If `escalate`, emit an escalation signal through
-   `host.notifier` and skip.
-7. `apply(action, ctx)` for allowed actions.
-8. `reflect(outcome, ctx)`.
-9. Audit the iteration to `host.auditor`.
-10. Check budget (iterations, deadline, tokens). If exhausted, halt.
-11. If `reflect` returns `done`, halt with status `converged`.
+2. Budget check (deadline, iteration cap). If exhausted, halt.
+3. `observe(ctx)`. Audit observation to `host.auditor`.
+4. `classify(obs, ctx)`. Audit classification.
+5. Convergence guard: if `classify` returns the same class as the
+   prior iteration AND the prior iteration made no progress, emit an
+   escalation signal and halt with `convergence-loop`.
+6. `propose(classified, ctx)`. Audit proposal.
+7. For each proposed action, in order:
+   a. `killSwitch()` -> if true, halt. No more actions in this
+      iteration; already-applied actions stand.
+   b. `checkToolPolicy(host, action)` (52a). Audit the decision.
+      - `deny`: skip; escalate recorded.
+      - `escalate`: skip; escalate recorded; iteration halts after
+        remaining proposals are gated (writes do not proceed).
+      - `allow`: `apply(action, ctx)`. Audit the outcome.
+8. `reflect(outcomes, classified, ctx)`. Audit reflection.
+9. If `reflect` returns `done`, halt with status `converged`.
+
+Contract: policy is the **pre-action** gate; audit is the
+**post-action** record. Every phase produces an audit event; halt
+always produces a final `halt` audit event carrying `haltReason` and
+`escalations`.
 
 `runActor` returns an `ActorReport`: statuses, audit refs, escalation
 refs, final reflections.

@@ -332,9 +332,11 @@ All three can run concurrently against the same `.lag/` in principle (file adapt
 
 ## D1: The Host is the boundary (Phase 1)
 
+> **Scope narrowed by D17 (Phase 53-pre).** `Host` is the sole boundary for **governance primitives**. External-system adapters (GitHub, CI, deploy targets) live behind a second, actor-scoped seam called `ActorAdapter`. Read this entry with D17 in hand.
+
 **Context**: Where is the seam between LAG's framework logic and concrete storage / LLM / scheduling?
 
-**Decision**: Eight sub-interfaces bundled in `Host` (AtomStore, CanonStore, LLM, Notifier, Scheduler, Auditor, PrincipalStore, Clock). LAG logic imports `type { Host }`. Adapters implement the interfaces. No exceptions.
+**Decision**: Eight sub-interfaces bundled in `Host` (AtomStore, CanonStore, LLM, Notifier, Scheduler, Auditor, PrincipalStore, Clock). LAG logic imports `type { Host }`. Adapters implement the interfaces. No exceptions **within governance**; external-effect adapters flow through `ActorAdapter` per D17.
 
 **Why**: One-level abstraction that maps 1:1 to capability areas. Testable via conformance suites (one per interface, parameterized across adapters). Swapping a file host for a Postgres host is a new adapter, not a refactor.
 
