@@ -57,6 +57,7 @@ function parseArgs(argv) {
     runLoopEveryMs: 0,       // 0 = disabled
     runExtractionEveryMs: 0, // 0 = disabled
     voiceMode: null,         // null | 'stub' | 'whisper-local'
+    cliStyle: false,         // true = stream Claude events into Telegram with throbber + tool lines
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -78,6 +79,8 @@ function parseArgs(argv) {
       args.runExtractionEveryMs = Number(argv[++i]);
     } else if (a === '--voice' && i + 1 < argv.length) {
       args.voiceMode = argv[++i];
+    } else if (a === '--cli-style') {
+      args.cliStyle = true;
     } else if (a === '-h' || a === '--help') {
       console.log(`Usage: node scripts/daemon.mjs [options]
 
@@ -89,6 +92,7 @@ Options:
   --queue-only                    write to inbox/outbox; hook handles the rest
   --run-loop-every-ms <ms>        ambient LoopRunner tick (decay, promote, canon)
   --run-extraction-every-ms <ms>  ambient L0 to L1 extraction pass
+  --cli-style                     stream Claude events into Telegram with throbber + compact tool lines (CLI-session feel)
   --verbose                       log claude-cli command lines`);
       process.exit(0);
     }
@@ -197,6 +201,7 @@ async function main() {
     invokeOptions: {
       verbose: args.verbose,
     },
+    cliStyle: args.cliStyle,
     onError: (err, ctx) => {
       console.error(`[daemon] ${ctx}:`, err?.message || err);
     },

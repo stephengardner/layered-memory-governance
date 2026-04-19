@@ -35,6 +35,7 @@ function buildMockFetch(
 ): { fetchImpl: typeof fetch; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   let getUpdatesCallCount = 0;
+  let nextMessageId = 1;
   const fetchImpl: typeof fetch = async (url, init) => {
     const u = String(url);
     const methodMatch = /\/bot[^/]+\/([a-zA-Z]+)$/.exec(u);
@@ -46,7 +47,15 @@ function buildMockFetch(
       result = updatesPerCall[getUpdatesCallCount] ?? [];
       getUpdatesCallCount += 1;
     } else if (method === 'sendMessage') {
-      result = sendMessageResponse;
+      // Ensure each sendMessage returns a unique message_id so the
+      // cliStyle path can track which message it's editing.
+      if (typeof sendMessageResponse === 'object' && sendMessageResponse !== null) {
+        result = { ...sendMessageResponse as Record<string, unknown>, message_id: nextMessageId++ };
+      } else {
+        result = sendMessageResponse;
+      }
+    } else if (method === 'editMessageText') {
+      result = { message_id: (body.message_id as number) ?? 0 };
     } else if (method === 'answerCallbackQuery') {
       result = true;
     } else {
@@ -274,6 +283,104 @@ describe('LAGDaemon.tick', () => {
     expect(await daemon.tick()).toBe(1);
     expect(await daemon.tick()).toBe(0);
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('cliStyle=true streams through CliRenderer: one post + edits, no batch sendMessage', async () => {
+    const host = createMemoryHost();
+    // Stub streaming invoke: synthesizes events the renderer consumes,
+    // ending with a complete event. Mirrors Phase 56b's shape.
+    const streamingInvoke = vi.fn().mockImplementation(async (opts: { onEvent?: (e: { type: string; [k: string]: unknown }) => Promise<void> }) => {
+      if (opts.onEvent) {
+        await opts.onEvent({ type: 'tool-call', tool: 'Read', summary: 'src/foo.ts' });
+        await opts.onEvent({ type: 'complete', finalText: 'All done, boss.', meta: { cost: '$0.001' } });
+      }
+      return {
+        text: 'All done, boss.',
+        thinking: '',
+        meta: { cost: '$0.001' },
+        exitCode: 0,
+        stderr: '',
+      };
+    });
+    const { fetchImpl, calls } = buildMockFetch([[
+      {
+        update_id: 700,
+        message: {
+          message_id: 42,
+          from: { id: 1, username: 'stephen' },
+          chat: { id: CHAT_ID },
+          text: 'CLI-style hello',
+        },
+      },
+    ]]);
+
+    const daemon = new LAGDaemon({
+      host,
+      botToken: 'FAKE:token',
+      chatId: CHAT_ID,
+      canonFilePath: canonPath,
+      principalResolver: () => PRINCIPAL,
+      fetchImpl,
+      cliStyle: true,
+      streamingInvokeImpl: streamingInvoke as never,
+    });
+
+    await daemon.tick();
+
+    // Streaming invoke called exactly once; batch invoke NEVER called.
+    expect(streamingInvoke).toHaveBeenCalledTimes(1);
+
+    // Telegram call shape: one sendMessage (the initial throbber post),
+    // followed by >=1 editMessageText (progress + final).
+    const posts = calls.filter((c) => c.method === 'sendMessage');
+    const edits = calls.filter((c) => c.method === 'editMessageText');
+    expect(posts).toHaveLength(1);
+    expect(edits.length).toBeGreaterThanOrEqual(1);
+    // Initial post should be a throbber with a reply_to (threaded under the operator's message).
+    expect(posts[0]!.body.reply_to_message_id).toBe(42);
+    expect(String(posts[0]!.body.text)).toMatch(/Claude.*working/);
+    // Final edit should contain the rendered final text.
+    const finalEdit = edits[edits.length - 1]!;
+    expect(String(finalEdit.body.text)).toContain('All done, boss.');
+
+    // L0 atoms: user + assistant.
+    const all = await host.atoms.query({}, 10);
+    const contents = all.atoms.map((a) => a.content).sort();
+    expect(contents).toContain('CLI-style hello');
+    expect(contents).toContain('All done, boss.');
+  });
+
+  it('cliStyle=true surfaces streaming-invoke errors as an error banner', async () => {
+    const host = createMemoryHost();
+    const streamingInvoke = vi.fn().mockRejectedValue(new Error('claude CLI went boom'));
+    const { fetchImpl, calls } = buildMockFetch([[
+      {
+        update_id: 800,
+        message: {
+          message_id: 50,
+          from: { id: 1, username: 'stephen' },
+          chat: { id: CHAT_ID },
+          text: 'trigger',
+        },
+      },
+    ]]);
+    const daemon = new LAGDaemon({
+      host,
+      botToken: 'FAKE',
+      chatId: CHAT_ID,
+      canonFilePath: canonPath,
+      principalResolver: () => PRINCIPAL,
+      fetchImpl,
+      cliStyle: true,
+      streamingInvokeImpl: streamingInvoke as never,
+    });
+
+    await daemon.tick();
+
+    const edits = calls.filter((c) => c.method === 'editMessageText');
+    const lastEdit = edits[edits.length - 1];
+    expect(lastEdit).toBeDefined();
+    expect(String(lastEdit!.body.text)).toContain('Error');
   });
 });
 
