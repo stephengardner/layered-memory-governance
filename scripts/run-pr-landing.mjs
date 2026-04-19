@@ -183,12 +183,25 @@ async function main() {
   ));
 
   // Exit code signals the broad outcome so CI can gate on it.
-  //   0 = converged (clean PR)
-  //   1 = halted with escalation or error
-  //   2 = hit iteration / deadline budget (may need another run)
-  if (report.haltReason === 'converged') process.exit(0);
-  if (report.haltReason === 'budget-iterations' || report.haltReason === 'budget-deadline') process.exit(2);
-  process.exit(1);
+  //   0 = actor operated correctly (converged OR escalated by design)
+  //   1 = actor crashed (genuine error)
+  //   2 = budget exhausted; another run may be needed
+  //
+  // Why escalate -> 0: policy-escalate-blocking is a VALID outcome
+  // per the autonomy-dial design. The actor did its job and surfaced
+  // items for the operator. Marking this as a CI failure would block
+  // PRs on their own agent's correct escalation -- exactly the
+  // opposite of what we want.
+  const exitMap = {
+    'converged': 0,
+    'policy-escalate-blocking': 0,
+    'kill-switch': 0,
+    'budget-iterations': 2,
+    'budget-deadline': 2,
+    'convergence-loop': 2,
+    'error': 1,
+  };
+  process.exit(exitMap[report.haltReason] ?? 1);
 }
 
 function summarize(payload) {
