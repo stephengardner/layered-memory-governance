@@ -297,6 +297,10 @@ export class CliRenderer {
         text: body,
         parseMode: 'HTML',
         disableNotification: true,
+        // Telegram's editMessageText strips reply_markup when the field
+        // is omitted; we must re-send the action on every intermediate
+        // edit to keep the Stop button visible until a terminal state.
+        ...(this.action ? { actions: [this.action] } : {}),
       });
     } catch (err) {
       logChannelError('edit', err);
@@ -343,7 +347,11 @@ export class CliRenderer {
   private renderFooter(meta: Readonly<Record<string, string | number>> | undefined): string {
     if (!meta || Object.keys(meta).length === 0) return '';
     const parts = Object.entries(meta).map(([k, v]) => `${k}=${String(v)}`);
-    return `<i>${escapeHtml(parts.join(' · '))}</i>`;
+    // Emit as markdown italic, not literal HTML. When renderFinal is a
+    // markdown->HTML converter (TelegramHtml), raw `<i>` tags would be
+    // escaped to `&lt;i&gt;` by the converter's free-text escape pass.
+    // `_..._` lets the converter produce the `<i>` tag itself.
+    return `_${parts.join(' · ')}_`;
   }
 }
 

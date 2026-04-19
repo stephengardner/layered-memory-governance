@@ -237,6 +237,31 @@ describe('CliRenderer', () => {
     await renderer.dispose();
   });
 
+  it('every intermediate edit re-sends the action (Telegram strips reply_markup on omit)', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      action: { label: 'Stop', callbackData: 'run-9' },
+    });
+    await renderer.emit({ type: 'start' });
+    t += 1;
+    await renderer.emit({ type: 'tool-call', tool: 'Read', summary: 'a' });
+    t += 1;
+    await renderer.emit({ type: 'tool-call', tool: 'Read', summary: 'b' });
+    t += 1;
+    await renderer.emit({ type: 'text-delta', text: 'hello world' });
+
+    const intermediateEdits = calls.filter((c) => c.kind === 'edit');
+    expect(intermediateEdits.length).toBeGreaterThanOrEqual(2);
+    for (const e of intermediateEdits) {
+      expect(e.actions).toEqual([{ label: 'Stop', callbackData: 'run-9' }]);
+    }
+    await renderer.dispose();
+  });
+
   it('clears action button on error', async () => {
     let t = 1_000_000;
     const { channel, calls } = mkStubChannel();
@@ -295,6 +320,34 @@ describe('CliRenderer', () => {
     for (const e of edits) {
       expect(e.text).not.toContain('<blockquote>');
     }
+    await renderer.dispose();
+  });
+
+  it('footer meta uses markdown italic so a markdown->HTML renderFinal does not escape it', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    // renderFinal stub: simulate the real markdown->HTML converter by
+    // escaping ANY remaining <...> in free text. A footer that already
+    // contains raw <i> would get escaped to &lt;i&gt;.
+    const renderFinal = (md: string): string => md.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      renderFinal,
+    });
+    await renderer.emit({ type: 'start' });
+    await renderer.emit({
+      type: 'complete',
+      finalText: 'Done.',
+      meta: { elapsed: '2s', cost: '$0.0001' },
+    });
+    const final = calls[calls.length - 1]!;
+    // Must NOT contain an escaped literal tag like `&lt;i&gt;`.
+    expect(final.text).not.toContain('&lt;i&gt;');
+    // Meta content still present.
+    expect(final.text).toContain('elapsed=2s');
+    expect(final.text).toContain('cost=$0.0001');
     await renderer.dispose();
   });
 
