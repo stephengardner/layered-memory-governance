@@ -6,7 +6,7 @@ A framework for multi-agent systems where memory has to stay true over time, aut
 
 > **If RAG brings knowledge into an agent, LAG governs knowledge across agents.** Retrieval makes one agent smarter; governance keeps a hundred agents coherent.
 
-Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, and an Actor primitive for governed outward-acting agents. **556 unit tests + 30 gated integration tests**, GitHub Actions CI on Ubuntu + Windows.
+Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, and an Actor primitive for governed outward-acting agents. **568+ unit tests + 30 gated integration tests** (count grows as open PRs land), GitHub Actions CI on Ubuntu + Windows.
 
 ---
 
@@ -253,7 +253,7 @@ Three pluggable embedders behind a single `Embedder` interface:
 ## Tests + CI
 
 ```
-npm test                                                                                        # 556 passed, 30 gated
+npm test                                                                                        # 568+ passed, 30 gated
 LAG_SPAWN_TEST=1 LAG_REAL_CLI=1 LAG_REAL_PALACE=1 LAG_BENCH_SCALE=1 LAG_REAL_EMBED=1 npm test   # full matrix
 ```
 
