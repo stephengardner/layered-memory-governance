@@ -60,12 +60,6 @@ export interface PlanningActorOptions {
   /** Aggregation caps forwarded to aggregateRelevantContext. */
   readonly aggregate?: AggregateContextOptions;
   /**
-   * Author of the plan atom written on apply. Usually the actor's
-   * own Principal (e.g., cto-actor). The ActorContext.principal is
-   * also available; this field exists for clarity + override.
-   */
-  readonly authorPrincipalId?: PrincipalId;
-  /**
    * Clock source for the plan atom's created_at + provenance. When
    * undefined, the context's host.clock.now() is used.
    */
@@ -154,8 +148,11 @@ export class PlanningActor implements Actor<
     const { plan } = action.payload;
     const nowFn = this.options.nowOverride ?? (() => ctx.host.clock.now());
     const now = nowFn();
-    const principalId =
-      this.options.authorPrincipalId ?? ctx.principal.id;
+    // Authorship is always the actor's running Principal. Options
+    // used to expose an `authorPrincipalId` override, which let a
+    // caller spoof plan authorship; authority has to come from the
+    // running context, not the call-site config. Dropped.
+    const principalId = ctx.principal.id;
 
     const planAtom: Atom = {
       schema_version: 1,
@@ -195,7 +192,18 @@ export class PlanningActor implements Actor<
       },
     };
 
-    await ctx.host.atoms.put(planAtom);
+    // atoms.put can throw (ConflictError, transient adapter failure,
+    // etc.). Wrap so runActor sees the failure cleanly and produces
+    // a halt-reason=error with a descriptive note, rather than
+    // bubbling an uncaught rejection.
+    try {
+      await ctx.host.atoms.put(planAtom);
+    } catch (err) {
+      throw new Error(
+        `PlanningActor.apply: atoms.put failed for plan '${plan.title}': ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
     this.planAtomIdsWritten.add(planAtom.id);
 
     // Surface as an HIL escalation. Operator approves/rejects via
@@ -239,11 +247,16 @@ export class PlanningActor implements Actor<
   ): Promise<Reflection> {
     const total = this.drafts.length;
     const applied = outcomes.length;
-    const done = applied >= total;
+    // Convergence requires BOTH: the plan atom was written AND the
+    // HIL escalation went out. A silent-done after a notifier failure
+    // means the operator never sees the plan; that's a discipline
+    // failure, not a success. Count only plans with a live handle.
+    const escalated = outcomes.filter((o) => o.notificationHandle !== null).length;
+    const done = applied >= total && escalated >= total;
     return {
       done,
       progress: applied > 0,
-      note: `Proposed ${applied}/${total} plan(s); operator approval pending`,
+      note: `Proposed ${applied}/${total} plan(s), ${escalated} escalated; operator approval pending`,
     };
   }
 }
