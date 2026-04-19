@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['22']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Default test suite (non-gated)
+        # Gated suites need ~90MB onnx model, Python bridge, or real
+        # Claude CLI; not a fit for CI. Default suite is 358 tests in
+        # under 15s across adapters and scenarios.
+        run: npm test
+
+      - name: Quickstart smoke
+        # Prove the public API path resolves against the just-built dist.
+        run: node examples/quickstart.mjs
+
+  package-hygiene:
+    name: package hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install
+        run: npm ci
+      - name: Verify no emdashes in source / docs
+        # Project convention is no emdashes anywhere. Enforced at CI so a
+        # regression is loud.
+        shell: bash
+        run: |
+          set -e
+          if grep -rP $'\u2014' src/ test/ docs/ README.md examples/ 2>/dev/null; then
+            echo "FAIL: emdash(es) found; replace with , ; . or normal -"
+            exit 1
+          fi
+          echo "OK: no emdashes"
+      - name: Verify no private terms anywhere in tracked files
+        shell: bash
+        run: |
+          set -e
+          TERMS='\bphx\b|Phoenix|palace-phoenix'
+          # Scan every tracked file (respects .gitignore by construction).
+          # Excludes only .github/workflows/ci.yml itself because the guard
+          # has to contain the terms in its grep string.
+          HITS=$(git ls-files | grep -v '^\.github/workflows/ci\.yml$' | xargs grep -lEi "$TERMS" 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "FAIL: private term(s) found in:"
+            echo "$HITS"
+            exit 1
+          fi
+          echo "OK: no private terms anywhere"
+      - name: Verify LICENSE present
+        run: test -f LICENSE
+      - name: Verify dist builds
+        run: npm run build && test -f dist/index.js && test -f dist/index.d.ts

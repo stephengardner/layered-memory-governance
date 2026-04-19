@@ -1,0 +1,87 @@
+{
+  "name": "layered-autonomous-governance",
+  "version": "0.1.0",
+  "description": "LAG (Layered Autonomous Governance): a governance substrate for autonomous agent organizations. Memory is the foundation; plans, principals, canon, arbitration, and human-in-the-loop escalation are built on top.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "lag-compromise": "./bin/lag-compromise.js",
+    "lag-respond": "./bin/lag-respond.js",
+    "lag-run-loop": "./bin/lag-run-loop.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./adapters/memory": {
+      "import": "./dist/adapters/memory/index.js",
+      "types": "./dist/adapters/memory/index.d.ts"
+    },
+    "./adapters/file": {
+      "import": "./dist/adapters/file/index.js",
+      "types": "./dist/adapters/file/index.d.ts"
+    },
+    "./adapters/bridge": {
+      "import": "./dist/adapters/bridge/index.js",
+      "types": "./dist/adapters/bridge/index.d.ts"
+    },
+    "./adapters/notifier": {
+      "import": "./dist/adapters/notifier/index.js",
+      "types": "./dist/adapters/notifier/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "scripts",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "license": "MIT",
+  "author": "Stephen Gardner",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stephengardner/layered-autonomous-governance.git"
+  },
+  "keywords": [
+    "agents",
+    "agentic",
+    "autonomous",
+    "governance",
+    "multi-agent",
+    "memory",
+    "llm",
+    "canon",
+    "arbitration",
+    "human-in-the-loop"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "bootstrap": "npm run build && node scripts/bootstrap.mjs",
+    "clean": "rimraf dist coverage .vitest-cache *.tsbuildinfo .lag"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.1.0",
+    "execa": "^9.5.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  },
+  "private": true
+}

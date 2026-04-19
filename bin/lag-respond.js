@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+// Shebang wrapper for the compiled CLI. Depends on `npm run build` producing
+// dist/cli/respond.js (configured in tsconfig).
+import '../dist/cli/respond.js';

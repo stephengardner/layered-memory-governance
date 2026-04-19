@@ -1,0 +1,45 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+coverage/
+.vitest-cache/
+*.tsbuildinfo
+
+# Simulation scratch
+/scratch/
+*.sim.log
+*.sim.json
+
+# Local palace data (if we test against a real palace)
+/.palace/
+
+# LAG self-bootstrap runtime state (atoms, audit log, notifier queue, etc).
+# The rendered CLAUDE.md is committed; this directory is the state that
+# produces it, gitignored so the repo stays portable.
+/.lag/
+
+# Secrets. .env holds real tokens; .env.example is the committed template.
+.env
+.env.local
+.env.*.local
+
+# Windows artifacts
+NUL
