@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # Run on every pull request regardless of base branch so stacked PRs
+  # (feature-on-feature) are gated by CI too. Without this, any PR not
+  # targeting main would merge with no CI signal.
   pull_request:
-    branches: [main]
 
 jobs:
   test:

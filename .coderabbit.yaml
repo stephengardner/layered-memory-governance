@@ -22,6 +22,11 @@ reviews:
   poem: false
   review_status: true
   collapse_walkthrough: false
+  # Review PRs regardless of what branch they target. Stacked PRs
+  # (feature-on-feature) need the same scrutiny as PRs into main;
+  # the default (main-only) would silently skip them.
+  base_branches:
+    - ".*"
   auto_review:
     enabled: true
     drafts: false
