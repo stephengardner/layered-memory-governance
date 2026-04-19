@@ -30,6 +30,36 @@ export function markdownToTelegramHtml(text: string): string {
   const placeholders: Placeholder[] = [];
   let s = text;
 
+  // 0. HTML <details>/<summary> blocks -> tg-spoiler (Telegram HTML
+  //    whitelist doesn't include <details>; we'd otherwise escape
+  //    them and render as literal "<details>" text on-screen).
+  //    Convention: <summary> becomes a bold line, <details> body
+  //    becomes a tg-spoiler the operator taps to expand.
+  s = extractPattern(
+    s,
+    /<details(?:\s[^>]*)?>([\s\S]*?)<\/details>/gi,
+    placeholders,
+    'DETAILS',
+    (m) => {
+      const inner = m[1] ?? '';
+      const sumMatch = /<summary(?:\s[^>]*)?>([\s\S]*?)<\/summary>/i.exec(inner);
+      const summary = sumMatch ? escapeHtml(stripHtmlTags(sumMatch[1] ?? '')) : 'details';
+      const body = sumMatch ? inner.slice(sumMatch.index + sumMatch[0].length) : inner;
+      const bodyClean = escapeHtml(stripHtmlTags(body).trim());
+      if (bodyClean.length === 0) return `<b>${summary}</b>`;
+      return `<b>${summary}</b>\n<tg-spoiler>${bodyClean}</tg-spoiler>`;
+    },
+  );
+
+  // 0b. Stray <summary> outside a <details>: render as a bold line.
+  s = extractPattern(
+    s,
+    /<summary(?:\s[^>]*)?>([\s\S]*?)<\/summary>/gi,
+    placeholders,
+    'SUMMARY',
+    (m) => `<b>${escapeHtml(stripHtmlTags(m[1] ?? ''))}</b>`,
+  );
+
   // 1. Fenced code blocks (greedy across lines, but non-overlapping).
   s = extractPattern(
     s,
@@ -190,6 +220,16 @@ function escapeHtml(s: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/**
+ * Strip any HTML-ish tags from a string, leaving only text content.
+ * Used when flattening content from inside <details>/<summary> blocks
+ * (Claude + CodeRabbit often nest code blocks or other tags in there;
+ * we want just the text for the tg-spoiler body to keep Telegram happy).
+ */
+function stripHtmlTags(s: string): string {
+  return s.replace(/<[^>]*>/g, '');
 }
 
 function escapeAttr(s: string): string {
