@@ -56,6 +56,14 @@ export interface LAGDaemonOptions {
    */
   readonly repoRoot?: string;
   /**
+   * Session id to resume. When set, every daemon invocation runs
+   * `claude -p --resume <id>`, loading the full prior conversation
+   * context from the session's jsonl. Replies append to that session
+   * so a terminal Claude Code instance reading the same jsonl sees
+   * them on its next turn. Opt-in for solo-dev continuity.
+   */
+  readonly resumeSessionId?: string;
+  /**
    * Map a Telegram user id to a LAG principal. For V1 you can hardcode
    * one principal; future multi-user daemons will dispatch here.
    */
@@ -225,6 +233,7 @@ export class LAGDaemon {
         userMessage: text,
         systemPrompt: context.prompt,
         ...(this.options.repoRoot !== undefined ? { cwd: this.options.repoRoot } : {}),
+        ...(this.options.resumeSessionId !== undefined ? { resumeSessionId: this.options.resumeSessionId } : {}),
         ...(this.options.invokeOptions ?? {}),
       });
       replyText = result.text.trim() || '(empty response from model)';

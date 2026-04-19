@@ -20,9 +20,10 @@
  * Stop: Ctrl-C (SIGINT). The daemon unwinds its poll loop cleanly.
  */
 
-import { readFile } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 import { mkdir } from 'node:fs/promises';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { LAGDaemon } from '../dist/daemon/index.js';
@@ -51,6 +52,7 @@ function parseArgs(argv) {
     rootDir: resolve(REPO_ROOT, '.lag'),
     canonPath: resolve(REPO_ROOT, 'CLAUDE.md'),
     verbose: false,
+    resumeSession: null, // null | 'latest' | '<specific-id>'
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -60,12 +62,44 @@ function parseArgs(argv) {
       args.canonPath = resolve(argv[++i]);
     } else if (a === '--verbose') {
       args.verbose = true;
+    } else if (a === '--resume-latest') {
+      args.resumeSession = 'latest';
+    } else if (a === '--resume-session' && i + 1 < argv.length) {
+      args.resumeSession = argv[++i];
     } else if (a === '-h' || a === '--help') {
-      console.log(`Usage: node scripts/daemon.mjs [--root-dir <path>] [--canon-file <path>] [--verbose]`);
+      console.log(`Usage: node scripts/daemon.mjs [--root-dir <path>] [--canon-file <path>] [--resume-latest | --resume-session <id>] [--verbose]`);
       process.exit(0);
     }
   }
   return args;
+}
+
+/**
+ * Walk ~/.claude/projects/*\/*.jsonl and return the id of the
+ * most-recently-modified session. Returns null if nothing found.
+ */
+async function findLatestSessionId() {
+  const projectsDir = join(homedir(), '.claude', 'projects');
+  let best = null;
+  let dirs;
+  try {
+    dirs = await readdir(projectsDir);
+  } catch { return null; }
+  for (const d of dirs) {
+    const sub = join(projectsDir, d);
+    let files;
+    try { files = await readdir(sub); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      const full = join(sub, f);
+      let s;
+      try { s = await stat(full); } catch { continue; }
+      if (!best || s.mtimeMs > best.mtime) {
+        best = { id: f.replace(/\.jsonl$/, ''), mtime: s.mtimeMs, project: d };
+      }
+    }
+  }
+  return best;
 }
 
 async function main() {
@@ -80,6 +114,22 @@ async function main() {
   await mkdir(args.rootDir, { recursive: true });
   const host = await createFileHost({ rootDir: args.rootDir });
 
+  // Resolve resume session id.
+  let resumeSessionId = null;
+  if (args.resumeSession === 'latest') {
+    const latest = await findLatestSessionId();
+    if (latest) {
+      resumeSessionId = latest.id;
+      console.log(`  Resume:       ${latest.id}`);
+      console.log(`                (from project ${latest.project})`);
+    } else {
+      console.log(`  Resume:       (requested latest, none found; starting fresh)`);
+    }
+  } else if (args.resumeSession) {
+    resumeSessionId = args.resumeSession;
+    console.log(`  Resume:       ${resumeSessionId}`);
+  }
+
   const daemon = new LAGDaemon({
     host,
     botToken: token,
@@ -89,6 +139,7 @@ async function main() {
     // repo's CLAUDE.md natively and does not fall back to workspace
     // history in ~/.claude.json (which leaks other projects' context).
     repoRoot: REPO_ROOT,
+    ...(resumeSessionId !== null ? { resumeSessionId } : {}),
     principalResolver: () => 'lag-self',
     onCallback: async (handle, disposition, responder) => {
       try {

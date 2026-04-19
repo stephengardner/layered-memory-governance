@@ -50,6 +50,17 @@ export interface InvokeClaudeOptions {
    * repo root when the daemon is running).
    */
   readonly cwd?: string;
+  /**
+   * Session id to resume via `--resume`. When set, claude-cli loads
+   * the full conversation context from
+   * ~/.claude/projects/<sanitized>/<id>.jsonl and appends this turn
+   * to it. Responses become part of that session so the terminal
+   * Claude Code instance (if any) sees them on its next turn. Opt-in
+   * for solo-dev continuity; do not enable for autonomous-org setups
+   * where each message should be stateless. Cost per call = full
+   * prior-context tokens.
+   */
+  readonly resumeSessionId?: string;
 }
 
 export interface InvokeClaudeResult {
@@ -125,6 +136,10 @@ export async function invokeClaude(options: InvokeClaudeOptions): Promise<Invoke
       '--mcp-config',
       '{"mcpServers":{}}',
     ];
+
+    if (options.resumeSessionId) {
+      args.push('--resume', options.resumeSessionId);
+    }
 
     if (options.verbose) {
       // eslint-disable-next-line no-console
