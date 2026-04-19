@@ -71,12 +71,23 @@ describe('createGhClient', () => {
       { stdout: '{"data":{"hello":"world"}}', stderr: '', exitCode: 0 },
     ]);
     const client = createGhClient({ executor });
-    const data = await client.graphql<{ hello: string }>('query { hello }', { x: 1 });
+    const data = await client.graphql<{ hello: string }>(
+      'query { hello }',
+      { number: 1, owner: 'foo', flag: true, nothing: null },
+    );
     expect(data.hello).toBe('world');
     expect(calls[0]!.args[0]).toBe('api');
     expect(calls[0]!.args[1]).toBe('graphql');
+    // Query goes through --raw-field so gh does not try to JSON-parse it.
+    expect(calls[0]!.args).toContain('--raw-field');
     expect(calls[0]!.args).toContain('query=query { hello }');
-    expect(calls[0]!.args).toContain('x=1');
+    // Variables go through -F so numbers stay Int, booleans stay Bool, etc.
+    const args = calls[0]!.args;
+    for (const pair of ['number=1', 'owner="foo"', 'flag=true', 'nothing=null']) {
+      const idx = args.indexOf(pair);
+      expect(idx, `expected "${pair}" in args: ${JSON.stringify(args)}`).toBeGreaterThan(-1);
+      expect(args[idx - 1]).toBe('-F');
+    }
   });
 
   it('graphql: throws GhClientError when response has errors', async () => {

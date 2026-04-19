@@ -101,9 +101,14 @@ export function createGhClient(options: GhClientOptions = {}): GhClient {
     query: string,
     variables: Readonly<Record<string, unknown>> = {},
   ): Promise<T> {
+    // --raw-field for the query body (multi-line string, no JSON parsing);
+    // -F for variables so numbers / booleans / null keep their JSON types.
+    // Without this, `-F number=1` round-trips as the integer 1 but
+    // `--raw-field number=1` sends the string "1", which GitHub rejects
+    // for Int!-typed GraphQL variables ("invalid value ... expected Int").
     const args: string[] = ['api', 'graphql', '--raw-field', `query=${query}`];
     for (const [k, v] of Object.entries(variables)) {
-      args.push('--raw-field', `${k}=${String(v)}`);
+      args.push('-F', `${k}=${formatFieldValue(v)}`);
     }
     const result = await raw(args);
     const parsed = parseJson<{ data: T; errors?: ReadonlyArray<{ message: string }> }>(result.stdout, args);
@@ -130,6 +135,13 @@ function applyQueryString(
     .join('&');
   const sep = path.includes('?') ? '&' : '?';
   return `${path}${sep}${qs}`;
+}
+
+function formatFieldValue(v: unknown): string {
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (v === null) return 'null';
+  return JSON.stringify(v);
 }
 
 function parseJson<T>(stdout: string, args: ReadonlyArray<string>): T {
