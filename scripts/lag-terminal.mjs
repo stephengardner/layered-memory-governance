@@ -276,6 +276,25 @@ async function main() {
   console.log(`  Stop:            Ctrl-C (both claude and the poller unwind)`);
   console.log('');
 
+  // Shared references used by both the mirror and the injector:
+  //   sessionFileRef.path  -> absolute path of the session jsonl once
+  //                           known. Used by the injector to verify
+  //                           submissions via ground-truth user records.
+  //   ptyOutput            -> rolling buffer of recent PTY bytes (cap
+  //                           PTY_BUFFER_CAP). The injector checks this
+  //                           to distinguish "drafted but not submitted"
+  //                           from "lost before reaching TUI".
+  const projectsRoot = join(homedir(), '.claude', 'projects');
+  const sanitizedCwd = REPO_ROOT.replace(/[:\\/]/g, '-');
+  const projectDir = join(projectsRoot, sanitizedCwd);
+  const sessionFileRef = {
+    path: args.resumeSessionId
+      ? join(projectDir, `${args.resumeSessionId}.jsonl`)
+      : null,
+  };
+  const PTY_BUFFER_CAP = 50_000;
+  let ptyOutput = '';
+
   // Start Claude Code inside a PTY so its TUI renders correctly.
   const cols = process.stdout.columns || 120;
   const rows = process.stdout.rows || 30;
@@ -305,6 +324,7 @@ async function main() {
   // Pipe PTY output to real stdout so the user sees everything.
   child.onData((data) => {
     lastOutput = Date.now();
+    ptyOutput = (ptyOutput + data).slice(-PTY_BUFFER_CAP);
     process.stdout.write(data);
   });
   child.onExit(({ exitCode }) => {
@@ -352,46 +372,189 @@ async function main() {
         if (text.length < mirrorMinChars) return;
         await sendMirrorText(injector, text, { verbose: args.verbose });
       },
+      onResolve: (p) => {
+        sessionFileRef.path = p;
+        if (args.verbose) console.error(`[tg] session file: ${p}`);
+      },
       verbose: args.verbose,
     });
   }
 
+  // If mirror is disabled but we still want verification (the common
+  // case), start a lightweight path-detection loop on our own. This
+  // duplicates a small amount of logic with startJsonlMirror but
+  // avoids gating verification on the mirror being enabled.
+  if (!args.mirror && !sessionFileRef.path) {
+    void (async () => {
+      const beforeSet = new Set();
+      try {
+        const entries = readdirSync(projectDir).filter((n) => n.endsWith('.jsonl'));
+        for (const e of entries) beforeSet.add(e);
+      } catch { /* project dir may not exist yet */ }
+      const deadline = Date.now() + 60_000;
+      while (!sessionFileRef.path && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          const entries = await readdir(projectDir);
+          for (const f of entries) {
+            if (!f.endsWith('.jsonl')) continue;
+            if (beforeSet.has(f)) continue;
+            sessionFileRef.path = join(projectDir, f);
+            if (args.verbose) console.error(`[tg] detected session file: ${sessionFileRef.path}`);
+            break;
+          }
+        } catch { /* retry */ }
+      }
+    })();
+  }
+
   // The injector: on each Telegram message, write it to the PTY.
   //
-  // The *byte sequence* is simple: body + '\r' in one write. The
-  // *timing* is what makes this work. scripts/probe-inject-matrix.mjs
-  // runs a 48-cell deterministic matrix (6 strategies x 4 spawn/wait
-  // conditions x single-and-double sends) and watches the session
-  // jsonl for user records to confirm submissions. Headline result:
+  // Injection is a three-layer machine:
   //
-  //   Strategy                                      Pass rate
-  //   -------------------------------------------   ---------
-  //   text + CR only                                  5/8
-  //   wait ESC[?2004h + text + CR                     3/8
-  //   quiesce 1200ms + text + CR                      4/8
-  //   quiesce 2000ms + text + CR                      8/8   <- picked
-  //   quiesce 3000ms + text + CR                      8/8
+  //   LAYER 1  byte sequence    body + '\r' in one write (proven by
+  //                             scripts/probe-inject-matrix.mjs: 8/8
+  //                             when TUI is ready, AQ2).
   //
-  // Why quiescence works where the readiness signal alone does not:
-  // Claude Code emits ESC[?2004h synchronously from setRawMode, well
-  // before React has mounted the Ink TextInput. An injection that
-  // fires on that signal races the component mount. The only robust
-  // "mount complete" signal is that PTY output has gone idle for long
-  // enough that no further renders are in flight, which empirically
-  // settles at ~2s for this TUI (header + status + context + migration
-  // banner). After 2s of quiet, the TextInput is wired and a plain
-  // `body + CR` submits deterministically.
+  //   LAYER 2  timing           quiesce the PTY for INJECT_QUIET_MS
+  //                             before writing. Claude Code emits
+  //                             ESC[?2004h during setRawMode, before
+  //                             React has mounted the Ink TextInput;
+  //                             the only reliable "mount complete"
+  //                             signal is PTY silence. ~2s empirically.
   //
-  // Happy side effect: when Claude is mid-response (streaming tokens
-  // and spinner output), quiescence never resolves, so TG messages
-  // naturally queue behind the in-flight turn instead of interleaving.
-  // Same is true while the user is typing directly into the wrapper:
-  // PTY echo keeps lastOutput fresh, the injector waits for a pause.
+  //   LAYER 3  verify + retry   after every write, watch the session
+  //                             jsonl for a `user` record containing
+  //                             the message body. If not seen within
+  //                             VERIFY_MS, fall through a ladder of
+  //                             fallbacks rather than silent-drop:
   //
-  // Rerun scripts/probe-inject-matrix.mjs to revalidate if the
-  // Claude Code CLI changes its TUI behavior.
+  //      (a) primary:  quiesce + body + CR
+  //      (b) if body IS in recent PTY   = drafted: bare CR (submit)
+  //      (c) if body NOT in recent PTY  = lost: quiesce + body + CR
+  //      (d) if still nothing: wake CR + quiesce + body + CR
+  //      (e) if still nothing: notify operator via TG; do not silent-drop
+  //
+  // Empty submits (bare CR with empty input box) are no-ops in Claude
+  // Code's TUI, so fallback (b) is safe even if the primary actually
+  // did submit and the input box is already empty.
+  //
+  // While Claude is streaming a response, PTY quiescence never
+  // resolves, so the whole ladder simply waits out the current turn;
+  // messages queue behind in-flight work rather than interleaving.
+  //
+  // Rerun scripts/probe-inject-matrix.mjs if the CLI's TUI behavior
+  // changes and AQ2 stops being the right primary strategy.
   const INJECT_QUIET_MS = 2000;
   const INJECT_QUIET_CAP_MS = 30_000;
+  const VERIFY_PRIMARY_MS = 7_000;
+  const VERIFY_RETRY_MS = 5_000;
+
+  // Counts user-type records whose content contains `bodyFragment`.
+  // We need this as a before/after snapshot so a repeat message
+  // (same body text as a prior turn) does not cause verify to
+  // spuriously pass by matching the *old* user record.
+  const countMatchingUserEntries = async (bodyFragment) => {
+    const filePath = sessionFileRef.path;
+    if (!filePath) return 0;
+    let count = 0;
+    try {
+      const content = await readFile(filePath, 'utf8');
+      for (const line of content.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (obj?.type !== 'user') continue;
+        const c = obj?.message?.content;
+        if (typeof c === 'string' && c.includes(bodyFragment)) { count++; continue; }
+        if (Array.isArray(c)) {
+          for (const b of c) {
+            if (typeof b?.text === 'string' && b.text.includes(bodyFragment)) {
+              count++;
+              break;
+            }
+          }
+        }
+      }
+    } catch { /* file not yet there */ }
+    return count;
+  };
+
+  // Returns true as soon as the count of matching user records
+  // exceeds `baseline`. Parses only the tail (last ~30 lines) each
+  // poll for efficiency. Pre-filtering raw line bytes is deliberately
+  // skipped because escaped characters (\", \n) in stored JSON would
+  // cause false negatives against the raw body text from Telegram.
+  const verifyCountIncrement = async (bodyFragment, baseline, timeoutMs) => {
+    const filePath = sessionFileRef.path;
+    if (!filePath) return false;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const current = await countMatchingUserEntries(bodyFragment);
+      if (current > baseline) return true;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return false;
+  };
+
+  const injectAndVerify = async (body) => {
+    // Snapshot count of matching user entries BEFORE we send so a
+    // repeat message (same text as an earlier turn) does not
+    // spuriously verify by matching the prior record.
+    const baseline = await countMatchingUserEntries(body);
+    const attempts = [];
+    const logAttempt = (label, ok, extra) => {
+      attempts.push({ label, ok, ...extra });
+      if (args.verbose) {
+        console.error(`[tg] inject attempt [${label}] -> ${ok ? 'submitted' : 'not verified'}${extra ? ' ' + JSON.stringify(extra) : ''}`);
+      }
+    };
+    const verify = (ms) => verifyCountIncrement(body, baseline, ms);
+
+    // (a) primary: quiesce then body + CR.
+    await qWait(INJECT_QUIET_MS, INJECT_QUIET_CAP_MS);
+    child.write(body + '\r');
+    if (await verify(VERIFY_PRIMARY_MS)) {
+      logAttempt('primary', true);
+      return { ok: true, via: 'primary', attempts };
+    }
+    logAttempt('primary', false);
+
+    // (b) draft present in PTY -> submit it with bare CR. Safe if
+    // input is actually empty: Claude Code no-ops on empty Enter.
+    const bodyEcho = body.slice(0, Math.min(40, body.length));
+    const drafted = ptyOutput.includes(bodyEcho);
+    if (drafted) {
+      child.write('\r');
+      if (await verify(VERIFY_RETRY_MS)) {
+        logAttempt('submit-draft', true);
+        return { ok: true, via: 'submit-draft', attempts };
+      }
+      logAttempt('submit-draft', false);
+    }
+
+    // (c) re-inject after another quiescence cycle.
+    await qWait(1500, 10_000);
+    child.write(body + '\r');
+    if (await verify(VERIFY_RETRY_MS)) {
+      logAttempt('requiesce', true);
+      return { ok: true, via: 'requiesce', attempts };
+    }
+    logAttempt('requiesce', false);
+
+    // (d) wake-up CR first (exits any lingering modal or paste
+    // state the TUI might be in), then full quiesce + body.
+    child.write('\r');
+    await qWait(1500, 10_000);
+    child.write(body + '\r');
+    if (await verify(VERIFY_RETRY_MS)) {
+      logAttempt('wake-up', true);
+      return { ok: true, via: 'wake-up', attempts };
+    }
+    logAttempt('wake-up', false);
+
+    return { ok: false, via: null, attempts };
+  };
 
   const injector = new TelegramInjector({
     botToken,
@@ -399,13 +562,19 @@ async function main() {
     verbose: args.verbose,
     onMessage: async ({ text }) => {
       const body = text.replace(/[\r\n]+$/g, '');
-      const okay = await qWait(INJECT_QUIET_MS, INJECT_QUIET_CAP_MS);
-      if (!okay && args.verbose) {
-        console.error(`[tg] inject: quiescence cap hit at ${INJECT_QUIET_CAP_MS}ms; firing anyway`);
-      }
-      child.write(body + '\r');
-      if (args.verbose) {
-        console.error(`[tg] injected + submitted (${body.length} chars)`);
+      const result = await injectAndVerify(body);
+      if (!result.ok) {
+        const preview = body.length > 100 ? body.slice(0, 100) + '...' : body;
+        console.error(`[tg] FAILED to submit after ${result.attempts.length} attempts: "${preview}"`);
+        try {
+          await injector.sendMessage(
+            'WARNING: your message could not be submitted to Claude after 4 attempts ' +
+            '(primary + 3 fallbacks). The TUI may be stuck. Message preview:\n\n' +
+            preview,
+          );
+        } catch { /* ignore secondary failure */ }
+      } else if (args.verbose) {
+        console.error(`[tg] submitted via ${result.via} (${body.length} chars, ${result.attempts.length} attempts)`);
       }
     },
     onError: (err, ctx) => {
@@ -452,7 +621,7 @@ function chunkForTelegram(text, max = 4000) {
  *     in the project dir that wasn't there at wrapper start. Up to a
  *     30s wait; gives up quietly if none appears.
  */
-function startJsonlMirror({ repoRoot, resumeSessionId, onText, verbose }) {
+function startJsonlMirror({ repoRoot, resumeSessionId, onText, onResolve, verbose }) {
   const projectsRoot = join(homedir(), '.claude', 'projects');
   const sanitized = repoRoot.replace(/[:\\/]/g, '-');
   const projectDir = join(projectsRoot, sanitized);
@@ -473,9 +642,16 @@ function startJsonlMirror({ repoRoot, resumeSessionId, onText, verbose }) {
     attached: false,
   };
 
+  const resolveFilePath = (p) => {
+    state.filePath = p;
+    if (typeof onResolve === 'function') {
+      try { onResolve(p); } catch { /* ignore callback errors */ }
+    }
+  };
+
   // If resume id given, we know the target file directly.
   if (resumeSessionId) {
-    state.filePath = join(projectDir, `${resumeSessionId}.jsonl`);
+    resolveFilePath(join(projectDir, `${resumeSessionId}.jsonl`));
   } else {
     // Snapshot current jsonls so a new one (the session we're about
     // to launch) can be distinguished when it appears.
@@ -506,7 +682,7 @@ function startJsonlMirror({ repoRoot, resumeSessionId, onText, verbose }) {
                   best = { path: join(projectDir, n), mtime: s.mtimeMs };
                 }
               }
-              state.filePath = best.path;
+              resolveFilePath(best.path);
               if (verbose) console.error(`[mirror] tailing ${state.filePath}`);
             } else if (Date.now() - state.wallStart > 30_000) {
               // Give up detecting after 30s.
