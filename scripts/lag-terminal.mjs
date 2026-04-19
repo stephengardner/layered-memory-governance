@@ -300,15 +300,50 @@ async function main() {
   }
 
   // The injector: on each Telegram message, write it to the PTY.
-  // Newline makes Claude Code treat it as a submitted prompt.
+  //
+  // How terminals tell a TUI "this is a paste, not keystrokes":
+  // bracketed paste mode (xterm ctlseqs, DEC mode 2004). When the
+  // TUI enables it (by emitting `ESC[?2004h`), any real terminal
+  // wraps pasted text in start/end markers:
+  //
+  //   ESC [ 2 0 0 ~                      (paste start, 6 bytes)
+  //   <the pasted body, verbatim>
+  //   ESC [ 2 0 1 ~                      (paste end)
+  //
+  // Inside the markers, Enter = newline in the input buffer.
+  // Outside, Enter = submit. This is exactly the semantic we want,
+  // and it is deterministic: no timing heuristics, no paste-vs-type
+  // detection based on byte arrival rate.
+  //
+  // Our sequence is therefore:
+  //   1. write ESC[200~
+  //   2. write the body (with any embedded ESC[201~ neutralized so
+  //      malicious or incidental content cannot close the paste early)
+  //   3. write ESC[201~
+  //   4. write '\r' (one Enter keypress, outside paste = submit)
+  //
+  // All four writes go through the same PTY so ordering is preserved
+  // by the child's read side.
+  const PASTE_START = '\x1b[200~';
+  const PASTE_END = '\x1b[201~';
+
   const injector = new TelegramInjector({
     botToken,
     chatId,
     verbose: args.verbose,
     onMessage: async ({ text }) => {
-      // Write text followed by carriage return so Claude Code accepts it.
-      // Use '\r' not '\n' since Claude Code's TUI expects Enter/CR on TTY.
-      child.write(text + '\r');
+      // Strip trailing CR/LF the user may have added in TG; submission
+      // is controlled by our explicit '\r' below.
+      const raw = text.replace(/[\r\n]+$/g, '');
+      // Neutralize any accidental paste-end sequences in the body.
+      const body = raw.split(PASTE_END).join('');
+      child.write(PASTE_START);
+      child.write(body);
+      child.write(PASTE_END);
+      child.write('\r');
+      if (args.verbose) {
+        console.error(`[tg] injected + submitted (${body.length} chars via bracketed paste)`);
+      }
     },
     onError: (err, ctx) => {
       if (args.verbose) console.error(`[tg] ${ctx}:`, err.message);
