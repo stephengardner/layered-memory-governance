@@ -16,6 +16,24 @@
 
 export { CliRenderer } from './renderer.js';
 export { createTelegramChannel } from './telegram-channel.js';
+export {
+  emptyAccumulator,
+  parseClaudeStreamLine,
+  summarizeToolUse,
+} from './claude-stream-parser.js';
+export type { ParseAccumulator } from './claude-stream-parser.js';
+export {
+  defaultClaudeStreamingExecutor,
+  invokeClaudeStreaming,
+  makeStubStreamingExecutor,
+  runSpawnedJsonl,
+} from './claude-streaming.js';
+export type {
+  InvokeClaudeStreamingOptions,
+  InvokeClaudeStreamingResult,
+  StreamingExecResult,
+  StreamingExecutor,
+} from './claude-streaming.js';
 export type {
   CliRendererChannel,
   CliRendererEvent,
