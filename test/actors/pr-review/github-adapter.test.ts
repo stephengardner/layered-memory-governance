@@ -231,12 +231,16 @@ describe('GitHubPrReviewAdapter', () => {
     expect(client.graphqls).toHaveLength(2);
   });
 
-  it('resolveComment throws when no thread can be found', async () => {
+  it('resolveComment is idempotent: no-ops when no thread can be found', async () => {
+    // Interface contract: resolveComment MUST be idempotent. A thread
+    // that no longer exists (already resolved elsewhere, or outdated)
+    // is success, not failure. Previous impl threw; aligned now with
+    // the interface doc.
     const client = mkClient({
       graphql: [mkThreadsPage([{ id: 't1', comments: [{ databaseId: 101, body: 'x' }] }])],
     });
     const adapter = new GitHubPrReviewAdapter({ client });
-    await expect(adapter.resolveComment(PR, '999')).rejects.toThrow(/no thread found/);
+    await expect(adapter.resolveComment(PR, '999')).resolves.toBeUndefined();
   });
 
   it('dryRun: replyToComment short-circuits without calling the client', async () => {

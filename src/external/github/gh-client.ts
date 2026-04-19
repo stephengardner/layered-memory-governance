@@ -64,7 +64,13 @@ export interface GhRestArgs {
 
 export interface GhClient {
   readonly executor: GhExecutor;
-  rest<T>(args: GhRestArgs): Promise<T>;
+  /**
+   * Typed REST call. Returns `undefined` when gh's stdout is empty
+   * (happens for 204 No Content responses like DELETE). Callers that
+   * expect a JSON body should check for undefined or use a method
+   * like POST that always returns JSON.
+   */
+  rest<T>(args: GhRestArgs): Promise<T | undefined>;
   graphql<T>(query: string, variables?: Readonly<Record<string, unknown>>): Promise<T>;
   raw(args: ReadonlyArray<string>): Promise<GhExecResult>;
 }
@@ -84,7 +90,7 @@ export function createGhClient(options: GhClientOptions = {}): GhClient {
     return result;
   }
 
-  async function rest<T>(reqArgs: GhRestArgs): Promise<T> {
+  async function rest<T>(reqArgs: GhRestArgs): Promise<T | undefined> {
     const method = reqArgs.method ?? 'GET';
     const path = applyQueryString(reqArgs.path, reqArgs.query);
     const args: string[] = ['api', path, '--method', method];
@@ -116,6 +122,13 @@ export function createGhClient(options: GhClientOptions = {}): GhClient {
     }
     const result = await raw(args);
     const parsed = parseJson<{ data: T; errors?: ReadonlyArray<{ message: string }> }>(result.stdout, args);
+    if (!parsed) {
+      throw new GhClientError(
+        'gh graphql returned empty stdout; expected a JSON envelope',
+        args,
+        result,
+      );
+    }
     if (parsed.errors && parsed.errors.length > 0) {
       throw new GhClientError(
         `GraphQL returned errors: ${parsed.errors.map((e) => e.message).join('; ')}`,
@@ -157,11 +170,9 @@ function pushVariableArg(args: string[], key: string, value: unknown): void {
   args.push('-F', `${key}=${JSON.stringify(value)}`);
 }
 
-function parseJson<T>(stdout: string, args: ReadonlyArray<string>): T {
+function parseJson<T>(stdout: string, args: ReadonlyArray<string>): T | undefined {
   const trimmed = stdout.trim();
-  if (trimmed.length === 0) {
-    return undefined as unknown as T;
-  }
+  if (trimmed.length === 0) return undefined;
   try {
     return JSON.parse(trimmed) as T;
   } catch (err) {
