@@ -38,7 +38,7 @@ import type {
   PrReviewAdapter,
   ReviewComment,
   ReviewReplyOutcome,
-} from './review-adapter.js';
+} from '../pr-review/adapter.js';
 
 export interface PrLandingAdapters {
   readonly review: PrReviewAdapter;
