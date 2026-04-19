@@ -64,8 +64,13 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Install
-        run: npm ci
+      - name: Install (skip native post-install)
+        # The pr-landing actor doesn't need any native deps. Skipping
+        # post-install scripts avoids onnxruntime-node (transitive
+        # @huggingface/transformers) trying to fetch a linux binary on
+        # a runner that hasn't the right glibc. Workflow build step
+        # below uses tsc, not anything that touches ONNX.
+        run: npm ci --ignore-scripts
 
       - name: Build
         run: npm run build
