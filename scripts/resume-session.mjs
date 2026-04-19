@@ -36,11 +36,10 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PROJECTS_ROOT = join(homedir(), '.claude', 'projects');
 
 function sanitizeCwd(cwd) {
-  // Claude Code's sanitization: replace `/` and `\` with `-`, keep the
-  // drive letter lowercased? In practice the stored name mirrors the
-  // path with backslashes flipped to `-`. For our target cwd
-  // C:\Users\opens\memory-governance -> C--Users-opens-memory-governance.
-  return cwd.replace(/:/g, '').replace(/[\\/]/g, '-');
+  // Claude Code replaces every `:`, `\`, and `/` with `-`. The Windows
+  // drive-letter therefore produces a double-dash: `C:\Users\...`
+  // becomes `C--Users-...` (colon -> `-`, backslash -> `-`, adjacent).
+  return cwd.replace(/[:\\/]/g, '-');
 }
 
 async function listProjects() {
