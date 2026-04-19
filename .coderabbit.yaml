@@ -1,0 +1,62 @@
+# CodeRabbit config for layered-autonomous-governance.
+# Docs: https://docs.coderabbit.ai/guides/configure-coderabbit
+#
+# LAG is a governance substrate; reviews should weigh architectural fit
+# and pluggable-substrate discipline, not only style. We prefer thorough,
+# slightly opinionated reviews so the pr-landing agent (Phase 53) has
+# something meaningful to classify against.
+
+language: en-US
+tone_instructions: >
+  Professional, direct, architectural. Flag anything that encodes our
+  org shape into framework primitives or blocks small/mid-team use.
+  Cite file:line when proposing changes.
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  # Review PRs regardless of what branch they target. Stacked PRs
+  # (feature-on-feature) need the same scrutiny as PRs into main;
+  # the default (main-only) would silently skip them.
+  base_branches:
+    - ".*"
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!dist/**"
+    - "!coverage/**"
+    - "!.lag/**"
+    - "!node_modules/**"
+    - "!**/*.tsbuildinfo"
+    - "!**/*.lock"
+    - "!**/package-lock.json"
+  path_instructions:
+    - path: "src/**/*.ts"
+      instructions: >
+        Framework code. Reject patterns that hardcode our specific org
+        shape (CTO, pr-landing, telegram, etc.) into primitives. These
+        belong in canon atoms, skills, or examples - never in src/.
+        Uphold the Host-interface boundary: no reaching around the 8
+        sub-interfaces. Prefer composition over inheritance.
+    - path: "test/**/*.ts"
+      instructions: >
+        Tests are the framework's contract. Prefer small, focused cases
+        with literal expected values over elaborate test helpers.
+    - path: "examples/**/*"
+      instructions: >
+        This is our instance, not the framework. Evaluate for clarity
+        and reproducibility for a newcomer; do not hold examples to
+        pluggable-substrate rules.
+    - path: ".claude/**/*"
+      instructions: >
+        Our instance configuration. Evaluate for internal consistency
+        with canon (CLAUDE.md) and DECISIONS.md; not for generality.
+
+chat:
+  auto_reply: true
