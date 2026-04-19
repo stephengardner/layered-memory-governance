@@ -284,7 +284,10 @@ async function main() {
     created_at: BOOTSTRAP_TIME,
   });
 
-  // Seed L3 atoms. Idempotent per id; re-running the script overwrites.
+  // Seed L3 atoms. Idempotent per id: existing atoms are skipped if
+  // their content matches the seed; divergence throws (atoms are
+  // content-immutable in the model, so a changed seed text means
+  // either a new seed id or a reset of .lag).
   let written = 0;
   for (const seed of SEED_ATOMS) {
     const existing = await host.atoms.get(seed.id);
