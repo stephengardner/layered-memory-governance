@@ -144,7 +144,7 @@ const SENT_LOG_PATH = path.join(QUEUE_DIR, 'sent-log.jsonl');
 
     fs.mkdirSync(CONSUMED_DIR, { recursive: true });
     const messages = [];
-    const messagesMeta = []; // [{text, tgMessageId, tgDate, replyToMessageId}]
+    const messagesMeta = []; // [{text, tgMessageId, tgDate, replyToMessageId, boundQuestionId}]
     let chatId = null;
     const handles = [];
     for (const name of pending) {
@@ -163,6 +163,7 @@ const SENT_LOG_PATH = path.join(QUEUE_DIR, 'sent-log.jsonl');
           tgMessageId: data.tgMessageId,
           tgDate: data.tgDate,
           replyToMessageId: data.replyToMessageId,
+          boundQuestionId: data.boundQuestionId,
         });
         handles.push(name);
       }
@@ -311,6 +312,14 @@ function computeCausality(messagesMeta, sentLog) {
   for (let i = 0; i < messagesMeta.length; i++) {
     const m = messagesMeta[i];
     if (!m.tgMessageId) continue;
+    // Auto-bound by daemon (Phase 50b-live): message is already linked
+    // to a pending question atom; agent sees the definitive binding.
+    if (m.boundQuestionId) {
+      notes.push(
+        `AUTO-BOUND: Inbound #${m.tgMessageId} linked to pending question ${m.boundQuestionId} via bindAnswer(). Question transitioned to 'answered'; audit recorded.`,
+      );
+      continue;
+    }
     // Explicit reply-to wins.
     if (typeof m.replyToMessageId === 'number') {
       const target = sentLog.find(s => s.messageId === m.replyToMessageId);

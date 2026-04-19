@@ -49,6 +49,7 @@ import {
   type TelegramVoice,
   type VoiceTranscriber,
 } from './voice.js';
+import { bindAnswer } from '../questions/index.js';
 
 export interface LAGDaemonOptions {
   readonly host: Host;
@@ -313,7 +314,7 @@ export class LAGDaemon {
     for (const name of entries) {
       if (!name.endsWith('.json')) continue;
       const full = join(outboxDir, name);
-      let payload: { chatId?: number; text?: string };
+      let payload: { chatId?: number; text?: string; questionId?: string };
       try {
         payload = JSON.parse(await readFile(full, 'utf8')) as typeof payload;
       } catch (err) {
@@ -329,9 +330,31 @@ export class LAGDaemon {
         : Number(this.chatIdString);
       const maxChars = this.options.maxReplyChars ?? 4000;
       try {
+        // Capture the first sent chunk's message_id for question linkage.
+        let firstMessageId: number | null = null;
         for (const chunk of splitMarkdownForTelegram(payload.text, maxChars)) {
           const html = markdownToTelegramHtml(chunk);
-          await this.sendMessage(chat, html, 'HTML');
+          const sentId = await this.sendMessageAndReturnId(chat, html, 'HTML', payload.questionId);
+          if (firstMessageId === null && sentId !== null) firstMessageId = sentId;
+        }
+        // If the outbox payload had a questionId, update the question
+        // atom's metadata with the Telegram message_id so subsequent
+        // reply-to inbounds can auto-bind to it.
+        if (payload.questionId && firstMessageId !== null) {
+          try {
+            const qAtom = await this.options.host.atoms.get(payload.questionId as AtomId);
+            if (qAtom && qAtom.type === 'question') {
+              await this.options.host.atoms.update(qAtom.id, {
+                metadata: {
+                  ...qAtom.metadata,
+                  tg_message_id: firstMessageId,
+                  asked_via: 'telegram',
+                },
+              });
+            }
+          } catch (err) {
+            this.onError(err, `drainOutbox question-linkage(${payload.questionId})`);
+          }
         }
         await rm(full, { force: true });
         sent += 1;
@@ -341,6 +364,39 @@ export class LAGDaemon {
       }
     }
     return sent;
+  }
+
+  private async sendMessageAndReturnId(
+    chatId: number,
+    text: string,
+    parseMode: 'HTML' | 'MarkdownV2' | 'Markdown',
+    questionIdForLog?: string,
+  ): Promise<number | null> {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+      parse_mode: parseMode,
+    };
+    const result = await this.callTelegram<{ message_id?: number; date?: number }>('sendMessage', body);
+    const mid = typeof result?.message_id === 'number' ? result.message_id : null;
+    if (this.options.queueMode && mid !== null) {
+      try {
+        await this.appendSentLog({
+          messageId: mid,
+          chatId,
+          sentAt: new Date().toISOString(),
+          ...(typeof result.date === 'number'
+            ? { tgSentAt: new Date(result.date * 1000).toISOString() }
+            : {}),
+          textPreview: text.replace(/<[^>]+>/g, '').slice(0, 200),
+          ...(questionIdForLog ? { questionId: questionIdForLog } : {}),
+        });
+      } catch (err) {
+        this.onError(err, 'appendSentLog(sendMessageAndReturnId)');
+      }
+    }
+    return mid;
   }
 
   private resolveQueueDir(): string {
@@ -358,6 +414,7 @@ export class LAGDaemon {
     tgMessageId: number;
     tgDate?: string;
     replyToMessageId?: number;
+    boundQuestionId?: AtomId;
   }): Promise<void> {
     const inboxDir = join(this.resolveQueueDir(), 'inbox');
     await mkdir(inboxDir, { recursive: true });
@@ -479,6 +536,18 @@ export class LAGDaemon {
       const tgDateIso = typeof message.date === 'number'
         ? new Date(message.date * 1000).toISOString()
         : null;
+
+      // Phase 50b-live: if the inbound explicitly replies-to a prior
+      // outbound that carried a questionId, auto-bind the answer now.
+      let autoBoundQuestionId: AtomId | null = null;
+      if (message.reply_to_message?.message_id) {
+        autoBoundQuestionId = await this.autoBindAnswerIfQuestion(
+          message.reply_to_message.message_id,
+          text,
+          principal,
+        );
+      }
+
       await this.enqueueInbound({
         chatId,
         text,
@@ -491,6 +560,7 @@ export class LAGDaemon {
         ...(message.reply_to_message
           ? { replyToMessageId: message.reply_to_message.message_id }
           : {}),
+        ...(autoBoundQuestionId ? { boundQuestionId: autoBoundQuestionId } : {}),
       });
       // Still record the user message as an L0 atom so the substrate
       // accumulates history even in queue mode.
@@ -643,12 +713,62 @@ export class LAGDaemon {
     sentAt: string;
     tgSentAt?: string;
     textPreview: string;
+    questionId?: string;
   }): Promise<void> {
     const queueDir = this.resolveQueueDir();
     const logPath = join(queueDir, 'sent-log.jsonl');
     const { appendFile, mkdir: mkdirP } = await import('node:fs/promises');
     await mkdirP(queueDir, { recursive: true });
     await appendFile(logPath, JSON.stringify(entry) + '\n', 'utf8');
+  }
+
+  /**
+   * Phase 50b-live auto-bind. Given an incoming Telegram reply-to
+   * message_id, look up the sent-log for the targeted outbound's
+   * recorded questionId, then call bindAnswer() on that question.
+   * Returns the question id if binding happened, null otherwise.
+   */
+  private async autoBindAnswerIfQuestion(
+    replyToMessageId: number,
+    answerContent: string,
+    answerer: PrincipalId,
+  ): Promise<AtomId | null> {
+    const queueDir = this.resolveQueueDir();
+    const logPath = join(queueDir, 'sent-log.jsonl');
+    let raw: string;
+    try {
+      raw = await readFile(logPath, 'utf8');
+    } catch {
+      return null;
+    }
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    // Walk newest-first for the matching entry.
+    let matchedQuestionId: string | null = null;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let entry: { messageId?: number; questionId?: string };
+      try {
+        entry = JSON.parse(lines[i]!) as typeof entry;
+      } catch {
+        continue;
+      }
+      if (entry.messageId === replyToMessageId && typeof entry.questionId === 'string') {
+        matchedQuestionId = entry.questionId;
+        break;
+      }
+    }
+    if (!matchedQuestionId) return null;
+
+    try {
+      const result = await bindAnswer(this.options.host, {
+        questionId: matchedQuestionId as AtomId,
+        answerContent,
+        answerer,
+      });
+      return result.questionId;
+    } catch (err) {
+      this.onError(err, `autoBindAnswer(${matchedQuestionId})`);
+      return null;
+    }
   }
 
   private async callTelegram<T>(
