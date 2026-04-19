@@ -28,6 +28,49 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 
 ---
 
+## D15: Terminal wrapper (Phase 51a) as the preferred real-time surface, not OS-level stdin injection
+
+**Context**: To give a running Claude Code terminal real-time Telegram reception (no turn-boundary wait), we needed some layer that owns the child's stdin. Two options were on the table:
+1. **Wrapper launcher** (shipped as `scripts/lag-terminal.mjs`): spawns `claude` as a node-pty child, wrapper owns the PTY master, Telegram poller injects into it.
+2. **OS-level stdin injection** into an already-running `claude` process (Windows `WriteConsoleInput` / Unix `ioctl(TIOCSTI)`).
+
+**Decision**: Ship option 1. Treat the wrapper as a first-class runtime surface composable with the other runtime modes (terminal, three daemon modes, hook-attached).
+
+**Why**:
+- One implementation vs three platform-specific ones; the wrapper behaves identically on Windows, macOS, Linux.
+- Single terminal emulator variance: the wrapper owns the PTY, so iTerm/Alacritty/Windows Terminal/tmux quirks are irrelevant.
+- No ambiguity about *which* `claude` instance is targeted (wrapper spawns its own child).
+- Invisible keystroke injection into an existing terminal is harder to reason about as a framework primitive; an explicit wrapper matches the "pluggable, auditable" discipline.
+- Mid-stream user typing can't collide with injection — wrapper sequences both streams into the PTY.
+
+**Alternatives considered**:
+- OS-level injection: wow-factor for the user who doesn't want to relaunch, but the trade-off dominates against a framework shipping to other developers.
+- Agent SDK service (Phase 44): long-term better answer for true push-to-running-process; blocked on zod v3 → v4 migration (Phase 44a). Complements rather than replaces the wrapper; both will ship.
+
+**What breaks if we revisit**: very little. The wrapper is an opt-in script; disabling is a non-launch. OS-level injection could layer in later as a second "attach-to-running" path for the specific "I can't relaunch" scenario; it would NOT replace the wrapper.
+
+---
+
+## D14: HIL causality — question atoms + reply-to + sent-log, layered (Phase 50a/b/b-live)
+
+**Context**: The Notifier's handle-based escalation path (`telegraph` -> disposition via handle) already gives Q-A causal binding for *structured* governance events. But free-form Telegram chat had no such binding: a "Yes" reply bound only to "the most recent question I sent," which races catastrophically under network delay (imagine the operator answers an older question while a newer question is already on the wire).
+
+**Decision**: Three layered primitives, all opt-in:
+1. **Phase 50a signals**: daemon records `tgMessageId` + `tgDate` on inbound, writes `sent-log.jsonl` for outbound with `message_id` + `sentAt`. Stop hook emits a *Causality context* block into the systemMessage — explicit reply-to match when the operator swipes-to-reply, TEMPORAL WARNING when an inbound is older than the most recent outbound.
+2. **Phase 50b primitive**: `type: 'question'` atom with a `pending | answered | expired | abandoned` state machine. `askQuestion`, `bindAnswer`, `listPendingQuestions`, `expirePastDueQuestions`. Answer atoms carry `provenance.derived_from = [questionId]`.
+3. **Phase 50b-live wiring**: `scripts/tg-ask.mjs` creates a question atom AND queues an outbox message tagged with `questionId`. Daemon's `drainOutbox` captures the Telegram-assigned `message_id` back onto the question's metadata. On an inbound with `reply_to_message.message_id`, daemon looks up `sent-log.jsonl` for a matching `questionId` and calls `bindAnswer` automatically. Hook annotates with "AUTO-BOUND".
+
+**Why layered**: signals alone are insufficient (timestamps don't bind across concurrent pending questions). Primitive alone is insufficient (agent has to remember to bind manually). Wiring closes the loop: the operator swipes-to-reply and the Q-A chain is captured automatically with full provenance.
+
+**Alternatives considered**:
+- **Timestamp heuristic only** (ship what 50a already provides; drop 50b): simple, but fails on concurrent questions — can't tell which one a "Yes" answers.
+- **LLM disambiguator first** (Phase 50c before 50b-live): works when explicit reply-to is missing, but adds an LLM call on the hot path. Deferred; reply-to covers the common case.
+- **Force every HIL exchange through the Notifier handle path**: rejected because free-form chat is a first-class modality now (mirror-all, tg-ask, wrapper injection) and shouldn't require structured-event envelope.
+
+**What breaks if we revisit**: Phase 50c adds an LLM classifier for ambiguous inbounds (no reply-to + multiple pending questions + timestamps don't decide). That layers on top of 50a/b without changing them.
+
+---
+
 ## D13: Telegram-as-operator, tools auto-fire on TG-originated prompts (current trade-off)
 
 **Context**: The LAG terminal wrapper (Phase 51a) injects incoming Telegram messages directly into the Claude Code child's stdin. When the child is launched with `--permission-mode auto` (standard Claude Code flag), it auto-approves tool execution. So a Telegram message from the operator can trigger Bash / Edit / Write / etc on the host machine without a second confirmation.
