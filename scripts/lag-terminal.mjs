@@ -287,8 +287,24 @@ async function main() {
     env: process.env,
   });
 
+  // Quiescence tracker: every byte the child emits pushes `lastOutput`
+  // forward. waitQuiet(ms, cap) returns once the PTY has been silent
+  // for that long (or the cap elapses). We use this to time TG-driven
+  // injections; see the injector onMessage below for rationale.
+  let lastOutput = Date.now();
+  const qWait = async (quietMs, capMs = 30_000) => {
+    const start = Date.now();
+    while (true) {
+      const quietFor = Date.now() - lastOutput;
+      if (quietFor >= quietMs) return true;
+      if (Date.now() - start > capMs) return false;
+      await new Promise((r) => setTimeout(r, Math.max(50, quietMs - quietFor)));
+    }
+  };
+
   // Pipe PTY output to real stdout so the user sees everything.
   child.onData((data) => {
+    lastOutput = Date.now();
     process.stdout.write(data);
   });
   child.onExit(({ exitCode }) => {
@@ -342,32 +358,51 @@ async function main() {
 
   // The injector: on each Telegram message, write it to the PTY.
   //
-  // Choice of sequence is empirical, not theoretical. scripts/probe-inject.mjs
-  // drives Claude Code's TUI with candidate byte sequences and watches
-  // the session jsonl for a new `user` record to confirm the TUI
-  // actually submitted the draft. Results (fresh claude, ConPTY on
-  // Windows):
+  // The *byte sequence* is simple: body + '\r' in one write. The
+  // *timing* is what makes this work. scripts/probe-inject-matrix.mjs
+  // runs a 48-cell deterministic matrix (6 strategies x 4 spawn/wait
+  // conditions x single-and-double sends) and watches the session
+  // jsonl for user records to confirm submissions. Headline result:
   //
-  //    PASS: text + '\r' (one write)            <- picked
-  //    PASS: text, 150ms delay, '\r'
-  //    PASS: text + '\r\n'
-  //    PASS: chars one-by-one + '\r'
-  //    FAIL: any bracketed-paste (ESC[200~ ... ESC[201~) variant
-  //    FAIL: bare '\n'
+  //   Strategy                                      Pass rate
+  //   -------------------------------------------   ---------
+  //   text + CR only                                  5/8
+  //   wait ESC[?2004h + text + CR                     3/8
+  //   quiesce 1200ms + text + CR                      4/8
+  //   quiesce 2000ms + text + CR                      8/8   <- picked
+  //   quiesce 3000ms + text + CR                      8/8
   //
-  // Bracketed paste fails because Claude Code does not leave the
-  // mode enabled for programmatic writes. Wrapping text in the
-  // markers makes the TUI render them verbatim or ignore them, and
-  // the trailing '\r' lands in a non-input context. The simplest
-  // passing sequence is sequence A, so that is what we use. Rerun
-  // the probe (node scripts/probe-inject.mjs) to revalidate if the
-  // CLI behavior changes.
+  // Why quiescence works where the readiness signal alone does not:
+  // Claude Code emits ESC[?2004h synchronously from setRawMode, well
+  // before React has mounted the Ink TextInput. An injection that
+  // fires on that signal races the component mount. The only robust
+  // "mount complete" signal is that PTY output has gone idle for long
+  // enough that no further renders are in flight, which empirically
+  // settles at ~2s for this TUI (header + status + context + migration
+  // banner). After 2s of quiet, the TextInput is wired and a plain
+  // `body + CR` submits deterministically.
+  //
+  // Happy side effect: when Claude is mid-response (streaming tokens
+  // and spinner output), quiescence never resolves, so TG messages
+  // naturally queue behind the in-flight turn instead of interleaving.
+  // Same is true while the user is typing directly into the wrapper:
+  // PTY echo keeps lastOutput fresh, the injector waits for a pause.
+  //
+  // Rerun scripts/probe-inject-matrix.mjs to revalidate if the
+  // Claude Code CLI changes its TUI behavior.
+  const INJECT_QUIET_MS = 2000;
+  const INJECT_QUIET_CAP_MS = 30_000;
+
   const injector = new TelegramInjector({
     botToken,
     chatId,
     verbose: args.verbose,
     onMessage: async ({ text }) => {
       const body = text.replace(/[\r\n]+$/g, '');
+      const okay = await qWait(INJECT_QUIET_MS, INJECT_QUIET_CAP_MS);
+      if (!okay && args.verbose) {
+        console.error(`[tg] inject: quiescence cap hit at ${INJECT_QUIET_CAP_MS}ms; firing anyway`);
+      }
       child.write(body + '\r');
       if (args.verbose) {
         console.error(`[tg] injected + submitted (${body.length} chars)`);
