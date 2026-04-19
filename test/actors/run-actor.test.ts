@@ -309,4 +309,64 @@ describe('runActor', () => {
     expect(report.haltReason).toBe('converged');
     expect(report.escalations).toHaveLength(0);
   });
+
+  it('error in classify halts with haltReason=error and a descriptive note', async () => {
+    const host = createMemoryHost();
+    class BrokenClassify extends ScriptedActor {
+      override async classify(): Promise<never> {
+        throw new Error('classify-kaboom');
+      }
+    }
+    const actor = new BrokenClassify({ observations: [1] });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 3 },
+      origin: 'test',
+    });
+    expect(report.haltReason).toBe('error');
+    expect(report.lastNote).toMatch(/classify failed: classify-kaboom/);
+  });
+
+  it('error in propose halts with haltReason=error', async () => {
+    const host = createMemoryHost();
+    class BrokenPropose extends ScriptedActor {
+      override async propose(): Promise<never> {
+        throw new Error('propose-kaboom');
+      }
+    }
+    const actor = new BrokenPropose({ observations: [1] });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 3 },
+      origin: 'test',
+    });
+    expect(report.haltReason).toBe('error');
+    expect(report.lastNote).toMatch(/propose failed: propose-kaboom/);
+  });
+
+  it('error in reflect halts with haltReason=error', async () => {
+    const host = createMemoryHost();
+    class BrokenReflect extends ScriptedActor {
+      override async reflect(): Promise<never> {
+        throw new Error('reflect-kaboom');
+      }
+    }
+    const actor = new BrokenReflect({
+      observations: [1],
+      proposals: [{ tool: 'safe', payload: 'x' }],
+    });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 3 },
+      origin: 'test',
+    });
+    expect(report.haltReason).toBe('error');
+    expect(report.lastNote).toMatch(/reflect failed: reflect-kaboom/);
+  });
 });

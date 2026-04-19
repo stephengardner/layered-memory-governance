@@ -30,7 +30,9 @@ import type {
   ActorBudget,
   ActorHaltReason,
   ActorReport,
+  Classified,
   ProposedAction,
+  Reflection,
 } from './types.js';
 import type { Host } from '../interface.js';
 import type { Principal } from '../types.js';
@@ -111,7 +113,14 @@ export async function runActor<
       payload: { observation: obs as unknown as Record<string, unknown> },
     });
 
-    const classified = await actor.classify(obs, ctx);
+    let classified: Classified<Obs>;
+    try {
+      classified = await actor.classify(obs, ctx);
+    } catch (err) {
+      haltReason = 'error';
+      lastNote = `classify failed: ${errString(err)}`;
+      break;
+    }
     await emitAudit(options, actor, {
       kind: 'classification',
       iteration,
@@ -121,6 +130,12 @@ export async function runActor<
       payload: { key: classified.key, metadata: classified.metadata ?? {} },
     });
 
+    // Convergence-loop guard: if the previous iteration made no progress
+    // AND this iteration classifies to the same key, the loop is stuck.
+    // Halt before wasting more apply cycles on actions we already know
+    // won't change state. For "slow external system" scenarios where the
+    // state is actually transient (e.g. waiting for CodeRabbit to post),
+    // use budget.deadline -- that's what deadlines are for.
     if (
       prevKey !== null
       && classified.key === prevKey
@@ -132,7 +147,14 @@ export async function runActor<
       break;
     }
 
-    const proposed = await actor.propose(classified, ctx);
+    let proposed: ReadonlyArray<ProposedAction<Action>>;
+    try {
+      proposed = await actor.propose(classified, ctx);
+    } catch (err) {
+      haltReason = 'error';
+      lastNote = `propose failed: ${errString(err)}`;
+      break;
+    }
     await emitAudit(options, actor, {
       kind: 'proposal',
       iteration,
@@ -155,7 +177,15 @@ export async function runActor<
         halted = true;
         break;
       }
-      const policyResult = await checkToolPolicy(options.host, policyContextFor(action, options));
+      let policyResult: Awaited<ReturnType<typeof checkToolPolicy>>;
+      try {
+        policyResult = await checkToolPolicy(options.host, policyContextFor(action, options));
+      } catch (err) {
+        haltReason = 'error';
+        lastNote = `policy check failed for ${action.tool}: ${errString(err)}`;
+        halted = true;
+        break;
+      }
       await emitAudit(options, actor, {
         kind: 'policy-decision',
         iteration,
@@ -203,7 +233,14 @@ export async function runActor<
     if (haltReason === 'error') break;
     if (halted) break;
 
-    const reflection = await actor.reflect(outcomes, classified, ctx);
+    let reflection: Reflection;
+    try {
+      reflection = await actor.reflect(outcomes, classified, ctx);
+    } catch (err) {
+      haltReason = 'error';
+      lastNote = `reflect failed: ${errString(err)}`;
+      break;
+    }
     lastNote = reflection.note;
     await emitAudit(options, actor, {
       kind: 'reflection',
