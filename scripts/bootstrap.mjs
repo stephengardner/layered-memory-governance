@@ -141,6 +141,12 @@ const SEED_ATOMS = [
     content: 'Artifacts shipped to this repo must not credit an AI assistant. Commits, PR bodies, PR comments, and any tracked file must not carry Co-Authored-By trailers or "Generated with" markers for Claude or any other AI. The assistant is a tool; authorship is the operator. This rule is strict and governs every future commit.',
     confidence: 1.0,
   },
+  {
+    id: 'dev-no-premature-stop',
+    type: 'directive',
+    content: 'Autonomous agents must not stop prematurely. If a turn announces continuation ("proceeding with X", "starting Y now", "continuing with Z", "moving on to W") it MUST execute the claimed action in the same turn via tool calls. Announcing forward motion without taking it is a discipline failure. The Stop-event hook (.claude/hooks/stop-continuation-guard.mjs) catches this mechanically; this atom is the governance-layer rationale so future agents and the PlanningActor inherit the rule from canon. If the work is genuinely complete, say so explicitly ("done", "awaiting direction") instead of announcing an action.',
+    confidence: 1.0,
+  },
 
   // ---- Decisions ---------------------------------------------------
   {
