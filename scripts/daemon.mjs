@@ -172,6 +172,8 @@ async function main() {
     console.log(`                Outbox: ${resolve(args.rootDir, 'tg-queue/outbox')}`);
   }
 
+  console.log(`  UX:           ${args.cliStyle ? 'CLI-STYLE (throbber + tool lines + streaming edits)' : 'BATCH (single message per response)'}`);
+
   if (args.runLoopEveryMs > 0) {
     console.log(`  Ambient loop:  every ${args.runLoopEveryMs}ms (decay, promote, canon)`);
   }
