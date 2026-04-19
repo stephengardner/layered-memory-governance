@@ -93,6 +93,55 @@ const SEED_ATOMS = [
     confidence: 1.0,
   },
 
+  // ---- Development principles (Phase 55-pre) ----------------------
+  // These directives are the "soul" inputs for the PlanningActor.
+  // validatePlan runs every proposed plan through arbitration against
+  // L3; a plan that conflicts with any of these either escalates or
+  // is rejected. They are canon atoms, not prompt strings, so the
+  // enforcement is structural, not advisory.
+  {
+    id: 'dev-extreme-rigor-and-research',
+    type: 'directive',
+    content: 'Development decisions require extreme rigor and research before shipping. Never ship what is "mostly right" without sourced reasoning; prior atoms, DECISIONS entries, prior art, and external docs must be searched and weighed. Plans that skip this step are escalated.',
+    confidence: 1.0,
+  },
+  {
+    id: 'dev-right-over-easy',
+    type: 'directive',
+    content: 'When a path is easy but compromises pluggability, composability, substrate discipline, or future-proofing, choose the right path instead. Surface the trade-off explicitly in the plan. The easy path without acknowledgment of what it costs is a plan failure.',
+    confidence: 1.0,
+  },
+  {
+    id: 'dev-forward-thinking-no-regrets',
+    type: 'directive',
+    content: 'Design decisions must survive a 3-month-later review without regret. Proposed plans must articulate how they will still be sound when the org has 10x more actors, 10x more canon, and an order of magnitude more external integrations. Plans that optimize for this week break later.',
+    confidence: 1.0,
+  },
+  {
+    id: 'dev-substrate-not-prescription',
+    type: 'directive',
+    content: 'Framework code under src/ must stay mechanism-focused and pluggable. Role names, specific org shapes, vendor-specific logic, and our instance configuration belong in canon, skills, or examples, never in src/. Plans that encode our org shape into framework primitives are rejected.',
+    confidence: 1.0,
+  },
+  {
+    id: 'dev-simple-surface-deep-architecture',
+    type: 'directive',
+    content: 'LAG must be simple to describe to a human ("governance substrate for autonomous agents") while having architecture deep enough to support orgs running 50+ concurrent actors. Plans that add complexity to the surface or thin the architecture are rejected. Subpath imports, sharp hello-world stories, layered tutorials are mechanisms that serve this.',
+    confidence: 1.0,
+  },
+  {
+    id: 'dev-flag-structural-concerns',
+    type: 'directive',
+    content: 'Any agent or actor operating in this org is required to flag structural concerns proactively when a proposed path compromises pluggability, simple-surface, substrate discipline, or fit for consumers beyond our current scope. Silent execution of a shape-compromising decision is a violation; surfaced concerns are the right behaviour even when the concern is ultimately overruled.',
+    confidence: 1.0,
+  },
+  {
+    id: 'dev-no-claude-attribution',
+    type: 'directive',
+    content: 'Artifacts shipped to this repo must not credit an AI assistant. Commits, PR bodies, PR comments, and any tracked file must not carry Co-Authored-By trailers or "Generated with" markers for Claude or any other AI. The assistant is a tool; authorship is the operator. This rule is strict and governs every future commit.',
+    confidence: 1.0,
+  },
+
   // ---- Decisions ---------------------------------------------------
   {
     id: 'arch-atomstore-source-of-truth',
@@ -235,7 +284,10 @@ async function main() {
     created_at: BOOTSTRAP_TIME,
   });
 
-  // Seed L3 atoms. Idempotent per id; re-running the script overwrites.
+  // Seed L3 atoms. Idempotent per id: existing atoms are skipped if
+  // their content matches the seed; divergence throws (atoms are
+  // content-immutable in the model, so a changed seed text means
+  // either a new seed id or a reset of .lag).
   let written = 0;
   for (const seed of SEED_ATOMS) {
     const existing = await host.atoms.get(seed.id);
@@ -268,9 +320,27 @@ async function main() {
       metadata: { source: 'self-bootstrap' },
     };
     if (existing) {
-      // No-op update to bump nothing: atoms are content-immutable. We only
-      // need to re-put if the content changed, which is rare. Skip for
-      // determinism.
+      // Atoms are content-immutable per the core model. If a seed's
+      // text has drifted from what was written, silently skipping
+      // would leave the store stale (and the rendered canon with
+      // it). Detect divergence and fail loudly so the operator
+      // either supersedes the atom with a new id or resets .lag
+      // before re-seeding. This is exactly the "fail fast if seed
+      // drifts" discipline for canon.
+      if (
+        existing.content !== atom.content
+        || existing.type !== atom.type
+        || existing.confidence !== atom.confidence
+      ) {
+        throw new Error(
+          `Seed atom '${seed.id}' drifted from bootstrap source.\n`
+          + `  stored content: ${JSON.stringify(existing.content).slice(0, 80)}\n`
+          + `  seed content:   ${JSON.stringify(atom.content).slice(0, 80)}\n`
+          + `Fix by either (a) creating a new seed with a different id and\n`
+          + `marking this one superseded, or (b) resetting .lag before re-running\n`
+          + `bootstrap if the store was never shared.`,
+        );
+      }
       continue;
     }
     await host.atoms.put(atom);
