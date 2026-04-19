@@ -37,78 +37,43 @@ LAG treats memory as a governed substrate. Every stored unit is an **atom** with
 
 ### The substrate (what LAG governs)
 
+A single linear pipeline from session sources to rendered canon, with plans feeding intent governance and a human-in-the-loop gate on the L3 boundary.
+
 ```mermaid
 flowchart LR
-  SRC["Session sources<br/>(pluggable)"]
-  L0["L0<br/>raw"]
-  L1["L1<br/>extracted"]
-  L2["L2<br/>curated"]
-  L3["L3<br/>canon"]
-  PLAN["Plans<br/>(intent)"]
-  CANON["CLAUDE.md targets<br/>(per scope / role)"]
-  HIL["Human in the loop"]
-
-  SRC -->|ingest| L0
-  L0 -->|extract<br/>claims| L1
-  L1 -->|consensus<br/>+ confidence| L2
-  L2 -->|human-gate<br/>+ higher bar| L3
-  L3 -->|render| CANON
-  PLAN -.validate<br/>vs canon.-> L3
-  L3 -.escalate<br/>ties / approvals.-> HIL
-  HIL -.approve /<br/>reject / revert.-> L3
+  SRC[Session sources] --> L0[L0 raw]
+  L0 -->|extract claims| L1[L1 extracted]
+  L1 -->|consensus| L2[L2 curated]
+  L2 -->|human gate| L3[L3 canon]
+  L3 -->|render| MD[CLAUDE.md targets]
+  HIL[Human in the loop] -->|approve / reject| L3
+  L3 -.escalate.-> HIL
+  PLAN[Plans] -.validate vs canon.-> L3
   PLAN -.escalate.-> HIL
-
-  classDef layer fill:#eef,stroke:#557,stroke-width:1px
-  classDef source fill:#efe,stroke:#575,stroke-width:1px
-  classDef human fill:#fee,stroke:#755,stroke-width:1px
-  classDef plan fill:#ffe,stroke:#775,stroke-width:1px
-  class L0,L1,L2,L3 layer
-  class SRC,CANON source
-  class HIL human
-  class PLAN plan
 ```
 
-Every transition is audit-logged. Governance primitives (arbitrate at write time, decay, TTL, taint cascade, promote-by-consensus, validate-plan) run on every loop tick and touch every layer.
+Around that pipeline, governance primitives run on every loop tick: **arbitrate at write time** (detect > source-rank > temporal > validate > escalate), **promote by consensus + confidence**, **decay + TTL expire**, **taint cascade** on compromise, **validate plan** before execution. Every transition is audit-logged. Nothing is deleted.
 
 ### Runtime surfaces (how LAG is driven)
 
+Three daemon modes plus the terminal Claude Code instance all share the same `.lag/` substrate. Pick one per context, or run them concurrently.
+
 ```mermaid
 flowchart LR
-  subgraph SURFACES["Operator surfaces"]
-    direction TB
-    TERM["Terminal<br/>Claude Code"]
-    DAEMON1["Daemon<br/>stateless"]
-    DAEMON2["Daemon<br/>resume-shared"]
-    DAEMON3["Daemon<br/>queue + Stop hook"]
-  end
-
-  LAG[".lag state<br/>(atoms, audit,<br/>plans, canon,<br/>notifier queue)"]
-  TG["Telegram<br/>(your phone)"]
-  SLACK["Slack / email /<br/>session-inject<br/>(roadmap)"]
-
-  TERM -->|read+write| LAG
-  DAEMON1 -->|spawn claude -p<br/>per message| LAG
-  DAEMON2 -->|claude -p --resume<br/>shared jsonl| LAG
-  DAEMON3 -->|write inbox,<br/>drain outbox| LAG
-  LAG -->|escalations| TG
-  LAG -.roadmap.-> SLACK
-  TG -.reply buttons<br/>and messages.-> LAG
-  DAEMON3 -.Stop hook<br/>injects into.-> TERM
-
-  classDef state fill:#eef,stroke:#557,stroke-width:2px
-  classDef channel fill:#efe,stroke:#575,stroke-width:1px
-  classDef future fill:#fff,stroke:#aaa,stroke-width:1px,stroke-dasharray:4 3
-  class LAG state
-  class TG,TERM,DAEMON1,DAEMON2,DAEMON3 channel
-  class SLACK future
+  TERM[Terminal Claude Code] -->|read + write| LAG[(.lag state)]
+  D1[Daemon: stateless] -->|spawn claude -p| LAG
+  D2[Daemon: resume-shared] -->|claude -p --resume| LAG
+  D3[Daemon: queue + hook] -->|write inbox<br/>drain outbox| LAG
+  LAG -->|escalations| TG[Telegram]
+  TG -.replies.-> LAG
+  D3 -.Stop hook inject.-> TERM
+  LAG -.roadmap.-> FUT[Slack / email /<br/>session-inject]
 ```
 
-All runtime surfaces share the same `.lag/` substrate. Pick modes per context:
-
-- **Terminal** for head-down development
-- **Stateless daemon** for autonomous-org (each agent message independent)
-- **Resume-shared daemon** for solo dev (daemon appends to your terminal's jsonl; bidirectional)
-- **Queue + hook** for "terminal is brain, Telegram is mouth" (the running Claude Code instance answers Telegram via a Stop hook)
+- **Terminal** for head-down development.
+- **Stateless daemon** for autonomous-org (each message independent, no context coupling).
+- **Resume-shared daemon** for solo dev (daemon appends to your terminal's jsonl; bidirectional).
+- **Queue + hook** for "terminal is brain, Telegram is mouth" (the running Claude Code instance answers Telegram via a Stop hook).
 
 Every atom carries an audit-ready provenance chain. Every transition (promote, supersede, taint, expire, approve, reject) is logged. Nothing gets deleted; superseded atoms stay in the store with `superseded_by` set so history is reconstructible.
 
