@@ -162,6 +162,9 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments/${commentId}/replies`,
       fields: { body },
     });
+    if (!response) {
+      throw new Error(`GitHubPrReviewAdapter: empty response from POST reply for comment ${commentId}`);
+    }
     return {
       commentId,
       replyId: String(response.id),
@@ -170,14 +173,17 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
   }
 
   async resolveComment(pr: PrIdentifier, commentId: string): Promise<void> {
+    // Contract is idempotent: a comment whose thread we cannot find
+    // is most likely already-resolved or already-outdated (our
+    // listUnresolvedComments filters those out before exposing them).
+    // Treating missing-thread as success (no-op) matches the interface
+    // doc's idempotence promise and prevents spurious failures when
+    // the actor retries after a prior successful resolve.
     if (this.dryRun) return;
 
     const threadId = await this.resolveThreadId(pr, commentId);
-    if (threadId === null) {
-      throw new Error(
-        `GitHubPrReviewAdapter: no thread found for comment ${commentId} on ${pr.owner}/${pr.repo}#${pr.number}`,
-      );
-    }
+    if (threadId === null) return;
+
     await this.client.graphql<GithubResolveReviewThreadResponse>(
       RESOLVE_THREAD_MUTATION,
       { threadId },
