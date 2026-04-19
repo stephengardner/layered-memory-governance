@@ -259,6 +259,69 @@ describe('GitHubPrReviewAdapter', () => {
     expect(client.graphqls).toHaveLength(0);
   });
 
+  it('hasReviewerEngaged: true when any review comment author matches', async () => {
+    const client = mkClient({
+      rest: [
+        [{ user: { login: 'human-reviewer' } }, { user: { login: 'coderabbitai[bot]' } }],
+        [],
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const engaged = await adapter.hasReviewerEngaged(PR, ['coderabbitai[bot]']);
+    expect(engaged).toBe(true);
+  });
+
+  it('hasReviewerEngaged: true when author appears in top-level issue comments', async () => {
+    const client = mkClient({
+      rest: [
+        [], // review comments empty
+        [{ user: { login: 'coderabbitai[bot]' } }], // issue comments
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const engaged = await adapter.hasReviewerEngaged(PR, ['coderabbitai[bot]']);
+    expect(engaged).toBe(true);
+  });
+
+  it('hasReviewerEngaged: false when none of the given logins appear', async () => {
+    const client = mkClient({
+      rest: [
+        [{ user: { login: 'human-reviewer' } }],
+        [{ user: { login: 'stephengardner' } }],
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const engaged = await adapter.hasReviewerEngaged(PR, ['coderabbitai[bot]']);
+    expect(engaged).toBe(false);
+  });
+
+  it('hasReviewerEngaged: false when authorLogins is empty (degenerate case)', async () => {
+    const client = mkClient({});
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const engaged = await adapter.hasReviewerEngaged(PR, []);
+    expect(engaged).toBe(false);
+  });
+
+  it('postPrComment: POSTs to the issues/comments endpoint', async () => {
+    const client = mkClient({ rest: [{ id: 5555 }] });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const outcome = await adapter.postPrComment(PR, '@coderabbitai review');
+    expect(outcome.posted).toBe(true);
+    expect(outcome.commentId).toBe('5555');
+    expect(client.rests[0]!.args.method).toBe('POST');
+    expect(client.rests[0]!.args.path).toBe('repos/o/r/issues/1/comments');
+    expect(client.rests[0]!.args.fields).toEqual({ body: '@coderabbitai review' });
+  });
+
+  it('dryRun: postPrComment short-circuits without calling the client', async () => {
+    const client = mkClient({});
+    const adapter = new GitHubPrReviewAdapter({ client, dryRun: true });
+    const outcome = await adapter.postPrComment(PR, '@coderabbitai review');
+    expect(outcome.posted).toBe(false);
+    expect(outcome.dryRun).toBe(true);
+    expect(client.rests).toHaveLength(0);
+  });
+
   it('dryRun: listUnresolvedComments still hits the client (reads are not gated)', async () => {
     const client = mkClient({
       graphql: [mkThreadsPage([{ id: 't1', comments: [{ databaseId: 101, body: 'nit' }] }])],

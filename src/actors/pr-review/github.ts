@@ -20,6 +20,7 @@ import type {
   GithubReviewThreadsResponse,
 } from '../../external/github/index.js';
 import type {
+  PrCommentOutcome,
   PrIdentifier,
   PrReviewAdapter,
   ReviewComment,
@@ -188,6 +189,64 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       RESOLVE_THREAD_MUTATION,
       { threadId },
     );
+  }
+
+  /**
+   * Check whether any of the given reviewer logins has posted ANY
+   * review comment (line-level) OR top-level issue/PR comment. Uses
+   * two REST endpoints so we catch both code-review threads and
+   * top-level chatter. Read-only; dry-run has no effect.
+   */
+  async hasReviewerEngaged(
+    pr: PrIdentifier,
+    authorLogins: ReadonlyArray<string>,
+  ): Promise<boolean> {
+    if (authorLogins.length === 0) return false;
+    const logins = new Set(authorLogins);
+
+    type CommentLike = { readonly user?: { readonly login?: string } };
+    const reviewComments = await this.client.rest<ReadonlyArray<CommentLike>>({
+      path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments`,
+      query: { per_page: 100 },
+    });
+    for (const c of reviewComments ?? []) {
+      const login = c.user?.login;
+      if (login && logins.has(login)) return true;
+    }
+
+    const issueComments = await this.client.rest<ReadonlyArray<CommentLike>>({
+      path: `repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`,
+      query: { per_page: 100 },
+    });
+    for (const c of issueComments ?? []) {
+      const login = c.user?.login;
+      if (login && logins.has(login)) return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Post a top-level PR comment. Used to prompt a reviewer bot or
+   * surface anything that is not a thread reply. GitHub treats PRs as
+   * issues for top-level comments, so this POSTs to the issues endpoint.
+   */
+  async postPrComment(
+    pr: PrIdentifier,
+    body: string,
+  ): Promise<PrCommentOutcome> {
+    if (this.dryRun) {
+      return { posted: false, dryRun: true };
+    }
+    const response = await this.client.rest<{ id: number }>({
+      method: 'POST',
+      path: `repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`,
+      fields: { body },
+    });
+    if (!response) {
+      throw new Error(`GitHubPrReviewAdapter: empty response from POST issue comment on ${pr.owner}/${pr.repo}#${pr.number}`);
+    }
+    return { commentId: String(response.id), posted: true };
   }
 
   private threadAlreadyHandled(thread: {

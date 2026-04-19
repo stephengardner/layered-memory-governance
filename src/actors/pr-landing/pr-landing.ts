@@ -48,13 +48,28 @@ export interface PrLandingAdapters {
 export interface PrLandingObservation {
   readonly pr: PrIdentifier;
   readonly comments: ReadonlyArray<ReviewComment>;
+  /**
+   * True when at least one of the reviewers in options.ensureReviewers
+   * has posted at least one comment on this PR. False means the bot
+   * has not engaged and the actor should prompt it. Undefined if
+   * ensureReviewers is not configured.
+   */
+  readonly reviewerEngaged?: boolean;
+  /**
+   * True when the pr-landing bot itself has ALREADY posted a top-level
+   * comment on this PR. Used as an idempotency guard: don't post the
+   * ensure-review prompt again if we already did. Defined only when
+   * ensureReviewers is configured AND reviewerEngaged is false.
+   */
+  readonly selfAlreadyPrompted?: boolean;
 }
 
 export type PrLandingActionKind =
   | 'reply-nit'
   | 'reply-suggestion'
   | 'reply-architectural'
-  | 'resolve-nit';
+  | 'resolve-nit'
+  | 'ensure-review';
 
 export interface PrLandingActionPayload {
   readonly kind: PrLandingActionKind;
@@ -68,10 +83,32 @@ export interface PrLandingOptions {
   readonly pr: PrIdentifier;
   /**
    * Optional hook that takes a comment and returns the reply body. If
-   * omitted, a stock template is used. In 53b the skill wires an LLM
-   * here to produce thoughtful replies.
+   * omitted, a stock template is used. A follow-up phase will wire an
+   * LLM here to produce thoughtful replies.
    */
   readonly composeReply?: (comment: ReviewComment, ctx: ActorContext<PrLandingAdapters>) => Promise<string>;
+  /**
+   * Reviewer logins to ensure have engaged on the PR. When set and the
+   * adapter's hasReviewerEngaged returns false, the actor proposes an
+   * `ensure-review` action that posts a prompt (e.g., for CodeRabbit,
+   * a top-level `@coderabbitai review` comment). Once any of these
+   * logins appears in comments, the actor moves on to handling
+   * feedback. Default: no ensure-review behaviour.
+   */
+  readonly ensureReviewers?: ReadonlyArray<{
+    /** Author logins considered equivalent (e.g. ['coderabbitai[bot]', 'coderabbitai']). */
+    readonly logins: ReadonlyArray<string>;
+    /** Body posted if none of the logins have engaged. */
+    readonly promptBody: string;
+    /** Human-readable name for audit + classification. */
+    readonly label: string;
+  }>;
+  /**
+   * Author logins whose prior top-level PR comments mean the actor has
+   * already posted an ensure-review prompt and should not re-post.
+   * Default: ['github-actions[bot]']. Set to [] to disable (testing).
+   */
+  readonly ensurePromptAuthors?: ReadonlyArray<string>;
 }
 
 export class PrLandingActor implements Actor<
@@ -87,7 +124,28 @@ export class PrLandingActor implements Actor<
 
   async observe(ctx: ActorContext<PrLandingAdapters>): Promise<PrLandingObservation> {
     const comments = await ctx.adapters.review.listUnresolvedComments(this.options.pr);
-    return { pr: this.options.pr, comments };
+    const base = { pr: this.options.pr, comments };
+    if (!this.options.ensureReviewers || this.options.ensureReviewers.length === 0) {
+      return base;
+    }
+    const allLogins = this.options.ensureReviewers.flatMap((r) => r.logins);
+    const reviewerEngaged = await ctx.adapters.review.hasReviewerEngaged(
+      this.options.pr,
+      allLogins,
+    );
+    if (reviewerEngaged) {
+      return { ...base, reviewerEngaged: true };
+    }
+    // Idempotency guard: if the pr-landing bot has already posted any
+    // comment on this PR, assume we've already ensure-review'd and do
+    // not post the prompt again. Without this, a slow reviewer bot
+    // (CodeRabbit queued behind other repos) would cause us to re-prompt
+    // every iteration, spamming the PR.
+    const promptAuthors = this.options.ensurePromptAuthors ?? ['github-actions[bot]'];
+    const selfAlreadyPrompted = promptAuthors.length === 0
+      ? false
+      : await ctx.adapters.review.hasReviewerEngaged(this.options.pr, promptAuthors);
+    return { ...base, reviewerEngaged: false, selfAlreadyPrompted };
   }
 
   async classify(
@@ -103,10 +161,14 @@ export class PrLandingActor implements Actor<
       else if (severity === 'suggestion') suggestion++;
       else architectural++;
     }
+    const reviewerPending = obs.reviewerEngaged === false;
+    const key = reviewerPending
+      ? `ensure-review nit:${nit} suggestion:${suggestion} architectural:${architectural}`
+      : `nit:${nit} suggestion:${suggestion} architectural:${architectural}`;
     return {
       observation: obs,
-      key: `nit:${nit} suggestion:${suggestion} architectural:${architectural}`,
-      metadata: { nit, suggestion, architectural },
+      key,
+      metadata: { nit, suggestion, architectural, reviewerPending },
     };
   }
 
@@ -115,6 +177,30 @@ export class PrLandingActor implements Actor<
     ctx: ActorContext<PrLandingAdapters>,
   ): Promise<ReadonlyArray<ProposedAction<PrLandingActionPayload>>> {
     const actions: ProposedAction<PrLandingActionPayload>[] = [];
+    // Ensure-review actions come first: if the configured reviewer bot
+    // hasn't engaged AND we haven't already posted a prompt ourselves,
+    // prompt it before trying to handle its (absent) feedback. Once the
+    // reviewer responds, subsequent iterations drop this class. If we
+    // already prompted and the reviewer still hasn't responded, do NOT
+    // re-post; let convergence-guard or deadline halt the run so the
+    // operator can investigate.
+    if (
+      classified.observation.reviewerEngaged === false
+      && !classified.observation.selfAlreadyPrompted
+      && this.options.ensureReviewers
+    ) {
+      for (const spec of this.options.ensureReviewers) {
+        actions.push({
+          tool: 'pr-ensure-review',
+          description: `Prompt ${spec.label} to review this PR`,
+          payload: {
+            kind: 'ensure-review',
+            commentId: `ensure:${spec.label}`,
+            body: spec.promptBody,
+          },
+        });
+      }
+    }
     for (const c of classified.observation.comments) {
       const severity = c.severity ?? heuristicSeverity(c);
       const body = await this.composeReplyBody(c, ctx);
@@ -159,6 +245,19 @@ export class PrLandingActor implements Actor<
       await review.resolveComment(this.options.pr, p.commentId);
       return { commentId: p.commentId, resolved: true };
     }
+    if (p.kind === 'ensure-review') {
+      const outcome = await review.postPrComment(this.options.pr, p.body ?? '');
+      const base: ReviewReplyOutcome = {
+        commentId: outcome.commentId ?? p.commentId,
+        posted: outcome.posted,
+      };
+      const withReply = outcome.commentId === undefined
+        ? base
+        : { ...base, replyId: outcome.commentId };
+      return outcome.dryRun === undefined
+        ? withReply
+        : { ...withReply, dryRun: outcome.dryRun };
+    }
     const body = p.body ?? '';
     return await review.replyToComment(this.options.pr, p.commentId, body);
   }
@@ -169,11 +268,15 @@ export class PrLandingActor implements Actor<
     _ctx: ActorContext<PrLandingAdapters>,
   ): Promise<Reflection> {
     const totalComments = classified.observation.comments.length;
+    const reviewerPending = classified.observation.reviewerEngaged === false;
     const progressed = outcomes.length > 0;
+    // Done = no comments AND no pending reviewer prompt. The ensure-review
+    // path needs subsequent iterations to observe that the bot has now
+    // engaged (or another run, if the bot is slow).
     return {
-      done: totalComments === 0,
+      done: totalComments === 0 && !reviewerPending,
       progress: progressed,
-      note: `handled ${outcomes.length} action(s) against ${totalComments} comment(s)`,
+      note: `handled ${outcomes.length} action(s) against ${totalComments} comment(s)${reviewerPending ? '; reviewer prompt pending' : ''}`,
     };
   }
 

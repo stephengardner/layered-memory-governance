@@ -1,0 +1,121 @@
+name: PR Landing Agent
+
+# Runs the pr-landing Actor on every PR event so review comments get
+# addressed within delegated authority. Starts in dry-run; flip to live
+# by setting the repo variable PR_LANDING_LIVE to "true".
+#
+# The workflow composes the LAG framework primitives (Host, Principal,
+# Actor, ActorAdapter, checkToolPolicy) and runs the PrLandingActor
+# against the current PR. See DECISIONS.md D16/D17 and
+# design/actors-and-adapters.md for the architectural context.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - ready_for_review
+      - reopened
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to run against'
+        required: true
+        type: number
+      live:
+        description: 'Live mode (true) or dry-run (false, default)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  pull-requests: write
+  contents: read
+
+# One pr-landing run per PR at a time. Without this, overlapping
+# pull_request / pull_request_review_comment events can spawn parallel
+# runs that race on ensure-review prompts and reply posting. Cancel
+# in-progress runs when a new one starts for the same PR; the new run
+# sees the latest state anyway.
+concurrency:
+  group: pr-landing-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-landing:
+    name: pr-landing agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    # Don't run on our own bot replies to avoid loops.
+    if: >-
+      (github.event_name != 'pull_request_review_comment' ||
+       github.event.comment.user.login != 'github-actions[bot]')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Bootstrap pr-landing canon
+        run: node scripts/bootstrap-pr-landing-canon.mjs
+        env:
+          LAG_OPERATOR_ID: stephen-human
+          LAG_AGENT_ID: claude-agent
+
+      - name: Determine PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${{ inputs.pr_number }}"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          elif [ "${{ github.event_name }}" = "pull_request_review" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          elif [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          fi
+          echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide live-or-dry
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            LIVE="${{ inputs.live }}"
+          else
+            LIVE="${{ vars.PR_LANDING_LIVE }}"
+          fi
+          if [ "$LIVE" = "true" ]; then
+            echo "flag=--live" >> "$GITHUB_OUTPUT"
+            echo "label=LIVE" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=--dry-run" >> "$GITHUB_OUTPUT"
+            echo "label=DRY-RUN" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run pr-landing actor (${{ steps.mode.outputs.label }})
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/run-pr-landing.mjs \
+            --pr "${{ steps.pr.outputs.number }}" \
+            --owner "${{ github.repository_owner }}" \
+            --repo "${{ github.event.repository.name }}" \
+            ${{ steps.mode.outputs.flag }} \
+            --max-iterations 3 \
+            --origin github-action
