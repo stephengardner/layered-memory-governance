@@ -26,6 +26,8 @@
  *   - Log every exchange as atoms so the session is resumable.
  */
 
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { Host } from '../interface.js';
 import type {
   Atom,
@@ -63,6 +65,24 @@ export interface LAGDaemonOptions {
    * them on its next turn. Opt-in for solo-dev continuity.
    */
   readonly resumeSessionId?: string;
+  /**
+   * Queue-only mode (Phase 42, terminal-attached).
+   *
+   * When true, the daemon does NOT spawn claude-cli. Incoming
+   * Telegram messages are written to `<queueDir>/inbox/<ts>.json`,
+   * where a Stop hook on an attached Claude Code terminal session
+   * picks them up, injects them via systemMessage, and the running
+   * instance responds. That instance writes the reply to
+   * `<queueDir>/outbox/<ts>.json`, which the daemon drains on its
+   * next tick by sending to Telegram.
+   *
+   * Use this when you want the terminal session to be the brain and
+   * Telegram to be its remote mouth. Fall back to plain daemon mode
+   * (this flag unset) when the terminal is closed.
+   */
+  readonly queueMode?: boolean;
+  /** Directory for the TG queue. Default: <host rootDir>/tg-queue. */
+  readonly queueDir?: string;
   /**
    * Map a Telegram user id to a LAG principal. For V1 you can hardcode
    * one principal; future multi-user daemons will dispatch here.
@@ -159,8 +179,87 @@ export class LAGDaemon {
     }
   }
 
+  /**
+   * Drain the outbox queue: read any reply files written by the Stop
+   * hook and push them to Telegram. Files are deleted on success so a
+   * second drain does not re-send. Called from tick() automatically.
+   */
+  private async drainOutbox(): Promise<number> {
+    if (!this.options.queueMode) return 0;
+    const outboxDir = join(this.resolveQueueDir(), 'outbox');
+    let entries: string[];
+    try {
+      entries = await readdir(outboxDir);
+    } catch {
+      return 0; // dir may not exist yet; nothing to drain
+    }
+    let sent = 0;
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      const full = join(outboxDir, name);
+      let payload: { chatId?: number; text?: string };
+      try {
+        payload = JSON.parse(await readFile(full, 'utf8')) as typeof payload;
+      } catch (err) {
+        this.onError(err, `drainOutbox(${name})`);
+        continue;
+      }
+      if (typeof payload.text !== 'string' || payload.text.length === 0) {
+        await rm(full, { force: true });
+        continue;
+      }
+      const chat = Number.isFinite(payload.chatId)
+        ? payload.chatId!
+        : Number(this.chatIdString);
+      const maxChars = this.options.maxReplyChars ?? 4000;
+      try {
+        for (const chunk of splitMarkdownForTelegram(payload.text, maxChars)) {
+          const html = markdownToTelegramHtml(chunk);
+          await this.sendMessage(chat, html, 'HTML');
+        }
+        await rm(full, { force: true });
+        sent += 1;
+      } catch (err) {
+        this.onError(err, `drainOutbox(send ${name})`);
+        // Leave file in place for retry on next tick.
+      }
+    }
+    return sent;
+  }
+
+  private resolveQueueDir(): string {
+    return this.options.queueDir
+      ?? join((this.options.host as unknown as { rootDir?: string }).rootDir ?? '.', 'tg-queue');
+  }
+
+  private async enqueueInbound(payload: {
+    chatId: number;
+    text: string;
+    fromId: number;
+    username?: string;
+    principalId: PrincipalId;
+    receivedAt: string;
+  }): Promise<void> {
+    const inboxDir = join(this.resolveQueueDir(), 'inbox');
+    await mkdir(inboxDir, { recursive: true });
+    // Timestamp + random so concurrent messages in the same ms collide rarely.
+    const ts = payload.receivedAt.replace(/[:.]/g, '-');
+    const rand = Math.random().toString(36).slice(2, 8);
+    const tmp = join(inboxDir, `.pending-${ts}-${rand}.json.tmp`);
+    const finalPath = join(inboxDir, `${ts}-${rand}.json`);
+    await writeFile(tmp, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+    await rename(tmp, finalPath); // atomic on same filesystem
+  }
+
   /** One poll cycle; public for tests to drive deterministically. */
   async tick(): Promise<number> {
+    // Drain any replies the Stop hook queued since last tick.
+    try {
+      await this.drainOutbox();
+    } catch (err) {
+      this.onError(err, 'drainOutbox');
+    }
+
     const startOffset = this.updateOffset;
     const updates = await this.callTelegram<ReadonlyArray<TelegramUpdate>>(
       'getUpdates',
@@ -215,6 +314,25 @@ export class LAGDaemon {
     const fromId = message.from?.id ?? 0;
     const username = message.from?.username;
     const principal = this.options.principalResolver(fromId, username);
+
+    // Queue mode: write to inbox and stop. The attached terminal
+    // session's Stop hook picks it up and the running Claude Code
+    // instance responds; the reply flows back through the outbox on
+    // a later tick.
+    if (this.options.queueMode) {
+      await this.enqueueInbound({
+        chatId,
+        text,
+        fromId,
+        ...(username !== undefined ? { username } : {}),
+        principalId: principal,
+        receivedAt: this.options.host.clock.now(),
+      });
+      // Still record the user message as an L0 atom so the substrate
+      // accumulates history even in queue mode.
+      await this.writeConversationAtom(text, 'user-directive', principal);
+      return;
+    }
 
     // 1. Record the user message as an L0 atom.
     await this.writeConversationAtom(text, 'user-directive', principal);
