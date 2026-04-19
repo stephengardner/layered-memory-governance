@@ -229,12 +229,17 @@ export type {
 // ---------------------------------------------------------------------------
 export {
   canTransition,
+  executePlan,
   InvalidPlanTransitionError,
   summarizeValidation,
   transitionPlanState,
   validatePlan,
 } from './plans/index.js';
 export type {
+  ExecutePlanOptions,
+  ExecutionOutcomeAtom,
+  ExecutionReport,
+  ExecutionResult,
   PlanConflict,
   PlanValidationResult,
   PlanValidationStatus,

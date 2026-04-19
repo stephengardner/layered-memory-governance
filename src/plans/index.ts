@@ -36,3 +36,10 @@ export {
   type PlanConflict,
   type ValidatePlanOptions,
 } from './validate.js';
+export {
+  executePlan,
+  type ExecutePlanOptions,
+  type ExecutionResult,
+  type ExecutionReport,
+  type ExecutionOutcomeAtom,
+} from './execute.js';
