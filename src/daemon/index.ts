@@ -45,6 +45,12 @@ import { assembleContext, type AssembleContextOptions } from './context.js';
 import { markdownToTelegramHtml, splitMarkdownForTelegram } from './format.js';
 import { invokeClaude, type InvokeClaudeOptions } from './invoke-claude.js';
 import {
+  CliRenderer,
+  createTelegramChannel,
+  invokeClaudeStreaming,
+  type InvokeClaudeStreamingOptions,
+} from './cli-renderer/index.js';
+import {
   downloadTelegramFile,
   type TelegramVoice,
   type VoiceTranscriber,
@@ -137,6 +143,21 @@ export interface LAGDaemonOptions {
   readonly fetchImpl?: typeof fetch;
   /** Invoke-claude impl. Default: invokeClaude. Tests inject a mock. */
   readonly invokeImpl?: typeof invokeClaude;
+  /**
+   * When true, the daemon uses the CLI-style streaming renderer for
+   * Telegram replies: a single message is posted as a throbber, then
+   * edited with compact tool-call lines as Claude progresses, and
+   * finally replaced with the full response. Default: false (preserve
+   * existing behaviour). Requires Claude CLI to support
+   * `--output-format stream-json --verbose` (which is the default for
+   * modern Claude Code builds).
+   */
+  readonly cliStyle?: boolean;
+  /**
+   * Streaming-invoke impl. Default: invokeClaudeStreaming. Tests
+   * inject a stub that feeds canned events via options.executor.
+   */
+  readonly streamingInvokeImpl?: typeof invokeClaudeStreaming;
   /** Error sink. Default: console.error. */
   readonly onError?: (err: unknown, context: string) => void;
 }
@@ -175,6 +196,7 @@ export class LAGDaemon {
   private readonly options: LAGDaemonOptions;
   private readonly fetch: typeof fetch;
   private readonly invoke: typeof invokeClaude;
+  private readonly invokeStreaming: typeof invokeClaudeStreaming;
   private readonly onError: (err: unknown, ctx: string) => void;
 
   private updateOffset: number = 0;
@@ -188,6 +210,7 @@ export class LAGDaemon {
     this.options = options;
     this.fetch = options.fetchImpl ?? globalThis.fetch;
     this.invoke = options.invokeImpl ?? invokeClaude;
+    this.invokeStreaming = options.streamingInvokeImpl ?? invokeClaudeStreaming;
     this.onError = options.onError ?? ((err, ctx) => {
       // eslint-disable-next-line no-console
       console.error(`[LAGDaemon] ${ctx}:`, err);
@@ -577,13 +600,46 @@ export class LAGDaemon {
       ...(this.options.contextOptions ?? {}),
     });
 
-    // 3. Invoke claude -p. If it fails transiently, apologize; if it
-    //    succeeds, relay the response.
+    // 3-4. Invoke claude and deliver the response. Two paths:
+    //  - cliStyle=true: stream events through CliRenderer for a
+    //    CLI-session-like Telegram experience (throbber -> tool
+    //    lines -> final).
+    //  - cliStyle=false (default): preserve the original batch path.
+    let replyText: string;
+    if (this.options.cliStyle) {
+      replyText = await this.replyCliStyle({
+        chatId,
+        replyToMessageId: message.message_id,
+        text,
+        systemPrompt: context.prompt,
+      });
+    } else {
+      replyText = await this.replyBatch({
+        chatId,
+        text,
+        systemPrompt: context.prompt,
+      });
+    }
+
+    // 5. Record the assistant response as an L0 atom.
+    await this.writeConversationAtom(replyText, 'agent-observed', principal);
+  }
+
+  /**
+   * Batch response path (original behaviour): invoke, wait for full
+   * response, split + HTML-render + send. Returns the raw markdown
+   * reply for the L0 atom write.
+   */
+  private async replyBatch(args: {
+    readonly chatId: number;
+    readonly text: string;
+    readonly systemPrompt: string;
+  }): Promise<string> {
     let replyText: string;
     try {
       const result = await this.invoke({
-        userMessage: text,
-        systemPrompt: context.prompt,
+        userMessage: args.text,
+        systemPrompt: args.systemPrompt,
         ...(this.options.repoRoot !== undefined ? { cwd: this.options.repoRoot } : {}),
         ...(this.options.resumeSessionId !== undefined ? { resumeSessionId: this.options.resumeSessionId } : {}),
         ...(this.options.invokeOptions ?? {}),
@@ -593,18 +649,59 @@ export class LAGDaemon {
       this.onError(err, 'invokeClaude');
       replyText = 'I could not generate a response right now. Please try again.';
     }
-
-    // 4. Send reply(s), splitting if needed. Split on raw markdown first
-    //    so each chunk is independently valid; then format per chunk so
-    //    HTML tag pairs never span a chunk boundary.
     const maxChars = this.options.maxReplyChars ?? 4000;
     for (const chunk of splitMarkdownForTelegram(replyText, maxChars)) {
       const html = markdownToTelegramHtml(chunk);
-      await this.sendMessage(chatId, html, 'HTML');
+      await this.sendMessage(args.chatId, html, 'HTML');
     }
+    return replyText;
+  }
 
-    // 5. Record the assistant response as an L0 atom.
-    await this.writeConversationAtom(replyText, 'agent-observed', principal);
+  /**
+   * CLI-style response path: stream Claude events through a
+   * CliRenderer bound to a Telegram channel. One message is posted
+   * with a throbber, then edited with compact tool-call lines as
+   * Claude works, then edited to the final formatted response.
+   */
+  private async replyCliStyle(args: {
+    readonly chatId: number;
+    readonly replyToMessageId: number;
+    readonly text: string;
+    readonly systemPrompt: string;
+  }): Promise<string> {
+    const channel = createTelegramChannel({
+      botToken: this.options.botToken,
+      chatId: args.chatId,
+      replyToMessageId: args.replyToMessageId,
+      fetchImpl: this.fetch,
+    });
+    const maxChars = this.options.maxReplyChars ?? 4000;
+    const renderer = new CliRenderer({
+      channel,
+      renderFinal: (md) => markdownToTelegramHtml(md),
+      splitFinal: (text) => splitMarkdownForTelegram(text, maxChars),
+    });
+
+    await renderer.emit({ type: 'start', label: 'Claude is working' });
+    let replyText = '';
+    try {
+      const streamingOpts: InvokeClaudeStreamingOptions = {
+        userMessage: args.text,
+        systemPrompt: args.systemPrompt,
+        onEvent: (ev) => renderer.emit(ev),
+        ...(this.options.repoRoot !== undefined ? { cwd: this.options.repoRoot } : {}),
+        ...(this.options.resumeSessionId !== undefined ? { resumeSessionId: this.options.resumeSessionId } : {}),
+      };
+      const result = await this.invokeStreaming(streamingOpts);
+      replyText = result.text.trim() || '(empty response from model)';
+    } catch (err) {
+      this.onError(err, 'invokeClaudeStreaming');
+      replyText = 'I could not generate a response right now. Please try again.';
+      await renderer.emit({ type: 'error', message: replyText });
+    } finally {
+      await renderer.dispose();
+    }
+    return replyText;
   }
 
   private async handleCallback(
