@@ -50,6 +50,7 @@ const MARKER_PATH = path.join(QUEUE_DIR, 'active-turn.json');
 const MIRROR_ALL_SENTINEL = path.join(QUEUE_DIR, 'mirror-all');
 const LAST_MIRRORED_PATH = path.join(QUEUE_DIR, 'last-mirrored-uuid.txt');
 const NO_AUTO_ACK_SENTINEL = path.join(QUEUE_DIR, 'no-auto-ack');
+const SENT_LOG_PATH = path.join(QUEUE_DIR, 'sent-log.jsonl');
 
 // ---------------------------------------------------------------------------
 // Main.
@@ -143,6 +144,7 @@ const NO_AUTO_ACK_SENTINEL = path.join(QUEUE_DIR, 'no-auto-ack');
 
     fs.mkdirSync(CONSUMED_DIR, { recursive: true });
     const messages = [];
+    const messagesMeta = []; // [{text, tgMessageId, tgDate, replyToMessageId}]
     let chatId = null;
     const handles = [];
     for (const name of pending) {
@@ -156,6 +158,12 @@ const NO_AUTO_ACK_SENTINEL = path.join(QUEUE_DIR, 'no-auto-ack');
       }
       if (typeof data.text === 'string' && data.text.trim().length > 0) {
         messages.push(data.text);
+        messagesMeta.push({
+          text: data.text,
+          tgMessageId: data.tgMessageId,
+          tgDate: data.tgDate,
+          replyToMessageId: data.replyToMessageId,
+        });
         handles.push(name);
       }
       if (chatId === null && typeof data.chatId === 'number') {
@@ -204,12 +212,25 @@ const NO_AUTO_ACK_SENTINEL = path.join(QUEUE_DIR, 'no-auto-ack');
       }
     }
 
+    // Phase 50a: read recent outbound log so we can annotate the
+    // inbound messages with causality context (did this reply come
+    // BEFORE or AFTER our last question? is it an explicit reply-to?).
+    const sentLog = readSentLogTail(SENT_LOG_PATH, 20);
+    const causalityNotes = computeCausality(messagesMeta, sentLog);
+
     // Format the systemMessage-style reinject.
     const bodyLines = [];
     bodyLines.push(
       'LAG: the following message(s) arrived on Telegram from the operator while you were working. ' +
       'Respond to them directly; your reply will be sent back over Telegram automatically.',
     );
+    if (causalityNotes.length > 0) {
+      bodyLines.push('');
+      bodyLines.push('Causality context (Phase 50a):');
+      for (const note of causalityNotes) {
+        bodyLines.push(`- ${note}`);
+      }
+    }
     bodyLines.push('');
     for (const m of messages) {
       bodyLines.push(`> ${m.split('\n').join('\n> ')}`);
@@ -255,6 +276,70 @@ function readJsonOrNull(p) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Read the tail of the sent-log (one JSON object per line). Returns
+ * newest-first up to `limit` entries.
+ */
+function readSentLogTail(p, limit) {
+  try {
+    const raw = fs.readFileSync(p, 'utf8');
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    const tail = lines.slice(Math.max(0, lines.length - limit));
+    const parsed = [];
+    for (const line of tail) {
+      try { parsed.push(JSON.parse(line)); } catch { /* skip */ }
+    }
+    return parsed.reverse(); // newest-first
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * For each inbound message, compute a causality note describing how
+ * it lines up against recent outbound messages. Returns an array of
+ * human-readable notes to include in the systemMessage so the agent
+ * can reason about Q/A binding.
+ */
+function computeCausality(messagesMeta, sentLog) {
+  const notes = [];
+  if (sentLog.length === 0) return notes;
+  const mostRecent = sentLog[0];
+  const mostRecentSentMs = Date.parse(mostRecent.tgSentAt || mostRecent.sentAt || '');
+  for (let i = 0; i < messagesMeta.length; i++) {
+    const m = messagesMeta[i];
+    if (!m.tgMessageId) continue;
+    // Explicit reply-to wins.
+    if (typeof m.replyToMessageId === 'number') {
+      const target = sentLog.find(s => s.messageId === m.replyToMessageId);
+      if (target) {
+        notes.push(
+          `Inbound #${m.tgMessageId} explicitly replies-to outbound #${target.messageId} ("${(target.textPreview || '').slice(0, 80)}...")`,
+        );
+      } else {
+        notes.push(
+          `Inbound #${m.tgMessageId} replies-to unknown message #${m.replyToMessageId} (not in recent sent-log; may be older or manual).`,
+        );
+      }
+      continue;
+    }
+    // Timestamp sanity.
+    const inboundMs = m.tgDate ? Date.parse(m.tgDate) : NaN;
+    if (!Number.isFinite(inboundMs) || !Number.isFinite(mostRecentSentMs)) continue;
+    if (inboundMs < mostRecentSentMs) {
+      const delta = Math.round((mostRecentSentMs - inboundMs) / 1000);
+      notes.push(
+        `TEMPORAL WARNING: Inbound #${m.tgMessageId} arrived with Telegram date ${delta}s BEFORE our most recent outbound #${mostRecent.messageId} ("${(mostRecent.textPreview || '').slice(0, 80)}..."). This reply likely addresses an EARLIER question. Consider asking for clarification if binding is ambiguous.`,
+      );
+    } else {
+      notes.push(
+        `Inbound #${m.tgMessageId} arrived after our most recent outbound #${mostRecent.messageId}; timestamps consistent with answering it.`,
+      );
+    }
+  }
+  return notes;
 }
 
 function readTextOrNull(p) {

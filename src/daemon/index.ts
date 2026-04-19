@@ -144,10 +144,16 @@ interface TelegramUpdate {
   readonly update_id: number;
   readonly message?: {
     readonly message_id: number;
+    readonly date?: number; // Unix seconds
     readonly from?: { readonly id: number; readonly username?: string };
     readonly chat: { readonly id: number };
     readonly text?: string;
     readonly voice?: TelegramVoice;
+    readonly reply_to_message?: {
+      readonly message_id: number;
+      readonly text?: string;
+      readonly from?: { readonly id: number; readonly is_bot?: boolean };
+    };
   };
   readonly callback_query?: {
     readonly id: string;
@@ -349,6 +355,9 @@ export class LAGDaemon {
     username?: string;
     principalId: PrincipalId;
     receivedAt: string;
+    tgMessageId: number;
+    tgDate?: string;
+    replyToMessageId?: number;
   }): Promise<void> {
     const inboxDir = join(this.resolveQueueDir(), 'inbox');
     await mkdir(inboxDir, { recursive: true });
@@ -467,6 +476,9 @@ export class LAGDaemon {
     // instance responds; the reply flows back through the outbox on
     // a later tick.
     if (this.options.queueMode) {
+      const tgDateIso = typeof message.date === 'number'
+        ? new Date(message.date * 1000).toISOString()
+        : null;
       await this.enqueueInbound({
         chatId,
         text,
@@ -474,6 +486,11 @@ export class LAGDaemon {
         ...(username !== undefined ? { username } : {}),
         principalId: principal,
         receivedAt: this.options.host.clock.now(),
+        tgMessageId: message.message_id,
+        ...(tgDateIso !== null ? { tgDate: tgDateIso } : {}),
+        ...(message.reply_to_message
+          ? { replyToMessageId: message.reply_to_message.message_id }
+          : {}),
       });
       // Still record the user message as an L0 atom so the substrate
       // accumulates history even in queue mode.
@@ -600,7 +617,38 @@ export class LAGDaemon {
       disable_web_page_preview: true,
     };
     if (parseMode !== undefined) body.parse_mode = parseMode;
-    await this.callTelegram('sendMessage', body);
+    const result = await this.callTelegram<{ message_id?: number; date?: number }>('sendMessage', body);
+    // Causality tracking (Phase 50a): log outbound message_id + sent time
+    // so the Stop hook can match inbound replies to the right question.
+    if (this.options.queueMode && result && typeof result.message_id === 'number') {
+      try {
+        await this.appendSentLog({
+          messageId: result.message_id,
+          chatId,
+          sentAt: new Date().toISOString(),
+          ...(typeof result.date === 'number'
+            ? { tgSentAt: new Date(result.date * 1000).toISOString() }
+            : {}),
+          textPreview: text.replace(/<[^>]+>/g, '').slice(0, 200),
+        });
+      } catch (err) {
+        this.onError(err, 'appendSentLog');
+      }
+    }
+  }
+
+  private async appendSentLog(entry: {
+    messageId: number;
+    chatId: number;
+    sentAt: string;
+    tgSentAt?: string;
+    textPreview: string;
+  }): Promise<void> {
+    const queueDir = this.resolveQueueDir();
+    const logPath = join(queueDir, 'sent-log.jsonl');
+    const { appendFile, mkdir: mkdirP } = await import('node:fs/promises');
+    await mkdirP(queueDir, { recursive: true });
+    await appendFile(logPath, JSON.stringify(entry) + '\n', 'utf8');
   }
 
   private async callTelegram<T>(
