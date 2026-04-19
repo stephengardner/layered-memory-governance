@@ -29,7 +29,7 @@ export interface PlanningContext {
    * rejected at validatePlan time.
    */
   readonly directives: ReadonlyArray<Atom>;
-  /** L3 decision atoms — prior precedent the planner must honor. */
+  /** L3 decision atoms -- prior precedent the planner must honor. */
   readonly decisions: ReadonlyArray<Atom>;
   /**
    * Top-K semantically-relevant atoms across all layers. Includes

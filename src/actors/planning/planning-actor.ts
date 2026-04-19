@@ -286,7 +286,7 @@ function renderPlanMarkdown(plan: ProposedPlan): string {
     lines.push('');
     lines.push('## Alternatives considered (rejected)');
     for (const { option, reason } of plan.alternativesRejected) {
-      lines.push(`- **${option}** — ${reason}`);
+      lines.push(`- **${option}** -- ${reason}`);
     }
   }
 
