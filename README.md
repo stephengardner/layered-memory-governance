@@ -6,7 +6,7 @@ A framework for multi-agent systems where memory has to stay true over time, aut
 
 > **If RAG brings knowledge into an agent, LAG governs knowledge across agents.** Retrieval makes one agent smarter; governance keeps a hundred agents coherent.
 
-Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, **448 unit tests + 30 gated integration tests**, GitHub Actions CI on Ubuntu + Windows.
+Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, and an Actor primitive for governed outward-acting agents. **568+ unit tests + 30 gated integration tests** (count grows as open PRs land), GitHub Actions CI on Ubuntu + Windows.
 
 ---
 
@@ -29,6 +29,9 @@ LAG treats memory as a governed substrate. Every stored unit is an **atom** with
 - **Layered promotion**: atoms flow upward through four trust tiers (L0 raw, L1 extracted, L2 curated, L3 canon) gated by confidence x consensus x validation thresholds. Promotion creates a new atom at the target layer with `provenance.kind='canon-promoted'` and marks the source superseded. Rollback is a graph operation, not a mutation.
 - **Arbitration at write time**: when two atoms conflict, a deterministic rule stack resolves before either reaches retrieval. Source-rank (layer x provenance x **principal hierarchy depth** x confidence) comes first, then temporal-scope, then validator registry, then escalation to a human. Most conflicts never reach a human.
 - **Intent governance via Plans**: plans are atoms with `type: 'plan'` and a `plan_state` state machine (proposed → approved → executing → succeeded | failed | abandoned). `validatePlan()` runs a plan's content through the arbitration stack against L3 canon BEFORE execution; conflicts block or escalate. Outcome atoms tagged `derived_from: [plan_id]` preserve lineage from intent to result.
+- **HIL causality via Questions**: questions are atoms with `type: 'question'` and a lifecycle (pending → answered | expired | abandoned). `askQuestion()` creates a pending-Q atom; `bindAnswer()` writes the answer as an atom with `derived_from: [question_id]` so every Q-A pair has an audit-grade causal link. Free-form Telegram replies auto-bind to the pending question they reply to, eliminating the "which question did you answer" race.
+- **Tool-use policy (the autonomy dial)**: L3 canon atoms carry a `metadata.policy` object that `checkToolPolicy(host, ctx)` matches against every proposed tool call. Match scoring is exact > regex > wildcard per field (tool/origin/principal); highest specificity wins. Decisions are `allow | deny | escalate`. The policy layer sits above Claude Code's permission mode; it is canon-driven, so the autonomy dial is data, not code.
+- **Actors for outward effects**: an `Actor` is a governed autonomous loop (observe → classify → propose → apply → reflect, MAPE-K lineage). `runActor` drives it with kill-switch, budget, convergence guard, and per-action policy gating via `checkToolPolicy`. Actors compose with a `Host` (governance primitives) and an actor-scoped set of `ActorAdapter`s (external systems). The Actor / Host split is a deliberate two-seam model (see D17): `Host` stays the governance boundary; `ActorAdapter` is the external-effect boundary.
 - **Decay and expiration**: atoms lose confidence on a per-type half-life without reinforcement. Atoms with `expires_at` past now move to `taint='quarantined'`. Stale and expired atoms drop out of retrieval, canon, and promotion automatically.
 - **Taint propagation**: when a principal is marked compromised, `propagateCompromiseTaint` walks their atoms and every derived atom across `provenance.derived_from` chains to fixpoint. The canon re-renders without the poisoned subgraph on the next tick.
 - **Canon with a human gate**: L3 atoms render into a bracketed section of target `CLAUDE.md` files via `CanonMdManager`. Multi-target canon: one file per scope or role (org-wide, per-project, per-team, per-agent). L3 promotion telegraphs through the `Notifier` for human approval (or auto-approves at higher autonomy levels). Human edits outside the markers are preserved byte-for-byte.
@@ -40,6 +43,7 @@ LAG treats memory as a governed substrate. Every stored unit is an **atom** with
 A single linear pipeline from session sources to rendered canon, with plans feeding intent governance and a human-in-the-loop gate on the L3 boundary.
 
 ```mermaid
+%%{init: {'flowchart': {'diagramPadding': 40, 'nodeSpacing': 40, 'rankSpacing': 50}}}%%
 flowchart LR
   SRC[Session sources] --> L0[L0 raw]
   L0 -->|extract claims| L1[L1 extracted]
@@ -59,6 +63,7 @@ Around that pipeline, governance primitives run on every loop tick: **arbitrate 
 Three daemon modes plus the terminal Claude Code instance all share the same `.lag/` substrate. Pick one per context, or run them concurrently.
 
 ```mermaid
+%%{init: {'flowchart': {'diagramPadding': 40, 'nodeSpacing': 40, 'rankSpacing': 50}}}%%
 flowchart LR
   TERM[Terminal Claude Code] -->|read + write| LAG[(.lag state)]
   WRAP[Wrapper<br/>lag-terminal.mjs<br/>PTY + TG injector] -->|stdin injection| TERM
@@ -153,21 +158,35 @@ That script spins up a memory-backed Host, seeds three atoms from three principa
 
 ## Library shape
 
-Host factories live on adapter sub-paths (so the top-level import is cheap):
+Two kinds of imports: **top-level** for the everyday governance primitives, **sub-paths** for heavier or opt-in modules so nothing is paid for unless you use it.
+
+Host factories (sub-paths):
 
 ```ts
 import { createMemoryHost } from 'layered-autonomous-governance/adapters/memory';
 import { createFileHost }   from 'layered-autonomous-governance/adapters/file';
 import { createBridgeHost } from 'layered-autonomous-governance/adapters/bridge';
+import { TelegramNotifier } from 'layered-autonomous-governance/adapters/notifier';
 ```
 
-Everything else imports from the top-level:
+Actors and external-system adapters (sub-paths; outward-acting work is opt-in):
+
+```ts
+import { runActor } from 'layered-autonomous-governance/actors';
+import { PrLandingActor } from 'layered-autonomous-governance/actors/pr-landing';
+import { GitHubPrReviewAdapter } from 'layered-autonomous-governance/actors/pr-review';
+import { createGhClient } from 'layered-autonomous-governance/external/github';
+```
+
+Everyday governance primitives (top-level):
 
 ```ts
 import {
   LoopRunner, PromotionEngine,
   arbitrate, applyDecision, computePrincipalDepth,
   propagateCompromiseTaint, CanonMdManager,
+  checkToolPolicy, askQuestion, bindAnswer,
+  validatePlan, executePlan,
   TrigramEmbedder, CachingEmbedder, OnnxMiniLmEmbedder,
 } from 'layered-autonomous-governance';
 import type { Host, Atom, AtomId, PrincipalId } from 'layered-autonomous-governance';
@@ -195,6 +214,10 @@ All three CLI bins accept `--help`; scripts are documented in their headers.
 
 ## Adapters
 
+Two kinds of adapter seam, kept deliberately separate (see DECISIONS.md D1 and D17):
+
+### Host adapters (governance boundary)
+
 Three Host implementations all satisfying the same 8-interface Host contract (AtomStore, CanonStore, LLM, Notifier, Scheduler, Auditor, PrincipalStore, Clock):
 
 - **memory** - in-process, deterministic, zero-dep. Used for tests and quick scripts.
@@ -202,6 +225,13 @@ Three Host implementations all satisfying the same 8-interface Host contract (At
 - **bridge** - wraps `file` and adds a Python subprocess bridge to bootstrap an existing ChromaDB-backed vector store as L1 atoms. Composes with a Claude CLI LLM via OAuth (no API key).
 
 Adding a fourth adapter (remote, postgres, custom vector store) is a factory plus six conformance-spec invocations.
+
+### Actor adapters (external-effect boundary)
+
+Actors are outward-acting autonomous loops; the things they touch (GitHub, CI, deploy targets) are `ActorAdapter`s rather than Host sub-interfaces. This keeps Host focused on governance and lets Actor dependencies stay self-declared at the type level. Shipped today:
+
+- **`external/github` -> `GhClient`** - reusable GitHub transport primitive (typed REST + GraphQL over the `gh` CLI). Any Actor that touches GitHub builds on this single client.
+- **`actors/pr-review` -> `GitHubPrReviewAdapter`** - full `PrReviewAdapter` implementation (GraphQL review threads, REST reply, GraphQL resolve mutation, first-class dry-run).
 
 ## Embedders
 
@@ -223,7 +253,7 @@ Three pluggable embedders behind a single `Embedder` interface:
 ## Tests + CI
 
 ```
-npm test                                                                                        # 448 passed, 30 gated
+npm test                                                                                        # 568+ passed, 30 gated
 LAG_SPAWN_TEST=1 LAG_REAL_CLI=1 LAG_REAL_PALACE=1 LAG_BENCH_SCALE=1 LAG_REAL_EMBED=1 npm test   # full matrix
 ```
 
@@ -239,8 +269,11 @@ GitHub Actions CI runs typecheck, build, default test suite, and a quickstart sm
 4. `examples/quickstart.mjs` - a runnable demonstration.
 5. `design/target-architecture.md` - the north-star diagram with gap analysis and a leverage-ordered roadmap.
 6. `design/host-interface.md` - the 8-interface Host contract every adapter satisfies.
-7. `DECISIONS.md` - living log of architectural choices: what we picked, why, and what we rejected.
-8. `CLAUDE.md` - rendered canon (L3 atoms from this repo's own `.lag/` state). What future agents on this repo should read first.
+7. `design/actors-and-adapters.md` - the Actor / ActorAdapter shape and the D1-to-D17 boundary-narrowing rationale.
+8. `design/prior-art-actor-frameworks.md` - shape survey of LangGraph / CrewAI / Mastra / Autogen / AI SDK / Pydantic AI; where LAG aligns and where it deliberately differs.
+9. `design/structural-audit-2026-04.md` - the last principled audit against pluggability, substrate-discipline, and simple-surface goals.
+10. `DECISIONS.md` - living log of architectural choices: what we picked, why, and what we rejected.
+11. `CLAUDE.md` - rendered canon (L3 atoms from this repo's own `.lag/` state). What future agents on this repo should read first.
 
 ## Non-goals (for now)
 
