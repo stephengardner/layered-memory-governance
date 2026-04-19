@@ -40,6 +40,7 @@ import {
   type TelegramNotifierOptions,
 } from '../adapters/notifier/telegram.js';
 import { assembleContext, type AssembleContextOptions } from './context.js';
+import { markdownToTelegramHtml, splitMarkdownForTelegram } from './format.js';
 import { invokeClaude, type InvokeClaudeOptions } from './invoke-claude.js';
 
 export interface LAGDaemonOptions {
@@ -232,10 +233,13 @@ export class LAGDaemon {
       replyText = 'I could not generate a response right now. Please try again.';
     }
 
-    // 4. Send reply(s), splitting if needed.
+    // 4. Send reply(s), splitting if needed. Split on raw markdown first
+    //    so each chunk is independently valid; then format per chunk so
+    //    HTML tag pairs never span a chunk boundary.
     const maxChars = this.options.maxReplyChars ?? 4000;
-    for (const chunk of splitForTelegram(replyText, maxChars)) {
-      await this.sendMessage(chatId, chunk);
+    for (const chunk of splitMarkdownForTelegram(replyText, maxChars)) {
+      const html = markdownToTelegramHtml(chunk);
+      await this.sendMessage(chatId, html, 'HTML');
     }
 
     // 5. Record the assistant response as an L0 atom.
@@ -311,12 +315,18 @@ export class LAGDaemon {
 
   // ---- Telegram wire helpers ----------------------------------------------
 
-  private async sendMessage(chatId: number, text: string): Promise<void> {
-    await this.callTelegram('sendMessage', {
+  private async sendMessage(
+    chatId: number,
+    text: string,
+    parseMode?: 'HTML' | 'MarkdownV2' | 'Markdown',
+  ): Promise<void> {
+    const body: Record<string, unknown> = {
       chat_id: chatId,
       text,
       disable_web_page_preview: true,
-    });
+    };
+    if (parseMode !== undefined) body.parse_mode = parseMode;
+    await this.callTelegram('sendMessage', body);
   }
 
   private async callTelegram<T>(

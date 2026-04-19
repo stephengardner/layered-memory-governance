@@ -110,7 +110,7 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 
 ## D4: Package hygiene enforced at CI, not code review (Phase 27)
 
-**Context**: The repo cannot leak private workspace terms (phx, Phoenix, palace-phoenix) or emdashes. How do we prevent regressions?
+**Context**: The repo cannot leak private workspace terms or emdashes into any tracked file. The specific term list is defined in CI and intentionally not echoed here. How do we prevent regressions?
 
 **Decision**: A dedicated CI job (`package-hygiene`) runs `grep` across all tracked files. Fails the build on any match. Term list lives in `.github/workflows/ci.yml` only; never in the guarded files themselves.
 
