@@ -55,6 +55,22 @@ export interface PostedMessage {
   readonly messageId: string;
 }
 
+/**
+ * An inline action button shown under a posted message. On Telegram
+ * this becomes one cell of an inline_keyboard; on a hypothetical Slack
+ * channel, a button block. Channel implementations serialize as needed.
+ */
+export interface InlineAction {
+  /** Human-readable label shown on the button. */
+  readonly label: string;
+  /**
+   * Opaque token the channel includes in the callback event when the
+   * button is pressed. Callers use this to route the press back to the
+   * right run. Keep under 64 bytes; Telegram's limit is 64.
+   */
+  readonly callbackData: string;
+}
+
 /** Options accepted when posting / editing a message. */
 export interface MessageOptions {
   readonly text: string;
@@ -62,6 +78,12 @@ export interface MessageOptions {
   readonly parseMode?: string;
   /** Suppress user-facing notification; used for intermediate updates. */
   readonly disableNotification?: boolean;
+  /**
+   * Optional inline action buttons. Single row per call; pass an empty
+   * array on a final edit to remove buttons from a previously-posted
+   * message.
+   */
+  readonly actions?: ReadonlyArray<InlineAction>;
 }
 
 /**
@@ -95,4 +117,23 @@ export interface CliRendererOptions {
    * 4000 chars on paragraph boundaries.
    */
   readonly splitFinal?: (text: string) => ReadonlyArray<string>;
+  /**
+   * Optional action button attached to the throbber message. When
+   * supplied, the channel displays it beneath the progress text; the
+   * caller is responsible for receiving the callback and acting on it
+   * (typically by aborting the underlying run). Removed automatically
+   * when the run reaches a terminal state (complete or error).
+   */
+  readonly action?: InlineAction;
+  /**
+   * Max characters of live assistant text shown inside the throbber
+   * view. Default 220. Set to 0 to suppress the live preview entirely.
+   */
+  readonly livePreviewMaxChars?: number;
+  /**
+   * Number of trailing lines from the live assistant text to display in
+   * the throbber view. Default 4. The last `livePreviewMaxChars`
+   * characters are used as a secondary cap.
+   */
+  readonly livePreviewLines?: number;
 }

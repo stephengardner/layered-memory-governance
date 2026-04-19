@@ -115,6 +115,21 @@ describe('invokeClaudeStreaming', () => {
     expect(capturedArgs[capturedArgs.indexOf('--resume') + 1]).toBe('session-xyz');
   });
 
+  it('forwards signal to the executor options', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const exec = async (_args: ReadonlyArray<string>, _onLine: unknown, opts: { signal?: AbortSignal }) => {
+      capturedSignal = opts.signal;
+      return { exitCode: 0, stderr: '' };
+    };
+    const controller = new AbortController();
+    await invokeClaudeStreaming({
+      userMessage: 'x',
+      executor: exec as unknown as Parameters<typeof invokeClaudeStreaming>[0]['executor'],
+      signal: controller.signal,
+    });
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
   it('error result event surfaces as error in the event stream', async () => {
     const events: CliRendererEvent[] = [];
     await invokeClaudeStreaming({

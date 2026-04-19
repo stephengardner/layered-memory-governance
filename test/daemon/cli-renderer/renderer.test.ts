@@ -21,6 +21,7 @@ interface Call {
   readonly text: string;
   readonly parseMode?: string;
   readonly disableNotification?: boolean;
+  readonly actions?: ReadonlyArray<{ label: string; callbackData: string }>;
 }
 
 function mkStubChannel(): { channel: CliRendererChannel; calls: Call[] } {
@@ -35,6 +36,7 @@ function mkStubChannel(): { channel: CliRendererChannel; calls: Call[] } {
           text: message.text,
           ...(message.parseMode === undefined ? {} : { parseMode: message.parseMode }),
           ...(message.disableNotification === undefined ? {} : { disableNotification: message.disableNotification }),
+          ...(message.actions === undefined ? {} : { actions: message.actions }),
         });
         return { messageId: String(nextId++) };
       },
@@ -45,6 +47,7 @@ function mkStubChannel(): { channel: CliRendererChannel; calls: Call[] } {
           text: message.text,
           ...(message.parseMode === undefined ? {} : { parseMode: message.parseMode }),
           ...(message.disableNotification === undefined ? {} : { disableNotification: message.disableNotification }),
+          ...(message.actions === undefined ? {} : { actions: message.actions }),
         });
       },
     },
@@ -209,6 +212,106 @@ describe('CliRenderer', () => {
     await renderer.emit({ type: 'tool-call', tool: 'Read', summary: 'x' });
     await renderer.emit({ type: 'complete', finalText: 'done' });
     expect(postAttempts).toBeGreaterThan(0);
+    await renderer.dispose();
+  });
+
+  it('attaches action button on start and clears it on complete', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      action: { label: 'Stop', callbackData: 'run-1' },
+    });
+    await renderer.emit({ type: 'start' });
+    const start = calls.find((c) => c.kind === 'post')!;
+    expect(start.actions).toEqual([{ label: 'Stop', callbackData: 'run-1' }]);
+
+    t += 10;
+    await renderer.emit({ type: 'complete', finalText: 'done' });
+    const final = calls[calls.length - 1]!;
+    expect(final.kind).toBe('edit');
+    // Terminal edit must clear the button.
+    expect(final.actions).toEqual([]);
+    await renderer.dispose();
+  });
+
+  it('clears action button on error', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      action: { label: 'Stop', callbackData: 'run-2' },
+    });
+    await renderer.emit({ type: 'start' });
+    t += 5;
+    await renderer.emit({ type: 'error', message: 'nope' });
+    const final = calls[calls.length - 1]!;
+    expect(final.kind).toBe('edit');
+    expect(final.actions).toEqual([]);
+    await renderer.dispose();
+  });
+
+  it('text-delta surfaces a live preview blockquote in the throbber', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      livePreviewLines: 2,
+      livePreviewMaxChars: 100,
+    });
+    await renderer.emit({ type: 'start' });
+    t += 1;
+    await renderer.emit({ type: 'text-delta', text: 'line one\nline two\nline three' });
+    const edits = calls.filter((c) => c.kind === 'edit');
+    expect(edits.length).toBeGreaterThanOrEqual(1);
+    const latest = edits[edits.length - 1]!;
+    expect(latest.text).toContain('<blockquote>');
+    expect(latest.text).toContain('line two');
+    expect(latest.text).toContain('line three');
+    // Only the last two lines are previewed.
+    expect(latest.text).not.toContain('line one');
+    await renderer.dispose();
+  });
+
+  it('livePreviewMaxChars=0 suppresses the preview block entirely', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+      livePreviewMaxChars: 0,
+    });
+    await renderer.emit({ type: 'start' });
+    t += 1;
+    await renderer.emit({ type: 'text-delta', text: 'anything' });
+    const edits = calls.filter((c) => c.kind === 'edit');
+    for (const e of edits) {
+      expect(e.text).not.toContain('<blockquote>');
+    }
+    await renderer.dispose();
+  });
+
+  it('second complete is a no-op (parser + daemon dedupe)', async () => {
+    let t = 1_000_000;
+    const { channel, calls } = mkStubChannel();
+    const renderer = new CliRenderer({
+      channel,
+      now: () => t,
+      editRateLimitMs: 0,
+    });
+    await renderer.emit({ type: 'start' });
+    await renderer.emit({ type: 'complete', finalText: 'first' });
+    const editCountAfterFirst = calls.filter((c) => c.kind === 'edit').length;
+    await renderer.emit({ type: 'complete', finalText: 'second' });
+    const editCountAfterSecond = calls.filter((c) => c.kind === 'edit').length;
+    expect(editCountAfterSecond).toBe(editCountAfterFirst);
     await renderer.dispose();
   });
 

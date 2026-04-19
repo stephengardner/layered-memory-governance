@@ -35,6 +35,7 @@ import type {
   CliRendererChannel,
   CliRendererEvent,
   CliRendererOptions,
+  InlineAction,
 } from './types.js';
 
 const DEFAULT_SPINNER = ['🟡', '🟠', '🔴', '🟣', '🔵', '🟢'] as const;
@@ -42,6 +43,8 @@ const DEFAULT_EDIT_RATE_MS = 1500;
 const DEFAULT_HEARTBEAT_MS = 3000;
 const DEFAULT_ACTIVITY_WINDOW = 8;
 const DEFAULT_MAX_CHARS = 4000;
+const DEFAULT_LIVE_PREVIEW_MAX_CHARS = 220;
+const DEFAULT_LIVE_PREVIEW_LINES = 4;
 
 interface ActivityLine {
   readonly icon: string;
@@ -57,12 +60,15 @@ export class CliRenderer {
   private readonly activityWindow: number;
   private readonly renderFinal: (markdown: string) => string;
   private readonly splitFinal: (text: string) => ReadonlyArray<string>;
+  private readonly action: InlineAction | null;
+  private readonly livePreviewMaxChars: number;
+  private readonly livePreviewLines: number;
 
   private messageId: string | null = null;
   private startedAtMs = 0;
   private lastEditMs = 0;
   private spinnerIdx = 0;
-  private label = 'Claude is working';
+  private label = 'Working';
   private hint?: string;
   private activity: ActivityLine[] = [];
   private accumulatedText = '';
@@ -81,6 +87,9 @@ export class CliRenderer {
     this.activityWindow = options.activityWindow ?? DEFAULT_ACTIVITY_WINDOW;
     this.renderFinal = options.renderFinal ?? ((s) => s);
     this.splitFinal = options.splitFinal ?? defaultSplit;
+    this.action = options.action ?? null;
+    this.livePreviewMaxChars = options.livePreviewMaxChars ?? DEFAULT_LIVE_PREVIEW_MAX_CHARS;
+    this.livePreviewLines = options.livePreviewLines ?? DEFAULT_LIVE_PREVIEW_LINES;
   }
 
   /**
@@ -115,6 +124,9 @@ export class CliRenderer {
         return;
       case 'text-delta':
         this.accumulatedText += event.text;
+        // Live preview: show the tail of what Claude has typed so the
+        // operator sees what's in flight, not just tool calls.
+        this.scheduleEdit();
         return;
       case 'complete':
         await this.handleComplete(event.finalText, event.meta);
@@ -151,6 +163,7 @@ export class CliRenderer {
         text: body,
         parseMode: 'HTML',
         disableNotification: true,
+        ...(this.action ? { actions: [this.action] } : {}),
       });
       this.messageId = posted.messageId;
       this.lastEditMs = this.now();
@@ -164,6 +177,9 @@ export class CliRenderer {
     finalText: string,
     meta?: Readonly<Record<string, string | number>>,
   ): Promise<void> {
+    // Parser + daemon may both emit `complete`. Idempotent-guard so the
+    // second one doesn't re-edit the message.
+    if (this.completed) return;
     this.completed = true;
     this.stopHeartbeat();
     if (this.pendingEditTimer) {
@@ -189,7 +205,13 @@ export class CliRenderer {
       }
     } else {
       try {
-        await this.channel.edit(this.messageId, { text: chunks[0]!, parseMode: 'HTML' });
+        await this.channel.edit(this.messageId, {
+          text: chunks[0]!,
+          parseMode: 'HTML',
+          // Clear the action button on the terminal edit; without this
+          // Telegram keeps the Stop button attached to the final reply.
+          ...(this.action ? { actions: [] } : {}),
+        });
       } catch (err) {
         logChannelError('edit', err);
       }
@@ -204,6 +226,7 @@ export class CliRenderer {
   }
 
   private async handleError(message: string): Promise<void> {
+    this.completed = true;
     this.stopHeartbeat();
     const text = `<b>⚠️ Error</b>\n\n${escapeHtml(message)}`;
     if (this.messageId === null) {
@@ -215,7 +238,12 @@ export class CliRenderer {
       return;
     }
     try {
-      await this.channel.edit(this.messageId, { text, parseMode: 'HTML' });
+      await this.channel.edit(this.messageId, {
+        text,
+        parseMode: 'HTML',
+        // Clear the Stop button on a terminal error edit.
+        ...(this.action ? { actions: [] } : {}),
+      });
     } catch (err) {
       logChannelError('edit', err);
     }
@@ -290,7 +318,26 @@ export class CliRenderer {
     const activityLines = this.activity.length === 0
       ? ''
       : '\n\n' + this.activity.map((a) => `${a.icon} ${escapeHtml(a.text)}`).join('\n');
-    return head + hintLine + activityLines;
+    const preview = this.renderLivePreview();
+    const previewBlock = preview.length === 0 ? '' : `\n\n${preview}`;
+    return head + hintLine + activityLines + previewBlock;
+  }
+
+  /**
+   * Render the tail of accumulated assistant text as a blockquote so
+   * the operator sees what Claude is typing. Returns empty string when
+   * there's nothing to preview or previews are disabled.
+   */
+  private renderLivePreview(): string {
+    if (this.livePreviewMaxChars <= 0 || this.livePreviewLines <= 0) return '';
+    const raw = this.accumulatedText.trimEnd();
+    if (raw.length === 0) return '';
+    const lines = raw.split('\n');
+    const tail = lines.slice(-this.livePreviewLines).join('\n');
+    const clipped = tail.length <= this.livePreviewMaxChars
+      ? tail
+      : '…' + tail.slice(tail.length - this.livePreviewMaxChars + 1);
+    return `<blockquote>${escapeHtml(clipped)}</blockquote>`;
   }
 
   private renderFooter(meta: Readonly<Record<string, string | number>> | undefined): string {

@@ -61,6 +61,9 @@ export function createTelegramChannel(opts: TelegramChannelOptions): CliRenderer
       if (opts.replyToMessageId !== undefined) {
         body.reply_to_message_id = opts.replyToMessageId;
       }
+      if (message.actions && message.actions.length > 0) {
+        body.reply_markup = toInlineKeyboard(message.actions);
+      }
       const result = await call<{ message_id: number }>('sendMessage', body);
       return { messageId: String(result.message_id) };
     },
@@ -71,9 +74,26 @@ export function createTelegramChannel(opts: TelegramChannelOptions): CliRenderer
         text: message.text,
       };
       if (message.parseMode) body.parse_mode = message.parseMode;
+      // Telegram keeps the prior reply_markup unless we send one explicitly,
+      // so the absence of `actions` here leaves the button attached; pass
+      // actions: [] to clear it on a terminal edit.
+      if (message.actions !== undefined) {
+        body.reply_markup = toInlineKeyboard(message.actions);
+      }
       // edit doesn't take disable_notification; Telegram already
       // silences edits by default.
       await call<{ message_id: number }>('editMessageText', body);
     },
+  };
+}
+
+function toInlineKeyboard(
+  actions: ReadonlyArray<{ label: string; callbackData: string }>,
+): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } {
+  if (actions.length === 0) return { inline_keyboard: [] };
+  return {
+    inline_keyboard: [
+      actions.map((a) => ({ text: a.label, callback_data: a.callbackData })),
+    ],
   };
 }

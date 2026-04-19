@@ -205,6 +205,13 @@ export class LAGDaemon {
   private loopTimer: ReturnType<typeof setTimeout> | null = null;
   private extractionTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly chatIdString: string;
+  /**
+   * Active cli-style runs keyed by a short opaque token. The token is
+   * embedded in the Stop button's callback_data; when Telegram posts
+   * the callback back we look up the AbortController here and abort.
+   */
+  private readonly activeRuns = new Map<string, AbortController>();
+  private runCounter = 0;
 
   constructor(options: LAGDaemonOptions) {
     this.options = options;
@@ -510,7 +517,7 @@ export class LAGDaemon {
         }
       }
 
-      if (update.callback_query && this.options.onCallback && typeof update.callback_query.data === 'string') {
+      if (update.callback_query && typeof update.callback_query.data === 'string') {
         try {
           await this.handleCallback(update.callback_query);
           processed += 1;
@@ -662,6 +669,10 @@ export class LAGDaemon {
    * CliRenderer bound to a Telegram channel. One message is posted
    * with a throbber, then edited with compact tool-call lines as
    * Claude works, then edited to the final formatted response.
+   *
+   * A Stop button is attached to the throbber; pressing it aborts the
+   * spawned claude process. Whatever text accumulated before abort
+   * becomes the reply, tagged as stopped by the operator.
    */
   private async replyCliStyle(args: {
     readonly chatId: number;
@@ -676,39 +687,85 @@ export class LAGDaemon {
       fetchImpl: this.fetch,
     });
     const maxChars = this.options.maxReplyChars ?? 4000;
+    const runToken = this.registerRun();
     const renderer = new CliRenderer({
       channel,
       renderFinal: (md) => markdownToTelegramHtml(md),
       splitFinal: (text) => splitMarkdownForTelegram(text, maxChars),
+      action: { label: '⏹ Stop', callbackData: `lag-stop:${runToken}` },
     });
 
     await renderer.emit({ type: 'start', label: 'Claude is working' });
     let replyText = '';
+    const controller = this.activeRuns.get(runToken)!;
     try {
       const streamingOpts: InvokeClaudeStreamingOptions = {
         userMessage: args.text,
         systemPrompt: args.systemPrompt,
         onEvent: (ev) => renderer.emit(ev),
+        signal: controller.signal,
         ...(this.options.repoRoot !== undefined ? { cwd: this.options.repoRoot } : {}),
         ...(this.options.resumeSessionId !== undefined ? { resumeSessionId: this.options.resumeSessionId } : {}),
       };
       const result = await this.invokeStreaming(streamingOpts);
-      replyText = result.text.trim() || '(empty response from model)';
+      const partial = result.text.trim();
+      if (controller.signal.aborted) {
+        // Operator stopped the run; surface what Claude produced up to
+        // that point, tagged so the operator knows it was truncated.
+        replyText = partial
+          ? `${partial}\n\n*(stopped by operator)*`
+          : '_Stopped by operator before Claude produced any text._';
+      } else {
+        replyText = partial || '(empty response from model)';
+      }
+      await renderer.emit({ type: 'complete', finalText: replyText, meta: result.meta });
     } catch (err) {
       this.onError(err, 'invokeClaudeStreaming');
       replyText = 'I could not generate a response right now. Please try again.';
       await renderer.emit({ type: 'error', message: replyText });
     } finally {
+      this.activeRuns.delete(runToken);
       await renderer.dispose();
     }
     return replyText;
   }
 
+  /**
+   * Allocate a short opaque token for a new cli-style run and register
+   * an AbortController under it. Token fits inside Telegram's 64-byte
+   * callback_data cap with room for the `lag-stop:` prefix.
+   */
+  private registerRun(): string {
+    this.runCounter += 1;
+    const token = `${Date.now().toString(36)}-${this.runCounter}`;
+    this.activeRuns.set(token, new AbortController());
+    return token;
+  }
+
   private async handleCallback(
     cq: NonNullable<TelegramUpdate['callback_query']>,
   ): Promise<void> {
-    if (!this.options.onCallback) return;
     if (typeof cq.data !== 'string') return;
+
+    // Stop button: abort the matching active run. Handled in-daemon;
+    // does not go through the escalation onCallback path.
+    if (cq.data.startsWith('lag-stop:')) {
+      const token = cq.data.slice('lag-stop:'.length);
+      const controller = this.activeRuns.get(token);
+      const found = controller !== undefined;
+      if (found) controller.abort();
+      try {
+        await this.callTelegram('answerCallbackQuery', {
+          callback_query_id: cq.id,
+          text: found ? 'Stopping…' : 'Run already finished',
+        });
+      } catch (err) {
+        this.onError(err, 'answerCallbackQuery(stop)');
+      }
+      return;
+    }
+
+    if (!this.options.onCallback) return;
     const parsed = parseCallbackData(cq.data);
     if (!parsed) return;
     const responder = this.options.principalResolver(cq.from.id, cq.from.username);

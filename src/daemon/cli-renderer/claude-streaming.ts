@@ -34,7 +34,7 @@ export interface StreamingExecResult {
 export type StreamingExecutor = (
   args: ReadonlyArray<string>,
   onLine: (line: string) => void | Promise<void>,
-  options: { timeoutMs?: number; cwd?: string },
+  options: { timeoutMs?: number; cwd?: string; signal?: AbortSignal },
 ) => Promise<StreamingExecResult>;
 
 export const defaultClaudeStreamingExecutor: StreamingExecutor = async (
@@ -64,6 +64,14 @@ export interface InvokeClaudeStreamingOptions {
   readonly onEvent?: (event: CliRendererEvent) => void | Promise<void>;
   /** Extra CLI args appended verbatim; escape hatch for advanced callers. */
   readonly extraArgs?: ReadonlyArray<string>;
+  /**
+   * Optional abort signal. When aborted, the spawned Claude CLI is
+   * terminated (SIGTERM, then SIGKILL after a 500ms grace). The call
+   * still resolves with the partial accumulator state; exitCode
+   * reflects termination. Callers detect cancellation via
+   * signal.aborted in the returned promise's continuation.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface InvokeClaudeStreamingResult {
@@ -123,6 +131,7 @@ export async function invokeClaudeStreaming(
   const result = await exec(args, handleLine, {
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
 
   return {
@@ -143,7 +152,7 @@ export async function runSpawnedJsonl(
   command: string,
   args: ReadonlyArray<string>,
   onLine: (line: string) => void | Promise<void>,
-  options: { timeoutMs?: number; cwd?: string },
+  options: { timeoutMs?: number; cwd?: string; signal?: AbortSignal },
 ): Promise<StreamingExecResult> {
   return await new Promise<StreamingExecResult>((resolvePromise, reject) => {
     const child = spawn(command, [...args], {
@@ -155,6 +164,7 @@ export async function runSpawnedJsonl(
     const lineQueue: string[] = [];
     let processing = false;
     let timedOut = false;
+    let aborted = false;
 
     const timeout = options.timeoutMs
       ? setTimeout(() => {
@@ -162,6 +172,24 @@ export async function runSpawnedJsonl(
           child.kill('SIGTERM');
         }, options.timeoutMs)
       : null;
+
+    const abortListener = (): void => {
+      aborted = true;
+      try { child.kill('SIGTERM'); } catch { /* already exited */ }
+      // Hard kill if SIGTERM doesn't land within a short grace window.
+      setTimeout(() => {
+        if (!child.killed) {
+          try { child.kill('SIGKILL'); } catch { /* ignore */ }
+        }
+      }, 500).unref();
+    };
+    if (options.signal) {
+      if (options.signal.aborted) {
+        abortListener();
+      } else {
+        options.signal.addEventListener('abort', abortListener, { once: true });
+      }
+    }
 
     const processQueue = async (): Promise<void> => {
       if (processing) return;
@@ -200,6 +228,9 @@ export async function runSpawnedJsonl(
     });
     child.on('close', async (code) => {
       if (timeout) clearTimeout(timeout);
+      if (options.signal) {
+        options.signal.removeEventListener('abort', abortListener);
+      }
       // Flush any trailing partial line (if writer didn't end on \n).
       if (stdoutBuffer.length > 0) {
         lineQueue.push(stdoutBuffer);
@@ -207,7 +238,7 @@ export async function runSpawnedJsonl(
       }
       await processQueue();
       resolvePromise({
-        exitCode: timedOut ? 124 : code ?? 0,
+        exitCode: aborted ? 130 : timedOut ? 124 : code ?? 0,
         stderr,
       });
     });
