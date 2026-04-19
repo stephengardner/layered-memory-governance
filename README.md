@@ -73,7 +73,7 @@ flowchart LR
 ```
 
 - **Terminal** for head-down development.
-- **Wrapper (`npm run terminal` / `terminal:auto`)** launches Claude Code inside a node-pty with an embedded Telegram long-poller. Incoming TG messages inject directly into the live stdin — real-time bidirectional, no turn-boundary wait. Ideal for "I want my phone to act as me."
+- **Wrapper (`npm run terminal` / `terminal:auto`)** launches Claude Code inside a node-pty with an embedded Telegram long-poller. Incoming TG messages inject directly into the live stdin for real-time bidirectional sessions, no turn-boundary wait. Ideal for "I want my phone to act as me."
 - **Stateless daemon** for autonomous-org (each message independent, no context coupling).
 - **Resume-shared daemon** for solo dev (daemon appends to your terminal's jsonl; bidirectional).
 - **Queue + hook** for "terminal is brain, Telegram is mouth" (the running Claude Code instance answers Telegram via a Stop hook).
