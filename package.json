@@ -46,6 +46,10 @@
       "import": "./dist/actors/pr-review/index.js",
       "types": "./dist/actors/pr-review/index.d.ts"
     },
+    "./actors/planning": {
+      "import": "./dist/actors/planning/index.js",
+      "types": "./dist/actors/planning/index.d.ts"
+    },
     "./external/github": {
       "import": "./dist/external/github/index.js",
       "types": "./dist/external/github/index.d.ts"
