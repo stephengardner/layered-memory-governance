@@ -32,3 +32,8 @@ export {
   listMarkdownRecursive,
   type ObsidianVaultSourceOptions,
 } from './obsidian.js';
+export {
+  GitLogSource,
+  parseGitLog,
+  type GitLogSourceOptions,
+} from './git-log.js';

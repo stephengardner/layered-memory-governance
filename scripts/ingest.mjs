@@ -38,6 +38,7 @@ import { createFileHost } from '../dist/adapters/file/index.js';
 import {
   ClaudeCodeTranscriptSource,
   FreshSource,
+  GitLogSource,
   ObsidianVaultSource,
 } from '../dist/sources/index.js';
 
@@ -119,8 +120,11 @@ function buildSource(spec) {
     case 'obsidian':
       if (!path) throw new Error('obsidian source requires a path');
       return new ObsidianVaultSource({ dir: expandTilde(path) });
+    case 'git-log':
+      if (!path) throw new Error('git-log source requires a path');
+      return new GitLogSource({ dir: expandTilde(path) });
     default:
-      throw new Error(`Unknown source kind: "${kind}". Known: fresh, claude-code, obsidian.`);
+      throw new Error(`Unknown source kind: "${kind}". Known: fresh, claude-code, obsidian, git-log.`);
   }
 }
 
