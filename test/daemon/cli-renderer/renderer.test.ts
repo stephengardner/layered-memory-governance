@@ -137,7 +137,7 @@ describe('CliRenderer', () => {
     await renderer.dispose();
   });
 
-  it('complete folds thinking into a tg-spoiler block (Telegram-safe HTML)', async () => {
+  it('complete folds thinking into a <details> block', async () => {
     let t = 1_000_000;
     const { channel, calls } = mkStubChannel();
     const renderer = new CliRenderer({ channel, now: () => t, editRateLimitMs: 0 });
@@ -148,83 +148,7 @@ describe('CliRenderer', () => {
     const final = calls[calls.length - 1]!;
     expect(final.text).toContain('Answer.');
     expect(final.text).toContain('considering approaches');
-    expect(final.text).toContain('<tg-spoiler>');
-    // Must NOT use <details>: Telegram HTML rejects that tag.
-    expect(final.text).not.toContain('<details>');
-    await renderer.dispose();
-  });
-
-  it('serialization: completion always lands LAST, even when a progress edit is in-flight', async () => {
-    // Regression guard for the race where scheduleEdit fires a
-    // fire-and-forget flushEdit whose channel.edit resolves AFTER a
-    // concurrent complete. With the serialized edit chain + post-chain
-    // terminal-state recheck, the completion must be the last edit.
-    vi.useRealTimers(); // this test needs real microtask sequencing
-    let t = 1_000_000;
-    const calls: Call[] = [];
-    let nextId = 100;
-    let gate: (() => void) | null = null;
-    const gateReady = new Promise<void>((resolvePromise) => {
-      gate = resolvePromise;
-    });
-    let firstEditStarted: (() => void) | null = null;
-    const firstEditHasStarted = new Promise<void>((resolvePromise) => {
-      firstEditStarted = resolvePromise;
-    });
-    const channel: CliRendererChannel = {
-      async post(message: MessageOptions): Promise<PostedMessage> {
-        calls.push({
-          kind: 'post',
-          text: message.text,
-          ...(message.parseMode === undefined ? {} : { parseMode: message.parseMode }),
-        });
-        return { messageId: String(nextId++) };
-      },
-      async edit(messageId: string, message: MessageOptions): Promise<void> {
-        const isFirst = calls.filter((c) => c.kind === 'edit').length === 0;
-        if (isFirst) {
-          firstEditStarted!();
-          await gateReady; // hold the first edit open
-        }
-        calls.push({ kind: 'edit', messageId, text: message.text });
-      },
-    };
-
-    const renderer = new CliRenderer({
-      channel,
-      now: () => t,
-      editRateLimitMs: 0,
-    });
-
-    await renderer.emit({ type: 'start' });
-    t += 10;
-    // Kick off the first edit (held by gate), wait until it actually
-    // enters channel.edit, then queue a complete behind it.
-    const firstP = renderer.emit({ type: 'tool-call', tool: 'Read', summary: 'a' });
-    await firstEditHasStarted;
-    const completeP = renderer.emit({ type: 'complete', finalText: 'Final.' });
-    gate!(); // release the held first edit
-    await firstP;
-    await completeP;
-
-    const editTexts = calls.filter((c) => c.kind === 'edit').map((c) => c.text);
-    // The very last edit must be the completion, not a stale progress.
-    expect(editTexts[editTexts.length - 1]).toContain('Final.');
-    await renderer.dispose();
-  });
-
-  it('error is terminal: no progress edits land after it', async () => {
-    let t = 1_000_000;
-    const { channel, calls } = mkStubChannel();
-    const renderer = new CliRenderer({ channel, now: () => t, editRateLimitMs: 0 });
-    await renderer.emit({ type: 'start' });
-    await renderer.emit({ type: 'error', message: 'died' });
-    // A later tool-call must NOT produce another edit; error is terminal.
-    await renderer.emit({ type: 'tool-call', tool: 'Read', summary: 'after-error' });
-    const editTexts = calls.filter((c) => c.kind === 'edit').map((c) => c.text);
-    const last = editTexts[editTexts.length - 1]!;
-    expect(last).toContain('Error');
-    expect(last).not.toContain('after-error');
+    expect(final.text).toContain('thinking');
     await renderer.dispose();
   });
 

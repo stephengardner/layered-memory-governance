@@ -5,12 +5,11 @@
  *
  * UX shape per run:
  *   1. On `start`: post ONE message.
- *        [🟡] Working... (0s)
- *   (caller supplies a specific label via emit({type:'start', label}).)
+ *        [🟡] Claude is working... (0s)
  *        <small hint if provided>
  *   2. Heartbeat (every heartbeatIntervalMs, cycling spinner frame,
  *      updating elapsed seconds, rate-limited by editRateLimitMs):
- *        [🟠] Working... (12s)
+ *        [🟠] Claude is working... (12s)
  *        🔧 Read src/foo.ts
  *        🔧 Edit src/foo.ts (+3/-1)
  *        ...
@@ -63,11 +62,7 @@ export class CliRenderer {
   private startedAtMs = 0;
   private lastEditMs = 0;
   private spinnerIdx = 0;
-  // Default label is vendor-neutral. Callers (e.g. LAGDaemon's
-  // cliStyle path) pass a specific label via emit({type:'start',
-  // label: 'Claude is working'}). The primitive itself must not
-  // encode a vendor name.
-  private label = 'Working';
+  private label = 'Claude is working';
   private hint?: string;
   private activity: ActivityLine[] = [];
   private accumulatedText = '';
@@ -76,24 +71,13 @@ export class CliRenderer {
   private pendingEditTimer: ReturnType<typeof setTimeout> | null = null;
   private completed = false;
   private disposed = false;
-  /**
-   * Serializes all channel.edit invocations so a stale progress edit
-   * cannot land AFTER a fresh completion/error edit. Every call to
-   * flushEdit / handleComplete / handleError enqueues its work onto
-   * this chain; the chain guarantees ordered delivery.
-   */
-  private editChain: Promise<void> = Promise.resolve();
 
   constructor(options: CliRendererOptions) {
     this.channel = options.channel;
     this.now = options.now ?? (() => Date.now());
     this.editRateLimitMs = options.editRateLimitMs ?? DEFAULT_EDIT_RATE_MS;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS;
-    // Reject empty spinner arrays; the heartbeat's modulo would throw
-    // NaN / Infinity otherwise. Fall back to the default in that case.
-    this.spinnerFrames = options.spinnerFrames && options.spinnerFrames.length > 0
-      ? options.spinnerFrames
-      : DEFAULT_SPINNER;
+    this.spinnerFrames = options.spinnerFrames ?? DEFAULT_SPINNER;
     this.activityWindow = options.activityWindow ?? DEFAULT_ACTIVITY_WINDOW;
     this.renderFinal = options.renderFinal ?? ((s) => s);
     this.splitFinal = options.splitFinal ?? defaultSplit;
@@ -180,90 +164,61 @@ export class CliRenderer {
     finalText: string,
     meta?: Readonly<Record<string, string | number>>,
   ): Promise<void> {
-    // Mark terminal FIRST so any racing scheduleEdit short-circuits
-    // before it can enqueue a progress edit behind the completion.
     this.completed = true;
     this.stopHeartbeat();
     if (this.pendingEditTimer) {
       clearTimeout(this.pendingEditTimer);
       this.pendingEditTimer = null;
     }
-    // Thinking is folded into a tg-spoiler block (Telegram HTML whitelist
-    // supports <tg-spoiler>; <details> is NOT supported and would be
-    // stripped or rejected).
     const withThinking = this.thinkingBuffer
-      ? `${finalText}\n\n<b>thinking</b>\n<tg-spoiler>${escapeHtml(this.thinkingBuffer)}</tg-spoiler>`
+      ? `${finalText}\n\n<details>\n<summary>thinking</summary>\n${this.thinkingBuffer}\n</details>`
       : finalText;
     const footer = this.renderFooter(meta);
     const composed = footer ? `${withThinking}\n\n${footer}` : withThinking;
     const rendered = this.renderFinal(composed);
     const chunks = this.splitFinal(rendered);
     if (chunks.length === 0) return;
-    // Enqueue onto the serialized chain so any in-flight progress
-    // edit finishes before the completion lands.
-    await this.enqueueOnChain(async () => {
-      if (this.messageId === null) {
-        try {
-          const posted = await this.channel.post({ text: chunks[0]!, parseMode: 'HTML' });
-          this.messageId = posted.messageId;
-        } catch (err) {
-          logChannelError('post', err);
-          return;
-        }
-      } else {
-        try {
-          await this.channel.edit(this.messageId, { text: chunks[0]!, parseMode: 'HTML' });
-        } catch (err) {
-          logChannelError('edit', err);
-        }
-      }
-      for (let i = 1; i < chunks.length; i++) {
-        try {
-          await this.channel.post({ text: chunks[i]!, parseMode: 'HTML' });
-        } catch (err) {
-          logChannelError('post', err);
-        }
-      }
-    });
-  }
-
-  private async handleError(message: string): Promise<void> {
-    // Same terminal-flag discipline as complete: no further progress
-    // edits may run after an error banner lands.
-    this.completed = true;
-    this.stopHeartbeat();
-    if (this.pendingEditTimer) {
-      clearTimeout(this.pendingEditTimer);
-      this.pendingEditTimer = null;
-    }
-    const text = `<b>⚠️ Error</b>\n\n${escapeHtml(message)}`;
-    await this.enqueueOnChain(async () => {
-      if (this.messageId === null) {
-        try {
-          await this.channel.post({ text, parseMode: 'HTML' });
-        } catch (err) {
-          logChannelError('post', err);
-        }
+    if (this.messageId === null) {
+      // start never got called or failed; post the final directly.
+      try {
+        const posted = await this.channel.post({ text: chunks[0]!, parseMode: 'HTML' });
+        this.messageId = posted.messageId;
+      } catch (err) {
+        logChannelError('post', err);
         return;
       }
+    } else {
       try {
-        await this.channel.edit(this.messageId, { text, parseMode: 'HTML' });
+        await this.channel.edit(this.messageId, { text: chunks[0]!, parseMode: 'HTML' });
       } catch (err) {
         logChannelError('edit', err);
       }
-    });
+    }
+    for (let i = 1; i < chunks.length; i++) {
+      try {
+        await this.channel.post({ text: chunks[i]!, parseMode: 'HTML' });
+      } catch (err) {
+        logChannelError('post', err);
+      }
+    }
   }
 
-  /**
-   * Append `task` to the serialized edit chain. Returns a promise
-   * that resolves when the enqueued work completes. A failure inside
-   * `task` is swallowed so a single bad task cannot poison the chain
-   * for subsequent enqueues.
-   */
-  private enqueueOnChain(task: () => Promise<void>): Promise<void> {
-    const next = this.editChain.then(task, task).catch(() => { /* tolerate */ });
-    this.editChain = next;
-    return next;
+  private async handleError(message: string): Promise<void> {
+    this.stopHeartbeat();
+    const text = `<b>⚠️ Error</b>\n\n${escapeHtml(message)}`;
+    if (this.messageId === null) {
+      try {
+        await this.channel.post({ text, parseMode: 'HTML' });
+      } catch (err) {
+        logChannelError('post', err);
+      }
+      return;
+    }
+    try {
+      await this.channel.edit(this.messageId, { text, parseMode: 'HTML' });
+    } catch (err) {
+      logChannelError('edit', err);
+    }
   }
 
   private startHeartbeat(): void {
@@ -307,26 +262,17 @@ export class CliRenderer {
 
   private async flushEdit(): Promise<void> {
     if (this.messageId === null || this.completed || this.disposed) return;
-    // Snapshot the body at scheduling time but actually send through
-    // the serialized chain so a stale progress cannot win the race
-    // against a concurrently-scheduled complete/error.
     const body = this.renderProgress();
     this.lastEditMs = this.now();
-    await this.enqueueOnChain(async () => {
-      // Re-check terminal state inside the chain: by the time this
-      // task actually runs, handleComplete/handleError may have
-      // flipped `completed`. If so, drop the stale progress edit.
-      if (this.messageId === null || this.completed || this.disposed) return;
-      try {
-        await this.channel.edit(this.messageId, {
-          text: body,
-          parseMode: 'HTML',
-          disableNotification: true,
-        });
-      } catch (err) {
-        logChannelError('edit', err);
-      }
-    });
+    try {
+      await this.channel.edit(this.messageId, {
+        text: body,
+        parseMode: 'HTML',
+        disableNotification: true,
+      });
+    } catch (err) {
+      logChannelError('edit', err);
+    }
   }
 
   private appendActivity(icon: string, text: string): void {
