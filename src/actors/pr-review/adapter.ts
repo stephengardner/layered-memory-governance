@@ -56,4 +56,28 @@ export interface PrReviewAdapter extends ActorAdapter {
 
   /** Mark the thread that contains `commentId` as resolved. Idempotent. */
   resolveComment(pr: PrIdentifier, commentId: string): Promise<void>;
+
+  /**
+   * Check whether any of the given reviewer logins has posted ANY
+   * review comment OR top-level PR comment on this PR. Used to detect
+   * "the reviewer bot never ran" and prompt it explicitly. Read-only;
+   * safe to call in dry-run.
+   */
+  hasReviewerEngaged(
+    pr: PrIdentifier,
+    authorLogins: ReadonlyArray<string>,
+  ): Promise<boolean>;
+
+  /**
+   * Post a top-level PR comment (not a threaded review reply). Used
+   * to prompt a reviewer bot (e.g., `@coderabbitai review`) or to
+   * surface anything that is not inline on a diff. Honors dryRun.
+   */
+  postPrComment(pr: PrIdentifier, body: string): Promise<PrCommentOutcome>;
+}
+
+export interface PrCommentOutcome {
+  readonly commentId?: string;
+  readonly posted: boolean;
+  readonly dryRun?: boolean;
 }

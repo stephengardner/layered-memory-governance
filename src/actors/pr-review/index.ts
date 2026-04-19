@@ -16,6 +16,7 @@
  */
 
 export type {
+  PrCommentOutcome,
   PrIdentifier,
   PrReviewAdapter,
   ReviewComment,

@@ -75,6 +75,13 @@ const POLICIES = [
     reason: 'Architectural feedback requires the operator to judge. Surface the thread; do not auto-reply.',
   },
   {
+    id: 'pol-pr-landing-ensure-review',
+    tool: 'pr-ensure-review',
+    action: 'allow',
+    priority: 10,
+    reason: 'pr-landing-agent may prompt a configured reviewer bot (e.g. "@coderabbitai review") when hasReviewerEngaged returns false. Low blast radius; idempotent in practice.',
+  },
+  {
     id: 'pol-pr-landing-merge-denied',
     tool: '^pr-merge-.*',
     action: 'deny',
@@ -214,7 +221,13 @@ async function main() {
   });
 
   let written = 0;
+  let skipped = 0;
   for (const spec of POLICIES) {
+    const existing = await host.atoms.get(spec.id);
+    if (existing) {
+      skipped++;
+      continue;
+    }
     await host.atoms.put(policyAtom(spec));
     written++;
   }
@@ -222,7 +235,7 @@ async function main() {
   console.log(
     `[bootstrap-pr-landing] Principal '${PR_LANDING_AGENT}' signed_by '${claudeAgentId}' created or refreshed.`,
   );
-  console.log(`[bootstrap-pr-landing] Wrote ${written} L3 policy atoms.`);
+  console.log(`[bootstrap-pr-landing] Wrote ${written} new L3 policy atoms (${skipped} already existed, skipped).`);
   console.log('[bootstrap-pr-landing] Done.');
 }
 

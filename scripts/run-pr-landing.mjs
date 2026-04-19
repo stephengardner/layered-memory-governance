@@ -110,7 +110,16 @@ async function main() {
   const client = createGhClient();
   const review = new GitHubPrReviewAdapter({ client, dryRun: !args.live });
 
-  const actor = new PrLandingActor({ pr: { owner, repo, number: args.prNumber } });
+  const actor = new PrLandingActor({
+    pr: { owner, repo, number: args.prNumber },
+    ensureReviewers: [
+      {
+        logins: ['coderabbitai[bot]', 'coderabbitai'],
+        promptBody: '@coderabbitai review',
+        label: 'CodeRabbit',
+      },
+    ],
+  });
 
   const deadline = new Date(Date.now() + args.deadlineMs).toISOString();
   const mode = args.live ? 'LIVE' : 'DRY-RUN';

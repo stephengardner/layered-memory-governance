@@ -16,6 +16,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { runActor } from '../../src/actors/run-actor.js';
 import { PrLandingActor } from '../../src/actors/pr-landing/pr-landing.js';
 import type {
+  PrCommentOutcome,
   PrIdentifier,
   PrReviewAdapter,
   ReviewComment,
@@ -41,10 +42,13 @@ class StubReviewAdapter implements PrReviewAdapter {
   readonly version = '0';
   replies: Array<{ commentId: string; body: string }> = [];
   resolvedIds: string[] = [];
+  prComments: Array<{ body: string }> = [];
+  reviewerEngagedByIteration: boolean[] = [];
 
   constructor(private commentsByIteration: ReviewComment[][]) {}
 
   private iter = 0;
+  private hasEngagedIter = 0;
   async listUnresolvedComments(): Promise<ReadonlyArray<ReviewComment>> {
     const list = this.commentsByIteration[this.iter] ?? [];
     this.iter++;
@@ -56,6 +60,15 @@ class StubReviewAdapter implements PrReviewAdapter {
   }
   async resolveComment(_pr: PrIdentifier, commentId: string): Promise<void> {
     this.resolvedIds.push(commentId);
+  }
+  async hasReviewerEngaged(): Promise<boolean> {
+    const engaged = this.reviewerEngagedByIteration[this.hasEngagedIter] ?? false;
+    this.hasEngagedIter++;
+    return engaged;
+  }
+  async postPrComment(_pr: PrIdentifier, body: string): Promise<PrCommentOutcome> {
+    this.prComments.push({ body });
+    return { commentId: `pc${this.prComments.length}`, posted: true };
   }
 }
 
@@ -121,6 +134,59 @@ describe('PrLandingActor', () => {
     expect(report.haltReason).toBe('converged');
     expect(report.iterations).toBe(1);
     expect(review.replies).toHaveLength(0);
+  });
+
+  it('posts ensure-review prompt when configured reviewer has not engaged', async () => {
+    const host = createMemoryHost();
+    const review = new StubReviewAdapter([[], []]);
+    review.reviewerEngagedByIteration = [false, true];
+    const actor = new PrLandingActor({
+      pr: PR,
+      ensureReviewers: [{
+        logins: ['coderabbitai[bot]'],
+        promptBody: '@coderabbitai review',
+        label: 'CodeRabbit',
+      }],
+    });
+
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: { review },
+      budget: { maxIterations: 3 },
+      origin: 'scheduled',
+    });
+
+    // Iteration 1: reviewer not engaged -> posts prompt. Not done.
+    // Iteration 2: reviewer engaged, 0 comments -> converged.
+    expect(report.haltReason).toBe('converged');
+    expect(review.prComments).toHaveLength(1);
+    expect(review.prComments[0]!.body).toBe('@coderabbitai review');
+  });
+
+  it('does NOT post ensure-review prompt when reviewer has already engaged', async () => {
+    const host = createMemoryHost();
+    const review = new StubReviewAdapter([[]]);
+    review.reviewerEngagedByIteration = [true];
+    const actor = new PrLandingActor({
+      pr: PR,
+      ensureReviewers: [{
+        logins: ['coderabbitai[bot]'],
+        promptBody: '@coderabbitai review',
+        label: 'CodeRabbit',
+      }],
+    });
+
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: { review },
+      budget: { maxIterations: 3 },
+      origin: 'scheduled',
+    });
+
+    expect(report.haltReason).toBe('converged');
+    expect(review.prComments).toHaveLength(0);
   });
 
   it('classify key changes when comment counts change across iterations', async () => {
