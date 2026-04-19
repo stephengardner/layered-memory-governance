@@ -55,6 +55,13 @@ export interface PrLandingObservation {
    * ensureReviewers is not configured.
    */
   readonly reviewerEngaged?: boolean;
+  /**
+   * True when the pr-landing bot itself has ALREADY posted a top-level
+   * comment on this PR. Used as an idempotency guard: don't post the
+   * ensure-review prompt again if we already did. Defined only when
+   * ensureReviewers is configured AND reviewerEngaged is false.
+   */
+  readonly selfAlreadyPrompted?: boolean;
 }
 
 export type PrLandingActionKind =
@@ -96,6 +103,12 @@ export interface PrLandingOptions {
     /** Human-readable name for audit + classification. */
     readonly label: string;
   }>;
+  /**
+   * Author logins whose prior top-level PR comments mean the actor has
+   * already posted an ensure-review prompt and should not re-post.
+   * Default: ['github-actions[bot]']. Set to [] to disable (testing).
+   */
+  readonly ensurePromptAuthors?: ReadonlyArray<string>;
 }
 
 export class PrLandingActor implements Actor<
@@ -111,18 +124,28 @@ export class PrLandingActor implements Actor<
 
   async observe(ctx: ActorContext<PrLandingAdapters>): Promise<PrLandingObservation> {
     const comments = await ctx.adapters.review.listUnresolvedComments(this.options.pr);
-    let reviewerEngaged: boolean | undefined;
-    if (this.options.ensureReviewers && this.options.ensureReviewers.length > 0) {
-      const allLogins = this.options.ensureReviewers.flatMap((r) => r.logins);
-      reviewerEngaged = await ctx.adapters.review.hasReviewerEngaged(
-        this.options.pr,
-        allLogins,
-      );
+    const base = { pr: this.options.pr, comments };
+    if (!this.options.ensureReviewers || this.options.ensureReviewers.length === 0) {
+      return base;
     }
-    const obs: PrLandingObservation = reviewerEngaged === undefined
-      ? { pr: this.options.pr, comments }
-      : { pr: this.options.pr, comments, reviewerEngaged };
-    return obs;
+    const allLogins = this.options.ensureReviewers.flatMap((r) => r.logins);
+    const reviewerEngaged = await ctx.adapters.review.hasReviewerEngaged(
+      this.options.pr,
+      allLogins,
+    );
+    if (reviewerEngaged) {
+      return { ...base, reviewerEngaged: true };
+    }
+    // Idempotency guard: if the pr-landing bot has already posted any
+    // comment on this PR, assume we've already ensure-review'd and do
+    // not post the prompt again. Without this, a slow reviewer bot
+    // (CodeRabbit queued behind other repos) would cause us to re-prompt
+    // every iteration, spamming the PR.
+    const promptAuthors = this.options.ensurePromptAuthors ?? ['github-actions[bot]'];
+    const selfAlreadyPrompted = promptAuthors.length === 0
+      ? false
+      : await ctx.adapters.review.hasReviewerEngaged(this.options.pr, promptAuthors);
+    return { ...base, reviewerEngaged: false, selfAlreadyPrompted };
   }
 
   async classify(
@@ -155,9 +178,17 @@ export class PrLandingActor implements Actor<
   ): Promise<ReadonlyArray<ProposedAction<PrLandingActionPayload>>> {
     const actions: ProposedAction<PrLandingActionPayload>[] = [];
     // Ensure-review actions come first: if the configured reviewer bot
-    // hasn't engaged, prompt it before trying to handle its (absent)
-    // feedback. Once it replies, subsequent iterations drop this class.
-    if (classified.observation.reviewerEngaged === false && this.options.ensureReviewers) {
+    // hasn't engaged AND we haven't already posted a prompt ourselves,
+    // prompt it before trying to handle its (absent) feedback. Once the
+    // reviewer responds, subsequent iterations drop this class. If we
+    // already prompted and the reviewer still hasn't responded, do NOT
+    // re-post; let convergence-guard or deadline halt the run so the
+    // operator can investigate.
+    if (
+      classified.observation.reviewerEngaged === false
+      && !classified.observation.selfAlreadyPrompted
+      && this.options.ensureReviewers
+    ) {
       for (const spec of this.options.ensureReviewers) {
         actions.push({
           tool: 'pr-ensure-review',

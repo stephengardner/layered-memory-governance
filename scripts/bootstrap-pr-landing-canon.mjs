@@ -24,7 +24,10 @@
  * primitives are Principal + Atom + Policy; the specific role shape
  * (pr-landing-agent, the decision classes) is our instance.
  *
- * Idempotent per atom id; re-running overwrites.
+ * Idempotent per atom id: re-running skips atoms whose id already
+ * exists. Content is immutable in the atom model, so to refresh a
+ * policy shape, change its id here or use the atom-update path
+ * explicitly (not exercised in this bootstrap).
  */
 
 import { resolve } from 'node:path';

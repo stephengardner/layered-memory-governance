@@ -43,13 +43,16 @@ class StubReviewAdapter implements PrReviewAdapter {
   replies: Array<{ commentId: string; body: string }> = [];
   resolvedIds: string[] = [];
   prComments: Array<{ body: string }> = [];
-  reviewerEngagedByIteration: boolean[] = [];
+  /** Logins the stub treats as engaged. Tests mutate between iterations. */
+  engagedLogins: Set<string> = new Set();
+  /** Fires at the START of each iteration (before list returns); mutate stub state here. */
+  beforeIteration?: (iterZeroBased: number, stub: StubReviewAdapter) => void;
 
   constructor(private commentsByIteration: ReviewComment[][]) {}
 
   private iter = 0;
-  private hasEngagedIter = 0;
   async listUnresolvedComments(): Promise<ReadonlyArray<ReviewComment>> {
+    this.beforeIteration?.(this.iter, this);
     const list = this.commentsByIteration[this.iter] ?? [];
     this.iter++;
     return list;
@@ -61,13 +64,14 @@ class StubReviewAdapter implements PrReviewAdapter {
   async resolveComment(_pr: PrIdentifier, commentId: string): Promise<void> {
     this.resolvedIds.push(commentId);
   }
-  async hasReviewerEngaged(): Promise<boolean> {
-    const engaged = this.reviewerEngagedByIteration[this.hasEngagedIter] ?? false;
-    this.hasEngagedIter++;
-    return engaged;
+  async hasReviewerEngaged(_pr: PrIdentifier, logins: ReadonlyArray<string>): Promise<boolean> {
+    for (const l of logins) if (this.engagedLogins.has(l)) return true;
+    return false;
   }
   async postPrComment(_pr: PrIdentifier, body: string): Promise<PrCommentOutcome> {
     this.prComments.push({ body });
+    // Simulate post making the bot engaged (subsequent iterations see it).
+    this.engagedLogins.add('github-actions[bot]');
     return { commentId: `pc${this.prComments.length}`, posted: true };
   }
 }
@@ -139,7 +143,10 @@ describe('PrLandingActor', () => {
   it('posts ensure-review prompt when configured reviewer has not engaged', async () => {
     const host = createMemoryHost();
     const review = new StubReviewAdapter([[], []]);
-    review.reviewerEngagedByIteration = [false, true];
+    // Before iteration 2 (zero-based 1), simulate reviewer arriving.
+    review.beforeIteration = (iterIdx, stub) => {
+      if (iterIdx === 1) stub.engagedLogins.add('coderabbitai[bot]');
+    };
     const actor = new PrLandingActor({
       pr: PR,
       ensureReviewers: [{
@@ -157,8 +164,8 @@ describe('PrLandingActor', () => {
       origin: 'scheduled',
     });
 
-    // Iteration 1: reviewer not engaged -> posts prompt. Not done.
-    // Iteration 2: reviewer engaged, 0 comments -> converged.
+    // Iteration 1: reviewer not engaged, self not prompted -> post prompt.
+    // Iteration 2: reviewer engaged (simulated), 0 comments -> converged.
     expect(report.haltReason).toBe('converged');
     expect(review.prComments).toHaveLength(1);
     expect(review.prComments[0]!.body).toBe('@coderabbitai review');
@@ -167,7 +174,7 @@ describe('PrLandingActor', () => {
   it('does NOT post ensure-review prompt when reviewer has already engaged', async () => {
     const host = createMemoryHost();
     const review = new StubReviewAdapter([[]]);
-    review.reviewerEngagedByIteration = [true];
+    review.engagedLogins.add('coderabbitai[bot]');
     const actor = new PrLandingActor({
       pr: PR,
       ensureReviewers: [{
@@ -187,6 +194,34 @@ describe('PrLandingActor', () => {
 
     expect(report.haltReason).toBe('converged');
     expect(review.prComments).toHaveLength(0);
+  });
+
+  it('idempotency: does NOT re-post ensure-review when bot already prompted', async () => {
+    // Bot already posted (engaged as github-actions[bot]) but reviewer
+    // hasn't engaged. Expected: no additional prompt posted; actor
+    // hits convergence-loop waiting for the slow reviewer, not spam.
+    const host = createMemoryHost();
+    const review = new StubReviewAdapter([[], []]);
+    review.engagedLogins.add('github-actions[bot]');
+    const actor = new PrLandingActor({
+      pr: PR,
+      ensureReviewers: [{
+        logins: ['coderabbitai[bot]'],
+        promptBody: '@coderabbitai review',
+        label: 'CodeRabbit',
+      }],
+    });
+
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: { review },
+      budget: { maxIterations: 3 },
+      origin: 'scheduled',
+    });
+
+    expect(review.prComments).toHaveLength(0);
+    expect(report.haltReason).toBe('convergence-loop');
   });
 
   it('classify key changes when comment counts change across iterations', async () => {

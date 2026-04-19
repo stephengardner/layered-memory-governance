@@ -36,6 +36,15 @@ permissions:
   pull-requests: write
   contents: read
 
+# One pr-landing run per PR at a time. Without this, overlapping
+# pull_request / pull_request_review_comment events can spawn parallel
+# runs that race on ensure-review prompts and reply posting. Cancel
+# in-progress runs when a new one starts for the same PR; the new run
+# sees the latest state anyway.
+concurrency:
+  group: pr-landing-${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
 jobs:
   pr-landing:
     name: pr-landing agent
