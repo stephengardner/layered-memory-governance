@@ -28,6 +28,42 @@ Format: short context, the decision, why, alternatives we rejected, what breaks 
 
 ---
 
+## D11: Queue mode + hook = terminal-attached runtime (Phase 42)
+
+**Context**: Phase 41's daemon spawns a fresh `claude -p` per message (stateless) or with `--resume` (shared-jsonl). Both are independent processes from the terminal Claude Code instance. The user asked for the Telegram bot to literally be the running terminal instance, so a session persists in-terminal that includes Telegram exchanges.
+
+**Decision**: Add `--queue-only` mode to the daemon. In queue mode, the daemon does NOT spawn claude-cli; it writes incoming Telegram messages to `.lag/tg-queue/inbox/` and drains `.lag/tg-queue/outbox/` to Telegram. A companion `Stop` hook (at `examples/hooks/lag-tg-attached-stop.cjs`) runs after each terminal turn, reads the inbox, re-prompts Claude via `decision: block` with the message as reason, captures Claude's reply from the transcript on the next Stop, writes to outbox.
+
+**Why**: Gives the "terminal is brain, Telegram is remote mouth" experience without a separate process. The running Claude Code instance handles both terminal and Telegram on the same session state. Both transcripts (terminal jsonl + Telegram chat history) record the same exchange coherently.
+
+**Alternatives rejected**:
+- TIOCSTI / fake-stdin injection on Unix. Hacky, Windows-hostile.
+- MCP server that exposes `tg_check` / `tg_send` as tools for Claude to poll. Requires Claude to think to poll; doesn't fit ambient UX.
+- Polling loop inside the main Claude Code process. No such extension point ships today.
+
+**What breaks if we revisit**: Hook registration is in user settings.local.json (out of repo); removing the feature means un-registering the hook. Queue dir is recoverable (drain, delete).
+
+## D10: Runtime modes compose rather than replace (Phases 41, 42)
+
+**Context**: LAG needs to serve both autonomous orgs (stateless agents) and solo dev (continuity, bidirectional). The temptation is to pick one runtime shape and build everything around it.
+
+**Decision**: Ship three composable runtime modes for the same daemon binary, all sharing the same `.lag/` substrate:
+
+1. **Stateless daemon** (default): every message is independent; canonical autonomous-org shape.
+2. **Resume-shared daemon** (`--resume-session <id>` or `--resume-latest`): daemon uses claude-cli's `--resume` flag so replies append to the pinned jsonl; terminal and daemon share state through the file.
+3. **Queue + hook** (`--queue-only`): daemon becomes pure transport; running terminal Claude Code instance handles via Stop hook.
+
+All three can run concurrently against the same `.lag/` in principle (file adapter supports cross-process access). A user chooses based on context.
+
+**Why**: "Pluggable architecture" is the north star. Hardcoding one runtime mode sacrifices either solo-dev ergonomics or org-scale semantics. Three modes is cheap (~300 lines, all behind one flag each) and lets us learn which is useful.
+
+**Alternatives rejected**:
+- Pick stateless only and tell solo-dev users to run terminal separately. Rejected because continuity is a real ergonomic win.
+- Pick resume-shared only. Rejected because autonomous orgs explicitly want no session coupling across messages.
+- Full "runtime orchestrator" abstraction with pluggable pipe stages. Premature. Three modes + clean flag surface is enough.
+
+**What breaks if we revisit**: Modes diverge in semantics over time; users may expect one to behave like another. Document differences. Queue-mode's Stop hook is the coupling point most at risk of drift.
+
 ## D9: Runtime surfaces are a seam, but only one ships (Phase 41)
 
 **Context**: The LAG daemon (Phase 41) listens on Telegram, spawns `claude -p`, writes atoms. That's ONE runtime surface. Others are obvious (Slack, Discord, web UI, email), and it's tempting to abstract a full pipeline now.

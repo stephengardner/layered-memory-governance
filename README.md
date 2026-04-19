@@ -6,7 +6,7 @@ A framework for multi-agent systems where memory has to stay true over time, aut
 
 > **If RAG brings knowledge into an agent, LAG governs knowledge across agents.** Retrieval makes one agent smarter; governance keeps a hundred agents coherent.
 
-Node 22+. TypeScript. Three adapters, three CLIs, three embedders, 374 unit tests + 29 gated integration tests, GitHub Actions CI on Ubuntu + Windows.
+Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, **448 unit tests + 30 gated integration tests**, GitHub Actions CI on Ubuntu + Windows.
 
 ---
 
@@ -24,10 +24,11 @@ Current agentic memory systems (MemGPT, Letta, GraphRAG, Anthropic Projects) eac
 
 ## The solution
 
-LAG treats memory as a governed substrate. Every stored unit is an **atom** with provenance, confidence, layer, principal, and scope. The framework applies five deterministic primitives on top, with a human in the loop as the ultimate arbiter:
+LAG treats memory as a governed substrate. Every stored unit is an **atom** with provenance, confidence, layer, principal, and scope. The framework applies six deterministic primitives on top, with a human in the loop as the ultimate arbiter:
 
 - **Layered promotion**: atoms flow upward through four trust tiers (L0 raw, L1 extracted, L2 curated, L3 canon) gated by confidence x consensus x validation thresholds. Promotion creates a new atom at the target layer with `provenance.kind='canon-promoted'` and marks the source superseded. Rollback is a graph operation, not a mutation.
 - **Arbitration at write time**: when two atoms conflict, a deterministic rule stack resolves before either reaches retrieval. Source-rank (layer x provenance x **principal hierarchy depth** x confidence) comes first, then temporal-scope, then validator registry, then escalation to a human. Most conflicts never reach a human.
+- **Intent governance via Plans**: plans are atoms with `type: 'plan'` and a `plan_state` state machine (proposed → approved → executing → succeeded | failed | abandoned). `validatePlan()` runs a plan's content through the arbitration stack against L3 canon BEFORE execution; conflicts block or escalate. Outcome atoms tagged `derived_from: [plan_id]` preserve lineage from intent to result.
 - **Decay and expiration**: atoms lose confidence on a per-type half-life without reinforcement. Atoms with `expires_at` past now move to `taint='quarantined'`. Stale and expired atoms drop out of retrieval, canon, and promotion automatically.
 - **Taint propagation**: when a principal is marked compromised, `propagateCompromiseTaint` walks their atoms and every derived atom across `provenance.derived_from` chains to fixpoint. The canon re-renders without the poisoned subgraph on the next tick.
 - **Canon with a human gate**: L3 atoms render into a bracketed section of target `CLAUDE.md` files via `CanonMdManager`. Multi-target canon: one file per scope or role (org-wide, per-project, per-team, per-agent). L3 promotion telegraphs through the `Notifier` for human approval (or auto-approves at higher autonomy levels). Human edits outside the markers are preserved byte-for-byte.
@@ -36,50 +37,62 @@ LAG treats memory as a governed substrate. Every stored unit is an **atom** with
 
 ```mermaid
 flowchart TB
-  subgraph AGENTS["Agent principals (signed_by hierarchy)"]
+  subgraph INGEST["Pluggable session sources (pre-populate .lag state)"]
     direction LR
-    ROOT["root<br/>(human operator)"]
-    VP["vp-eng<br/>(depth 1)"]
-    AL["alice agent<br/>(depth 2)"]
-    ROOT --> VP --> AL
+    SRC1["ClaudeCodeTranscriptSource<br/>(.claude/projects/*.jsonl)"]
+    SRC2["FreshSource<br/>(empty)"]
+    SRC3["Roadmap:<br/>ChromaDB, Obsidian,<br/>Git log, Slack, Notion"]
   end
 
-  subgraph STORE["Atom store (provenance + layered trust)"]
+  subgraph STORE["Atom store (content-hash dedup, full provenance)"]
     direction LR
-    L0["L0 raw<br/>(untouched input:<br/>transcripts, tool output)"]
-    L1["L1 extracted<br/>(LLM or regex pulled<br/>a structured claim<br/>out of L0)"]
-    L2["L2 curated<br/>(governance pipeline<br/>promoted by consensus<br/>+ confidence)"]
-    L3["L3 canon<br/>(human-approved,<br/>authoritative,<br/>rollback-able)"]
+    L0["L0 raw<br/>(untouched input)"]
+    L1["L1 extracted<br/>(claims via LLM judge)"]
+    L2["L2 curated<br/>(consensus + confidence)"]
+    L3["L3 canon<br/>(human-approved,<br/>rollback-able)"]
+    PLAN["Plans<br/>(type=plan,<br/>proposed / approved /<br/>executing / succeeded /<br/>failed / abandoned)"]
     L0 --> L1 --> L2 --> L3
   end
 
   subgraph GOV["Governance primitives (every loop tick)"]
     direction TB
-    G1["arbitrate at write time<br/>(detect then source-rank<br/>then temporal then validate<br/>then escalate)"]
-    G2["promote by consensus<br/>(distinct-principal count<br/>plus confidence gate)"]
-    G3["decay + TTL expire<br/>(per-type half-life;<br/>expires_at quarantine)"]
-    G4["taint cascade<br/>(compromised principal<br/>plus every derived atom)"]
+    G1["arbitrate at write time<br/>(detect > source-rank ><br/>temporal > validate > escalate)"]
+    G2["promote by consensus<br/>+ confidence + validation"]
+    G3["validate plan<br/>(arbitrate plan vs L3 canon<br/>before execution)"]
+    G4["decay + TTL expire"]
+    G5["taint cascade<br/>(compromise propagation)"]
   end
 
-  subgraph CANON["Canon targets (one per scope or role)"]
+  subgraph RUNTIME["Runtime surfaces (compose freely)"]
     direction TB
-    T1["ORG-CLAUDE.md<br/>(scope=global)"]
-    T2["ENG-CLAUDE.md<br/>(scope=project)"]
-    T3["alice.md<br/>(scope=user)"]
+    RT1["Terminal Claude Code<br/>(head-down, primary)"]
+    RT2["Daemon stateless<br/>(autonomous org default)"]
+    RT3["Daemon resume-shared<br/>(solo dev; shared jsonl)"]
+    RT4["Daemon queue + hook<br/>(terminal is brain,<br/>Telegram is mouth)"]
   end
 
-  subgraph HIL["Human in the loop"]
+  subgraph CANON["Canon targets (multi-target render)"]
     direction TB
-    N["Notifier channels:<br/>file queue (today),<br/>Telegram / Slack /<br/>session-inject / email<br/>(roadmap)"]
-    H["operator<br/>(source of truth for<br/>anything the stack<br/>cannot decide)"]
+    T1["ORG-CLAUDE.md (global)"]
+    T2["ENG-CLAUDE.md (project)"]
+    T3["alice.md (user)"]
+  end
+
+  subgraph HIL["Human in the loop (ultimate arbiter)"]
+    direction TB
+    N["Notifier channels (pluggable):<br/>file queue (default),<br/>Telegram (shipped),<br/>Slack / session-inject / email<br/>(roadmap)"]
+    H["Operator"]
     N --> H
   end
 
-  AGENTS -->|write atoms| STORE
+  INGEST -->|ingest atoms| STORE
+  RUNTIME -->|read / write| STORE
   GOV -.governs.-> STORE
+  PLAN -.validated by.-> G3
   L3 -->|"render per<br/>scope / principal filter"| CANON
   GOV -.escalate.-> HIL
   HIL -.approve / reject / revert.-> STORE
+  HIL -.dispositions.-> RUNTIME
 ```
 
 Every atom carries an audit-ready provenance chain. Every transition (promote, supersede, taint, expire, approve, reject) is logged. Nothing gets deleted; superseded atoms stay in the store with `superseded_by` set so history is reconstructible.
@@ -177,15 +190,25 @@ import {
 import type { Host, Atom, AtomId, PrincipalId } from 'layered-autonomous-governance';
 ```
 
-## CLIs
+## CLIs and runtime surfaces
 
-Three operator commands ship as npm bins:
+Operator commands ship as npm bins:
 
 - `lag-run-loop` - autonomous tick daemon. Walks decay, TTL expiration, L2 promotion, L3 promotion (with human gate), canon file applier.
 - `lag-respond` - interactive human-approval prompt. Displays pending notifications; accepts approve/reject/ignore/skip/quit via stdin.
 - `lag-compromise` - operator incident response. Marks a principal compromised, propagates taint across direct and derived atoms, prints the affected atom ids and an audit summary.
 
-All three accept `--help`. See `docs/framework.md` for the full flag surface.
+Runnable scripts (no install):
+
+- `node scripts/bootstrap.mjs` - self-bootstrap. Seeds a curated set of L3 invariants as atoms from a root principal and renders them into `CLAUDE.md`. This repo's own `CLAUDE.md` is produced by this script against LAG's own substrate.
+- `node scripts/ingest.mjs --source <kind>:<path>` - compose one or more `SessionSource`s to pre-populate `.lag/` from existing history (Claude Code transcripts today; Obsidian / Git / Slack / ChromaDB on the roadmap).
+- `node scripts/daemon.mjs [--queue-only | --resume-session <id> | --resume-latest]` - the Telegram-facing daemon with three runtime modes:
+  - default (stateless): each message spawns a fresh `claude -p`; best for autonomous-org setups.
+  - `--resume-session <id>` / `--resume-latest`: each message resumes a specific session via claude-cli's `--resume` flag; replies append to the shared jsonl so a terminal Claude Code session sees them on its next turn.
+  - `--queue-only`: daemon becomes a pure transport (write inbox, drain outbox). Pair with the `examples/hooks/lag-tg-attached-stop.cjs` Stop hook to have the *running* terminal Claude Code instance answer Telegram directly, bidirectional.
+- `node scripts/telegram-whoami.mjs` - helper to discover your Telegram chat id after you message your bot.
+
+All three CLI bins accept `--help`; scripts are documented in their headers.
 
 ## Adapters
 
@@ -217,11 +240,11 @@ Three pluggable embedders behind a single `Embedder` interface:
 ## Tests + CI
 
 ```
-npm test                                                                                        # 374 passed, 29 gated
+npm test                                                                                        # 448 passed, 30 gated
 LAG_SPAWN_TEST=1 LAG_REAL_CLI=1 LAG_REAL_PALACE=1 LAG_BENCH_SCALE=1 LAG_REAL_EMBED=1 npm test   # full matrix
 ```
 
-Default suite runs in ~10s across the Host interfaces, scenarios s1-s7, arbitration stack (including hierarchy-aware source-rank), promotion engine, loop runner, canon manager (single- and multi-target), taint propagator, and every adapter's conformance spec. Gated suites need the ONNX model, a ChromaDB Python bridge, subprocess spawns, or a real Claude CLI; they run under env flags.
+Default suite runs in ~10s across the Host interfaces, scenarios s1-s10 (self-bootstrap, decision reversal, promotion, TTL, collusion, compromise, hierarchy, self-bootstrap canon render, plan governance, source composition), arbitration stack (including hierarchy-aware source-rank), promotion engine, plan validation + state machine, loop runner, canon manager (single- and multi-target), taint propagator, session sources, daemon + format conversion, Telegram notifier with mocked fetch, and every adapter's conformance spec. Gated suites need the ONNX model, a ChromaDB Python bridge, subprocess spawns, or a real Claude CLI; they run under env flags.
 
 GitHub Actions CI runs typecheck, build, default test suite, and a quickstart smoke on Node 22 across Ubuntu and Windows for every push and PR to `main`. A separate package-hygiene job verifies no private-term leaks and no emdashes in prose.
 
