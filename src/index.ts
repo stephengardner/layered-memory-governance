@@ -47,6 +47,7 @@ export type {
   PermittedLayers,
   PermittedScopes,
   PlanState,
+  QuestionState,
   Principal,
   PrincipalId,
   Proposal,
@@ -226,6 +227,23 @@ export type {
   ExtractionReport,
   ExtractionPassReport,
 } from './extraction/index.js';
+
+// ---------------------------------------------------------------------------
+// Questions (Phase 50b): HIL Q-A with causality binding
+// ---------------------------------------------------------------------------
+export {
+  askQuestion,
+  bindAnswer,
+  canTransitionQuestion,
+  expirePastDueQuestions,
+  InvalidQuestionTransitionError,
+  listPendingQuestions,
+} from './questions/index.js';
+export type {
+  AskQuestionOptions,
+  BindAnswerOptions,
+  BindAnswerResult,
+} from './questions/index.js';
 
 // ---------------------------------------------------------------------------
 // Plans (Phase 38): intent governance

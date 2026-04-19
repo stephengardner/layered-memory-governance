@@ -134,6 +134,11 @@ export class FileAtomStore implements AtomStore {
         : existing.plan_state !== undefined
           ? { plan_state: existing.plan_state }
           : {}),
+      ...(patch.question_state !== undefined
+        ? { question_state: patch.question_state }
+        : existing.question_state !== undefined
+          ? { question_state: existing.question_state }
+          : {}),
     };
     await atomicWriteFile(this.pathFor(id), JSON.stringify(updated, null, 2));
     return updated;

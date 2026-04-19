@@ -53,7 +53,8 @@ export type AtomType =
   | 'preference'
   | 'reference'
   | 'ephemeral'
-  | 'plan';
+  | 'plan'
+  | 'question';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
@@ -74,6 +75,25 @@ export type PlanState =
   | 'executing'
   | 'succeeded'
   | 'failed'
+  | 'abandoned';
+
+/**
+ * Lifecycle for atoms with `type: 'question'` (Phase 50b).
+ *
+ * Questions are HIL-addressed requests for input. The state machine
+ * disambiguates Q-A binding under network delay: every answer is
+ * linked to the specific pending question via `derived_from`, so
+ * the audit trail reconstructs which response addressed which
+ * question regardless of arrival order.
+ *
+ * Allowed transitions:
+ *   pending   -> answered | expired | abandoned
+ *   {answered, expired, abandoned} are terminal.
+ */
+export type QuestionState =
+  | 'pending'
+  | 'answered'
+  | 'expired'
   | 'abandoned';
 
 export type ValidationStatus =
@@ -146,6 +166,11 @@ export interface Atom {
    * the transition rules.
    */
   readonly plan_state?: PlanState;
+  /**
+   * Lifecycle state for atoms with `type: 'question'`. Undefined on
+   * non-question atoms. Mutable via AtomStore.update. See QuestionState.
+   */
+  readonly question_state?: QuestionState;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +264,8 @@ export interface AtomFilter {
   readonly superseded?: boolean;
   /** Filter by plan_state. Only meaningful for type='plan' atoms. */
   readonly plan_state?: ReadonlyArray<PlanState>;
+  /** Filter by question_state. Only meaningful for type='question' atoms. */
+  readonly question_state?: ReadonlyArray<QuestionState>;
 }
 
 export interface AtomPatch {
@@ -255,6 +282,8 @@ export interface AtomPatch {
   readonly metadata?: Readonly<Record<string, unknown>>;
   /** Transition for plan atoms. Validated by transitionPlanState(). */
   readonly plan_state?: PlanState;
+  /** Transition for question atoms. Validated by transitionQuestionState(). */
+  readonly question_state?: QuestionState;
 }
 
 export interface Target {

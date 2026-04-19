@@ -28,6 +28,7 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'architecture' as AtomType, // future-safe; currently falls through
   'reference',
   'plan',
+  'question',
   'observation',
   'ephemeral',
 ];
@@ -38,6 +39,7 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   preference: 'Preferences',
   reference: 'References',
   plan: 'Plans',
+  question: 'Questions',
   observation: 'Observations',
   ephemeral: 'Ephemeral',
 };

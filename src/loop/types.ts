@@ -27,6 +27,10 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // succeeded / failed / abandoned). A very long half-life keeps the
   // plan's stated confidence essentially untouched during its lifetime.
   plan: 365 * 24 * 60 * 60 * 1000,        // ~1 year
+  // Questions do not decay; they terminate via the question_state
+  // machine (pending -> answered | expired | abandoned). A long
+  // half-life keeps stated confidence stable during their lifetime.
+  question: 365 * 24 * 60 * 60 * 1000,    // ~1 year
 });
 
 export interface LoopOptions {

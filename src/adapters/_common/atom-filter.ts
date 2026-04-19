@@ -21,6 +21,10 @@ export function matches(atom: Atom, filter: AtomFilter): boolean {
     if (atom.plan_state === undefined) return false;
     if (!filter.plan_state.includes(atom.plan_state)) return false;
   }
+  if (filter.question_state) {
+    if (atom.question_state === undefined) return false;
+    if (!filter.question_state.includes(atom.question_state)) return false;
+  }
 
   const isSuperseded = atom.superseded_by.length > 0;
   if (isSuperseded && filter.superseded !== true) return false;
