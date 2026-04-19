@@ -84,7 +84,11 @@ export class CliRenderer {
     this.now = options.now ?? (() => Date.now());
     this.editRateLimitMs = options.editRateLimitMs ?? DEFAULT_EDIT_RATE_MS;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS;
-    this.spinnerFrames = options.spinnerFrames ?? DEFAULT_SPINNER;
+    // Reject empty spinner arrays; the heartbeat's modulo would throw
+    // NaN / Infinity otherwise. Fall back to the default in that case.
+    this.spinnerFrames = options.spinnerFrames && options.spinnerFrames.length > 0
+      ? options.spinnerFrames
+      : DEFAULT_SPINNER;
     this.activityWindow = options.activityWindow ?? DEFAULT_ACTIVITY_WINDOW;
     this.renderFinal = options.renderFinal ?? ((s) => s);
     this.splitFinal = options.splitFinal ?? defaultSplit;
