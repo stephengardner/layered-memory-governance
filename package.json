@@ -41,6 +41,14 @@
     "./actors/pr-landing": {
       "import": "./dist/actors/pr-landing/index.js",
       "types": "./dist/actors/pr-landing/index.d.ts"
+    },
+    "./actors/pr-review": {
+      "import": "./dist/actors/pr-review/index.js",
+      "types": "./dist/actors/pr-review/index.d.ts"
+    },
+    "./external/github": {
+      "import": "./dist/external/github/index.js",
+      "types": "./dist/external/github/index.d.ts"
     }
   },
   "files": [

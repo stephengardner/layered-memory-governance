@@ -20,7 +20,7 @@ import type {
   PrReviewAdapter,
   ReviewComment,
   ReviewReplyOutcome,
-} from '../../src/actors/pr-landing/review-adapter.js';
+} from '../../src/actors/pr-review/adapter.js';
 import { samplePrincipal } from '../fixtures.js';
 
 const PR: PrIdentifier = { owner: 'o', repo: 'r', number: 1 };

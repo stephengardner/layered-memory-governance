@@ -1,16 +1,17 @@
 /**
- * PrLandingActor and its PrReviewAdapter interface (Phase 53a reference
- * implementation).
+ * PrLandingActor (subpath: `/actors/pr-landing`).
+ *
+ * A reference outward Actor that drives a PR through review feedback to
+ * a clean state. Composes with any `PrReviewAdapter` (from
+ * `/actors/pr-review`).
  *
  * Subpath import:
  *
  *   import { PrLandingActor } from 'layered-autonomous-governance/actors/pr-landing';
+ *   import { GitHubPrReviewAdapter } from 'layered-autonomous-governance/actors/pr-review';
  *
- * This is a reference Actor using the actor primitive. It demonstrates
- * the shape end-to-end; LAG does not prescribe that you use it.
- * Concrete PrReviewAdapter implementations (CodeRabbit via gh CLI,
- * Copilot review, etc.) are shipped separately and plugged in at
- * runActor time.
+ * LAG does not prescribe that you use this actor. It is a reference
+ * implementation demonstrating the shape end-to-end.
  */
 
 export { PrLandingActor } from './pr-landing.js';
@@ -22,10 +23,3 @@ export type {
   PrLandingOptions,
   PrLandingOutcome,
 } from './pr-landing.js';
-export type {
-  PrIdentifier,
-  PrReviewAdapter,
-  ReviewComment,
-  ReviewCommentSeverity,
-  ReviewReplyOutcome,
-} from './review-adapter.js';
