@@ -33,6 +33,14 @@
     "./adapters/notifier": {
       "import": "./dist/adapters/notifier/index.js",
       "types": "./dist/adapters/notifier/index.d.ts"
+    },
+    "./actors": {
+      "import": "./dist/actors/index.js",
+      "types": "./dist/actors/index.d.ts"
+    },
+    "./actors/pr-landing": {
+      "import": "./dist/actors/pr-landing/index.js",
+      "types": "./dist/actors/pr-landing/index.d.ts"
     }
   },
   "files": [
