@@ -144,7 +144,17 @@ export async function runActor<
 
     const outcomes: Outcome[] = [];
     let blockedByEscalate = false;
+    let halted = false;
     for (const action of proposed) {
+      // Kill-switch is checked BEFORE each apply, not only at iteration
+      // start. This is the contract in design/actors-and-adapters.md:
+      // a halt request during a multi-action iteration must land at the
+      // earliest safe point (between actions; never mid-adapter-call).
+      if (options.killSwitch?.()) {
+        haltReason = 'kill-switch';
+        halted = true;
+        break;
+      }
       const policyResult = await checkToolPolicy(options.host, policyContextFor(action, options));
       await emitAudit(options, actor, {
         kind: 'policy-decision',
@@ -191,6 +201,7 @@ export async function runActor<
       }
     }
     if (haltReason === 'error') break;
+    if (halted) break;
 
     const reflection = await actor.reflect(outcomes, classified, ctx);
     lastNote = reflection.note;

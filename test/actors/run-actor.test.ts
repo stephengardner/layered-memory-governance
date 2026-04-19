@@ -111,6 +111,39 @@ describe('runActor', () => {
     expect(report.iterations).toBe(1);
   });
 
+  it('kill-switch triggered mid-iteration halts before the next apply (not at end)', async () => {
+    // Contract per design/actors-and-adapters.md: killSwitch is checked
+    // both at iteration start AND before each apply. When toggled on
+    // between apply 1 and apply 2 of the same iteration, apply 2 must
+    // not execute.
+    const host = createMemoryHost();
+    let killed = false;
+    let applyCount = 0;
+    const actor = new ScriptedActor({
+      observations: [1],
+      proposals: [
+        { tool: 'safe-a', payload: 'a' },
+        { tool: 'safe-b', payload: 'b' },
+      ],
+      applyImpl: async () => {
+        applyCount++;
+        if (applyCount === 1) killed = true; // flip the switch after first apply
+        return `ok-${applyCount}`;
+      },
+      reflect: () => ({ done: false, progress: true }),
+    });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 3 },
+      origin: 'test',
+      killSwitch: () => killed,
+    });
+    expect(applyCount).toBe(1);
+    expect(report.haltReason).toBe('kill-switch');
+  });
+
   it('halts when deadline passed before iteration start', async () => {
     const host = createMemoryHost();
     const actor = new ScriptedActor({ observations: [1, 2, 3] });
