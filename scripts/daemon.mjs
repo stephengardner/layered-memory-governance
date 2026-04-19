@@ -54,6 +54,8 @@ function parseArgs(argv) {
     verbose: false,
     resumeSession: null, // null | 'latest' | '<specific-id>'
     queueOnly: false,
+    runLoopEveryMs: 0,       // 0 = disabled
+    runExtractionEveryMs: 0, // 0 = disabled
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -69,8 +71,22 @@ function parseArgs(argv) {
       args.resumeSession = argv[++i];
     } else if (a === '--queue-only') {
       args.queueOnly = true;
+    } else if (a === '--run-loop-every-ms' && i + 1 < argv.length) {
+      args.runLoopEveryMs = Number(argv[++i]);
+    } else if (a === '--run-extraction-every-ms' && i + 1 < argv.length) {
+      args.runExtractionEveryMs = Number(argv[++i]);
     } else if (a === '-h' || a === '--help') {
-      console.log(`Usage: node scripts/daemon.mjs [--root-dir <path>] [--canon-file <path>] [--resume-latest | --resume-session <id>] [--queue-only] [--verbose]`);
+      console.log(`Usage: node scripts/daemon.mjs [options]
+
+Options:
+  --root-dir <path>               .lag state dir (default <repo>/.lag)
+  --canon-file <path>             CLAUDE.md target (default <repo>/CLAUDE.md)
+  --resume-latest                 auto-detect newest Claude Code session
+  --resume-session <id>           pin to a specific session id
+  --queue-only                    write to inbox/outbox; hook handles the rest
+  --run-loop-every-ms <ms>        ambient LoopRunner tick (decay, promote, canon)
+  --run-extraction-every-ms <ms>  ambient L0 to L1 extraction pass
+  --verbose                       log claude-cli command lines`);
       process.exit(0);
     }
   }
@@ -139,6 +155,13 @@ async function main() {
     console.log(`                Outbox: ${resolve(args.rootDir, 'tg-queue/outbox')}`);
   }
 
+  if (args.runLoopEveryMs > 0) {
+    console.log(`  Ambient loop:  every ${args.runLoopEveryMs}ms (decay, promote, canon)`);
+  }
+  if (args.runExtractionEveryMs > 0) {
+    console.log(`  Extraction:    every ${args.runExtractionEveryMs}ms (L0 to L1 via LLM judge)`);
+  }
+
   const daemon = new LAGDaemon({
     host,
     botToken: token,
@@ -150,6 +173,8 @@ async function main() {
     repoRoot: REPO_ROOT,
     ...(resumeSessionId !== null ? { resumeSessionId } : {}),
     ...(args.queueOnly ? { queueMode: true, queueDir: resolve(args.rootDir, 'tg-queue') } : {}),
+    ...(args.runLoopEveryMs > 0 ? { runLoopIntervalMs: args.runLoopEveryMs } : {}),
+    ...(args.runExtractionEveryMs > 0 ? { runExtractionIntervalMs: args.runExtractionEveryMs } : {}),
     // Two-principal default: Telegram-origin messages are attributed to
     // the human operator; the daemon writes the agent's responses
     // under the agent principal. Override via env for multi-user.

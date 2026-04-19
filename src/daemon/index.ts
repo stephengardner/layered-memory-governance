@@ -84,6 +84,24 @@ export interface LAGDaemonOptions {
   /** Directory for the TG queue. Default: <host rootDir>/tg-queue. */
   readonly queueDir?: string;
   /**
+   * Ambient governance (Phase 47): interval (ms) at which the daemon
+   * runs a LoopRunner tick (decay, TTL, L2/L3 promotion, canon
+   * re-render). Undefined or 0 = disabled. Typical value 300_000 (5 min).
+   */
+  readonly runLoopIntervalMs?: number;
+  /**
+   * Ambient extraction (Phase 47): interval (ms) at which the daemon
+   * runs a claim-extraction pass over unprocessed L0 atoms (calls the
+   * LLM judge for each new L0 atom). Undefined or 0 = disabled.
+   * Typical value 600_000 (10 min).
+   */
+  readonly runExtractionIntervalMs?: number;
+  /**
+   * Ambient loop principal (used for LoopRunner tick + extraction pass
+   * attribution). Defaults to the daemon's principalResolver(0) result.
+   */
+  readonly ambientPrincipalId?: PrincipalId;
+  /**
    * Map a Telegram user id to a LAG principal. For V1 you can hardcode
    * one principal; future multi-user daemons will dispatch here.
    */
@@ -142,6 +160,8 @@ export class LAGDaemon {
   private updateOffset: number = 0;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private polling: boolean = false;
+  private loopTimer: ReturnType<typeof setTimeout> | null = null;
+  private extractionTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly chatIdString: string;
 
   constructor(options: LAGDaemonOptions) {
@@ -169,6 +189,37 @@ export class LAGDaemon {
       this.pollTimer = setTimeout(() => { void run(); }, this.options.pollIntervalMs ?? 2000);
     };
     void run();
+
+    // Ambient loop: promotions, decay, TTL, canon re-render.
+    if (this.options.runLoopIntervalMs && this.options.runLoopIntervalMs > 0) {
+      const runLoop = async (): Promise<void> => {
+        if (!this.polling) return;
+        try {
+          await this.ambientLoopTick();
+        } catch (err) {
+          this.onError(err, 'ambientLoopTick');
+        }
+        if (!this.polling) return;
+        this.loopTimer = setTimeout(() => { void runLoop(); }, this.options.runLoopIntervalMs);
+      };
+      // Stagger initial fire by a few seconds so boot is quiet.
+      this.loopTimer = setTimeout(() => { void runLoop(); }, 5_000);
+    }
+
+    // Ambient extraction: L0 to L1 pass.
+    if (this.options.runExtractionIntervalMs && this.options.runExtractionIntervalMs > 0) {
+      const runExtr = async (): Promise<void> => {
+        if (!this.polling) return;
+        try {
+          await this.ambientExtractionTick();
+        } catch (err) {
+          this.onError(err, 'ambientExtractionTick');
+        }
+        if (!this.polling) return;
+        this.extractionTimer = setTimeout(() => { void runExtr(); }, this.options.runExtractionIntervalMs);
+      };
+      this.extractionTimer = setTimeout(() => { void runExtr(); }, 10_000);
+    }
   }
 
   stop(): void {
@@ -176,6 +227,52 @@ export class LAGDaemon {
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
+    }
+    if (this.loopTimer) {
+      clearTimeout(this.loopTimer);
+      this.loopTimer = null;
+    }
+    if (this.extractionTimer) {
+      clearTimeout(this.extractionTimer);
+      this.extractionTimer = null;
+    }
+  }
+
+  /**
+   * Run one LoopRunner tick (decay, TTL, L2/L3 promotion, canon). Public
+   * for tests to drive deterministically.
+   */
+  async ambientLoopTick(): Promise<void> {
+    const { LoopRunner } = await import('../loop/index.js');
+    const principalId = this.resolveAmbientPrincipal();
+    const runner = new LoopRunner(this.options.host, {
+      principalId,
+      ...(this.options.canonFilePath
+        ? { canonTargetPath: this.options.canonFilePath }
+        : {}),
+    });
+    await runner.tick();
+  }
+
+  /**
+   * Run one claim-extraction pass over unprocessed L0 atoms. Public for
+   * tests.
+   */
+  async ambientExtractionTick(): Promise<void> {
+    const { runExtractionPass } = await import('../extraction/index.js');
+    const principalId = this.resolveAmbientPrincipal();
+    await runExtractionPass(this.options.host, {
+      principalId,
+      maxAtoms: 20, // cap LLM calls per tick
+    });
+  }
+
+  private resolveAmbientPrincipal(): PrincipalId {
+    if (this.options.ambientPrincipalId) return this.options.ambientPrincipalId;
+    try {
+      return this.options.principalResolver(0);
+    } catch {
+      return 'lag-self' as PrincipalId;
     }
   }
 
