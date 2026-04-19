@@ -48,6 +48,13 @@ async function loadDotEnv() {
 }
 
 function parseArgs(argv) {
+  // LAG_CLI_STYLE env var controls the default for cliStyle.
+  // Unset or "true" / "1" / "yes" -> true (new UX is the default).
+  // "false" / "0" / "no" -> false (preserve old batch path).
+  // Explicit --cli-style / --no-cli-style on argv always wins.
+  const envCliStyleRaw = (process.env.LAG_CLI_STYLE ?? '').trim().toLowerCase();
+  const envCliStyleExplicitFalse = ['false', '0', 'no', 'off'].includes(envCliStyleRaw);
+  const defaultCliStyle = !envCliStyleExplicitFalse;
   const args = {
     rootDir: resolve(REPO_ROOT, '.lag'),
     canonPath: resolve(REPO_ROOT, 'CLAUDE.md'),
@@ -57,7 +64,7 @@ function parseArgs(argv) {
     runLoopEveryMs: 0,       // 0 = disabled
     runExtractionEveryMs: 0, // 0 = disabled
     voiceMode: null,         // null | 'stub' | 'whisper-local'
-    cliStyle: false,         // true = stream Claude events into Telegram with throbber + tool lines
+    cliStyle: defaultCliStyle,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -81,6 +88,8 @@ function parseArgs(argv) {
       args.voiceMode = argv[++i];
     } else if (a === '--cli-style') {
       args.cliStyle = true;
+    } else if (a === '--no-cli-style') {
+      args.cliStyle = false;
     } else if (a === '-h' || a === '--help') {
       console.log(`Usage: node scripts/daemon.mjs [options]
 
@@ -92,7 +101,8 @@ Options:
   --queue-only                    write to inbox/outbox; hook handles the rest
   --run-loop-every-ms <ms>        ambient LoopRunner tick (decay, promote, canon)
   --run-extraction-every-ms <ms>  ambient L0 to L1 extraction pass
-  --cli-style                     stream Claude events into Telegram with throbber + compact tool lines (CLI-session feel)
+  --cli-style                     force CLI-style Telegram UX (throbber + tool lines). Default: on unless LAG_CLI_STYLE env is 'false'/'0'/'no'/'off'.
+  --no-cli-style                  force the batch Telegram path (one message per response, no throbber).
   --verbose                       log claude-cli command lines`);
       process.exit(0);
     }
