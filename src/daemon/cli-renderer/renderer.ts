@@ -5,11 +5,12 @@
  *
  * UX shape per run:
  *   1. On `start`: post ONE message.
- *        [🟡] Claude is working... (0s)
+ *        [🟡] Working... (0s)
+ *   (caller supplies a specific label via emit({type:'start', label}).)
  *        <small hint if provided>
  *   2. Heartbeat (every heartbeatIntervalMs, cycling spinner frame,
  *      updating elapsed seconds, rate-limited by editRateLimitMs):
- *        [🟠] Claude is working... (12s)
+ *        [🟠] Working... (12s)
  *        🔧 Read src/foo.ts
  *        🔧 Edit src/foo.ts (+3/-1)
  *        ...
@@ -62,7 +63,11 @@ export class CliRenderer {
   private startedAtMs = 0;
   private lastEditMs = 0;
   private spinnerIdx = 0;
-  private label = 'Claude is working';
+  // Default label is vendor-neutral. Callers (e.g. LAGDaemon's
+  // cliStyle path) pass a specific label via emit({type:'start',
+  // label: 'Claude is working'}). The primitive itself must not
+  // encode a vendor name.
+  private label = 'Working';
   private hint?: string;
   private activity: ActivityLine[] = [];
   private accumulatedText = '';
