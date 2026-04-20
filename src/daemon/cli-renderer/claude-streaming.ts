@@ -16,9 +16,38 @@
  */
 
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { emptyAccumulator, parseClaudeStreamLine } from './claude-stream-parser.js';
 import type { CliRendererEvent } from './types.js';
+
+/**
+ * Tools the streaming Claude CLI should NOT have access to.
+ *
+ * Mirrors invoke-claude.ts DEFAULT_DISALLOWED_TOOLS so the streaming
+ * and non-streaming paths have the same tool surface. If this drifts,
+ * the streaming path silently becomes more permissive than the
+ * non-streaming one. Keep them in sync when either changes.
+ */
+const DEFAULT_DISALLOWED_TOOLS: ReadonlyArray<string> = [
+  'Bash',
+  'Edit',
+  'Read',
+  'Write',
+  'Glob',
+  'Grep',
+  'Agent',
+  'Task',
+  'WebFetch',
+  'WebSearch',
+  'MultiEdit',
+  'NotebookEdit',
+  'TodoWrite',
+  'SlashCommand',
+];
 
 export interface StreamingExecResult {
   readonly exitCode: number;
@@ -77,6 +106,16 @@ export interface InvokeClaudeStreamingResult {
 export async function invokeClaudeStreaming(
   options: InvokeClaudeStreamingOptions,
 ): Promise<InvokeClaudeStreamingResult> {
+  // Write the system prompt to a tmp file rather than the argv so it
+  // does not leak via process listings. Mirrors invoke-claude.ts.
+  let tmpDir: string | null = null;
+  let systemFile: string | null = null;
+  if (options.systemPrompt !== undefined) {
+    tmpDir = await mkdtemp(join(tmpdir(), 'lag-claude-streaming-'));
+    systemFile = join(tmpDir, `system-${randomBytes(4).toString('hex')}.txt`);
+    await writeFile(systemFile, options.systemPrompt, 'utf8');
+  }
+
   const args: string[] = [
     '-p',
     options.userMessage,
@@ -87,12 +126,14 @@ export async function invokeClaudeStreaming(
     options.model ?? 'claude-haiku-4-5-20251001',
     '--max-budget-usd',
     String(options.maxBudgetUsd ?? 1.0),
+    '--disallowedTools',
+    DEFAULT_DISALLOWED_TOOLS.join(' '),
     '--disable-slash-commands',
     '--mcp-config',
     '{"mcpServers":{}}',
   ];
-  if (options.systemPrompt !== undefined) {
-    args.push('--append-system-prompt', options.systemPrompt);
+  if (systemFile !== null) {
+    args.push('--append-system-prompt-file', systemFile);
   }
   if (options.resumeSessionId !== undefined) {
     args.push('--resume', options.resumeSessionId);
@@ -120,18 +161,24 @@ export async function invokeClaudeStreaming(
     }
   };
 
-  const result = await exec(args, handleLine, {
-    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-  });
+  try {
+    const result = await exec(args, handleLine, {
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    });
 
-  return {
-    text: acc.assistantText,
-    thinking: acc.thinkingText,
-    meta: acc.meta,
-    exitCode: result.exitCode,
-    stderr: result.stderr,
-  };
+    return {
+      text: acc.assistantText,
+      thinking: acc.thinkingText,
+      meta: acc.meta,
+      exitCode: result.exitCode,
+      stderr: result.stderr,
+    };
+  } finally {
+    if (tmpDir !== null) {
+      await rm(tmpDir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
+    }
+  }
 }
 
 /**
@@ -153,7 +200,12 @@ export async function runSpawnedJsonl(
     let stderr = '';
     let stdoutBuffer = '';
     const lineQueue: string[] = [];
-    let processing = false;
+    // Active drain as a Promise, not a boolean flag. The close handler
+    // needs to wait for any in-flight onLine to finish; a boolean let
+    // the close path resolve while a pending await was still
+    // processing, so callers got partial text and could miss the
+    // terminal event.
+    let processingPromise: Promise<void> | null = null;
     let timedOut = false;
 
     // SIGTERM first, then escalate to SIGKILL after a short grace so a
@@ -174,19 +226,22 @@ export async function runSpawnedJsonl(
         }, options.timeoutMs)
       : null;
 
-    const processQueue = async (): Promise<void> => {
-      if (processing) return;
-      processing = true;
-      while (lineQueue.length > 0) {
-        const line = lineQueue.shift()!;
-        try {
-          await onLine(line);
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.error('[runSpawnedJsonl] onLine threw; continuing:', err);
+    const processQueue = (): Promise<void> => {
+      if (processingPromise) return processingPromise;
+      processingPromise = (async (): Promise<void> => {
+        while (lineQueue.length > 0) {
+          const line = lineQueue.shift()!;
+          try {
+            await onLine(line);
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('[runSpawnedJsonl] onLine threw; continuing:', err);
+          }
         }
-      }
-      processing = false;
+      })().finally(() => {
+        processingPromise = null;
+      });
+      return processingPromise;
     };
 
     child.stdout.setEncoding('utf8');

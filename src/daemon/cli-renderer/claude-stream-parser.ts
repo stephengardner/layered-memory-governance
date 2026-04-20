@@ -26,10 +26,19 @@ export interface ParseAccumulator {
   thinkingText: string;
   /** Cost + elapsed metadata harvested from the terminal `result` event. */
   meta: Record<string, string | number>;
+  /**
+   * Map from tool_use block id to tool name. Claude CLI emits
+   * tool_result blocks with a `tool_use_id` referring back to the
+   * earlier tool_use; the result envelope itself does NOT carry the
+   * tool name. This map lets parseUserMessage correlate a result
+   * back to the tool that produced it so the renderer can render
+   * "Bash ok" instead of "tool ok" when multiple tools run.
+   */
+  toolNamesByUseId: Record<string, string>;
 }
 
 export function emptyAccumulator(): ParseAccumulator {
-  return { assistantText: '', thinkingText: '', meta: {} };
+  return { assistantText: '', thinkingText: '', meta: {}, toolNamesByUseId: {} };
 }
 
 /**
@@ -64,7 +73,7 @@ export function parseClaudeStreamLine(
     case 'assistant':
       return parseAssistantMessage(parsed, acc);
     case 'user':
-      return parseUserMessage(parsed);
+      return parseUserMessage(parsed, acc);
     case 'result':
       return parseResultMessage(parsed, acc);
     default:
@@ -98,6 +107,9 @@ function parseAssistantMessage(
       continue;
     }
     if (bType === 'tool_use' && typeof block.name === 'string') {
+      if (typeof block.id === 'string') {
+        acc.toolNamesByUseId[block.id] = block.name;
+      }
       events.push({
         type: 'tool-call',
         tool: block.name,
@@ -111,6 +123,7 @@ function parseAssistantMessage(
 
 function parseUserMessage(
   envelope: Record<string, unknown>,
+  acc: ParseAccumulator,
 ): ReadonlyArray<CliRendererEvent> {
   const message = pickRecord(envelope.message);
   if (!message) return [];
@@ -122,13 +135,15 @@ function parseUserMessage(
     if (!isRecord(block)) continue;
     if (block.type !== 'tool_result') continue;
     const isError = block.is_error === true;
+    // tool_result does not carry the tool name; correlate by the
+    // tool_use_id captured earlier on the tool_use emission.
     const tool = typeof block.tool_use_id === 'string'
-      ? '' // tool name isn't on the result; caller can correlate by id if needed
-      : '';
+      ? (acc.toolNamesByUseId[block.tool_use_id] ?? 'tool')
+      : 'tool';
     const summary = extractToolResultSummary(block.content);
     events.push({
       type: 'tool-result',
-      tool: tool.length === 0 ? 'tool' : tool,
+      tool,
       ok: !isError,
       ...(summary === undefined ? {} : { summary }),
     });
