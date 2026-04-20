@@ -30,12 +30,27 @@ import type {
 } from './types.js';
 
 /**
- * Default per-call LLM timeout. Exported so drivers can size their
- * run deadline against the worst-case wait (maxIterations * 2 calls
- * per iteration * this value + slack) and not force a
- * `budget-deadline` halt mid-run.
+ * Default per-call LLM timeout in milliseconds.
+ *
+ * Conservative framework default. Deployment policy (effort posture,
+ * expected draft complexity, cost discipline) belongs at the call
+ * site: override via HostLlmPlanningJudgmentOptions.timeoutMs.
+ *
+ * Exported so drivers can size their run deadline as
+ * maxIterations * callsPerIteration * timeoutMs + slack without
+ * guessing.
  */
 export const DEFAULT_JUDGE_TIMEOUT_MS = 180_000;
+
+/**
+ * Default per-call budget cap passed to host.llm.judge as
+ * LlmOptions.max_budget_usd. Semantics are adapter-defined; the
+ * framework treats this only as a numeric pass-through.
+ *
+ * Conservative framework default. Callers set deployment policy
+ * via HostLlmPlanningJudgmentOptions.maxBudgetUsdPerCall.
+ */
+export const DEFAULT_MAX_BUDGET_USD_PER_CALL = 0.5;
 
 export interface HostLlmPlanningJudgmentOptions {
   /**
@@ -52,8 +67,10 @@ export interface HostLlmPlanningJudgmentOptions {
    */
   readonly draftModel: string;
   /**
-   * Per-call budget cap passed to host.llm.judge. Per-run worst case
-   * is 2x this value (classify + draft). Default 0.50 USD.
+   * Per-call budget cap forwarded to host.llm.judge as
+   * LlmOptions.max_budget_usd. Adapter-defined semantics;
+   * treat as an opaque numeric knob at this layer.
+   * Default DEFAULT_MAX_BUDGET_USD_PER_CALL.
    */
   readonly maxBudgetUsdPerCall?: number;
   /**
@@ -66,8 +83,8 @@ export interface HostLlmPlanningJudgmentOptions {
   /** Temperature for the judge calls. Default 0.2 (mostly deterministic). */
   readonly temperature?: number;
   /**
-   * Optional override for the timeout on each judge call (ms). Plans
-   * can take longer than an extract-claims call; default 180_000.
+   * Override for the timeout on each judge call (ms).
+   * Default DEFAULT_JUDGE_TIMEOUT_MS.
    */
   readonly timeoutMs?: number;
 }
@@ -210,10 +227,22 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
     this.host = host;
     this.classifyModel = options.classifyModel;
     this.draftModel = options.draftModel;
-    this.maxBudgetUsdPerCall = options.maxBudgetUsdPerCall ?? 0.5;
+    const maxBudgetUsdPerCall = options.maxBudgetUsdPerCall ?? DEFAULT_MAX_BUDGET_USD_PER_CALL;
+    if (!Number.isFinite(maxBudgetUsdPerCall) || maxBudgetUsdPerCall <= 0) {
+      throw new Error(
+        `maxBudgetUsdPerCall must be a positive finite number, got ${maxBudgetUsdPerCall}`,
+      );
+    }
+    this.maxBudgetUsdPerCall = maxBudgetUsdPerCall;
     this.minConfidence = options.minConfidence ?? 0.55;
     this.temperature = options.temperature ?? 0.2;
-    this.timeoutMs = options.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new Error(
+        `timeoutMs must be a positive finite number, got ${timeoutMs}`,
+      );
+    }
+    this.timeoutMs = timeoutMs;
   }
 
   async classify(context: PlanningContext): Promise<PlanningClassification> {

@@ -24,6 +24,7 @@ export { aggregateRelevantContext } from './aggregate-context.js';
 export type { AggregateContextOptions } from './aggregate-context.js';
 export {
   DEFAULT_JUDGE_TIMEOUT_MS,
+  DEFAULT_MAX_BUDGET_USD_PER_CALL,
   HostLlmPlanningJudgment,
 } from './host-llm-judgment.js';
 export type { HostLlmPlanningJudgmentOptions } from './host-llm-judgment.js';
