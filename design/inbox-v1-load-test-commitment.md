@@ -96,11 +96,31 @@ reference hardware before PR E approval.
 
 1. Load-test suite is run on reference hardware against a Postgres build of the
    AtomStore.
-2. The run produces a summary atom (`observation`, layer L1,
-   `metadata.load_test_run_id`) with the full metric set and pass/fail status.
+2. The run produces a summary atom with the following **required** provenance
+   contract (per the `inv-provenance-every-write` canon directive; every atom
+   must carry a source chain):
+
+   | Field | Value |
+   |---|---|
+   | `type` | `observation` |
+   | `layer` | `L1` |
+   | `principal_id` | the load-test harness principal, seeded in `.lag/principals/load-test-harness.json` before the run |
+   | `provenance.kind` | `'agent-observed'` (the harness is an agent, the numbers are observations) |
+   | `provenance.source.tool` | `'load-test-harness'` |
+   | `provenance.source.session_id` | the run id, **must** match `metadata.load_test_run_id` so the two bindings stay coherent |
+   | `provenance.source.agent_id` | `'load-test-harness'` |
+   | `provenance.derived_from` | `[]` (the harness reads the live AtomStore, not another atom; the source chain terminates here) |
+   | `metadata.load_test_run_id` | stable, unique per run; same value as `provenance.source.session_id` |
+   | `metadata.passed` | boolean |
+   | `metadata.metrics` | object carrying every metric from the pass/fail table, including failure detail if `metadata.passed === false` |
+
+   Including `session_id` explicitly satisfies D-mbb-V1-4 (source-chain explorer) and
+   D-mbb-V2-2 (importance-timeline projection) which both depend on session_id
+   being present on every atom the pipeline produces.
+
 3. PR E's description cites the observation atom id.
-4. Operator approval of PR E requires the cited observation to exist and report
-   pass.
+4. Operator approval of PR E requires the cited observation to exist, have the
+   provenance contract above, and report `metadata.passed === true`.
 
 If the first run does not pass, the regression is in the plan or implementation,
 not the test. Revise the plan and re-run before attempting PR E.

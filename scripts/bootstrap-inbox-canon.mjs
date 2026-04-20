@@ -207,6 +207,37 @@ function diffPolicyAtom(existing, expected) {
   if (existing.content !== expected.content) {
     diffs.push(`content (rationale): stored vs expected differ; rewrite or bump id to supersede`);
   }
+  // Signer / provenance integrity. These fields establish WHO authored the
+  // atom and WHERE it came from. Editing them while the policy payload stays
+  // unchanged would misattribute the atom without changing any numeric
+  // threshold; the drift check must surface that, otherwise a compromised
+  // principal could silently re-sign policies without triggering any alarm.
+  if (existing.principal_id !== expected.principal_id) {
+    diffs.push(
+      `principal_id: stored=${JSON.stringify(existing.principal_id)} `
+      + `expected=${JSON.stringify(expected.principal_id)}`,
+    );
+  }
+  const ev = existing.provenance ?? {};
+  const xv = expected.provenance;
+  if (ev.kind !== xv.kind) {
+    diffs.push(
+      `provenance.kind: stored=${JSON.stringify(ev.kind)} `
+      + `expected=${JSON.stringify(xv.kind)}`,
+    );
+  }
+  if (JSON.stringify(ev.source ?? {}) !== JSON.stringify(xv.source)) {
+    diffs.push(
+      `provenance.source: stored=${JSON.stringify(ev.source)} `
+      + `expected=${JSON.stringify(xv.source)}`,
+    );
+  }
+  if (JSON.stringify(ev.derived_from ?? []) !== JSON.stringify(xv.derived_from)) {
+    diffs.push(
+      `provenance.derived_from: stored=${JSON.stringify(ev.derived_from)} `
+      + `expected=${JSON.stringify(xv.derived_from)}`,
+    );
+  }
   const ep = existing.metadata?.policy ?? {};
   const xp = expected.metadata.policy;
   const keys = new Set([...Object.keys(ep), ...Object.keys(xp)]);
