@@ -142,14 +142,14 @@ export class ClaudeCliLLM implements LLM {
       // starts up inside the judge session and adds turns + cost. Measured:
       // 22 turns -> 1-4 turns with this flag.
       // Pass the user message via stdin, NOT as the `-p` positional
-      // argument. When the data payload is large (judge calls with
-      // dozens of atoms of full content), the positional form blows
-      // through the Windows CreateProcess argv limit (~32767 chars)
-      // and spawn silently fails with exitCode=undefined + empty
-      // stdout/stderr (discovered 2026-04-20 running the thinking
-      // CTO). Piping via stdin has no such ceiling. `-p` flag
-      // without a positional value puts claude into non-interactive
-      // print mode and reads the prompt from stdin.
+      // argument. Large data payloads (large context judge calls,
+      // where the schema-bound data object can reach tens of
+      // kilobytes) blow through the Windows CreateProcess argv
+      // limit (~32767 chars) when passed positionally, and spawn
+      // silently fails with exitCode=undefined + empty stdout/stderr.
+      // Piping via stdin has no such ceiling. `-p` flag without a
+      // positional value puts claude into non-interactive print
+      // mode and reads the prompt from stdin.
       //
       // See test/adapters/claude-cli/llm.test.ts for the regression
       // guard that enforces "user-data payload never enters argv."
@@ -188,10 +188,11 @@ export class ClaudeCliLLM implements LLM {
           timeout: timeoutMs,
           reject: false,
           stripFinalNewline: true,
-          // Pipe the user message via stdin. Large payloads (thousands
-          // of atoms of full content for the thinking CTO) blow past
-          // the Windows CreateProcess argv ceiling when passed as
-          // the `-p` positional value; stdin has no such ceiling.
+          // Pipe the user message via stdin. Large data payloads
+          // (e.g. large context judge calls with a schema-bound
+          // data object reaching tens of kilobytes) blow past the
+          // Windows CreateProcess argv ceiling when passed as the
+          // `-p` positional value; stdin has no such ceiling.
           input: userMessage,
           // Run from a neutral cwd so the CLI does not auto-load a workspace
           // CLAUDE.md into the judge session. We still pay for the default
