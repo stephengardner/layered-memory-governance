@@ -126,6 +126,40 @@ describe('runAuditor', () => {
     expect(orphan!.severity).toBe('critical');
   });
 
+  it('does NOT flag orphan provenance when the parent exists outside the scan slice', async () => {
+    // Regression guard for the CR-flagged false-critical: the prior
+    // implementation declared an atom's parent "orphan" if the parent
+    // id was missing from the in-slice set, even when the parent was
+    // alive and well in the store just outside the scan scope. The
+    // fix explicitly verifies via host.atoms.get before flagging.
+    const host = createMemoryHost();
+    // Parent lives in the store but we will scope the scan to exclude
+    // it by filtering to a specific principal_id.
+    await host.atoms.put(sampleAtom('parent', { principal_id: 'other-principal' as PrincipalId }));
+    // Child references parent; child's principal_id is 'in-scope'.
+    await host.atoms.put(sampleAtom('child', {
+      principal_id: 'in-scope' as PrincipalId,
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'bob' },
+        derived_from: ['parent' as AtomId],
+      },
+    }));
+
+    await runAuditor(host, {
+      reply_to: 'operator' as PrincipalId,
+      filter: { principal_id: 'in-scope' as PrincipalId },
+    }, 'corr-scoped');
+
+    const obs = await host.atoms.query({ type: ['observation'] }, 100);
+    const audit = obs.atoms.find((a) => a.metadata?.audit?.correlation_id === 'corr-scoped');
+    expect(audit).toBeDefined();
+    const findings = audit!.metadata.audit.findings as Array<{ kind: string }>;
+    // parent exists in the store (just outside the slice); must NOT
+    // surface as orphan provenance.
+    expect(findings.find((f) => f.kind === 'orphan-provenance')).toBeUndefined();
+  });
+
   it('honors payload.filter.type, excluding other types from the audit scan', async () => {
     // Regression guard for the CR-flagged filter-drop: the auditor
     // advertised type filtering but only forwarded principal_id.

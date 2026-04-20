@@ -2,15 +2,15 @@
  * AuditorActor: read-only introspection of the atom store, emits
  * finding atoms and a summary actor-message.
  *
- * Fits the 55c delegation pattern: the CTO approves a plan whose
- * metadata.delegation dispatches here; this actor reads whatever
- * scope the payload asks for, aggregates governance-relevant
- * findings (tainted atoms, unresolved trips, orphan provenance,
- * old questions), and writes an observation atom + a reply message.
+ * Fits a delegation pattern: a plan routes here via
+ * metadata.delegation; this actor reads whatever scope the payload
+ * asks for, aggregates governance-relevant findings (tainted atoms,
+ * unresolved trips, orphan provenance), and writes an observation
+ * atom + a reply message.
  *
  * Explicit non-goals:
- * - No mutation. The auditor only reads; any remediation is the
- *   operator's call via a separate plan.
+ * - No mutation. The auditor only reads; any remediation is a
+ *   separate plan written by a caller with write authority.
  * - No LLM reasoning. The auditor ships with deterministic checks
  *   so its output is reproducible and its cost is zero. A future
  *   phase can add an LLM-backed auditor as a separate actor.
@@ -22,7 +22,7 @@ import type { ActorMessageV1, UrgencyTier } from './types.js';
 import type { InvokeResult } from './sub-actor-registry.js';
 
 export interface AuditorPayload {
-  /** Where the result message goes. Usually the operator. */
+  /** Destination principal for the audit result message. */
   readonly reply_to: PrincipalId;
   /**
    * Optional filter. When present, only atoms matching these fields
@@ -72,7 +72,7 @@ export async function runAuditor(
       : {}),
   }, 2000);
 
-  const findings = collectFindings(page.atoms);
+  const findings = await collectFindings(host, page.atoms);
   const counts = {
     scanned: page.atoms.length,
     tainted: page.atoms.filter((a) => a.taint !== 'clean').length,
@@ -189,12 +189,17 @@ export async function runAuditor(
  * governance invariants:
  * - Tainted atoms (all taints surface as warn).
  * - Open circuit-breaker trips (warn).
- * - Atoms derived_from an id that does not exist (critical;
- *   provenance-chain break).
- * - Plan atoms stuck in 'executing' for longer than a threshold
- *   (info; operator may want to reap).
+ * - Atoms derived_from an id that does not exist in the store at
+ *   all (critical; provenance-chain break). An id that's simply
+ *   outside the scanned slice but present in the store is NOT a
+ *   finding: a bounded scan cannot assume all parents of every
+ *   scanned atom are in-slice. The store is queried explicitly
+ *   (host.atoms.get) for each candidate orphan before flagging.
  */
-function collectFindings(atoms: ReadonlyArray<Atom>): AuditFinding[] {
+async function collectFindings(
+  host: Host,
+  atoms: ReadonlyArray<Atom>,
+): Promise<AuditFinding[]> {
   const findings: AuditFinding[] = [];
   const ids = new Set(atoms.map((a) => String(a.id)));
 
@@ -220,11 +225,24 @@ function collectFindings(atoms: ReadonlyArray<Atom>): AuditFinding[] {
     });
   }
 
+  // Orphan provenance: verify each missing-in-slice parent really
+  // doesn't exist in the store. An in-slice miss + out-of-store
+  // means broken chain (critical); an in-slice miss + in-store hit
+  // is just the scope boundary (not a finding).
   const orphanProvenance: string[] = [];
+  const checked = new Map<string, boolean>(); // parentId -> exists
   for (const atom of atoms) {
     for (const parentId of atom.provenance.derived_from) {
-      if (!ids.has(String(parentId))) {
-        orphanProvenance.push(`${String(atom.id)}->${String(parentId)}`);
+      const pid = String(parentId);
+      if (ids.has(pid)) continue;
+      let exists = checked.get(pid);
+      if (exists === undefined) {
+        const resolved = await host.atoms.get(parentId);
+        exists = resolved !== null;
+        checked.set(pid, exists);
+      }
+      if (!exists) {
+        orphanProvenance.push(`${String(atom.id)}->${pid}`);
       }
     }
   }
@@ -234,8 +252,8 @@ function collectFindings(atoms: ReadonlyArray<Atom>): AuditFinding[] {
       kind: 'orphan-provenance',
       detail:
         `${orphanProvenance.length} atoms reference a provenance.derived_from id `
-        + 'that is not present in the scanned slice. Either the parent is outside '
-        + 'the scan scope (benign) or the provenance chain is broken (must fix).',
+        + 'that does not exist anywhere in the atom store. The provenance chain '
+        + 'is broken and must be repaired.',
       atomIds: orphanProvenance,
     });
   }
