@@ -65,19 +65,36 @@ export async function runAuditor(
   // the operator chunks audits via smaller filters. Both
   // principal_id AND type from the payload flow into the query so
   // type-scoped audits do not silently fan out to the whole store.
+  //
+  // `superseded: true` is load-bearing: the default query excludes
+  // superseded atoms (see AtomFilter), but the auditor's counts
+  // surface superseded atoms explicitly. Without this flag, the
+  // 'superseded' count was always 0 regardless of store state.
   const page = await host.atoms.query({
+    superseded: true,
     ...(payload.filter?.principal_id ? { principal_id: [payload.filter.principal_id] } : {}),
     ...(payload.filter?.type && payload.filter.type.length > 0
       ? { type: [...payload.filter.type] }
       : {}),
   }, 2000);
 
-  const findings = await collectFindings(host, page.atoms);
+  // Defense-in-depth: AtomFilter enforcement varies across adapters
+  // (a predicate may silently no-op on some backing stores). Re-apply
+  // the filter in code so a scoped audit is guaranteed-scoped.
+  const scopedAtoms = page.atoms.filter((atom) =>
+    (!payload.filter?.principal_id
+      || String(atom.principal_id) === String(payload.filter.principal_id))
+    && (!payload.filter?.type
+      || payload.filter.type.length === 0
+      || payload.filter.type.includes(atom.type)),
+  );
+
+  const findings = await collectFindings(host, scopedAtoms);
   const counts = {
-    scanned: page.atoms.length,
-    tainted: page.atoms.filter((a) => a.taint !== 'clean').length,
-    superseded: page.atoms.filter((a) => a.superseded_by.length > 0).length,
-    open_circuit_breaker_trips: page.atoms.filter(
+    scanned: scopedAtoms.length,
+    tainted: scopedAtoms.filter((a) => a.taint !== 'clean').length,
+    superseded: scopedAtoms.filter((a) => a.superseded_by.length > 0).length,
+    open_circuit_breaker_trips: scopedAtoms.filter(
       (a) => a.type === 'circuit-breaker-trip' && a.superseded_by.length === 0,
     ).length,
     by_severity: {
