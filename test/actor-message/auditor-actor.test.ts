@@ -1,0 +1,148 @@
+/**
+ * AuditorActor tests.
+ *
+ * Covers:
+ *   - empty store -> 0-findings report, clean reply message
+ *   - tainted atoms -> warn finding with atom ids listed
+ *   - open circuit-breaker trip -> warn finding
+ *   - orphan provenance (derived_from points at missing id) -> critical finding
+ *   - reply message is an actor-message addressed to payload.reply_to
+ *     with correlation_id preserved
+ *   - result is InvokeResult.completed with both atom ids
+ */
+
+import { describe, expect, it } from 'vitest';
+import { createMemoryHost } from '../../src/adapters/memory/index.js';
+import { runAuditor } from '../../src/actor-message/auditor-actor.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
+
+function sampleAtom(id: string, over: Partial<Atom> = {}): Atom {
+  const now = '2026-04-20T00:00:00.000Z' as Time;
+  return {
+    schema_version: 1,
+    id: id as AtomId,
+    content: 'c',
+    type: 'observation',
+    layer: 'L1',
+    provenance: {
+      kind: 'agent-observed',
+      source: { agent_id: 'bob', tool: 'test' },
+      derived_from: [],
+    },
+    confidence: 1,
+    created_at: now,
+    last_reinforced_at: now,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: 'bob' as PrincipalId,
+    taint: 'clean',
+    metadata: {},
+    ...over,
+  };
+}
+
+describe('runAuditor', () => {
+  it('empty store -> 0 findings, completed result, reply to operator', async () => {
+    const host = createMemoryHost();
+    const result = await runAuditor(host, {
+      reply_to: 'operator' as PrincipalId,
+    }, 'corr-empty');
+
+    expect(result.kind).toBe('completed');
+    if (result.kind !== 'completed') return;
+    expect(result.producedAtomIds.length).toBe(2);
+
+    // Reply actor-message present and addressed to operator.
+    const replies = await host.atoms.query({ type: ['actor-message'] }, 100);
+    const reply = replies.atoms.find((a) => a.metadata?.actor_message?.correlation_id === 'corr-empty');
+    expect(reply).toBeDefined();
+    expect(reply!.metadata.actor_message.to).toBe('operator');
+    expect(reply!.metadata.actor_message.body).toContain('Audit clean');
+  });
+
+  it('flags tainted atoms as warn', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(sampleAtom('a1'));
+    await host.atoms.put(sampleAtom('a2', { taint: 'tainted' }));
+    await host.atoms.put(sampleAtom('a3', { taint: 'quarantined' }));
+
+    await runAuditor(host, {
+      reply_to: 'operator' as PrincipalId,
+    }, 'corr-tainted');
+
+    const obs = await host.atoms.query({ type: ['observation'] }, 100);
+    const audit = obs.atoms.find((a) => a.metadata?.audit?.correlation_id === 'corr-tainted');
+    expect(audit).toBeDefined();
+    const findings = audit!.metadata.audit.findings as Array<{ kind: string; atomIds: string[] }>;
+    const taintedFinding = findings.find((f) => f.kind === 'tainted-atoms');
+    expect(taintedFinding).toBeDefined();
+    expect(taintedFinding!.atomIds.sort()).toEqual(['a2', 'a3']);
+  });
+
+  it('flags open circuit-breaker trips as warn', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(sampleAtom('t1', {
+      type: 'circuit-breaker-trip',
+      metadata: { trip: { target_principal: 'bob' } },
+    }));
+
+    await runAuditor(host, {
+      reply_to: 'operator' as PrincipalId,
+    }, 'corr-trip');
+
+    const obs = await host.atoms.query({ type: ['observation'] }, 100);
+    const audit = obs.atoms.find((a) => a.metadata?.audit?.correlation_id === 'corr-trip');
+    const findings = audit!.metadata.audit.findings as Array<{ kind: string }>;
+    expect(findings.some((f) => f.kind === 'open-circuit-breaker-trips')).toBe(true);
+  });
+
+  it('flags orphan provenance as critical', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(sampleAtom('child', {
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'bob' },
+        derived_from: ['non-existent-parent' as AtomId],
+      },
+    }));
+
+    await runAuditor(host, {
+      reply_to: 'operator' as PrincipalId,
+    }, 'corr-orphan');
+
+    const obs = await host.atoms.query({ type: ['observation'] }, 100);
+    const audit = obs.atoms.find((a) => a.metadata?.audit?.correlation_id === 'corr-orphan');
+    const findings = audit!.metadata.audit.findings as Array<{ kind: string; severity: string }>;
+    const orphan = findings.find((f) => f.kind === 'orphan-provenance');
+    expect(orphan).toBeDefined();
+    expect(orphan!.severity).toBe('critical');
+  });
+
+  it('reply message preserves correlation_id and urgency reflects severity', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(sampleAtom('child', {
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'bob' },
+        derived_from: ['missing-id' as AtomId], // critical finding
+      },
+    }));
+
+    await runAuditor(host, {
+      reply_to: 'operator' as PrincipalId,
+    }, 'corr-urgency');
+
+    const replies = await host.atoms.query({ type: ['actor-message'] }, 100);
+    const reply = replies.atoms.find((a) => a.metadata?.actor_message?.correlation_id === 'corr-urgency');
+    expect(reply).toBeDefined();
+    expect(reply!.metadata.actor_message.urgency_tier).toBe('high');
+  });
+});
