@@ -21,7 +21,7 @@ When `bootstrap-code-author-canon.mjs` ships, it seeds these four policy atoms. 
 
 **Enforces:** no direct writes to `src/`, `test/`, `design/`, `docs/`, `scripts/`, or any other tracked path. All changes land through a signed pull request authored by the code-author principal via its provisioned GitHub App identity.
 
-```
+```json
 metadata.policy: {
   subject: 'code-author-authorship',
   output_channel: 'signed-pr',            // literal; alternatives rejected
@@ -36,7 +36,7 @@ metadata.policy: {
 
 **Enforces:** a hard cap on LLM spend per PR, independent of the per-day budget. A single runaway plan must trip before it eats the whole day.
 
-```
+```json
 metadata.policy: {
   subject: 'code-author-per-pr-cost-cap',
   max_usd_per_pr: <number>,               // seeded at 10.0 for v0
@@ -50,7 +50,7 @@ metadata.policy: {
 
 **Enforces:** a PR from the code-author actor is only eligible for any auto-approval (PR-landing merge, plan-dispatch of a follow-up plan, etc.) after CI reports `SUCCESS` for Node 22 Linux, Node 22 Windows, and `package-hygiene`.
 
-```
+```json
 metadata.policy: {
   subject: 'code-author-ci-gate',
   required_checks: [
@@ -74,7 +74,7 @@ metadata.policy: {
 
 **Enforces:** when `.lag/STOP` is written during a code-author run, the actor: (a) halts its current operation, (b) closes (not abandons) any in-progress draft PR with a comment explaining the revocation, and (c) writes a `code-author-revoked` atom so the operator can resume or discard explicitly.
 
-```
+```json
 metadata.policy: {
   subject: 'code-author-write-revocation',
   on_stop_action: 'close-pr-with-revocation-comment',
@@ -117,6 +117,6 @@ All must hold before seeding the atoms above:
 |---|---|---|
 | 2026-04-20 | cto-actor (self-audit run) | Proposed as hardening ask #3 in the self-audit plan. |
 | 2026-04-20 | cto-actor (devil's-advocate of same plan) | Conceded deferral: reserve ADR slot, do not seed atoms yet. |
-| 2026-04-20 | operator / maintainer | Accepted the deferral; ADR-only PR merged to freeze the four-atom shape. |
+| 2026-04-20 | operator / maintainer | Under review: ADR-only PR proposes freezing the four-atom shape; merge pending. |
 | (pending) | future bootstrap author | Seeds `pol-code-author-*` once graduation criteria are met. |
 | (pending) | future operator | Reviews + merges the first code-author PR that ships under these fences. |
