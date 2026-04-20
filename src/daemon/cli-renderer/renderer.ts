@@ -232,10 +232,17 @@ export class CliRenderer {
     // in the final message. Long thinking blocks cause split-at-HTML-
     // tag corruption (tg-spoiler opened in one chunk, closed in the
     // next) and render as noise appended after the answer.
-    const footer = this.renderFooter(meta);
-    const composed = footer ? `${finalText}\n\n${footer}` : finalText;
-    const rendered = this.renderFinal(composed);
-    const chunks = this.splitFinal(rendered);
+    //
+    // Footer is emitted POST-render as raw HTML. If we passed
+    // `_key=foo_bar.ts_` through renderFinal (the markdown-to-HTML
+    // converter), the converter would not recognize the italic
+    // because the content contains an underscore and escaping it
+    // (\_) leaves the bytes but still confuses the pattern. By
+    // appending HTML after the converter runs, we get a reliable
+    // italic and the meta strings stay literal.
+    const rendered = this.renderFinal(finalText);
+    const footerHtml = this.renderFooterHtml(meta);
+    const chunks = this.splitFinal(footerHtml.length > 0 ? `${rendered}\n\n${footerHtml}` : rendered);
     if (chunks.length === 0) return;
     // Enqueue onto the serialized chain so any in-flight progress
     // edit finishes before the completion lands.
@@ -444,29 +451,25 @@ export class CliRenderer {
     return `💭 <i>${escapeHtml(clipped)}</i>`;
   }
 
-  private renderFooter(meta: Readonly<Record<string, string | number>> | undefined): string {
+  /**
+   * Render the footer as Telegram-ready HTML for POST-render append.
+   *
+   * Handing the footer to renderFinal() as markdown (`_..._`) fails
+   * whenever a meta value contains an underscore (file paths, atom
+   * ids, commit shas), because markdownToTelegramHtml's `_..._`
+   * italic pattern requires NO underscores inside the content. The
+   * fix: render the main body through renderFinal, then concatenate
+   * this function's HTML output directly. That way the `<i>` wrapper
+   * is literal HTML and the meta values are HTML-escaped characters,
+   * not subject to any markdown parsing.
+   */
+  private renderFooterHtml(meta: Readonly<Record<string, string | number>> | undefined): string {
     if (!meta || Object.keys(meta).length === 0) return '';
-    // Escape markdown metacharacters in keys + values. Meta can
-    // contain file paths, atom ids, and other strings with
-    // underscores, asterisks, backticks, or brackets that would
-    // break the `_..._` italic wrapper or accidentally introduce
-    // markup the caller did not intend.
     const parts = Object.entries(meta).map(
-      ([k, v]) => `${escapeMarkdownInline(k)}=${escapeMarkdownInline(String(v))}`,
+      ([k, v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`,
     );
-    // Emit as markdown italic, not literal HTML. When renderFinal is a
-    // markdown->HTML converter (TelegramHtml), raw `<i>` tags would be
-    // escaped to `&lt;i&gt;` by the converter's free-text escape pass.
-    // `_..._` lets the converter produce the `<i>` tag itself.
-    return `_${parts.join(' · ')}_`;
+    return `<i>${parts.join(' · ')}</i>`;
   }
-}
-
-function escapeMarkdownInline(s: string): string {
-  // Backslash first so the escapes we introduce below are not
-  // themselves double-escaped. Then the set of chars that create
-  // emphasis or links / code spans in the markdown->HTML converter.
-  return s.replaceAll('\\', '\\\\').replace(/([_*`[\]()])/g, '\\$1');
 }
 
 function truncate(s: string, max: number): string {

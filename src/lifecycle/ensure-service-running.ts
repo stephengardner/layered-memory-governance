@@ -270,32 +270,43 @@ async function startDetached(
     : process.env;
 
   let stdio: 'ignore' | ['ignore', number, number];
+  let logFd: number | undefined;
   if (options.logFile !== undefined) {
     await mkdir(dirname(options.logFile), { recursive: true });
     // Append-open so a pre-existing log is preserved and restarts land
     // on the tail. 'a' = append, 0o644 rw/r/r.
-    const fd = openSync(options.logFile, 'a', 0o644);
-    stdio = ['ignore', fd, fd];
+    logFd = openSync(options.logFile, 'a', 0o644);
+    stdio = ['ignore', logFd, logFd];
   } else {
     stdio = 'ignore';
   }
 
-  const child = spawnFn(options.command, [...options.args], {
-    cwd: options.cwd ?? process.cwd(),
-    env,
-    detached: true,
-    stdio,
-    windowsHide: true,
-  });
+  try {
+    const child = spawnFn(options.command, [...options.args], {
+      cwd: options.cwd ?? process.cwd(),
+      env,
+      detached: true,
+      stdio,
+      windowsHide: true,
+    });
 
-  // Detach: unref the child so the parent can exit without waiting.
-  // Wrap in try so a mock spawn (no unref) doesn't throw.
-  try { child.unref(); } catch { /* ok */ }
+    // Detach: unref the child so the parent can exit without waiting.
+    // Wrap in try so a mock spawn (no unref) doesn't throw.
+    try { child.unref(); } catch { /* ok */ }
 
-  if (typeof child.pid !== 'number') {
-    throw new Error('spawn did not return a pid');
+    if (typeof child.pid !== 'number') {
+      throw new Error('spawn did not return a pid');
+    }
+    return { pid: child.pid };
+  } finally {
+    // Close the parent-side log FD after spawn. The child inherited
+    // its own references via stdio, so closing here only releases the
+    // parent's descriptor. Without this, repeated starts/restarts
+    // leak one FD per start until the parent hits its ulimit.
+    if (logFd !== undefined) {
+      try { closeSync(logFd); } catch { /* ignore */ }
+    }
   }
-  return { pid: child.pid };
 }
 
 async function readExistingPid(pidFile: string): Promise<number | null> {

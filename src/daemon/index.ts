@@ -286,6 +286,16 @@ export class LAGDaemon {
       clearTimeout(this.extractionTimer);
       this.extractionTimer = null;
     }
+    // Abort any in-flight cli-style reply streams. Without this, a
+    // shutdown (SIGTERM, lifecycle stopService, terminal takeover)
+    // would leave the underlying invokeClaudeStreaming child running
+    // AND continuing to edit Telegram messages after the daemon
+    // process no longer considers itself active. Aborting propagates
+    // through runSpawnedJsonl's signal handler and kills the child.
+    for (const [token, controller] of this.activeRuns) {
+      try { controller.abort(); } catch { /* already aborted */ }
+      this.activeRuns.delete(token);
+    }
   }
 
   /**
@@ -761,7 +771,26 @@ export class LAGDaemon {
 
     // Stop button: abort the matching active run. Handled in-daemon;
     // does not go through the escalation onCallback path.
+    //
+    // Chat-binding: we honor lag-stop ONLY when the callback
+    // originates from the configured chat. Without this, a callback
+    // query from any other chat that happens to have a live token
+    // could cancel a run the operator did not authorize. The token
+    // itself is short + opaque so collision is unlikely, but we
+    // refuse to rely on that as an authority check.
     if (cq.data.startsWith('lag-stop:')) {
+      const cqChat = cq.message?.chat.id;
+      if (cqChat === undefined || String(cqChat) !== this.chatIdString) {
+        try {
+          await this.callTelegram('answerCallbackQuery', {
+            callback_query_id: cq.id,
+            text: 'Unauthorized',
+          });
+        } catch (err) {
+          this.onError(err, 'answerCallbackQuery(stop-unauthorized)');
+        }
+        return;
+      }
       const token = cq.data.slice('lag-stop:'.length);
       const controller = this.activeRuns.get(token);
       const found = controller !== undefined;
