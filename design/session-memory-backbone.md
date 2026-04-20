@@ -70,9 +70,9 @@ Rationale: a personal side-project must not poison an employer repo's canon. Tru
 
 ### D-mbb-4: Budget per watch, paused on breach
 
-Each watch has `budget_usd_per_day` (default $1.00). LLM extraction tracks cost via the LLM adapter's reported usage. When the daily budget is breached, the watch pauses extraction (but not ingestion - raw L0 atoms still land). Pause emits an Audit event `watch.budget.paused` and optionally notifies the operator via Notifier.
+Each watch has `budget_usd_per_day` (default $1.00). Every LLM call the pipeline makes - both the worthiness classifier call (D-mbb-5) and the extraction call - records usd_spent through the adapter's reported usage and accrues to the same per-watch ledger. "Budget" means total LLM spend for the watch, not just extraction. When the daily budget is breached, the watch pauses both the classifier and extraction (but not ingestion - raw L0 atoms still land). Pause emits an Audit event `watch.budget.paused` and optionally notifies the operator via Notifier.
 
-Rationale: extraction cost is the only unbounded line item. A runaway loop without a budget is an outage.
+Rationale: classifier cost on high-volume sessions is not negligible (it runs on every L0 atom, not just the worthy ones); separating the two budgets would let a broken classifier silently blow past the extraction cap. A runaway loop without a budget is an outage regardless of which LLM call caused it.
 
 ### D-mbb-5: LLM worthiness classification gates extraction
 
@@ -138,7 +138,7 @@ Installed under `.claude/hooks/lag-session-end.mjs` (project-scope) or globally 
 2. Loads the registry, finds watches matching `cwd`.
 3. For each matching watch, calls `lagClient.ingest(watch, transcript_path)`.
 4. Triggers extraction pass (budget-gated) for newly ingested L0 atoms.
-5. Exits 0 regardless of inner errors - hooks never block sessions.
+5. Exits 0 regardless of inner errors - hooks never block sessions. **But** every inner error is appended to `<watch>/.lag/hooks/session-end-errors.jsonl` AND emits an Audit event `hook.session_end.error` with fields `{watch_id, session_id, error_message, timestamp, consecutive_error_count}`. On `consecutive_error_count >= 3` the hook also emits a `Notifier.escalate()` call so the operator learns before their canon silently drifts. The exit-0 is for hook politeness, not for silent failure.
 
 Hook never runs LLM calls inline; ingest is synchronous (file read + atom write), extraction is dispatched to a short-lived worker (`lag extract --for <watch-id>`) so the hook returns fast.
 
@@ -164,7 +164,7 @@ V0 implementation: LLM-backed with a rules-first short-circuit. Rules: conversat
 
 ### Claude-session adapter (already shipping)
 
-`src/sources/claude-code.ts` - `ClaudeCodeTranscriptSource.ingest(host, options)` already does this. V0 wires it into the hook trigger. Minor extension: emit session_id in provenance (verify it's already there; add if not).
+`src/sources/claude-code.ts` - `ClaudeCodeTranscriptSource.ingest(host, options)` already does this. V0 wires it into the hook trigger. `session_id` in `provenance.source.session_id` is **mandatory**, not optional, for every atom the pipeline emits - the D-mbb-7 lineage contract depends on it. If `ClaudeCodeTranscriptSource` does not currently populate it, the V0 work includes adding it AND a contract test that asserts `typeof atom.provenance.source.session_id === 'string'` for every atom produced by the pipeline. Conditional population was a hedge the design should not carry; make it load-bearing up front so the lineage invariant can't quietly drift.
 
 ## V1 Additions
 
