@@ -56,6 +56,10 @@
       "import": "./dist/actors/provisioning/index.js",
       "types": "./dist/actors/provisioning/index.d.ts"
     },
+    "./actor-message": {
+      "import": "./dist/actor-message/index.js",
+      "types": "./dist/actor-message/index.d.ts"
+    },
     "./external/github": {
       "import": "./dist/external/github/index.js",
       "types": "./dist/external/github/index.d.ts"
