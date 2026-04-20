@@ -1,6 +1,6 @@
 # Bot identities for LAG actors
 
-Every LAG actor that touches GitHub can do so under its own bot identity instead of the operator's personal scope. Comments, PR opens, merges, and review replies are attributed to `<role>[bot]`, not the human.
+Every LAG actor that touches GitHub can do so under its own bot identity instead of the operator's personal scope. Comments, PR opens, and review replies are attributed to `<role>[bot]`, not the human. Merges flow through a specific bot only where policy permits (see the table below).
 
 ## One-time setup
 
@@ -16,6 +16,7 @@ Currently provisioned roles (see `roles.json`):
 
 - `lag-pr-landing`  -  PR-landing actor; replies to review threads, resolves nits.
 - `lag-cto`  -  CTO actor's GitHub-facing hand; opens PRs for code-change plans, authors CodeRabbit replies as CTO. Cannot merge (`pol-cto-no-merge`).
+- `lag-ceo`  -  Operator's human-proxy identity. Opens PRs on the operator's behalf, posts operator-initiated PR comments and review replies, merges PRs when the operator delegates. NOT a decision-bearing authority; this bot's job is attribution only, so artifacts the operator ships through an agent do not carry the operator's personal login.
 
 ## Using a bot identity from a script or terminal
 
@@ -51,11 +52,14 @@ GH_TOKEN=$(node scripts/gh-token-for.mjs lag-cto) gh pr create ...
 
 | Operation | Identity | Why |
 |---|---|---|
-| PR open for a plan the CTO produced | `lag-cto` | The CTO authored the plan; the PR should reflect authorship. |
+| PR open initiated by the operator (via an agent in session) | `lag-ceo` | Operator's human-proxy. Keeps the operator's personal login off the PR header without claiming decision authority. |
+| PR open for a plan the CTO produced | `lag-cto` | The CTO authored the plan; the PR should reflect decision authorship, not operator-proxy attribution. |
 | Review-thread reply on a PR the CTO opened | `lag-cto` | Continuity: the author of the PR replies to reviewer findings. |
+| Review-thread reply on an operator-initiated PR | `lag-ceo` | Same attribution logic as the PR-open. |
 | Resolve nits, re-request review after fix | `lag-pr-landing` | That's the pr-landing actor's job; delegated authority. |
-| `git commit` locally | operator or `lag-cto` | Commits can be authored by a bot via `git config user.email` per repo; PR-open via `gh-as.mjs lag-cto` then attributes the PR to the bot regardless. |
-| PR merge | **operator only** | Canon `pol-cto-no-merge` keeps merge authority out of bot scope until the medium-tier kill switch ships. |
+| `git commit` locally | `lag-ceo` for operator-initiated work; `lag-cto` for CTO-authored plans | Commit author flows via `git config user.email` pointed at the bot's `<APP-ID>+<role>[bot]@users.noreply.github.com`. Keeps the operator's real name off every tracked commit. |
+| PR merge initiated by the operator | `lag-ceo` | Operator is delegating the click; the bot runs the merge under operator authority. |
+| PR merge initiated autonomously by the CTO | blocked until medium-tier kill switch ships | Canon `pol-cto-no-merge` and `dev-merge-authority-requires-medium-tier-kill-switch` keep autonomous merge out of bot scope. |
 | Opening issues to track operational findings | actor whose finding it is | e.g. `lag-auditor` would open the issue if a GitHub output channel were wired. |
 
 ## Audit trail
@@ -74,7 +78,7 @@ The App id and installation id are stable across key rotations; only the PEM cha
 
 ## Files involved
 
-- `roles.json`  -  declarative role spec (name, permissions, description ≤ 240 chars)
+- `roles.json`  -  declarative role spec (name, permissions, description ≤ 1024 chars)
 - `bin/lag-actors.js`  -  CLI (`sync`, `list`, `demo-pr`, `demo-adapter`)
 - `scripts/gh-token-for.mjs`  -  token mint helper
 - `scripts/gh-as.mjs`  -  `gh` wrapper with auto-minted token

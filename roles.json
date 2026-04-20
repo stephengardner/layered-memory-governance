@@ -27,6 +27,20 @@
         "metadata": "read"
       },
       "events": []
+    },
+    {
+      "name": "lag-ceo",
+      "displayName": "LAG CEO",
+      "description": "Operator's human-proxy GitHub identity. Opens PRs, posts operator-initiated PR comments and review replies, and merges PRs when the operator delegates. NOT a decision-bearing authority (that role is lag-cto); lag-ceo's job is attribution only, so artifacts the operator ships through an agent do not carry the operator's personal login. Authority chain: operator (root) -> claude-agent -> lag-ceo[bot]. Rotation and install-scope are operator-controlled via GitHub App settings.",
+      "permissions": {
+        "contents": "write",
+        "pull_requests": "write",
+        "issues": "write",
+        "checks": "read",
+        "statuses": "read",
+        "metadata": "read"
+      },
+      "events": []
     }
   ]
 }

@@ -41,8 +41,16 @@ export const roleDefinitionSchema = z
       }),
     /** Human-readable label shown on GitHub and in approval messages. */
     displayName: z.string().min(3).max(80),
-    /** One-sentence description; shown on the App creation screen. */
-    description: z.string().min(10).max(240),
+    /**
+     * Description shown on the App creation screen and retained as
+     * the App's GitHub-side description. Raised from 240 to 1024 so
+     * role descriptions can record authority scope, canon constraints,
+     * and rationale (e.g., lag-cto's "cannot merge while pol-cto-no-merge
+     * holds" or lag-ceo's authority chain) instead of a one-liner.
+     * GitHub's own cap is ~2048 chars; 1024 leaves comfortable headroom
+     * and still discourages the description from becoming a manifesto.
+     */
+    description: z.string().min(10).max(1024),
     /**
      * Optional. GitHub organization slug to create this App under.
      * When set, LAG routes the manifest URL to
