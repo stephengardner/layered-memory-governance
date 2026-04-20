@@ -180,6 +180,14 @@ import { runActor } from 'layered-autonomous-governance/actors';
 import { PrLandingActor } from 'layered-autonomous-governance/actors/pr-landing';
 import { GitHubPrReviewAdapter } from 'layered-autonomous-governance/actors/pr-review';
 import { createGhClient } from 'layered-autonomous-governance/external/github';
+
+// Per-role GitHub App identity + pluggable auth (see "Actor identities" below):
+import {
+  loadRoleRegistry,
+  createCredentialsStore,
+  provisionRole,
+} from 'layered-autonomous-governance/actors/provisioning';
+import { createAppBackedGhClient } from 'layered-autonomous-governance/external/github-app';
 ```
 
 Everyday governance primitives (top-level):
@@ -203,6 +211,7 @@ Operator commands ship as npm bins:
 - `lag-run-loop` - autonomous tick daemon. Walks decay, TTL expiration, L2 promotion, L3 promotion (with human gate), canon file applier.
 - `lag-respond` - interactive human-approval prompt. Displays pending notifications; accepts approve/reject/ignore/skip/quit via stdin.
 - `lag-compromise` - operator incident response. Marks a principal compromised, propagates taint across direct and derived atoms, prints the affected atom ids and an audit summary.
+- `lag-actors` - per-role GitHub App identity provisioning. `sync` walks `roles.json` and creates one App per un-provisioned actor (browser-approval flow, one click per role). `list` enumerates provisioned actors and their `<slug>[bot]` identities. `demo-pr` and `demo-adapter` exercise the full auth chain end-to-end. See "Actor identities" below.
 
 Runnable scripts (no install):
 
@@ -234,8 +243,83 @@ Adding a fourth adapter (remote, postgres, custom vector store) is a factory plu
 
 Actors are outward-acting autonomous loops; the things they touch (GitHub, CI, deploy targets) are `ActorAdapter`s rather than Host sub-interfaces. This keeps Host focused on governance and lets Actor dependencies stay self-declared at the type level. Shipped today:
 
-- **`external/github` -> `GhClient`** - reusable GitHub transport primitive (typed REST + GraphQL over the `gh` CLI). Any Actor that touches GitHub builds on this single client.
-- **`actors/pr-review` -> `GitHubPrReviewAdapter`** - full `PrReviewAdapter` implementation (GraphQL review threads, REST reply, GraphQL resolve mutation, first-class dry-run).
+- **`external/github` -> `GhClient`** - reusable GitHub transport primitive (typed REST + GraphQL over the `gh` CLI, PAT-authenticated). Any Actor that touches GitHub builds on this single client.
+- **`external/github-app` -> `createAppBackedGhClient`** - the same `GhClient` shape, but backed by a provisioned GitHub App installation (JWT + installation token over HTTP, no `gh` CLI). Same Actor code; auth backend is a caller choice (see D19 in DECISIONS.md).
+- **`actors/pr-review` -> `GitHubPrReviewAdapter`** - full `PrReviewAdapter` implementation (GraphQL review threads, REST reply, GraphQL resolve mutation, first-class dry-run). Accepts either `GhClient` implementation unchanged.
+- **`actors/provisioning`** - declarative role schema + provisioning orchestrator for per-Actor App identities. See "Actor identities" below.
+
+## Actor identities
+
+Two kinds of identity an Actor can wear on GitHub. The framework supports both; the deployment chooses per Actor.
+
+**PAT identity (default, zero-setup):** the operator's personal access token, via `createGhClient()`. PRs, reviews, and comments opened by any Actor appear as the operator's user. Fine for solo projects and local dev; the human IS the accountability trail.
+
+**App identity (per-role, for autonomous orgs):** a dedicated GitHub App per Actor role, via `createAppBackedGhClient({ auth })`. PRs from `PrLandingActor` appear as `lag-pr-landing[bot]`; a future `CtoActor` appears as `lag-cto[bot]`; etc. Each role has its own credentials, its own permission set, its own revocation boundary. The framework treats role names as opaque; you pick the ones that fit your org shape.
+
+The choice is pluggable. Wire whichever client into `GitHubPrReviewAdapter`; the Actor code never changes:
+
+```ts
+// Same actor, different identity on the wire:
+const client = useBotIdentity
+  ? createAppBackedGhClient({ auth: await loadAuthForRole('lag-pr-landing') })
+  : createGhClient();
+
+const actor = new PrLandingActor({
+  adapter: new GitHubPrReviewAdapter({ client }),
+});
+```
+
+### Declaring roles
+
+Actor identities are declared, not coded. Drop a `roles.json` at your project root:
+
+```json
+{
+  "version": 1,
+  "actors": [
+    {
+      "name": "lag-pr-landing",
+      "displayName": "LAG PR Landing",
+      "description": "Lands PRs from review feedback.",
+      "permissions": {
+        "contents": "write",
+        "pull_requests": "write",
+        "checks": "read",
+        "statuses": "read",
+        "metadata": "read"
+      }
+    }
+  ]
+}
+```
+
+### Provisioning
+
+`lag-actors sync` walks the registry and provisions any un-provisioned role:
+
+```
+$ lag-actors sync
+[lag-pr-landing] risk=high: contents:write allows direct commits
+[lag-pr-landing] awaiting operator approval...
+[lag-pr-landing] callback listening at http://127.0.0.1:56324/callback
+[lag-pr-landing] open in browser: http://127.0.0.1:56324/start
+  (browser opens; operator clicks "Create GitHub App"; one click per role)
+[lag-pr-landing] provisioned as lag-pr-landing[bot] (app id 3437485)
+```
+
+Under the hood: localhost callback server binds a random port; generates a GitHub App Manifest with the role's declared permissions; operator's browser is pointed at a local `/start` page that POSTs the manifest to GitHub; operator clicks Create; GitHub redirects to the local `/callback`; LAG exchanges the returned code for the new App's private key and writes `.lag/apps/<role>.json` + `.lag/apps/keys/<role>.pem` (chmod 0600, gitignored).
+
+**High-risk roles** (anything asking for `contents:write`, `workflows:write`, or `administration`) gate on operator approval before the browser ever opens. The default is a terminal y/N prompt; swap in a Telegram notifier for remote approval.
+
+After provisioning, the App still needs to be installed on the target repos (one more browser click per repo). `lag-actors demo-pr --role lag-pr-landing --repo <owner>/<repo>` validates the full chain by opening a trivial test PR as the bot.
+
+### Why one App per role (not one shared App)
+
+Per D18 in DECISIONS.md: GitHub surfaces one identity per App (`<slug>[bot]`); sharing one App across roles collapses the audit trail, forces the union of every role's permissions, and makes revocation all-or-nothing. One App per role keeps each identity distinctly attributable on every timeline event, each permission set minimal, and each revocation surgical. The one-time provisioning cost (a browser click per new role) buys that every action from that role is forever clearly labeled.
+
+### Why auth is pluggable (not App-only)
+
+Per D19: forcing bot-only closes the door on zero-setup onboarding and breaks every consumer who just wants to paste a PAT and run. Forcing human-only strands the provisioning investment and forfeits per-role audit. Pluggability lets the same Actor graduate with the deployment: start on PAT, adopt role bots when the org grows, without a rewrite.
 
 ## Embedders
 
