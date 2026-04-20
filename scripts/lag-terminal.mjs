@@ -481,8 +481,9 @@ async function main() {
   };
 
   // Returns true as soon as the count of matching user records
-  // exceeds `baseline`. Parses only the tail (last ~30 lines) each
-  // poll for efficiency. Pre-filtering raw line bytes is deliberately
+  // exceeds `baseline`. Polls by re-reading the full session file
+  // each iteration; a tail-only scan is deferred until file size
+  // makes it measurable. Pre-filtering raw line bytes is deliberately
   // skipped because escaped characters (\", \n) in stored JSON would
   // cause false negatives against the raw body text from Telegram.
   const verifyCountIncrement = async (bodyFragment, baseline, timeoutMs) => {
