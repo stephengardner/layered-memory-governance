@@ -40,6 +40,23 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const BOOTSTRAP_TIME = '2026-04-20T00:00:00.000Z';
 
+// Operator principal id. Every deployment picks its own; a
+// hardcoded default here would leak one instance's shape into
+// the script. Require explicit configuration. Matches the
+// bootstrap-cto-actor-canon.mjs convention but without any
+// fallback to a specific person's id.
+const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR_ID) {
+  console.error(
+    '[bootstrap-inbox] ERROR: LAG_OPERATOR_ID is not set. Export your\n'
+    + 'operator principal id before running this script, e.g.\n\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n\n'
+    + 'The id is referenced by pol-circuit-breaker-reset-authority and must\n'
+    + 'match the principal already seeded in .lag/principals/.',
+  );
+  process.exit(2);
+}
+
 /**
  * Per-subject defaults. Every number is justified in the v2.1 plan;
  * tuning is a canon edit, not a release. Bumping a value is
@@ -104,7 +121,7 @@ const POLICIES = [
       // Empty = default-deny. The expected shape is either an explicit list of
       // principal ids OR a non-null `max_signer_depth` with a non-empty
       // `root_principals` list. The validator checks this at write time.
-      authorized_principals: [process.env.LAG_OPERATOR_ID || 'stephen-human'],
+      authorized_principals: [OPERATOR_ID],
       // 0 = root-only. Raised via canon edit when multi-human structure exists.
       max_signer_depth: 0,
     },
@@ -158,7 +175,7 @@ function policyAtom(spec) {
       validation_status: 'unchecked',
       last_validated_at: null,
     },
-    principal_id: process.env.LAG_OPERATOR_ID || 'stephen-human',
+    principal_id: OPERATOR_ID,
     taint: 'clean',
     metadata: {
       policy: {
@@ -175,16 +192,25 @@ function policyAtom(spec) {
  * Returns a list of drift descriptors (empty = in sync). Every subject-
  * specific numeric or id field is compared so a silent edit to the
  * POLICIES table here is loud on the next bootstrap run.
+ *
+ * `content` and `metadata.policy.reason` are both compared so editing the
+ * human-reading rationale is surfaced as drift (a policy whose reason
+ * was "root-only because depth-based is attackable" quietly becoming
+ * "any operator" would misrepresent the governance posture without
+ * changing any numeric field; that silent edit is exactly the class of
+ * bug this drift check is here to catch).
  */
 function diffPolicyAtom(existing, expected) {
   const diffs = [];
   if (existing.type !== expected.type) diffs.push(`type: ${existing.type} -> ${expected.type}`);
   if (existing.layer !== expected.layer) diffs.push(`layer: ${existing.layer} -> ${expected.layer}`);
+  if (existing.content !== expected.content) {
+    diffs.push(`content (rationale): stored vs expected differ; rewrite or bump id to supersede`);
+  }
   const ep = existing.metadata?.policy ?? {};
   const xp = expected.metadata.policy;
   const keys = new Set([...Object.keys(ep), ...Object.keys(xp)]);
   for (const k of keys) {
-    if (k === 'reason') continue; // content already captures the human reason
     if (JSON.stringify(ep[k]) !== JSON.stringify(xp[k])) {
       diffs.push(`policy.${k}: stored=${JSON.stringify(ep[k])} expected=${JSON.stringify(xp[k])}`);
     }

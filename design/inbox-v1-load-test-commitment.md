@@ -15,7 +15,7 @@ load-test suite is green against a real Postgres AtomStore.**
 
 Indie floor is explicitly outside the gate: deployments on the file AtomStore never
 hit this test. Only the Postgres-graduation PR is gated. This preserves
-`dev-indie-floor-org-ceiling` — solo dev ships the same shape without paying the
+`dev-indie-floor-org-ceiling`  -  solo dev ships the same shape without paying the
 load-test cost.
 
 ## Where it lives
@@ -23,7 +23,7 @@ load-test cost.
 `test/load/actor-message/run-50-actor.ts`
 
 The file AtomStore test suite (`npm test`) does not include this directory; a dedicated
-`npm run test:load` harness runs it. Default CI does not gate on it either — the gate
+`npm run test:load` harness runs it. Default CI does not gate on it either  -  the gate
 is the PR E review path, enforced as a canon-documented requirement on that specific PR.
 
 ## Workload
@@ -31,15 +31,23 @@ is the PR E review path, enforced as a canon-documented requirement on that spec
 - **50 concurrent actor principals**, each acting as both a sender and a receiver of
   `actor-message` atoms. Each principal runs its own observe/classify/propose/apply
   loop via `runActor` against a shared Postgres AtomStore.
-- **Sustained rate: 2 msgs/sec/actor (100 msgs/sec aggregate) for 30 minutes.** Matches
-  the `10/min` token-bucket ceiling (see `pol-actor-message-rate`) for 60s bursts but
-  averages below at the 10-minute mark; no sender should be denied on sustained
-  workload.
+- **Load-test principal rate overrides.** The framework default `pol-actor-message-rate`
+  (10 msgs/min, burst 20) would throttle any sustained load test below 1 msg/3s and
+  leave this suite testing only the rate limiter, not the substrate. The test instead
+  provisions a per-principal override atom for each of the 50 load-test principals
+  granting `tokens_per_minute: 200, burst_capacity: 50`. Non-load-test principals
+  continue under the default. This is the same per-principal override mechanism any
+  deployment uses for a known-high-volume sender (e.g. a webhook adapter) and is
+  itself exercised as part of the test.
+- **Sustained rate: 2 msgs/sec/actor (100 msgs/sec aggregate) for 30 minutes.** At
+  120 msgs/min/actor this runs below the override bucket ceiling (200/min); no
+  sender should be denied during the sustained segment. Verifies substrate
+  throughput under steady load, not the rate limiter.
 - **Burst segment: 10 msgs/sec/actor (500 msgs/sec aggregate) for 60s embedded at
-  minute 5.** Exceeds the 20-msg burst bucket per sender, so the bucket will deny;
-  3 denials inside `window_ms=300_000` trip the circuit breaker. Tests that (a) trips
-  happen when expected, (b) untripped senders continue unaffected, (c) the atom-store
-  write rate ceiling holds.
+  minute 5.** 600 msgs/min/actor exceeds the override's 200/min bucket; the bucket
+  denies; 3 denials inside `window_ms=300_000` trip the circuit breaker. Verifies
+  that (a) trips happen when expected, (b) untripped senders continue unaffected,
+  (c) the atom-store write rate ceiling holds under the denied load.
 - **Deadline-imminent injections: 1 msg/min/actor** carrying a `deadline_ts` value
   within 30s of `now`. Tests that the `pol-inbox-poll-cadence` `deadline_imminent_poll_ms`
   cadence engages and the message is picked up inside the poll interval even if

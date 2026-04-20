@@ -55,10 +55,10 @@ export type AtomType =
   | 'ephemeral'
   | 'plan'
   | 'question'
-  // Proactive-CTO inbox primitives (ship in PRs A-E of the inbox V1
-  // sequence; listed here so later PRs don't churn the type union).
-  // See design/inbox-v1-load-test-commitment.md and
-  // plan-revised-inbox-hybrid-wake-write-time-rat-* for shape.
+  // Inter-actor messaging primitives. actor-message and
+  // actor-message-ack model the send/ack pair; circuit-breaker-trip
+  // and circuit-breaker-reset model a write-time back-pressure surface
+  // any consumer wrapping AtomStore can produce.
   | 'actor-message'
   | 'actor-message-ack'
   | 'circuit-breaker-trip'
