@@ -231,18 +231,23 @@ async function main() {
   //   1 = actor crashed (genuine error)
   //   2 = budget exhausted; another run may be needed
   //
-  // Why escalate -> 0: policy-escalate-blocking is a VALID outcome
-  // per the autonomy-dial design. The actor did its job and surfaced
-  // items for the operator. Marking this as a CI failure would block
-  // PRs on their own agent's correct escalation -- exactly the
-  // opposite of what we want.
+  // Why every "correct halt" -> 0: policy-escalate-blocking and
+  // convergence-loop are both VALID outcomes per the autonomy-dial
+  // design. The actor did its job and surfaced items for the
+  // operator via the actor-message escalation written above (see
+  // sendOperatorEscalation). Marking those as CI failures would
+  // double-signal the operator (red CI + inbox notification) AND
+  // block PRs on their own agent's correct escalation - exactly the
+  // opposite of what we want. budget-iterations / budget-deadline
+  // stay at 2 because those ARE "run me again with more budget"
+  // signals, not "I know what I saw, deal with it" signals.
   const exitMap = {
     'converged': 0,
     'policy-escalate-blocking': 0,
     'kill-switch': 0,
+    'convergence-loop': 0,
     'budget-iterations': 2,
     'budget-deadline': 2,
-    'convergence-loop': 2,
     'error': 1,
   };
   process.exit(exitMap[report.haltReason] ?? 1);
