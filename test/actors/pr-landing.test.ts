@@ -45,16 +45,27 @@ class StubReviewAdapter implements PrReviewAdapter {
   prComments: Array<{ body: string }> = [];
   /** Logins the stub treats as engaged. Tests mutate between iterations. */
   engagedLogins: Set<string> = new Set();
+  /** Per-iteration body-nits to return. Defaults to [] every iteration. */
+  bodyNitsByIteration: ReviewComment[][] = [];
   /** Fires at the START of each iteration (before list returns); mutate stub state here. */
   beforeIteration?: (iterZeroBased: number, stub: StubReviewAdapter) => void;
 
   constructor(private commentsByIteration: ReviewComment[][]) {}
 
   private iter = 0;
+  private bodyIter = 0;
   async listUnresolvedComments(): Promise<ReadonlyArray<ReviewComment>> {
     this.beforeIteration?.(this.iter, this);
     const list = this.commentsByIteration[this.iter] ?? [];
     this.iter++;
+    return list;
+  }
+  async listReviewBodyNits(): Promise<ReadonlyArray<ReviewComment>> {
+    // Body-nits use an independent counter because observe() issues
+    // listUnresolvedComments + listReviewBodyNits concurrently; relying
+    // on the shared `iter` would race.
+    const list = this.bodyNitsByIteration[this.bodyIter] ?? [];
+    this.bodyIter++;
     return list;
   }
   async replyToComment(_pr: PrIdentifier, commentId: string, body: string): Promise<ReviewReplyOutcome> {
@@ -328,6 +339,47 @@ describe('PrLandingActor', () => {
     expect(report.iterations).toBe(2);
     expect(review.prComments).toHaveLength(1);
     expect(review.prComments[0]!.body).toBe('@coderabbitai review');
+  });
+
+  it('observe() surfaces body-nits separately from line comments and does NOT reply/resolve them', async () => {
+    // Regression guard for the "nitpicks buried in the review body" gap.
+    // Before this change the actor only saw line comments; body-nits
+    // posted by CodeRabbit's 🧹 Nitpick block were invisible and
+    // silently dropped. Now they must appear in observation.bodyNits
+    // AND the actor must NOT attempt to reply or resolve against them
+    // (they have no threadId and would 404).
+    const host = createMemoryHost();
+    const bodyNit: ReviewComment = {
+      id: 'body-nit:99:src/foo.ts:10',
+      author: 'coderabbitai[bot]',
+      body: 'Minor wording.',
+      createdAt: '2026-04-20T19:00:00.000Z',
+      resolved: false,
+      path: 'src/foo.ts',
+      line: 10,
+      kind: 'body-nit',
+      severity: 'nit',
+    };
+    const review = new StubReviewAdapter([[]]);
+    review.bodyNitsByIteration = [[bodyNit]];
+    const actor = new PrLandingActor({
+      pr: PR,
+      composeReply: async (c) => `reply for ${c.id}`,
+    });
+
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: { review },
+      budget: { maxIterations: 3 },
+      origin: 'scheduled',
+    });
+
+    // Converges on iter 1: no line comments to act on; body-nit is
+    // observation-only so nothing is proposed against it.
+    expect(report.haltReason).toBe('converged');
+    expect(review.replies).toEqual([]);
+    expect(review.resolvedIds).toEqual([]);
   });
 
   it('classify key changes when comment counts change across iterations', async () => {

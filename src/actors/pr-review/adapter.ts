@@ -16,6 +16,22 @@ import type { ActorAdapter } from '../types.js';
 
 export type ReviewCommentSeverity = 'nit' | 'suggestion' | 'architectural' | 'blocking';
 
+/**
+ * Where the comment originated.
+ *
+ * 'line': a threaded line-level review comment. Replyable + resolvable.
+ * 'body-nit': an item extracted from a reviewer's review-body markdown
+ *   (e.g., CodeRabbit's `🧹 Nitpick comments (N)` collapsible block).
+ *   NOT replyable or resolvable individually — the body is a single
+ *   review object on GitHub's side; items inside it are observed-only.
+ *   Consumers (including pr-landing) must branch on `kind` before
+ *   proposing reply/resolve actions against a body-nit.
+ *
+ * Defaults to 'line' when absent, which keeps all existing call sites
+ * backward-compatible.
+ */
+export type ReviewCommentKind = 'line' | 'body-nit';
+
 export interface ReviewComment {
   readonly id: string;
   readonly author: string;
@@ -32,6 +48,18 @@ export interface ReviewComment {
    * comment id can leave it undefined.
    */
   readonly threadId?: string;
+  /**
+   * Origin of the comment. Absent ≡ 'line' (back-compat default).
+   */
+  readonly kind?: ReviewCommentKind;
+  /**
+   * Unified-diff text of a `♻️ Proposed fix` block found in the comment
+   * body (or extracted from a body-nit). Present when the reviewer
+   * posted an applyable diff; undefined otherwise. Consumers can copy
+   * the text straight into `git apply`. No leading/trailing fenced-code
+   * markers; just diff text.
+   */
+  readonly proposedFix?: string;
 }
 
 export interface ReviewReplyOutcome {
@@ -74,6 +102,22 @@ export interface PrReviewAdapter extends ActorAdapter {
    * surface anything that is not inline on a diff. Honors dryRun.
    */
   postPrComment(pr: PrIdentifier, body: string): Promise<PrCommentOutcome>;
+
+  /**
+   * List items that live inside reviewers' review-body markdown rather
+   * than as individual line comments. Today this covers CodeRabbit's
+   * `🧹 Nitpick comments (N)` collapsible block; a shared abstraction
+   * waits for a second concrete reviewer format (YAGNI until then).
+   *
+   * Returned items carry `kind: 'body-nit'` and have no threadId; they
+   * are observed-only and cannot be replied to or resolved in isolation.
+   * pr-landing surfaces them through the operator-escalation path
+   * instead of the reply/resolve path.
+   *
+   * Adapters that do not consume a reviewer with body-scoped nits can
+   * return an empty array.
+   */
+  listReviewBodyNits(pr: PrIdentifier): Promise<ReadonlyArray<ReviewComment>>;
 }
 
 export interface PrCommentOutcome {

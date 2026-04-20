@@ -47,7 +47,23 @@ export interface PrLandingAdapters {
 
 export interface PrLandingObservation {
   readonly pr: PrIdentifier;
+  /**
+   * Line-level review comments. Replyable + resolvable via the review
+   * adapter; these drive classify()'s convergence key and propose()'s
+   * reply/resolve actions.
+   */
   readonly comments: ReadonlyArray<ReviewComment>;
+  /**
+   * Body-scoped nits extracted from reviewer review bodies (e.g.,
+   * CodeRabbit's `🧹 Nitpick comments (N)` collapsible block). Each
+   * has `kind: 'body-nit'` and no threadId. These items are
+   * OBSERVATION-ONLY: pr-landing does not reply or resolve them (no
+   * thread to act against). They surface through the
+   * operator-escalation path instead. Including them here keeps audit
+   * events complete and lets the escalation helper pull a single
+   * observation object rather than re-fetching.
+   */
+  readonly bodyNits: ReadonlyArray<ReviewComment>;
   /**
    * True when at least one of the reviewers in options.ensureReviewers
    * has posted at least one comment on this PR. False means the bot
@@ -123,8 +139,16 @@ export class PrLandingActor implements Actor<
   constructor(private readonly options: PrLandingOptions) {}
 
   async observe(ctx: ActorContext<PrLandingAdapters>): Promise<PrLandingObservation> {
-    const comments = await ctx.adapters.review.listUnresolvedComments(this.options.pr);
-    const base = { pr: this.options.pr, comments };
+    // Fetch line comments and body-scoped nits concurrently. Body-nits
+    // are additive observation data (never the convergence driver), so
+    // failing to fetch them must not block the observe; a 404/500 from
+    // the reviews endpoint surfaces as empty, which simply means "no
+    // body-nits seen this pass" and the normal flow continues.
+    const [comments, bodyNits] = await Promise.all([
+      ctx.adapters.review.listUnresolvedComments(this.options.pr),
+      safeListBodyNits(ctx.adapters.review, this.options.pr),
+    ]);
+    const base = { pr: this.options.pr, comments, bodyNits };
     if (!this.options.ensureReviewers || this.options.ensureReviewers.length === 0) {
       return base;
     }
@@ -335,4 +359,22 @@ function heuristicSeverity(comment: ReviewComment): 'nit' | 'suggestion' | 'arch
   if (/\bnit(pick)?\b/.test(body) || body.startsWith('nit:')) return 'nit';
   if (/(architecture|design|refactor|should be|instead of)/.test(body)) return 'architectural';
   return 'suggestion';
+}
+
+/**
+ * Wrap listReviewBodyNits so a failing adapter (network error, or an
+ * adapter that predates the method and has been softly-typed around)
+ * does not abort observe(). Body-nits are additive observation; an
+ * empty list is always a valid answer.
+ */
+async function safeListBodyNits(
+  adapter: PrReviewAdapter,
+  pr: PrIdentifier,
+): Promise<ReadonlyArray<ReviewComment>> {
+  if (typeof adapter.listReviewBodyNits !== 'function') return [];
+  try {
+    return await adapter.listReviewBodyNits(pr);
+  } catch {
+    return [];
+  }
 }

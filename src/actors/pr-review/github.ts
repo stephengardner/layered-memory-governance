@@ -15,6 +15,7 @@
 
 import type { GhClient } from '../../external/github/index.js';
 import type {
+  GithubPullRequestReviewRest,
   GithubReplyResponse,
   GithubResolveReviewThreadResponse,
   GithubReviewThreadsResponse,
@@ -26,6 +27,7 @@ import type {
   ReviewComment,
   ReviewReplyOutcome,
 } from './adapter.js';
+import { extractProposedFixFromCommentBody, parseCodeRabbitReviewBody } from './coderabbit-body-parser.js';
 
 export interface GitHubPrReviewAdapterOptions {
   readonly client: GhClient;
@@ -227,6 +229,58 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
   }
 
   /**
+   * Fetch all reviews for the PR, parse each body for CodeRabbit's
+   * `🧹 Nitpick comments (N)` block, and return the extracted items as
+   * synthetic `ReviewComment`s with `kind: 'body-nit'`.
+   *
+   * Synthetic ids have the form `body-nit:<reviewId>:<path>:<lineStart>`
+   * so they're stable across iterations (important for de-dup and
+   * escalation-message idempotency). Body-nits have no threadId and
+   * must not be fed into reply/resolve paths — pr-landing enforces
+   * this via the `kind` check.
+   *
+   * Only CodeRabbit reviews are parsed today. A second reviewer format
+   * would justify moving the parse dispatch into a registry; one
+   * concrete consumer, one inline branch.
+   */
+  async listReviewBodyNits(pr: PrIdentifier): Promise<ReadonlyArray<ReviewComment>> {
+    const reviews = await this.client.rest<ReadonlyArray<GithubPullRequestReviewRest>>({
+      path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
+      query: { per_page: 100 },
+    });
+    if (!reviews || reviews.length === 0) return [];
+
+    const out: ReviewComment[] = [];
+    for (const review of reviews) {
+      const author = review.user?.login ?? 'unknown';
+      if (!author.startsWith('coderabbitai')) continue;
+      if (!review.body) continue;
+      const parsed = parseCodeRabbitReviewBody(review.body);
+      for (const nit of parsed.nitpicks) {
+        const syntheticId = `body-nit:${review.id}:${nit.path}:${nit.lineStart ?? 0}`;
+        const base: ReviewComment = {
+          id: syntheticId,
+          author,
+          body: nit.body,
+          createdAt: review.submitted_at ?? new Date().toISOString(),
+          resolved: false,
+          kind: 'body-nit',
+          severity: 'nit',
+          path: nit.path,
+        };
+        const withLine = nit.lineStart !== undefined
+          ? { ...base, line: nit.lineStart }
+          : base;
+        const withFix = nit.proposedFix !== undefined
+          ? { ...withLine, proposedFix: nit.proposedFix }
+          : withLine;
+        out.push(withFix);
+      }
+    }
+    return out;
+  }
+
+  /**
    * Post a top-level PR comment. Used to prompt a reviewer bot or
    * surface anything that is not a thread reply. GitHub treats PRs as
    * issues for top-level comments, so this POSTs to the issues endpoint.
@@ -283,6 +337,7 @@ function mkComment(
     readonly createdAt: string;
   },
 ): ReviewComment {
+  const proposedFix = extractProposedFixFromCommentBody(c.body);
   const base: ReviewComment = {
     id: commentId,
     author: c.author?.login ?? 'unknown',
@@ -290,6 +345,8 @@ function mkComment(
     createdAt: c.createdAt,
     resolved: false,
     threadId,
+    kind: 'line',
+    ...(proposedFix !== undefined ? { proposedFix } : {}),
   };
   const path = c.path ?? threadPath;
   const line = c.line ?? undefined;

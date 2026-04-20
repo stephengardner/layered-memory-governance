@@ -68,3 +68,14 @@ export interface GithubReplyResponse {
   readonly node_id: string;
   readonly body: string;
 }
+
+/** A review object returned by REST /pulls/{n}/reviews. */
+export interface GithubPullRequestReviewRest {
+  readonly id: number;
+  readonly node_id: string;
+  readonly user: GithubUser;
+  readonly body: string;
+  readonly state: string;
+  readonly submitted_at?: string;
+  readonly commit_id?: string;
+}

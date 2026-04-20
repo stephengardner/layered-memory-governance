@@ -22,6 +22,7 @@ export type {
   GhRestArgs,
 } from './gh-client.js';
 export type {
+  GithubPullRequestReviewRest,
   GithubReplyResponse,
   GithubResolveReviewThreadResponse,
   GithubReviewCommentRest,
