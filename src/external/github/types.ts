@@ -73,7 +73,11 @@ export interface GithubReplyResponse {
 export interface GithubPullRequestReviewRest {
   readonly id: number;
   readonly node_id: string;
-  readonly user: GithubUser;
+  /**
+   * Nullable / absent when the account is deleted or is a ghost.
+   * Consumers must defend with `review.user?.login ?? 'unknown'`.
+   */
+  readonly user?: GithubUser | null;
   readonly body: string;
   readonly state: string;
   readonly submitted_at?: string;

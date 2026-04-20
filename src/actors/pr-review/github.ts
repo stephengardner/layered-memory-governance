@@ -50,9 +50,26 @@ export interface GitHubPrReviewAdapterOptions {
    * comment regardless of prior replies).
    */
   readonly alreadyRepliedAuthors?: ReadonlyArray<string>;
+  /**
+   * Author login prefixes whose review BODIES are parsed for body-
+   * scoped nits by `listReviewBodyNits`. Extracting nits from the
+   * review body is reviewer-format-specific (CodeRabbit ships the
+   * `🧹 Nitpick comments` collapsible block; other reviewers use
+   * different structures we cannot parse). Vendor-specific knowledge
+   * belongs in configuration, not src/: a team using a private
+   * CodeRabbit instance with a custom login, or a different
+   * reviewer bot entirely, overrides this without touching framework
+   * code.
+   *
+   * Default: ['coderabbitai']. Any author whose login starts with
+   * ANY prefix in the list has their review body parsed. Set to []
+   * to disable body-nit parsing entirely.
+   */
+  readonly bodyNitReviewerPrefixes?: ReadonlyArray<string>;
 }
 
 const DEFAULT_ALREADY_REPLIED_AUTHORS: ReadonlyArray<string> = ['github-actions[bot]'];
+const DEFAULT_BODY_NIT_REVIEWER_PREFIXES: ReadonlyArray<string> = ['coderabbitai'];
 
 const REVIEW_THREADS_QUERY = `
 query ReviewThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
@@ -99,6 +116,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
   private readonly dryRun: boolean;
   private readonly maxThreadPages: number;
   private readonly alreadyRepliedAuthors: ReadonlySet<string>;
+  private readonly bodyNitReviewerPrefixes: ReadonlyArray<string>;
   private readonly threadIndex = new Map<string, string>();
 
   constructor(options: GitHubPrReviewAdapterOptions) {
@@ -108,6 +126,8 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     this.alreadyRepliedAuthors = new Set(
       options.alreadyRepliedAuthors ?? DEFAULT_ALREADY_REPLIED_AUTHORS,
     );
+    this.bodyNitReviewerPrefixes =
+      options.bodyNitReviewerPrefixes ?? DEFAULT_BODY_NIT_REVIEWER_PREFIXES;
   }
 
   async listUnresolvedComments(pr: PrIdentifier): Promise<ReadonlyArray<ReviewComment>> {
@@ -253,7 +273,11 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     const out: ReviewComment[] = [];
     for (const review of reviews) {
       const author = review.user?.login ?? 'unknown';
-      if (!author.startsWith('coderabbitai')) continue;
+      // Body-nit parsing is reviewer-format-specific. Only authors
+      // whose login starts with one of the configured prefixes get
+      // their review body parsed; others have no supported body
+      // format and would produce empty or garbage output.
+      if (!this.bodyNitReviewerPrefixes.some((p) => author.startsWith(p))) continue;
       if (!review.body) continue;
       const parsed = parseCodeRabbitReviewBody(review.body);
       for (const nit of parsed.nitpicks) {
