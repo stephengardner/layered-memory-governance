@@ -106,15 +106,8 @@ export interface InvokeClaudeStreamingResult {
 export async function invokeClaudeStreaming(
   options: InvokeClaudeStreamingOptions,
 ): Promise<InvokeClaudeStreamingResult> {
-  // Write the system prompt to a tmp file rather than the argv so it
-  // does not leak via process listings. Mirrors invoke-claude.ts.
   let tmpDir: string | null = null;
   let systemFile: string | null = null;
-  if (options.systemPrompt !== undefined) {
-    tmpDir = await mkdtemp(join(tmpdir(), 'lag-claude-streaming-'));
-    systemFile = join(tmpDir, `system-${randomBytes(4).toString('hex')}.txt`);
-    await writeFile(systemFile, options.systemPrompt, 'utf8');
-  }
 
   const args: string[] = [
     '-p',
@@ -132,9 +125,6 @@ export async function invokeClaudeStreaming(
     '--mcp-config',
     '{"mcpServers":{}}',
   ];
-  if (systemFile !== null) {
-    args.push('--append-system-prompt-file', systemFile);
-  }
   if (options.resumeSessionId !== undefined) {
     args.push('--resume', options.resumeSessionId);
   }
@@ -162,6 +152,18 @@ export async function invokeClaudeStreaming(
   };
 
   try {
+    // Write the system prompt to a tmp file rather than the argv so
+    // it does not leak via process listings (mirrors invoke-claude.ts).
+    // The mkdtemp/writeFile lives INSIDE try so a writeFile failure
+    // still hits the finally cleanup; otherwise a failed write would
+    // orphan the created temp directory.
+    if (options.systemPrompt !== undefined) {
+      tmpDir = await mkdtemp(join(tmpdir(), 'lag-claude-streaming-'));
+      systemFile = join(tmpDir, `system-${randomBytes(4).toString('hex')}.txt`);
+      await writeFile(systemFile, options.systemPrompt, 'utf8');
+      args.push('--append-system-prompt-file', systemFile);
+    }
+
     const result = await exec(args, handleLine, {
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
