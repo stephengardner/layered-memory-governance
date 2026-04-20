@@ -158,9 +158,15 @@ export function markdownToTelegramHtml(text: string): string {
 }
 
 /**
- * Split a markdown text into chunks sized for Telegram. Never splits
- * inside a fenced code block. Operates on RAW markdown so each chunk
- * can be independently converted with markdownToTelegramHtml().
+ * Split a text into chunks sized for Telegram. Never splits inside a
+ * fenced code block or between a paired `<tg-spoiler>` open/close.
+ *
+ * Callers pass EITHER raw markdown (pre-render) OR already-rendered
+ * Telegram HTML. The splitter is tag-aware enough to keep
+ * `<tg-spoiler>` pairs intact; without that guard, a long details
+ * block whose HTML exceeds TELEGRAM_MAX_CHARS would be cut between
+ * its opening and closing spoiler tag and Telegram's HTML parse
+ * would reject the chunks.
  */
 export function splitMarkdownForTelegram(text: string, maxChars = TELEGRAM_MAX_CHARS): string[] {
   if (text.length <= maxChars) return [text];
@@ -176,8 +182,18 @@ export function splitMarkdownForTelegram(text: string, maxChars = TELEGRAM_MAX_C
     // the fence starts too early (e.g. at position 0), accept that we
     // must cut inside the block.
     const safeFence = findSafeFenceCut(remaining, maxChars);
-    if (safeFence > maxChars * 0.3) {
-      cut = safeFence;
+    // Same invariant for `<tg-spoiler>` pairs: if the window has an
+    // opening spoiler tag with no matching close before maxChars, cut
+    // before the opening tag so the entire spoiler body lands in the
+    // next chunk.
+    const safeSpoiler = findSafeSpoilerCut(remaining, maxChars);
+
+    // Pick the latest safe cut point that meets the 30%-of-maxChars
+    // minimum (to avoid tiny fragments). Line/space fallbacks apply
+    // only if no tag-aware cut is available.
+    const tagCuts = [safeFence, safeSpoiler].filter((c) => c > maxChars * 0.3);
+    if (tagCuts.length > 0) {
+      cut = Math.max(...tagCuts);
     } else {
       const nl = remaining.lastIndexOf('\n', maxChars);
       if (nl > maxChars * 0.5) {
@@ -261,6 +277,41 @@ function findSafeFenceCut(text: string, limit: number): number {
   }
   if (positions.length % 2 === 1 && positions.length > 0) {
     return positions[positions.length - 1]!;
+  }
+  return -1;
+}
+
+/**
+ * Find a safe cut point AT or BEFORE `limit` that does not split a
+ * `<tg-spoiler>` open/close pair. If the window contains an opening
+ * spoiler tag with no matching close before `limit`, return the
+ * position of that opening tag so we cut just before it (the entire
+ * spoiler body lands in the next chunk). Otherwise -1.
+ */
+function findSafeSpoilerCut(text: string, limit: number): number {
+  const window = text.slice(0, limit);
+  const openPositions: number[] = [];
+  const closePositions: number[] = [];
+  const OPEN = '<tg-spoiler>';
+  const CLOSE = '</tg-spoiler>';
+  let i = 0;
+  while (i < window.length) {
+    const next = window.indexOf(OPEN, i);
+    if (next === -1) break;
+    openPositions.push(next);
+    i = next + OPEN.length;
+  }
+  i = 0;
+  while (i < window.length) {
+    const next = window.indexOf(CLOSE, i);
+    if (next === -1) break;
+    closePositions.push(next);
+    i = next + CLOSE.length;
+  }
+  if (openPositions.length > closePositions.length) {
+    // An unmatched opening tag: cut before it so the whole spoiler
+    // goes to the next chunk.
+    return openPositions[openPositions.length - 1]!;
   }
   return -1;
 }

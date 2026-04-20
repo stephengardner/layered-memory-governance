@@ -145,10 +145,16 @@ export async function ensureServiceRunning(
   try {
     await writePidFile(options.pidFile, startResult.pid);
   } catch (err) {
+    // Kill the orphan. We already spawned the detached child, so if
+    // we can't persist its pid to the lockfile, the next caller will
+    // see "no pidFile" and spawn a SECOND instance while the first
+    // is still running. Best-effort SIGTERM; whatever happens, we
+    // release the lock and surface failure.
+    try { process.kill(startResult.pid, 'SIGTERM'); } catch { /* already gone */ }
     await rm(lockFile, { force: true }).catch(() => { /* ignore */ });
     return {
       status: 'failed',
-      reason: `spawned pid ${startResult.pid} but could not write ${options.pidFile}: ${
+      reason: `spawned pid ${startResult.pid} but could not write ${options.pidFile} (orphan killed): ${
         err instanceof Error ? err.message : String(err)
       }`,
     };

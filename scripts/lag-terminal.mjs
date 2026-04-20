@@ -379,21 +379,6 @@ async function main() {
   const mirrorMinChars = 40;
   let mirrorController = null;
   if (args.mirror) {
-<<<<<<< HEAD
-    mirrorController = startJsonlMirror({
-      repoRoot: REPO_ROOT,
-      resumeSessionId: args.resumeSessionId,
-      onText: async (text) => {
-        if (text.length < mirrorMinChars) return;
-        await sendMirrorText(injector, text, { verbose: args.verbose });
-      },
-      onResolve: (p) => {
-        sessionFileRef.path = p;
-        if (args.verbose) console.error(`[tg] session file: ${p}`);
-      },
-      verbose: args.verbose,
-    });
-=======
     const useCliMirror = args.mirrorUx === 'cli'
       && startJsonlMirrorCli !== null
       && createTelegramChannel !== null
@@ -413,6 +398,12 @@ async function main() {
           )
         : null;
       if (jsonlPath) {
+        // Sync sessionFileRef.path so the injector's verify path
+        // (countMatchingUserEntries) reads the same file the CLI
+        // mirror is tailing. Without this assignment, verify would
+        // use whatever stale default sessionFileRef started with.
+        sessionFileRef.path = jsonlPath;
+        if (args.verbose) console.error(`[tg] session file: ${jsonlPath}`);
         const channel = createTelegramChannel({
           botToken,
           chatId,
@@ -432,6 +423,10 @@ async function main() {
         mirrorController = startJsonlMirror({
           repoRoot: REPO_ROOT,
           resumeSessionId: args.resumeSessionId,
+          onResolve: (p) => {
+            sessionFileRef.path = p;
+            if (args.verbose) console.error(`[tg] session file: ${p}`);
+          },
           onText: async (text) => {
             if (text.length < mirrorMinChars) return;
             await sendMirrorText(injector, text, { verbose: args.verbose });
@@ -443,6 +438,10 @@ async function main() {
       mirrorController = startJsonlMirror({
         repoRoot: REPO_ROOT,
         resumeSessionId: args.resumeSessionId,
+        onResolve: (p) => {
+          sessionFileRef.path = p;
+          if (args.verbose) console.error(`[tg] session file: ${p}`);
+        },
         onText: async (text) => {
           if (text.length < mirrorMinChars) return;
           await sendMirrorText(injector, text, { verbose: args.verbose });
@@ -450,7 +449,6 @@ async function main() {
         verbose: args.verbose,
       });
     }
->>>>>>> 3667525 (cli-renderer: thinking in throbber, never in final + jsonl-mirror primitive)
   }
 
   // If mirror is disabled but we still want verification (the common

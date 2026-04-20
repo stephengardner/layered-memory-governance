@@ -699,11 +699,23 @@ export class LAGDaemon {
     let replyText = '';
     const controller = this.activeRuns.get(runToken)!;
     try {
+      // Pick up operator-configured invoke options (model, verbose,
+      // timeoutMs, maxBudgetUsd) so CLI-style replies honor the same
+      // runtime knobs as batch replies. Without this, toggling
+      // cliStyle silently dropped invokeOptions on the floor.
+      // InvokeClaudeOptions is a superset that includes fields the
+      // streaming path does not consume (e.g. output-format flags);
+      // we cherry-pick the fields that apply to both.
+      const cfg = this.options.invokeOptions ?? {};
       const streamingOpts: InvokeClaudeStreamingOptions = {
         userMessage: args.text,
         systemPrompt: args.systemPrompt,
         onEvent: (ev) => renderer.emit(ev),
         signal: controller.signal,
+        ...(cfg.model !== undefined ? { model: cfg.model } : {}),
+        ...(cfg.maxBudgetUsd !== undefined ? { maxBudgetUsd: cfg.maxBudgetUsd } : {}),
+        ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
+        ...(cfg.verbose !== undefined ? { verbose: cfg.verbose } : {}),
         ...(this.options.repoRoot !== undefined ? { cwd: this.options.repoRoot } : {}),
         ...(this.options.resumeSessionId !== undefined ? { resumeSessionId: this.options.resumeSessionId } : {}),
       };

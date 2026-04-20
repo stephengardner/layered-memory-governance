@@ -446,13 +446,27 @@ export class CliRenderer {
 
   private renderFooter(meta: Readonly<Record<string, string | number>> | undefined): string {
     if (!meta || Object.keys(meta).length === 0) return '';
-    const parts = Object.entries(meta).map(([k, v]) => `${k}=${String(v)}`);
+    // Escape markdown metacharacters in keys + values. Meta can
+    // contain file paths, atom ids, and other strings with
+    // underscores, asterisks, backticks, or brackets that would
+    // break the `_..._` italic wrapper or accidentally introduce
+    // markup the caller did not intend.
+    const parts = Object.entries(meta).map(
+      ([k, v]) => `${escapeMarkdownInline(k)}=${escapeMarkdownInline(String(v))}`,
+    );
     // Emit as markdown italic, not literal HTML. When renderFinal is a
     // markdown->HTML converter (TelegramHtml), raw `<i>` tags would be
     // escaped to `&lt;i&gt;` by the converter's free-text escape pass.
     // `_..._` lets the converter produce the `<i>` tag itself.
     return `_${parts.join(' · ')}_`;
   }
+}
+
+function escapeMarkdownInline(s: string): string {
+  // Backslash first so the escapes we introduce below are not
+  // themselves double-escaped. Then the set of chars that create
+  // emphasis or links / code spans in the markdown->HTML converter.
+  return s.replaceAll('\\', '\\\\').replace(/([_*`[\]()])/g, '\\$1');
 }
 
 function truncate(s: string, max: number): string {
