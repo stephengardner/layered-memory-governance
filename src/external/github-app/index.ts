@@ -31,3 +31,6 @@ export type {
   AppInstallation,
   AppManifestConversionResult,
 } from './app-client.js';
+
+export { createAppBackedGhClient } from './gh-client-adapter.js';
+export type { AppBackedGhClientOptions } from './gh-client-adapter.js';

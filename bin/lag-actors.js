@@ -29,6 +29,7 @@ import {
   getBranchSha,
   createBranch,
   upsertFile,
+  createAppBackedGhClient,
 } from '../dist/external/github-app/index.js';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -87,6 +88,9 @@ Commands:
   list                 Show provisioned actors.
   demo-pr              Open a trivial test PR as an actor to prove
                        end-to-end auth. Requires --role and --repo.
+  demo-adapter         Exercise the GhClient adapter (rest + graphql)
+                       against GitHub to confirm the pluggable auth
+                       backend works. Requires --role.
   help                 This help.
 
 Options:
@@ -279,6 +283,59 @@ async function cmdDemoPr(args) {
   }
 }
 
+async function cmdDemoAdapter(args) {
+  if (!args.role) {
+    console.error('demo-adapter requires --role <name>');
+    process.exit(1);
+  }
+  const store = createCredentialsStore(args.stateDir);
+  const loaded = await store.load(args.role);
+  if (!loaded) {
+    console.error(`no credentials for role '${args.role}'. Run 'lag-actors sync' first.`);
+    process.exit(1);
+  }
+  const { record, privateKey } = loaded;
+  if (!record.installationId) {
+    console.error(`role '${args.role}' has no installationId yet. Run 'lag-actors demo-pr' once against a repo first to record it, or install the App manually.`);
+    process.exit(1);
+  }
+
+  // Build a GhClient that authenticates as the App bot. Any actor
+  // written against GhClient (including PrLandingActor via
+  // GitHubPrReviewAdapter) can consume this client unchanged.
+  const client = createAppBackedGhClient({
+    auth: {
+      appId: record.appId,
+      privateKey,
+      installationId: record.installationId,
+    },
+  });
+
+  // Surface 1: REST. /installation/repositories is the canonical
+  // "what can I see?" call for an App installation.
+  const repos = await client.rest({
+    path: '/installation/repositories',
+    query: { per_page: 5 },
+  });
+  const repoNames = (repos?.repositories ?? []).map((r) => r.full_name);
+  console.log(`[${args.role}] rest /installation/repositories -> ${repoNames.length} repo(s):`);
+  for (const n of repoNames) console.log(`  - ${n}`);
+
+  // Surface 2: GraphQL. viewer.login returns the bot's own identity.
+  const viewer = await client.graphql(
+    'query { viewer { login __typename } }',
+  );
+  console.log(`[${args.role}] graphql { viewer { login } } -> ${viewer.viewer.login} (${viewer.viewer.__typename})`);
+
+  if (args.json) {
+    console.log(JSON.stringify({
+      role: args.role,
+      bot: viewer.viewer.login,
+      repos: repoNames,
+    }, null, 2));
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   switch (args.command) {
@@ -290,6 +347,9 @@ async function main() {
       break;
     case 'demo-pr':
       await cmdDemoPr(args);
+      break;
+    case 'demo-adapter':
+      await cmdDemoAdapter(args);
       break;
     case 'help':
     default:
