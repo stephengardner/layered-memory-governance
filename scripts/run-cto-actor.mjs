@@ -32,7 +32,6 @@ import { createFileHost } from '../dist/adapters/file/index.js';
 import { ClaudeCliLLM } from '../dist/adapters/claude-cli/index.js';
 import { runActor } from '../dist/actors/index.js';
 import {
-  DEFAULT_JUDGE_TIMEOUT_MS,
   HostLlmPlanningJudgment,
   PlanningActor,
 } from '../dist/actors/planning/index.js';
@@ -44,6 +43,25 @@ import {
 // tokens.
 const DEFAULT_CLASSIFY_MODEL = 'claude-opus-4-7';
 const DEFAULT_DRAFT_MODEL = 'claude-opus-4-7';
+
+// Instance policy for the "thinking" run posture. Per operator
+// directive 2026-04-20: "these budgets should be inherently much
+// higher, getting things right and sparing no tokens and using
+// maximum effort in order to get to the perfect setup is part of
+// our canon." The Claude Code CLI we shell out to reports
+// `total_cost_usd` as a self-metered effort counter against a
+// would-be-API-billing rate; on subscription that number is not a
+// real charge, it is the "how hard should the CLI try before
+// giving up on one call" knob. 50 USD leaves comfortable headroom
+// for rich planning runs that explore multiple tool-use attempts
+// before producing structured output.
+//
+// 30-minute wallclock is similarly generous: complex drafts
+// legitimately take 3-8 minutes; the default must never be the
+// reason a legitimate run gets killed. Operator override remains
+// via --max-budget-usd and --timeout-ms.
+const INSTANCE_MAX_BUDGET_USD_PER_CALL = 50.0;
+const INSTANCE_JUDGE_TIMEOUT_MS = 1_800_000;
 
 // Each iteration spawns (up to) 2 judge calls: classify + draft.
 // Used to size the deadline so we do not budget-deadline a run
@@ -65,6 +83,7 @@ function parseArgs(argv) {
     classifyModel: undefined,
     draftModel: undefined,
     maxBudgetUsdPerCall: undefined,
+    timeoutMs: undefined,
     minConfidence: undefined,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -81,6 +100,13 @@ function parseArgs(argv) {
         process.exit(2);
       }
       args.maxBudgetUsdPerCall = n;
+    } else if (a === '--timeout-ms' && i + 1 < argv.length) {
+      const n = Number(argv[++i]);
+      if (!Number.isFinite(n) || n <= 0) {
+        console.error('ERROR: --timeout-ms expects a positive number');
+        process.exit(2);
+      }
+      args.timeoutMs = n;
     } else if (a === '--min-confidence' && i + 1 < argv.length) {
       const n = Number(argv[++i]);
       if (!Number.isFinite(n) || n < 0 || n > 1) {
@@ -106,7 +132,8 @@ function parseArgs(argv) {
         '  --stub                   Use the deterministic stub judgment (no LLM call).',
         '  --classify-model <name>  Override the classify-step model. Default claude-opus-4-7.',
         '  --draft-model <name>     Override the draft-step model. Default claude-opus-4-7.',
-        '  --max-budget-usd <n>     Per-call budget cap (synthetic effort counter, NOT subscription billing). Default 50.00.',
+        '  --max-budget-usd <n>     Per-call budget cap. Default 50.00 (instance "spare-no-tokens" posture on Claude Code subscription; the CLI treats this as a synthetic effort counter, not a real charge on subscription).',
+        '  --timeout-ms <n>         Per-call LLM timeout (ms). Default 1800000 (30 min) for Opus rich drafts.',
         '  --min-confidence <n>     Drop plans below this confidence. Default 0.55.',
         '  --max-iterations <n>     runActor iteration cap. Default 2.',
         '  --principal <id>         Principal to run as. Default cto-actor.',
@@ -235,9 +262,11 @@ async function main() {
     : new HostLlmPlanningJudgment(host, {
         classifyModel: args.classifyModel ?? DEFAULT_CLASSIFY_MODEL,
         draftModel: args.draftModel ?? DEFAULT_DRAFT_MODEL,
-        ...(args.maxBudgetUsdPerCall !== undefined
-          ? { maxBudgetUsdPerCall: args.maxBudgetUsdPerCall }
-          : {}),
+        // Instance policy: spare-no-tokens posture on Claude Code
+        // subscription. Framework defaults in src/ are conservative;
+        // the "thinking" run posture is expressed here where it belongs.
+        maxBudgetUsdPerCall: args.maxBudgetUsdPerCall ?? INSTANCE_MAX_BUDGET_USD_PER_CALL,
+        timeoutMs: args.timeoutMs ?? INSTANCE_JUDGE_TIMEOUT_MS,
         ...(args.minConfidence !== undefined ? { minConfidence: args.minConfidence } : {}),
       });
 
@@ -248,11 +277,12 @@ async function main() {
 
   // Size the deadline so we never budget-deadline a run whose LLM
   // calls are running at the per-call timeout. Worst case per run is
-  // maxIterations * JUDGE_CALLS_PER_ITERATION * DEFAULT_JUDGE_TIMEOUT_MS,
+  // maxIterations * JUDGE_CALLS_PER_ITERATION * effective-per-call-timeout,
   // plus slack for actor overhead + atom writes + notifier posts.
+  const effectivePerCallTimeoutMs = args.timeoutMs ?? INSTANCE_JUDGE_TIMEOUT_MS;
   const SLACK_MS = 60_000;
   const llmBudgetMs =
-    args.maxIterations * JUDGE_CALLS_PER_ITERATION * DEFAULT_JUDGE_TIMEOUT_MS + SLACK_MS;
+    args.maxIterations * JUDGE_CALLS_PER_ITERATION * effectivePerCallTimeoutMs + SLACK_MS;
   const deadlineMs = args.stub ? 60_000 : Math.max(600_000, llmBudgetMs);
   const deadline = new Date(Date.now() + deadlineMs).toISOString();
   const mode = args.stub ? 'STUB' : 'LLM (thinking)';
