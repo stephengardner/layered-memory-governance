@@ -38,7 +38,13 @@ export type {
   CliRendererChannel,
   CliRendererEvent,
   CliRendererOptions,
+  InlineAction,
   MessageOptions,
   PostedMessage,
 } from './types.js';
 export type { TelegramChannelOptions } from './telegram-channel.js';
+export { startJsonlMirror } from './jsonl-mirror.js';
+export type {
+  JsonlMirrorController,
+  JsonlMirrorOptions,
+} from './jsonl-mirror.js';

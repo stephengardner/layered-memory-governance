@@ -12,6 +12,7 @@
  *   lag-tg restart    stop + start
  */
 
+import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
@@ -26,6 +27,7 @@ const REPO_ROOT = resolve(HERE, '..');
 const PID_FILE = join(REPO_ROOT, '.lag', 'daemon.pid');
 const LOG_FILE = join(REPO_ROOT, '.lag', 'daemon.log');
 const DAEMON_SCRIPT = join(REPO_ROOT, 'scripts', 'daemon.mjs');
+const TERMINAL_SCRIPT = join(REPO_ROOT, 'scripts', 'lag-terminal.mjs');
 
 async function loadDotEnv() {
   try {
@@ -103,8 +105,32 @@ async function status() {
   }
 }
 
+async function terminal(rest) {
+  // Foreground PTY-mirror session. Ensures no standalone daemon is
+  // racing for Telegram getUpdates before exec'ing lag-terminal.
+  const status = await getServiceStatus({ pidFile: PID_FILE });
+  if (status.status === 'running') {
+    console.error(`lag-tg: standalone daemon is running (pid ${status.pid}); stopping before terminal mode`);
+    await stopService({ pidFile: PID_FILE });
+  }
+  await loadDotEnv();
+  if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+    console.error('lag-tg: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set (typically in .env).');
+    process.exit(1);
+  }
+  // Exec the terminal wrapper in the foreground; its PTY session is
+  // interactive so we inherit stdio verbatim.
+  const child = spawn(process.execPath, [TERMINAL_SCRIPT, ...rest], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+    env: process.env,
+  });
+  child.on('exit', (code) => process.exit(code ?? 0));
+}
+
 async function main() {
   const cmd = process.argv[2];
+  const rest = process.argv.slice(3);
   switch (cmd) {
     case 'start': await start(); return;
     case 'stop': await stop(); return;
@@ -113,19 +139,40 @@ async function main() {
       await stop();
       await start();
       return;
+    case 'terminal':
+      await terminal(rest);
+      return;
     case undefined:
     case '-h':
     case '--help':
-      console.log(`Usage: lag-tg <start|stop|status|restart>
+      console.log(`Usage: lag-tg <start|stop|status|restart|terminal>
 
-  start      start the LAG Telegram daemon in the background (idempotent)
-  stop       send SIGTERM to the recorded pid and clear the lockfile
-  status     report running | stopped | stale
-  restart    stop + start
+Modes:
+  start        Standalone daemon: each TG message spawns a fresh
+               \`claude -p\` subprocess with the cli-renderer throbber.
+               Runs detached in the background. Best when you don't
+               need an interactive local Claude session.
+
+  terminal     PTY mirror: wraps your local Claude Code session in a
+               PTY. Telegram messages inject into stdin; assistant
+               turns mirror to Telegram with the cli-renderer
+               throbber (via jsonl tail). Runs in the foreground of
+               the terminal you invoked it from.
+               Forwards any remaining args to scripts/lag-terminal.mjs
+               (e.g. --resume-session <id>).
+
+Lifecycle:
+  stop         send SIGTERM to the recorded pid and clear the lockfile
+  status       report running | stopped | stale
+  restart      stop + start
+
+Note: only one of (start, terminal) may poll Telegram at a time.
+\`terminal\` auto-stops a running daemon before taking over.
 
 Lockfile:  ${PID_FILE}
 Log file:  ${LOG_FILE}
-Script:    ${DAEMON_SCRIPT}`);
+Daemon:    ${DAEMON_SCRIPT}
+Terminal:  ${TERMINAL_SCRIPT}`);
       return;
     default:
       console.error(`lag-tg: unknown subcommand: ${cmd}`);
