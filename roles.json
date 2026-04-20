@@ -13,6 +13,20 @@
         "metadata": "read"
       },
       "events": []
+    },
+    {
+      "name": "lag-cto",
+      "displayName": "LAG CTO",
+      "description": "CTO actor's GitHub identity. Opens PRs for plans that need code, authors CodeRabbit replies as CTO. Cannot merge (pol-cto-no-merge keeps merge authority with operator).",
+      "permissions": {
+        "contents": "write",
+        "pull_requests": "write",
+        "issues": "write",
+        "checks": "read",
+        "statuses": "read",
+        "metadata": "read"
+      },
+      "events": []
     }
   ]
 }
