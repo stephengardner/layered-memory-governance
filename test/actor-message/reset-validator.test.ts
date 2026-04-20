@@ -269,6 +269,29 @@ describe('validateResetWrite', () => {
     await expect(validateResetWrite(host, reset)).rejects.toBeInstanceOf(ResetShapeError);
   });
 
+  it('tainted authority policy is ignored (falls through to default-deny)', async () => {
+    // Regression guard: if the policy atom is tainted (operator
+    // compromised an authority policy and later marked it tainted),
+    // the validator must NOT honor it. Otherwise a compromised atom
+    // could silently widen the authorized set or bump max_signer_depth.
+    const host = createMemoryHost();
+    const tainted = authorityPolicyAtom({ authorized: ['attacker'] });
+    await host.atoms.put(tainted);
+    await host.atoms.update(tainted.id, { taint: 'tainted' });
+
+    await host.principals.put(principal('attacker'));
+    await host.atoms.put(tripAtom('trip-1', 'victim'));
+    const reset = resetAtom('reset-1', 'attacker', {
+      target_principal: 'victim' as PrincipalId,
+      trip_atom_id: 'trip-1' as AtomId,
+    });
+
+    // With the tainted policy filtered out, the fallback
+    // (authorized_principals=[], max_signer_depth=0) applies, so
+    // the attacker fails authority.
+    await expect(validateResetWrite(host, reset)).rejects.toBeInstanceOf(ResetAuthorityError);
+  });
+
   it('non-existent principal does NOT pass the depth gate even when max_signer_depth >= 0', async () => {
     // Regression guard for the #38 CR round-2 finding: principalDepth
     // used to return 0 for a principal not in the store (the while loop

@@ -212,11 +212,18 @@ export class ActorMessageRateLimiter {
     this.cacheExpiresAt = this.policyCacheMs > 0 ? nowMs + this.policyCacheMs : 0;
   }
 
-  /** Query policy atoms for a given subject. Directives only (L3). */
+  /**
+   * Query policy atoms for a given subject. Directives only (L3).
+   * Excludes tainted and superseded atoms defensively so a compromised
+   * atom cannot silently widen rate limits or relax the trip
+   * threshold.
+   */
   private async queryPolicyAtoms(subject: string): Promise<Atom[]> {
     const filter: AtomFilter = { type: ['directive'], layer: ['L3'] };
     const page = await this.host.atoms.query(filter, 200);
     return page.atoms.filter((a) => {
+      if (a.taint !== 'clean') return false;
+      if (a.superseded_by.length > 0) return false;
       const policy = (a.metadata as Record<string, unknown>)?.policy as
         | Record<string, unknown>
         | undefined;

@@ -179,6 +179,14 @@ async function isAuthorizedSigner(
 async function readAuthorityPolicy(host: Host): Promise<ResetAuthorityPolicy> {
   const page = await host.atoms.query({ type: ['directive'], layer: ['L3'] }, 200);
   for (const atom of page.atoms) {
+    // Reject tainted or superseded policy atoms defensively. The
+    // AtomFilter may not always include these predicates in every
+    // backing store implementation, so the filter happens here too.
+    // A tainted or superseded authority policy must never silently
+    // grant authority -- that would let a compromised atom re-enable
+    // a signer the canon rejected.
+    if (atom.taint !== 'clean') continue;
+    if (atom.superseded_by.length > 0) continue;
     const policy = (atom.metadata as Record<string, unknown>)?.policy as
       | Record<string, unknown>
       | undefined;
