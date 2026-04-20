@@ -259,9 +259,31 @@ Two kinds of identity an Actor can wear on GitHub. The framework supports both; 
 The choice is pluggable. Wire whichever client into `GitHubPrReviewAdapter`; the Actor code never changes:
 
 ```ts
+// Load credentials a role provisioned by `lag-actors sync`. The
+// store reads .lag/apps/<role>.json + .lag/apps/keys/<role>.pem;
+// installationId is populated after the App is installed on a
+// target. See `actors/provisioning` for the full surface.
+async function ghClientForRole(role: string) {
+  const store = createCredentialsStore('.lag');
+  const loaded = await store.load(role);
+  if (!loaded) {
+    throw new Error(`role "${role}" not provisioned; run 'lag-actors sync'`);
+  }
+  if (loaded.record.installationId === undefined) {
+    throw new Error(`role "${role}" has no installation; install the App on a target repo first`);
+  }
+  return createAppBackedGhClient({
+    auth: {
+      appId: loaded.record.appId,
+      installationId: loaded.record.installationId,
+      privateKey: loaded.privateKey,
+    },
+  });
+}
+
 // Same actor, different identity on the wire:
 const client = useBotIdentity
-  ? createAppBackedGhClient({ auth: await loadAuthForRole('lag-pr-landing') })
+  ? await ghClientForRole('lag-pr-landing')
   : createGhClient();
 
 const actor = new PrLandingActor({
