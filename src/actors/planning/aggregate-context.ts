@@ -75,7 +75,14 @@ export async function aggregateRelevantContext(
     maxOpenPlans,
   );
   const openPlans = planPage.atoms.filter((atom) => {
-    const ps = atom.metadata.plan_state;
+    // plan_state is a top-level Atom field per src/types.ts. Fall
+    // back to metadata.plan_state to stay compatible with older
+    // plan atoms that were written with it in metadata before the
+    // PlanningActor fix. New plans use the top-level field; the
+    // compatibility read lets historical atoms continue to surface
+    // in open-plan queries.
+    const ps = atom.plan_state
+      ?? (atom.metadata.plan_state as string | undefined);
     return ps === 'proposed' || ps === 'approved' || ps === 'executing';
   });
 

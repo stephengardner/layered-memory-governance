@@ -203,7 +203,11 @@ function renderContextForJudge(context: PlanningContext): Record<string, unknown
         typeof atom.metadata?.title === 'string'
           ? (atom.metadata.title as string)
           : '(untitled)',
-      plan_state: String(atom.metadata?.plan_state ?? 'unknown'),
+      // Read top-level plan_state first (the correct location per
+       // src/types.ts); fall back to metadata.plan_state so plans
+       // written before the planning-actor plan_state fix still
+       // render as their real state instead of 'unknown'.
+      plan_state: String(atom.plan_state ?? atom.metadata?.plan_state ?? 'unknown'),
       content: atom.content,
     })),
     principals: context.relevantPrincipals.map((p) => ({
