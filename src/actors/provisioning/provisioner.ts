@@ -21,7 +21,6 @@ import { randomBytes } from 'node:crypto';
 import type { RoleDefinition } from './schema.js';
 import { assessRoleRisk } from './risk-assessor.js';
 import type { RiskAssessment } from './risk-assessor.js';
-import { buildManifestUrl } from './manifest-url.js';
 import { startCallbackServer } from './callback-server.js';
 import type { CredentialsStore } from './credentials-store.js';
 import { convertManifestCode } from '../../external/github-app/app-client.js';
@@ -84,24 +83,32 @@ export async function provisionRole(req: ProvisionRoleRequest): Promise<Provisio
 
   const state = randomBytes(16).toString('hex');
   progress('starting-callback-server');
+
+  // Build the manifest lazily (after the server binds and knows its
+  // port) so `url` / `redirect_url` point at the actual callback URL.
   const callback = await startCallbackServer({
     expectedState: state,
+    buildManifestJson: (redirectUrl) => JSON.stringify({
+      name: req.role.displayName,
+      url: redirectUrl,
+      redirect_url: redirectUrl,
+      description: req.role.description,
+      public: false,
+      default_permissions: req.role.permissions,
+      default_events: req.role.events,
+    }),
+    ...(req.role.organization ? { organization: req.role.organization } : {}),
     ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
   });
 
-  const manifestUrl = buildManifestUrl({
-    role: req.role,
-    state,
-    redirectUrl: callback.redirectUrl,
-  });
-  log(`[${req.role.name}] manifest URL ready: ${manifestUrl.slice(0, 80)}...`);
+  log(`[${req.role.name}] callback listening at ${callback.redirectUrl}`);
+  log(`[${req.role.name}] open this URL in a browser to approve:`);
+  log(callback.startUrl);
   progress('opening-browser');
   try {
-    await req.openBrowser(manifestUrl);
+    await req.openBrowser(callback.startUrl);
   } catch (err) {
-    log(`[${req.role.name}] openBrowser failed (will print URL for manual open): ${(err as Error).message}`);
-    log(`[${req.role.name}] open this URL in a browser to approve:`);
-    log(manifestUrl);
+    log(`[${req.role.name}] openBrowser failed: ${(err as Error).message} (URL printed above)`);
   }
 
   progress('awaiting-callback');

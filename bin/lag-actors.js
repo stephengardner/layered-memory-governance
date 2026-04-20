@@ -114,15 +114,27 @@ async function openBrowserCmd(url) {
 }
 
 /**
- * Simple terminal-based high-risk approval. If env LAG_TG_APPROVAL_QUEUE
- * is set, we also queue a Telegram ask (best-effort); otherwise we
- * prompt the operator on the local terminal with a y/N.
+ * High-risk approval. Resolution order:
+ *   1. LAG_AUTO_APPROVE_HIGH_RISK=1 auto-approves (scripted / CI flows).
+ *   2. stdin is a TTY -> prompt y/N.
+ *   3. stdin not a TTY and no env flag -> reject (fail-closed).
  */
 async function approveHighRiskInteractive(role, risk) {
   console.log('');
   console.log(`[HIGH-RISK] Role '${role.name}' wants:`);
   for (const reason of risk.reasons) console.log(`  - ${reason}`);
   console.log('');
+
+  if (process.env.LAG_AUTO_APPROVE_HIGH_RISK === '1') {
+    console.log(`[${role.name}] auto-approving via LAG_AUTO_APPROVE_HIGH_RISK=1`);
+    return true;
+  }
+
+  if (!process.stdin.isTTY) {
+    console.log(`[${role.name}] stdin is not a TTY and LAG_AUTO_APPROVE_HIGH_RISK is not set; rejecting`);
+    return false;
+  }
+
   process.stdout.write('Approve provisioning? [y/N] ');
   const answer = await new Promise((resolveFn) => {
     process.stdin.resume();
