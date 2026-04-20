@@ -31,3 +31,22 @@ export {
   RateLimitedError,
 } from './rate-limiter.js';
 export type { ActorMessageRateLimiterOptions } from './rate-limiter.js';
+
+export { listUnread, emitAck } from './inbox-reader.js';
+export type { InboxMessage, ListUnreadOptions } from './inbox-reader.js';
+
+export {
+  pickNextMessage,
+  defaultOrdering,
+} from './pickup.js';
+export type {
+  PickupOutcome,
+  PickupOptions,
+  OrderingFn,
+} from './pickup.js';
+
+export {
+  validateResetWrite,
+  ResetAuthorityError,
+  ResetShapeError,
+} from './reset-validator.js';
