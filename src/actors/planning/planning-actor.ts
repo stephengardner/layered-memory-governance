@@ -94,6 +94,15 @@ export class PlanningActor implements Actor<
   private drafts: ReadonlyArray<ProposedPlan> = [];
   private classification: PlanningClassification | null = null;
   private planAtomIdsWritten = new Set<AtomId>();
+  /**
+   * Plan title (stable identity for one run) -> atom id of the
+   * already-written plan atom. If apply() is invoked a second time
+   * for the same draft (e.g. reflect kept the loop open because the
+   * escalation failed) we reuse this id and skip the atoms.put so a
+   * single logical plan never becomes multiple plan-* atoms with
+   * different timestamp suffixes.
+   */
+  private atomIdByPlanTitle = new Map<string, AtomId>();
 
   constructor(private readonly options: PlanningActorOptions) {}
 
@@ -147,16 +156,25 @@ export class PlanningActor implements Actor<
   ): Promise<PlanningOutcome> {
     const { plan } = action.payload;
     const nowFn = this.options.nowOverride ?? (() => ctx.host.clock.now());
-    const now = nowFn();
     // Authorship is always the actor's running Principal. Options
     // used to expose an `authorPrincipalId` override, which let a
     // caller spoof plan authorship; authority has to come from the
     // running context, not the call-site config. Dropped.
     const principalId = ctx.principal.id;
 
+    // Reuse the atom id if we already wrote this draft on a prior
+    // iteration. Without this, a retry (escalation failed, reflect
+    // kept the loop open) would generate a fresh id from the current
+    // clock and write a second plan-* atom for the same logical
+    // proposal.
+    const existingAtomId = this.atomIdByPlanTitle.get(plan.title);
+    const planAtomId: AtomId = existingAtomId
+      ?? deterministicPlanId(plan.title, principalId, nowFn());
+    const now = nowFn();
+
     const planAtom: Atom = {
       schema_version: 1,
-      id: deterministicPlanId(plan.title, principalId, now),
+      id: planAtomId,
       content: renderPlanMarkdown(plan),
       type: 'plan',
       layer: 'L1',
@@ -192,19 +210,24 @@ export class PlanningActor implements Actor<
       },
     };
 
-    // atoms.put can throw (ConflictError, transient adapter failure,
-    // etc.). Wrap so runActor sees the failure cleanly and produces
-    // a halt-reason=error with a descriptive note, rather than
-    // bubbling an uncaught rejection.
-    try {
-      await ctx.host.atoms.put(planAtom);
-    } catch (err) {
-      throw new Error(
-        `PlanningActor.apply: atoms.put failed for plan '${plan.title}': ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
-      );
+    // On retry, the atom is already in the store; skip the write and
+    // proceed to re-attempt the notifier. atoms.put can throw
+    // (ConflictError, transient adapter failure, etc.); wrap so
+    // runActor sees the failure cleanly and produces a halt-reason
+    // =error with a descriptive note rather than bubbling an uncaught
+    // rejection.
+    if (existingAtomId === undefined) {
+      try {
+        await ctx.host.atoms.put(planAtom);
+      } catch (err) {
+        throw new Error(
+          `PlanningActor.apply: atoms.put failed for plan '${plan.title}': ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      }
+      this.planAtomIdsWritten.add(planAtom.id);
+      this.atomIdByPlanTitle.set(plan.title, planAtom.id);
     }
-    this.planAtomIdsWritten.add(planAtom.id);
 
     // Surface as an HIL escalation. Operator approves/rejects via
     // existing notifier channels (file queue, Telegram). The notifier
