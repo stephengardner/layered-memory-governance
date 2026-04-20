@@ -59,3 +59,12 @@ export type { OrderingPolicyConfig } from './ordering-policy.js';
 
 export { runInboxPoller } from './poller.js';
 export type { InboxPollerOptions } from './poller.js';
+
+export { SubActorRegistry } from './sub-actor-registry.js';
+export type { InvokeResult, SubActorInvoker } from './sub-actor-registry.js';
+
+export { runAuditor } from './auditor-actor.js';
+export type { AuditorPayload, AuditFinding } from './auditor-actor.js';
+
+export { runDispatchTick } from './plan-dispatch.js';
+export type { DelegationEnvelope, DispatchTickResult } from './plan-dispatch.js';
