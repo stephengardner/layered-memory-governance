@@ -142,7 +142,12 @@ async function computeSleepMs(
   try {
     const { listUnread } = await import('./inbox-reader.js');
     const unread = await listUnread(host, principalId);
-    const nowMs = Date.now();
+    // Use host.clock (not Date.now) so virtualized/replayed time
+    // in tests or time-shifted adapters produces deterministic
+    // cadence decisions. Per the Host-interface boundary rule.
+    const nowIso = host.clock.now();
+    const nowMs = Date.parse(nowIso);
+    if (!Number.isFinite(nowMs)) return correctnessPollMs;
     for (const m of unread) {
       const deadline = m.envelope.deadline_ts;
       if (deadline === undefined) continue;
@@ -180,23 +185,36 @@ async function waitForWakeOrTimeout(
   signal?.addEventListener('abort', outerAbortListener, { once: true });
 
   const timeoutPromise = new Promise<void>((r) => {
-    const t = setTimeout(() => {
+    const off = () => {
       clearTimeout(t);
+      // Remove BOTH abort listeners so a normal timeout does not
+      // leave stale callbacks dangling off the signals. Without
+      // this, each idle cycle retains two callbacks per signal and
+      // shutdown walks them all.
+      signal?.removeEventListener('abort', off);
+      subAbort.signal.removeEventListener('abort', off);
       r();
-    }, timeoutMs);
-    // Let aborts unblock the timer too.
-    const off = () => clearTimeout(t);
+    };
+    const t = setTimeout(off, timeoutMs);
     signal?.addEventListener('abort', off, { once: true });
     subAbort.signal.addEventListener('abort', off, { once: true });
   });
 
   const eventPromise = (async () => {
     try {
+      // AtomFilter cannot express metadata.actor_message.to today, so
+      // we subscribe by type and filter recipient at the consumer
+      // side by re-fetching the atom. Extra read per event, but
+      // correct, and avoids waking N inbox pollers on every write.
+      // Adapters that add recipient-level filtering in a future PR
+      // can have their AtomFilter extended; the poller will use
+      // whatever the filter supports without a code change here.
       for await (const ev of subscribe.call(host.atoms, { type: ['actor-message'] }, subAbort.signal)) {
-        // Any event is sufficient to break out and re-drive the
-        // pickNextMessage loop. We do not filter by recipient here
-        // because listUnread applies that filter again at pick time.
-        if (ev.kind === 'put' || ev.kind === 'update') return;
+        if (ev.kind !== 'put' && ev.kind !== 'update') continue;
+        const atom = await host.atoms.get(ev.atomId);
+        if (atom === null) continue;
+        const to = (atom.metadata as { actor_message?: { to?: string } })?.actor_message?.to;
+        if (to === String(principalId)) return;
       }
     } catch {
       // Subscription failure -> fall back to waiting out the timer.
@@ -209,20 +227,21 @@ async function waitForWakeOrTimeout(
     cancelAll();
     signal?.removeEventListener('abort', outerAbortListener);
   }
-  // Signal the handler-void to silence the unused-var lint when only
-  // one branch runs; also prevents the subscription-reader from
-  // lingering if the timer won the race.
-  void principalId;
 }
 
 function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms);
     const cancel = () => {
       clearTimeout(t);
+      // Remove the abort listener on BOTH paths (normal timeout and
+      // abort). Without this the poll loop accumulates one stale
+      // listener per idle cycle, which is a slow memory leak and
+      // makes shutdown walk a growing callback list.
+      signal?.removeEventListener('abort', cancel);
       resolve();
     };
+    const t = setTimeout(cancel, ms);
     signal?.addEventListener('abort', cancel, { once: true });
   });
 }

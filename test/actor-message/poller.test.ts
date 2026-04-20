@@ -153,12 +153,29 @@ describe('runInboxPoller (subscribe-capable host)', () => {
    * Adapter-style wrapper that advertises subscribe capability and
    * emits an event for every put().
    */
-  function subscribeCapableHost(): { host: Host; emitPut: (atom: Atom) => void } {
+  function subscribeCapableHost(): {
+    host: Host;
+    emitPut: (atom: Atom) => void;
+    waitSubscribed: () => Promise<void>;
+  } {
     const inner = createMemoryHost();
     const listeners = new Set<(ev: AtomSubscribeEvent) => void>();
+    // Resolves the first time a subscriber registers its listener.
+    // Lets the test wait for subscription before emitPut instead of
+    // relying on a setTimeout(50ms) that's fragile under slow CI.
+    let resolveSubscribed: (() => void) | null = null;
+    const subscribedPromise = new Promise<void>((r) => { resolveSubscribed = r; });
+    const markSubscribed = () => {
+      if (resolveSubscribed !== null) {
+        const r = resolveSubscribed;
+        resolveSubscribed = null;
+        r();
+      }
+    };
     const emitPut = (atom: Atom) => {
       for (const l of listeners) l({ kind: 'put', atomId: atom.id });
     };
+    const waitSubscribed = () => subscribedPromise;
     // Bind methods explicitly because spread loses prototype methods.
     const innerAtoms = inner.atoms;
     const atomsProxy = new Proxy(innerAtoms, {
@@ -186,6 +203,7 @@ describe('runInboxPoller (subscribe-capable host)', () => {
             }
           };
           listeners.add(listener);
+          markSubscribed();
           signal?.addEventListener('abort', () => listeners.delete(listener), { once: true });
           return {
             next(): Promise<IteratorResult<AtomSubscribeEvent>> {
@@ -207,11 +225,11 @@ describe('runInboxPoller (subscribe-capable host)', () => {
         },
       };
     }
-    return { host: wrapped, emitPut };
+    return { host: wrapped, emitPut, waitSubscribed };
   }
 
   it('uses subscribe() to wake before the correctness timer fires', async () => {
-    const { host, emitPut } = subscribeCapableHost();
+    const { host, emitPut, waitSubscribed } = subscribeCapableHost();
     const abort = new AbortController();
     const received: string[] = [];
     const SLOW_POLL_MS = 10_000; // would take forever without push
@@ -227,8 +245,12 @@ describe('runInboxPoller (subscribe-capable host)', () => {
       },
     });
 
-    // Give the poller time to go idle + subscribe.
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait deterministically until the poller has actually attached
+    // its subscription listener before emitting. The 50ms setTimeout
+    // I originally used here was fragile under slow CI - the test
+    // could emit before the listener attached and silently fall
+    // through to the poll path, which would time out after 10s.
+    await waitSubscribed();
     const atom = messageAtom('m-pushed', 'alice', 'bob');
     await host.atoms.put(atom);
     emitPut(atom);

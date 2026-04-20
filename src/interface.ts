@@ -97,9 +97,14 @@ export interface AtomStore {
   /**
    * Optional push wake. When `capabilities.hasSubscribe` is true,
    * consumers can subscribe to changes matching a filter. The returned
-   * async iterable yields atom ids (or full atoms for adapters that
-   * cheaply provide them) when a matching write lands; termination via
-   * AbortSignal so callers can unwind cleanly.
+   * async iterable yields AtomSubscribeEvent values (atom id + event
+   * kind) when a matching write lands. Consumers that need the full
+   * atom re-query the store via `get()`; we keep the event shape
+   * minimal so adapters do not have to serialize the full atom
+   * payload into the event stream.
+   *
+   * Termination via AbortSignal so callers can unwind cleanly; the
+   * iterator MUST return `{done: true}` when the signal aborts.
    *
    * Adapters that do not support push-wake must not implement this
    * method; the presence of the method on the prototype is the
