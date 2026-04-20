@@ -149,6 +149,38 @@ const POLICIES = [
     },
   },
   {
+    id: 'pol-judgment-fallback-ladder',
+    subject: 'judgment-fallback-ladder',
+    reason:
+      'Tiered fallback policy for LLM-backed judgment calls (e.g., HostLlmPlanningJudgment). '
+      + 'A failed primary draft MUST NOT emit an atom that is eligible for auto-approval. The '
+      + 'ladder: (1) retry with jitter up to retry_max attempts on transient errors, (2) single '
+      + 're-draft against cheaper_model if configured, (3) emit an escalation atom with the full '
+      + 'failure trace so HIL sees it. Fail-closed: if no rung succeeds, the produced atom is a '
+      + 'missing-judgment escalation with confidence below the auto-approve floor, NEVER a '
+      + 'low-confidence stub whose plan_state could be auto-approved. Surfaced by the first '
+      + 'self-audit run; consumes the five plan-clarify-cannot-draft-a-grounded-plan-llm atoms '
+      + 'observed on 2026-04-20 as evidence of the primary path failing modes (budget exceeded, '
+      + 'exit=undefined, empty stdout).',
+    fields: {
+      // Retry on transient errors (rate limit, network, timeout).
+      // 2 retries + 1 primary attempt = 3 total shots before moving
+      // to the cheaper-model rung. Low enough that a stuck request
+      // does not blow past the per-call budget on its own.
+      retry_max: 2,
+      // Base backoff 2s; full jitter applied (random in [0, retry_base_ms]).
+      retry_base_ms: 2000,
+      // Cheaper model for the re-draft rung. Null = skip this rung
+      // and go straight to escalation when the primary fails.
+      cheaper_model: null,
+      // Confidence below which a produced atom is never eligible
+      // for auto-approval, regardless of any other policy. Prevents
+      // a fallback stub from sneaking through pol-plan-auto-approve-
+      // low-stakes.min_confidence.
+      escalation_floor_confidence: 0.3,
+    },
+  },
+  {
     id: 'pol-plan-auto-approve-low-stakes',
     subject: 'plan-auto-approve-low-stakes',
     reason:
