@@ -96,7 +96,17 @@ export function createGhClient(options: GhClientOptions = {}): GhClient {
     const args: string[] = ['api', path, '--method', method];
     if (reqArgs.fields) {
       for (const [k, v] of Object.entries(reqArgs.fields)) {
-        args.push('--field', `${k}=${String(v)}`);
+        // `gh api --field` (-F) treats a leading '@' in the value as
+        // "read from file", so a body like "@coderabbitai review"
+        // would have gh try to open a file named "coderabbitai review"
+        // and fail with ENOENT. String values use --raw-field (-f)
+        // which is always literal; numbers/booleans keep --field so
+        // gh still coerces the JSON type on the wire.
+        if (typeof v === 'string') {
+          args.push('--raw-field', `${k}=${v}`);
+        } else {
+          args.push('--field', `${k}=${String(v)}`);
+        }
       }
     }
     const result = await raw(args);

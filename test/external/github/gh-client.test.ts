@@ -52,18 +52,41 @@ describe('createGhClient', () => {
     expect(path).toContain('per_page=5');
   });
 
-  it('rest: adds --field flags on POST', async () => {
+  it('rest: string bodies use --raw-field so a leading @ is not treated as a file path', async () => {
+    // Regression guard. When the body value starts with "@" (e.g.
+    // "@coderabbitai review"), `gh api --field` interprets it as
+    // "read from file named 'coderabbitai review'" and the request
+    // fails with ENOENT. `--raw-field` always treats the value as a
+    // literal string.
     const { executor, calls } = mkStub([{ stdout: '{"id": 42}', stderr: '', exitCode: 0 }]);
     const client = createGhClient({ executor });
     await client.rest({
       method: 'POST',
       path: 'repos/a/b/pulls/1/comments/99/replies',
-      fields: { body: 'thanks for the review' },
+      fields: { body: '@coderabbitai review' },
     });
-    expect(calls[0]!.args).toContain('--field');
-    expect(calls[0]!.args).toContain('body=thanks for the review');
+    expect(calls[0]!.args).toContain('--raw-field');
+    expect(calls[0]!.args).toContain('body=@coderabbitai review');
+    expect(calls[0]!.args).not.toContain('--field');
     expect(calls[0]!.args).toContain('--method');
     expect(calls[0]!.args[calls[0]!.args.indexOf('--method') + 1]).toBe('POST');
+  });
+
+  it('rest: numeric + boolean fields still use --field so gh preserves the JSON type', async () => {
+    const { executor, calls } = mkStub([{ stdout: '{"ok": true}', stderr: '', exitCode: 0 }]);
+    const client = createGhClient({ executor });
+    await client.rest({
+      method: 'POST',
+      path: 'repos/a/b/x',
+      fields: { count: 3, flag: true },
+    });
+    const args = calls[0]!.args;
+    const countIdx = args.indexOf('count=3');
+    expect(countIdx).toBeGreaterThan(-1);
+    expect(args[countIdx - 1]).toBe('--field');
+    const flagIdx = args.indexOf('flag=true');
+    expect(flagIdx).toBeGreaterThan(-1);
+    expect(args[flagIdx - 1]).toBe('--field');
   });
 
   it('graphql: passes query and raw-field variables', async () => {
