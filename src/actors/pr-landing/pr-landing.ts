@@ -295,14 +295,27 @@ export class PrLandingActor implements Actor<
   ): Promise<Reflection> {
     const totalComments = classified.observation.comments.length;
     const reviewerPending = classified.observation.reviewerEngaged === false;
+    const selfAlreadyPrompted = classified.observation.selfAlreadyPrompted === true;
     const progressed = outcomes.length > 0;
-    // Done = no comments AND no pending reviewer prompt. The ensure-review
-    // path needs subsequent iterations to observe that the bot has now
-    // engaged (or another run, if the bot is slow).
+    // Done when there is nothing left for THIS run to do:
+    //   (a) all comments resolved AND reviewer has engaged; or
+    //   (b) all comments resolved AND we already posted our prompt -- the
+    //       next CI trigger (webhook fired when the real reviewer posts)
+    //       will pick up any subsequent comments; staying in-loop here
+    //       produces a false `convergence-loop` halt that reds out the
+    //       CI check on every fresh PR. See regression test
+    //       "ensure-review single-run cycle" for the exact scenario.
+    const waitingForExternalReviewer = reviewerPending && selfAlreadyPrompted;
     return {
-      done: totalComments === 0 && !reviewerPending,
+      done: totalComments === 0 && (!reviewerPending || selfAlreadyPrompted),
       progress: progressed,
-      note: `handled ${outcomes.length} action(s) against ${totalComments} comment(s)${reviewerPending ? '; reviewer prompt pending' : ''}`,
+      note:
+        `handled ${outcomes.length} action(s) against ${totalComments} comment(s)`
+        + (waitingForExternalReviewer
+          ? '; reviewer prompt posted, awaiting external review'
+          : reviewerPending
+            ? '; reviewer prompt pending'
+            : ''),
     };
   }
 

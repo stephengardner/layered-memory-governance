@@ -256,10 +256,21 @@ describe('PrLandingActor', () => {
     expect(review.prComments).toHaveLength(0);
   });
 
-  it('idempotency: does NOT re-post ensure-review when bot already prompted', async () => {
-    // Bot already posted (engaged as github-actions[bot]) but reviewer
-    // hasn't engaged. Expected: no additional prompt posted; actor
-    // hits convergence-loop waiting for the slow reviewer, not spam.
+  it('idempotency: converges cleanly when prompt is already posted and reviewer is slow', async () => {
+    // RCA (2026-04-20): prior behavior halted with `convergence-loop`
+    // here, which reds-out the CI check for every new PR whose review
+    // hasn't been posted yet. That was training the operator to ignore
+    // red checks -- precisely the failure mode that let a real
+    // CodeRabbit finding slip past a prior admin-merge attempt.
+    //
+    // Correct behavior: if we've already posted the prompt AND have no
+    // comments to handle, this run is done. The external reviewer
+    // will eventually post and trigger a new CI run via webhook;
+    // sitting in-loop waiting here is pointless and reports a false
+    // convergence-loop failure to CI.
+    //
+    // Still no re-post of the prompt (the idempotency guarantee we
+    // always wanted); now also no false CI failure.
     const host = createMemoryHost();
     const review = new StubReviewAdapter([[], []]);
     review.engagedLogins.add('github-actions[bot]');
@@ -281,7 +292,42 @@ describe('PrLandingActor', () => {
     });
 
     expect(review.prComments).toHaveLength(0);
-    expect(report.haltReason).toBe('convergence-loop');
+    expect(report.haltReason).toBe('converged');
+  });
+
+  it('ensure-review single-run cycle: iter 1 posts prompt, iter 2 converges without convergence-loop', async () => {
+    // Regression guard for the CI-false-fail pattern:
+    //   iter 1: reviewer not engaged, self not prompted -> post prompt.
+    //   iter 2: reviewer STILL not engaged (bot is slow, production
+    //           reality when CodeRabbit queues behind other repos)
+    //           but we see our prompt now in selfAlreadyPrompted.
+    //           Nothing more we can do this run. Must halt converged
+    //           (exit 0 in the CI script), NOT convergence-loop.
+    const host = createMemoryHost();
+    const review = new StubReviewAdapter([[], []]);
+    // NO beforeIteration hook: reviewer stays dormant the whole run.
+    // This is the exact CI scenario that was painting every new PR red.
+    const actor = new PrLandingActor({
+      pr: PR,
+      ensureReviewers: [{
+        logins: ['coderabbitai[bot]'],
+        promptBody: '@coderabbitai review',
+        label: 'CodeRabbit',
+      }],
+    });
+
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: { review },
+      budget: { maxIterations: 3 },
+      origin: 'scheduled',
+    });
+
+    expect(report.haltReason).toBe('converged');
+    expect(report.iterations).toBe(2);
+    expect(review.prComments).toHaveLength(1);
+    expect(review.prComments[0]!.body).toBe('@coderabbitai review');
   });
 
   it('classify key changes when comment counts change across iterations', async () => {
