@@ -97,7 +97,10 @@ describe('PlanningActor', () => {
     expect(all.atoms).toHaveLength(1);
     const plan = all.atoms[0]!;
     expect(plan.layer).toBe('L1');
-    expect(plan.metadata.plan_state).toBe('proposed');
+    // plan_state is the top-level Atom field; prior versions wrote
+    // it into metadata where dispatch/auto-approve loops couldn't
+    // see it. Top-level assertion locks the fix in.
+    expect(plan.plan_state).toBe('proposed');
     expect(plan.metadata.title).toBe('Plan Alpha');
     expect(plan.provenance.derived_from).toContain(DIR_ATOM);
     expect(plan.content).toContain('Plan Alpha');
