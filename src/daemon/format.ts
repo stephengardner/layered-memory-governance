@@ -223,13 +223,19 @@ function escapeHtml(s: string): string {
 }
 
 /**
- * Strip any HTML-ish tags from a string, leaving only text content.
- * Used when flattening content from inside <details>/<summary> blocks
+ * Strip HTML-ish tags from a string, leaving only text content. Used
+ * when flattening content from inside <details>/<summary> blocks
  * (Claude + CodeRabbit often nest code blocks or other tags in there;
- * we want just the text for the tg-spoiler body to keep Telegram happy).
+ * we want just the text for the tg-spoiler body).
+ *
+ * The regex is shape-aware: `</?tagname[ attrs]>`. A naive `<[^>]*>`
+ * would also strip "2 < 3 && 5 > 4" and code fragments like
+ * "T<int, string>" because anything between `<` and `>` matches.
+ * Constraining the first char after `<` / `</` to a letter keeps
+ * comparison operators and templated type fragments intact.
  */
 function stripHtmlTags(s: string): string {
-  return s.replace(/<[^>]*>/g, '');
+  return s.replace(/<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*)?>/g, '');
 }
 
 function escapeAttr(s: string): string {

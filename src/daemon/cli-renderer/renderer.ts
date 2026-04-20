@@ -176,8 +176,19 @@ export class CliRenderer {
    * that need to observe intermediate channel traffic synchronously.
    * Production callers do not need this: they already await terminal
    * emits which chain through the serialized queue.
+   *
+   * If scheduleEdit armed a rate-limited pendingEditTimer but the
+   * timer has not fired yet, editChain alone is not enough to
+   * guarantee idleness: the timer's flushEdit callback has not run,
+   * so the next edit is still queued on the timer wheel. Force the
+   * flush here before awaiting the chain.
    */
   async waitForIdle(): Promise<void> {
+    if (this.pendingEditTimer !== null) {
+      clearTimeout(this.pendingEditTimer);
+      this.pendingEditTimer = null;
+      await this.flushEdit();
+    }
     await this.editChain;
   }
 

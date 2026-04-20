@@ -170,7 +170,13 @@ export function startJsonlMirror(opts: JsonlMirrorOptions): JsonlMirrorControlle
         await finalizeActiveTurn('new-user-turn');
         return;
       }
-      // Tool result: forward to the active renderer if any.
+      // Tool result: forward to the active renderer if any. Re-arm
+      // the inactivity timer: a tool just completed, which is a
+      // legitimate sign of progress and also likely to be followed by
+      // more assistant text or another tool call. Without this, a run
+      // that does text -> tool_use -> (tool runs for 2x inactivity
+      // window) -> tool_result -> text would get synthetically
+      // completed mid-turn because only text re-armed the timer.
       if (Array.isArray(content)) {
         for (const b of content) {
           if (!isRecord(b) || b.type !== 'tool_result') continue;
@@ -182,6 +188,7 @@ export function startJsonlMirror(opts: JsonlMirrorOptions): JsonlMirrorControlle
               ? {}
               : { summary: summarizeToolResult(b.content)! }),
           });
+          armInactivity();
         }
       }
       return;
@@ -209,6 +216,10 @@ export function startJsonlMirror(opts: JsonlMirrorOptions): JsonlMirrorControlle
             tool: b.name,
             summary: summarizeToolUse(b.name, (isRecord(b.input) ? b.input : {})),
           });
+          // Re-arm so the tool's own run time does not cause a
+          // premature synthetic completion. The matching tool_result
+          // will re-arm again on arrival.
+          armInactivity();
           continue;
         }
       }

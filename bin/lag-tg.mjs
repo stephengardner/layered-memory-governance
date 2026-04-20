@@ -107,11 +107,35 @@ async function status() {
 
 async function terminal(rest) {
   // Foreground PTY-mirror session. Ensures no standalone daemon is
-  // racing for Telegram getUpdates before exec'ing lag-terminal.
+  // racing for Telegram getUpdates before exec'ing lag-terminal. Two
+  // daemons polling the same bot getUpdates endpoint would have them
+  // fighting over each update's ownership (only one consumer wins
+  // per message) and duplicating outbound replies; abort if we can
+  // not confirm the prior daemon is gone.
   const status = await getServiceStatus({ pidFile: PID_FILE });
   if (status.status === 'running') {
     console.error(`lag-tg: standalone daemon is running (pid ${status.pid}); stopping before terminal mode`);
-    await stopService({ pidFile: PID_FILE });
+    const stopResult = await stopService({ pidFile: PID_FILE });
+    if (stopResult.status === 'failed') {
+      console.error(`lag-tg: failed to stop daemon: ${stopResult.reason}`);
+      console.error('lag-tg: aborting terminal mode; investigate the stuck process and retry.');
+      process.exit(1);
+    }
+    // stopService now waits for the process to exit before returning
+    // 'stopped', but be defensive: poll getServiceStatus as a
+    // belt-and-braces check against a future regression where
+    // stopService reports optimistically.
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const check = await getServiceStatus({ pidFile: PID_FILE });
+      if (check.status !== 'running') break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const final = await getServiceStatus({ pidFile: PID_FILE });
+    if (final.status === 'running') {
+      console.error(`lag-tg: daemon pid ${final.pid} still alive after stop + 3s grace; aborting so we do not race for getUpdates.`);
+      process.exit(1);
+    }
   }
   await loadDotEnv();
   if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {

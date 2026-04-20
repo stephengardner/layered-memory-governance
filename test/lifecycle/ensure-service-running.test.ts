@@ -151,18 +151,42 @@ describe('stopService', () => {
     await rm(tmp, { recursive: true, force: true });
   });
 
-  it('sends signal and removes lockfile', async () => {
+  it('sends signal, waits for exit, then removes lockfile', async () => {
     await writeFile(pidFile, '555\n');
     const sent: Array<{ pid: number; signal: string }> = [];
+    // Simulate a process that is alive at the time of kill but becomes
+    // dead once killImpl runs. stopService now polls isAlive after
+    // sending the signal so removing the lockfile eagerly cannot let
+    // a caller spawn a replacement while the old process still exists.
+    let dead = false;
     const res = await stopService({
       pidFile,
-      isAlive: () => true,
-      killImpl: (pid, signal) => { sent.push({ pid, signal }); },
+      isAlive: () => !dead,
+      killImpl: (pid, signal) => {
+        sent.push({ pid, signal });
+        dead = true;
+      },
     });
     expect(res).toEqual({ status: 'stopped', pid: 555 });
     expect(sent).toEqual([{ pid: 555, signal: 'SIGTERM' }]);
     // Lockfile removed.
     await expect(stat(pidFile)).rejects.toThrow();
+  });
+
+  it('reports failed when the process does not exit within the grace window', async () => {
+    // Regression guard for the eager-rm bug: if the signal is sent but
+    // the process stays alive, stopService must not pretend success.
+    // Callers (e.g. lag-tg terminal) rely on this to decide whether to
+    // escalate to SIGKILL or abort.
+    await writeFile(pidFile, '666\n');
+    const res = await stopService({
+      pidFile,
+      isAlive: () => true, // stays alive forever
+      killImpl: () => { /* no-op: signal sent, but the process ignores it */ },
+    });
+    expect(res.status).toBe('failed');
+    // Lockfile NOT removed: the caller must not assume the slot is free.
+    await expect(stat(pidFile)).resolves.toBeDefined();
   });
 
   it('reports not-running when pid is dead (clears lockfile)', async () => {
