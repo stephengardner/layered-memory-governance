@@ -164,9 +164,9 @@ function parseResultMessage(
   }
 
   // Persist the terminal text so invokeClaudeStreaming() returns the
-  // same string we just emitted as finalText — otherwise callers that
-  // read the accumulator see the last assistant delta, not the
-  // canonical result envelope.
+  // same string we just emitted as finalText. Without this the caller
+  // reads the last assistant delta from the accumulator instead of
+  // the canonical result envelope text.
   acc.assistantText = resultText;
   return [{
     type: 'complete',
