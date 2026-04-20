@@ -195,14 +195,26 @@ async function readAuthorityPolicy(host: Host): Promise<ResetAuthorityPolicy> {
   return FALLBACK_AUTHORITY;
 }
 
-/** Compute principal depth from root. 0 = root, null = not found. */
+/**
+ * Compute principal depth from root.
+ *   0  = root (principal exists and signed_by is null)
+ *   N  = N hops from root
+ *   -1 = principal not found in the store
+ *
+ * The `-1` sentinel is load-bearing: isAuthorizedSigner's depth check
+ * (`depth <= max_signer_depth`) must REJECT a principal that doesn't
+ * exist, even when max_signer_depth >= 0 would nominally admit
+ * "depth 0". Returning 0 for not-found would let a non-existent
+ * principal id slip past the depth gate; that's the bug the -1
+ * sentinel plus the `depth >= 0` guard in the caller prevents.
+ */
 async function principalDepth(
   host: Host,
   principalId: PrincipalId,
 ): Promise<number> {
-  // Walk the signed_by chain up to a reasonable depth ceiling.
   const MAX = 32;
   let current = await host.principals.get(principalId);
+  if (current === null) return -1;
   let depth = 0;
   while (current !== null && current.signed_by !== null && depth < MAX) {
     current = await host.principals.get(current.signed_by);

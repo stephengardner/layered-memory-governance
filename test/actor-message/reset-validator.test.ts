@@ -269,6 +269,30 @@ describe('validateResetWrite', () => {
     await expect(validateResetWrite(host, reset)).rejects.toBeInstanceOf(ResetShapeError);
   });
 
+  it('non-existent principal does NOT pass the depth gate even when max_signer_depth >= 0', async () => {
+    // Regression guard for the #38 CR round-2 finding: principalDepth
+    // used to return 0 for a principal not in the store (the while loop
+    // never entered), which meant a signer using a forged/unknown
+    // principal id slipped past a depth gate of 0. Fix returns -1 for
+    // not-found; isAuthorizedSigner requires `depth >= 0`.
+    const host = await hostWithAuthority({
+      authorized: [], // only depth gate is active
+      max_signer_depth: 5, // generous; real bug was "anyone passes"
+    });
+    // Seed root but not 'ghost'.
+    await host.principals.put(principal('root-operator'));
+    await host.atoms.put(tripAtom('trip-1', 'victim'));
+    const reset = resetAtom('reset-1', 'ghost', {
+      target_principal: 'victim' as PrincipalId,
+      trip_atom_id: 'trip-1' as AtomId,
+    });
+
+    await expect(validateResetWrite(host, reset)).rejects.toBeInstanceOf(ResetAuthorityError);
+
+    const trip = await host.atoms.get('trip-1' as AtomId);
+    expect(trip!.superseded_by.length).toBe(0); // untouched
+  });
+
   it('authorizing_principal mismatch with atom.principal_id -> ShapeError', async () => {
     const host = await hostWithAuthority({ authorized: ['root-operator'] });
     await host.principals.put(principal('root-operator'));
