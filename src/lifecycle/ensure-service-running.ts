@@ -21,8 +21,9 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { openSync } from 'node:fs';
+import { closeSync, openSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 export interface EnsureServiceOptions {
   /** Executable to spawn. Resolved against PATH unless absolute. */
@@ -83,6 +84,7 @@ export async function ensureServiceRunning(
 ): Promise<EnsureServiceResult> {
   const isAlive = options.isAlive ?? defaultIsAlive;
   const spawnFn = options.spawnImpl ?? spawn;
+  const lockFile = options.pidFile + '.lock';
 
   const existing = await readExistingPid(options.pidFile);
   if (existing !== null) {
@@ -90,10 +92,50 @@ export async function ensureServiceRunning(
     if (alive) return { status: 'already-running', pid: existing };
   }
 
+  // Atomic lock-or-bust. `openSync(..., 'wx')` throws EEXIST if the
+  // lock file is already there. Without this guard, two concurrent
+  // callers (e.g. two SessionStart hooks firing at the same millisecond)
+  // both observe a missing pidFile, both spawn a detached child, and
+  // whichever writes the pidFile last wins. We'd end up with a
+  // double-started service and a leaked process. The lockfile makes
+  // exactly one caller win the spawn.
+  try {
+    await mkdir(dirname(lockFile), { recursive: true });
+    const fd = openSync(lockFile, 'wx');
+    // Stash our PID in the lock for diagnostics if we crash before
+    // cleanup; the real service pid lands in the pidFile on success.
+    try { writeSync(fd, String(process.pid)); } catch { /* ignore */ }
+    try { closeSync(fd); } catch { /* ignore */ }
+  } catch (err: unknown) {
+    if ((err as { code?: string })?.code === 'EEXIST') {
+      // Another caller holds the lock. Give them a short window to
+      // finish spawning and write the pidFile, then observe the
+      // result. If we still see no live pid, the other caller likely
+      // crashed mid-spawn; surface as failed so the caller can retry.
+      for (let i = 0; i < 10; i++) {
+        await sleep(100);
+        const pid = await readExistingPid(options.pidFile);
+        if (pid !== null && (await isAlive(pid))) {
+          return { status: 'already-running', pid };
+        }
+      }
+      return {
+        status: 'failed',
+        reason: `lockfile ${lockFile} held by another caller but pidFile never became live. Remove the lockfile and retry.`,
+      };
+    }
+    return {
+      status: 'failed',
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+
   let startResult: StartResult;
   try {
     startResult = await startDetached(options, spawnFn);
   } catch (err) {
+    // Release the lock so a retry can make progress.
+    await rm(lockFile, { force: true }).catch(() => { /* ignore */ });
     return {
       status: 'failed',
       reason: err instanceof Error ? err.message : String(err),
@@ -103,6 +145,7 @@ export async function ensureServiceRunning(
   try {
     await writePidFile(options.pidFile, startResult.pid);
   } catch (err) {
+    await rm(lockFile, { force: true }).catch(() => { /* ignore */ });
     return {
       status: 'failed',
       reason: `spawned pid ${startResult.pid} but could not write ${options.pidFile}: ${
@@ -110,6 +153,10 @@ export async function ensureServiceRunning(
       }`,
     };
   }
+
+  // pidFile is now authoritative; release the lock. A leaked lock
+  // only costs the next caller one retry loop, so best-effort rm.
+  await rm(lockFile, { force: true }).catch(() => { /* ignore */ });
 
   return existing !== null
     ? { status: 'stale-lock-reclaimed', pid: startResult.pid, previousPid: existing }
@@ -179,8 +226,27 @@ export async function stopService(
       reason: err instanceof Error ? err.message : String(err),
     };
   }
-  await rm(options.pidFile, { force: true });
-  return { status: 'stopped', pid };
+
+  // Wait for the process to actually exit before clearing the
+  // pidFile. If we removed the pidFile eagerly a caller could spawn
+  // a replacement instance while the old one is still draining
+  // requests, which defeats the lifecycle guarantee for `restart`
+  // and terminal takeover. We poll isAlive for up to ~2 seconds; if
+  // the process still lives past that, surface a weaker state so
+  // the caller knows to back off or escalate to SIGKILL.
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    if (!(await isAlive(pid))) {
+      await rm(options.pidFile, { force: true });
+      return { status: 'stopped', pid };
+    }
+    await sleep(100);
+  }
+  return {
+    status: 'failed',
+    reason: `sent ${signal} to pid ${pid} but it is still alive after 2s grace. ` +
+      `Caller should retry with SIGKILL or investigate a wedged process.`,
+  };
 }
 
 // ---- internals ---------------------------------------------------------
