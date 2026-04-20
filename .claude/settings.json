@@ -1,0 +1,13 @@
+{
+  "$schema": "https://claude.ai/schemas/settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/enforce-lag-ceo-for-gh.mjs" }
+        ]
+      }
+    ]
+  }
+}

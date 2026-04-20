@@ -2,7 +2,32 @@
 
 Hook scripts wired into Claude Code via `.claude/settings.json`.
 
-## stop-continuation-guard.mjs
+Two kinds of configuration:
+
+- `.claude/settings.json` **IS checked in**. Use it for hooks that encode repo-wide governance rules every contributor should get automatically (e.g., `enforce-lag-ceo-for-gh.mjs`).
+- `.claude/settings.local.json` is **per-operator** and gitignored. Use it for hooks that are preference/workflow choices (e.g., the Stop hook below).
+
+## enforce-lag-ceo-for-gh.mjs (checked-in, always on)
+
+PreToolUse hook that blocks any raw `gh` CLI call in this repo's Claude Code session and tells the agent to route through `node scripts/gh-as.mjs lag-ceo ...` (or `lag-cto` for decision-bearing ops) instead. This is the third-layer deterministic guarantee described in `docs/bot-identities.md` - in this repo the agent's GitHub attribution is `lag-ceo[bot]` OR the tool call fails loudly; the operator's personal login is never an accidental fallback.
+
+Wired in `.claude/settings.json` so every contributor who opens this repo in Claude Code gets the enforcement automatically.
+
+### Escape hatch
+
+Append `# allow-raw-gh` to a command to explicitly opt out (intended for narrow cases like a test that must run under operator scope).
+
+### Smoke tests
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"gh pr list"}}' | node .claude/hooks/enforce-lag-ceo-for-gh.mjs
+# -> stdout: {"decision":"block","reason":"..."} ; exit 0
+
+echo '{"tool_name":"Bash","tool_input":{"command":"node scripts/gh-as.mjs lag-ceo pr list"}}' | node .claude/hooks/enforce-lag-ceo-for-gh.mjs
+# -> no output ; exit 0 (allowed)
+```
+
+## stop-continuation-guard.mjs (opt-in per operator)
 
 Stop-event hook that catches premature agent stops (turns where the
 last assistant message said "proceeding with X", "starting Y", or
@@ -10,8 +35,9 @@ last assistant message said "proceeding with X", "starting Y", or
 
 ### To enable
 
-Add to `.claude/settings.json` (the file is not checked in because
-enabling a stop-behavior hook is a per-operator decision):
+Add to `.claude/settings.local.json` (per-operator decision; not
+checked in because some operators prefer not to have their stops
+blocked):
 
 ```json
 {

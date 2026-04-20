@@ -62,6 +62,18 @@ GH_TOKEN=$(node scripts/gh-token-for.mjs lag-cto) gh pr create ...
 | PR merge initiated autonomously by the CTO | blocked until medium-tier kill switch ships | Canon `pol-cto-no-merge` and `dev-merge-authority-requires-medium-tier-kill-switch` keep autonomous merge out of bot scope. |
 | Opening issues to track operational findings | actor whose finding it is | e.g. `lag-auditor` would open the issue if a GitHub output channel were wired. |
 
+## How enforcement works (three layers)
+
+Without mechanism, using the bot identities consistently is discipline; with mechanism, it is a repo invariant. Three layers stack to give a deterministic guarantee in this repo:
+
+**Layer 1 - Credential isolation (automatic).**  `.lag/apps/<role>.json` and `.lag/apps/keys/<role>.pem` live in this repo's working tree. `scripts/gh-as.mjs <role>` reads them by relative path. In a different repo those files do not exist; `gh-as.mjs` errors out and `gh` falls back to the operator's global `gh auth`. Cross-repo credential leak is physically impossible.
+
+**Layer 2 - Repo-local git identity (one-time config).**  Commit authorship is set per-repo via `git config --local user.email "<APP-ID>+<role>[bot]@users.noreply.github.com"` and `git config --local user.name "<role>[bot]"`. Every `git commit` in this clone carries the bot author. In another clone or another repo, a different (or the default operator) identity applies.
+
+**Layer 3 - PreToolUse hook (checked-in enforcement).**  `.claude/hooks/enforce-lag-ceo-for-gh.mjs`, wired via `.claude/settings.json`, intercepts every Bash tool call in a Claude Code session, blocks raw `gh` invocations, and points the agent at `scripts/gh-as.mjs lag-ceo <args>`. The hook file is repo-scoped; in any other project it does not exist and the rule does not apply. Escape hatch: append `# allow-raw-gh` to a command for narrow legitimate cases.
+
+The combined invariant: in this repo, any GitHub action an agent produces is attributed to a provisioned bot, OR the action fails loudly. There is no silent path to the operator's personal login.
+
 ## Audit trail
 
 Every App action is attributed to `<role>[bot]` in GitHub's UI AND to the operator who provisioned the App (App settings page, "Created by"). The operator retains revocation authority: visit the App settings, click Uninstall, the App loses write access immediately.
