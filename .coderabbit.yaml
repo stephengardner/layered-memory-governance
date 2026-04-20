@@ -28,6 +28,14 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # Do NOT auto-pause reviews after N reviewed commits. Canon
+    # directive: development decisions require extreme rigor and
+    # research before shipping; CodeRabbit feedback is a primary
+    # training signal (we reply in detail so its model learns our
+    # preferences; see the feedback memory on detailed CodeRabbit
+    # replies). Pausing after a threshold starves that loop. 0
+    # disables the pause entirely; every push gets reviewed.
+    auto_pause_after_reviewed_commits: 0
   path_filters:
     - "!dist/**"
     - "!coverage/**"
