@@ -64,7 +64,8 @@ export async function runAutoApprovePass(
   host: Host,
   options: { readonly now?: () => number } = {},
 ): Promise<AutoApproveTickResult> {
-  const policy = await readAutoApprovePolicy(host);
+  const resolution = await readAutoApprovePolicy(host);
+  const policy = resolution.config;
   // Fail-closed short-circuit: if no sub-actors are allowed, no plan
   // can qualify. Skip the scan.
   if (policy.allowed_sub_actors.length === 0) {
@@ -72,61 +73,126 @@ export async function runAutoApprovePass(
   }
 
   const now = options.now ?? (() => Date.now());
-  const page = await host.atoms.query({ type: ['plan'] }, 500);
-  const candidates = page.atoms.filter((atom) => {
-    if (atom.taint !== 'clean') return false;
-    if (atom.superseded_by.length > 0) return false;
-    if (atom.plan_state !== 'proposed') return false;
-    if (atom.confidence < policy.min_confidence) return false;
-    const version = (atom.metadata as Record<string, unknown>)?.planning_actor_version;
-    if (typeof version !== 'string' || version.length === 0) return false;
-    const delegation = (atom.metadata as Record<string, unknown>)?.delegation as
-      | Record<string, unknown>
-      | undefined;
-    if (!delegation) return false;
-    const targetRaw = delegation.sub_actor_principal_id;
-    if (typeof targetRaw !== 'string') return false;
-    return policy.allowed_sub_actors.includes(targetRaw);
-  });
+  // Paginate: a first-page-only scan could starve eligible plans on
+  // later pages if an adapter orders them deterministically. Walk to
+  // exhaustion with a hard cap to bound the worst case.
+  const MAX_PLAN_SCAN = 5_000;
+  const PLAN_PAGE_SIZE = 500;
+  let totalSeen = 0;
+  const candidates: Atom[] = [];
+  let cursor: string | undefined;
+  do {
+    const remaining = MAX_PLAN_SCAN - totalSeen;
+    if (remaining <= 0) break;
+    const page = await host.atoms.query(
+      { type: ['plan'] },
+      Math.min(PLAN_PAGE_SIZE, remaining),
+      cursor,
+    );
+    for (const atom of page.atoms) {
+      if (atom.taint !== 'clean') continue;
+      if (atom.superseded_by.length > 0) continue;
+      if (atom.plan_state !== 'proposed') continue;
+      if (atom.confidence < policy.min_confidence) continue;
+      const version = (atom.metadata as Record<string, unknown>)?.planning_actor_version;
+      if (typeof version !== 'string' || version.length === 0) continue;
+      const delegation = (atom.metadata as Record<string, unknown>)?.delegation as
+        | Record<string, unknown>
+        | undefined;
+      if (!delegation) continue;
+      const targetRaw = delegation.sub_actor_principal_id;
+      if (typeof targetRaw !== 'string') continue;
+      if (!policy.allowed_sub_actors.includes(targetRaw)) continue;
+      candidates.push(atom);
+    }
+    totalSeen += page.atoms.length;
+    cursor = page.nextCursor === null ? undefined : page.nextCursor;
+  } while (cursor !== undefined);
 
+  let approved = 0;
   for (const plan of candidates) {
+    // Re-read before approving. A concurrent path may have moved the
+    // plan out of 'proposed' (operator rejected, revocation, another
+    // auto-approve pass already ran). Without this check the update
+    // below would force an 'approved' state back onto a plan that
+    // was deliberately moved away. Same claim-before-mutate pattern
+    // as runDispatchTick.
+    const latest = await host.atoms.get(plan.id);
+    if (latest === null) continue;
+    if (latest.plan_state !== 'proposed') continue;
+    if (latest.taint !== 'clean') continue;
+    if (latest.superseded_by.length > 0) continue;
+
     await host.atoms.update(plan.id, {
       plan_state: 'approved',
       metadata: {
         auto_approved: {
           at: new Date(now()).toISOString() as Time,
-          via: 'pol-plan-auto-approve-low-stakes',
+          // The matched policy atom id, not a hardcoded string. A
+          // deployment that supersedes pol-plan-auto-approve-low-
+          // stakes with a different id (pol-plan-auto-approve-v2,
+          // etc.) will have the ACTUAL governing atom's id stamped
+          // on each auto-approval - a real audit trail.
+          via: String(resolution.atomId),
         },
       },
     });
+    approved += 1;
   }
 
-  return { scanned: candidates.length, approved: candidates.length };
+  return { scanned: candidates.length, approved };
 }
 
-async function readAutoApprovePolicy(host: Host): Promise<AutoApprovePolicyConfig> {
-  const page = await host.atoms.query({ type: ['directive'], layer: ['L3'] }, 200);
-  for (const atom of page.atoms) {
-    if (atom.taint !== 'clean') continue;
-    if (atom.superseded_by.length > 0) continue;
-    const policy = (atom.metadata as Record<string, unknown>)?.policy as
-      | Record<string, unknown>
-      | undefined;
-    if (policy?.subject !== 'plan-auto-approve-low-stakes') continue;
+interface PolicyResolution {
+  readonly config: AutoApprovePolicyConfig;
+  /** Id of the atom the config came from, or null when falling back. */
+  readonly atomId: string | null;
+}
 
-    const allowedRaw = policy.allowed_sub_actors;
-    const minConfRaw = Number(policy.min_confidence);
-    const allowed = Array.isArray(allowedRaw)
-      ? allowedRaw.filter((v): v is string => typeof v === 'string')
-      : [];
-    const minConfidence = Number.isFinite(minConfRaw) && minConfRaw >= 0 && minConfRaw <= 1
-      ? minConfRaw
-      : FALLBACK_AUTO_APPROVE.min_confidence;
+async function readAutoApprovePolicy(host: Host): Promise<PolicyResolution> {
+  // Paginate the directive scan too: a first-page-only read could
+  // silently fall back to the deny-default if the governing atom
+  // happens to land on page 2. Fail-closed fallback only after
+  // every page has been considered.
+  const MAX_DIRECTIVE_SCAN = 5_000;
+  const PAGE_SIZE = 200;
+  let totalSeen = 0;
+  let cursor: string | undefined;
+  do {
+    const remaining = MAX_DIRECTIVE_SCAN - totalSeen;
+    if (remaining <= 0) break;
+    const page = await host.atoms.query(
+      { type: ['directive'], layer: ['L3'] },
+      Math.min(PAGE_SIZE, remaining),
+      cursor,
+    );
+    for (const atom of page.atoms) {
+      if (atom.taint !== 'clean') continue;
+      if (atom.superseded_by.length > 0) continue;
+      const policy = (atom.metadata as Record<string, unknown>)?.policy as
+        | Record<string, unknown>
+        | undefined;
+      if (policy?.subject !== 'plan-auto-approve-low-stakes') continue;
 
-    return {
-      allowed_sub_actors: allowed,
-      min_confidence: minConfidence,
-    };
-  }
-  return FALLBACK_AUTO_APPROVE;
+      const allowedRaw = policy.allowed_sub_actors;
+      const minConfRaw = Number(policy.min_confidence);
+      const allowed = Array.isArray(allowedRaw)
+        ? allowedRaw.filter((v): v is string => typeof v === 'string')
+        : [];
+      const minConfidence = Number.isFinite(minConfRaw) && minConfRaw >= 0 && minConfRaw <= 1
+        ? minConfRaw
+        : FALLBACK_AUTO_APPROVE.min_confidence;
+
+      return {
+        config: {
+          allowed_sub_actors: allowed,
+          min_confidence: minConfidence,
+        },
+        atomId: String(atom.id),
+      };
+    }
+    totalSeen += page.atoms.length;
+    cursor = page.nextCursor === null ? undefined : page.nextCursor;
+  } while (cursor !== undefined);
+  return { config: FALLBACK_AUTO_APPROVE, atomId: null };
 }

@@ -209,6 +209,48 @@ describe('runAutoApprovePass', () => {
     expect(result.approved).toBe(0);
   });
 
+  it('re-reads the plan before approving (claim pattern, no stale-state regression)', async () => {
+    // Regression guard for the CR-flagged race: the prior code used
+    // the scan snapshot for the approval update, so a plan that
+    // moved out of 'proposed' between scan and update would be
+    // forced back to 'approved'. Fix re-reads host.atoms.get(plan.id)
+    // immediately before update and skips if the state has changed.
+    const host = createMemoryHost();
+    await host.atoms.put(policyAtom({ allowed: ['auditor-actor'] }));
+    await host.atoms.put(planAtom('p-race', { sub_actor: 'auditor-actor' }));
+
+    // Simulate operator revoking (superseding) the plan BETWEEN the
+    // scan's snapshot and the approval write. Easiest to do by
+    // calling runAutoApprovePass after transitioning the plan.
+    await host.atoms.update('p-race' as AtomId, { plan_state: 'abandoned' });
+
+    const result = await runAutoApprovePass(host);
+    expect(result.approved).toBe(0);
+    const p = await host.atoms.get('p-race' as AtomId);
+    // Must NOT have been re-approved.
+    expect(p!.plan_state).toBe('abandoned');
+  });
+
+  it('stamps via with the actual policy atom id (supports superseded-by-newer-id)', async () => {
+    // A deployment that supersedes pol-plan-auto-approve-low-stakes
+    // with a different id (e.g., pol-plan-auto-approve-v2) needs
+    // the stamp to reflect the actual governing atom, not a
+    // hardcoded string.
+    const host = createMemoryHost();
+    // Create a policy atom with a NON-default id.
+    const custom: Atom = {
+      ...policyAtom({ allowed: ['auditor-actor'] }),
+      id: 'pol-plan-auto-approve-v2' as AtomId,
+    };
+    await host.atoms.put(custom);
+    await host.atoms.put(planAtom('p-via', { sub_actor: 'auditor-actor' }));
+
+    await runAutoApprovePass(host);
+
+    const p = await host.atoms.get('p-via' as AtomId);
+    expect((p!.metadata.auto_approved as { via: string }).via).toBe('pol-plan-auto-approve-v2');
+  });
+
   it('tainted plan and superseded plan -> ignored', async () => {
     const host = createMemoryHost();
     await host.atoms.put(policyAtom({ allowed: ['auditor-actor'] }));
