@@ -49,6 +49,14 @@ export interface ClaudeCliOptions {
   readonly extraArgs?: ReadonlyArray<string>;
   /** If true, log the command line to stderr for debugging. */
   readonly verbose?: boolean;
+  /**
+   * Injectable exec implementation for tests. Takes (binary, args,
+   * execaOptions) and returns the execa result shape. Defaults to
+   * the real execa. Tests pass a stub that records the call and
+   * synthesizes a response, so the adapter can be exercised without
+   * spawning a real process.
+   */
+  readonly execImpl?: typeof execa;
 }
 
 const DEFAULT_DISALLOWED_TOOLS: ReadonlyArray<string> = [
@@ -133,9 +141,20 @@ export class ClaudeCliLLM implements LLM {
       // invocation. Without it, every configured MCP server (any configured)
       // starts up inside the judge session and adds turns + cost. Measured:
       // 22 turns -> 1-4 turns with this flag.
+      // Pass the user message via stdin, NOT as the `-p` positional
+      // argument. Large data payloads (large context judge calls,
+      // where the schema-bound data object can reach tens of
+      // kilobytes) blow through the Windows CreateProcess argv
+      // limit (~32767 chars) when passed positionally, and spawn
+      // silently fails with exitCode=undefined + empty stdout/stderr.
+      // Piping via stdin has no such ceiling. `-p` flag without a
+      // positional value puts claude into non-interactive print
+      // mode and reads the prompt from stdin.
+      //
+      // See test/adapters/claude-cli/llm.test.ts for the regression
+      // guard that enforces "user-data payload never enters argv."
       const args: string[] = [
         '-p',
-        userMessage,
         '--model',
         options.model,
         '--max-budget-usd',
@@ -162,15 +181,19 @@ export class ClaudeCliLLM implements LLM {
       const startedAt = Date.now();
       const timeoutMs = options.timeout_ms ?? 180_000;
 
+      const exec = this.opts.execImpl ?? execa;
       let execResult;
       try {
-        execResult = await execa(this.opts.claudePath ?? 'claude', args, {
+        execResult = await exec(this.opts.claudePath ?? 'claude', args, {
           timeout: timeoutMs,
           reject: false,
           stripFinalNewline: true,
-          // Close stdin so the CLI does not wait for piped input. Judge data
-          // is already in the `-p` positional argument.
-          stdin: 'ignore',
+          // Pipe the user message via stdin. Large data payloads
+          // (e.g. large context judge calls with a schema-bound
+          // data object reaching tens of kilobytes) blow past the
+          // Windows CreateProcess argv ceiling when passed as the
+          // `-p` positional value; stdin has no such ceiling.
+          input: userMessage,
           // Run from a neutral cwd so the CLI does not auto-load a workspace
           // CLAUDE.md into the judge session. We still pay for the default
           // Claude Code system prompt, but this trims project-specific memory.

@@ -79,6 +79,28 @@ jobs:
             exit 1
           fi
           echo "OK: no emdashes"
+      - name: Verify no instance-specific role vocabulary in src/
+        # Framework code under src/ must stay mechanism-focused and
+        # pluggable. Role/instance names ("thinking CTO", "our CTO",
+        # references to a specific principal id in framework
+        # primitives) belong in canon, skills, scripts, or examples,
+        # not in src/. CodeRabbit flagged this class of leak on PR #32
+        # (2026-04-20); this guard prevents recurrence repo-wide.
+        # The term list is intentionally narrow: we block phrases
+        # that have no mechanism-level meaning, not legitimate class
+        # names (HostLlmPlanningJudgment, PlanningActor).
+        shell: bash
+        run: |
+          set -e
+          FORBIDDEN='thinking CTO|the cto-actor principal|our CTO|the auditor role'
+          HITS=$(grep -rEn "$FORBIDDEN" src/ 2>/dev/null || true)
+          if [ -n "$HITS" ]; then
+            echo "FAIL: instance-specific role vocabulary in src/:"
+            echo "$HITS"
+            echo "Move these references to canon, skills, scripts, or examples."
+            exit 1
+          fi
+          echo "OK: no instance-specific role vocabulary in src/"
       - name: Verify no private terms anywhere in tracked files
         shell: bash
         run: |
