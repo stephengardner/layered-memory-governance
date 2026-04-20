@@ -11,7 +11,8 @@
   "bin": {
     "lag-compromise": "./bin/lag-compromise.js",
     "lag-respond": "./bin/lag-respond.js",
-    "lag-run-loop": "./bin/lag-run-loop.js"
+    "lag-run-loop": "./bin/lag-run-loop.js",
+    "lag-tg": "./bin/lag-tg.mjs"
   },
   "exports": {
     ".": {
@@ -53,6 +54,10 @@
     "./external/github": {
       "import": "./dist/external/github/index.js",
       "types": "./dist/external/github/index.d.ts"
+    },
+    "./lifecycle": {
+      "import": "./dist/lifecycle/index.js",
+      "types": "./dist/lifecycle/index.d.ts"
     }
   },
   "files": [
