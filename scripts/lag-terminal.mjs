@@ -58,15 +58,20 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // the script without building), we fall back to plain-text mirroring.
 let markdownToTelegramHtml = null;
 let splitMarkdownForTelegram = null;
+let startJsonlMirrorCli = null;
+let createTelegramChannel = null;
 try {
   const fmt = await import('../dist/daemon/format.js');
   markdownToTelegramHtml = fmt.markdownToTelegramHtml;
   splitMarkdownForTelegram = fmt.splitMarkdownForTelegram;
+  const cli = await import('../dist/daemon/cli-renderer/index.js');
+  startJsonlMirrorCli = cli.startJsonlMirror;
+  createTelegramChannel = cli.createTelegramChannel;
 } catch {
   // Fallback: plain-text mirror. Log once on startup; do not block boot.
   // eslint-disable-next-line no-console
   console.error('[tg] note: dist/daemon/format.js not found; mirror will send plain text.');
-  console.error('[tg]       run `npm run build` to enable markdown -> Telegram HTML.');
+  console.error('[tg]       run `npm run build` to enable the CLI-style throbber mirror.');
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +103,7 @@ function parseArgs(argv) {
   const args = {
     resumeSessionId: null,
     mirror: true,
+    mirrorUx: 'cli', // 'cli' (CliRenderer throbber) | 'basic' (plain sendMessage)
     claudeArgs: [],
     verbose: false,
   };
@@ -107,6 +113,13 @@ function parseArgs(argv) {
       args.resumeSessionId = argv[++i];
     } else if (a === '--no-mirror') {
       args.mirror = false;
+    } else if (a === '--mirror-ux' && i + 1 < argv.length) {
+      const v = argv[++i];
+      if (v !== 'cli' && v !== 'basic') {
+        console.error(`Unknown --mirror-ux ${v}; expected cli|basic`);
+        process.exit(2);
+      }
+      args.mirrorUx = v;
     } else if (a === '--claude-args' && i + 1 < argv.length) {
       args.claudeArgs = argv[++i].split(/\s+/).filter(Boolean);
     } else if (a === '--verbose') {
@@ -120,6 +133,7 @@ Incoming Telegram messages inject directly into the Claude Code stdin.
 Options:
   --resume-session <id>   Resume a specific session (passes --resume to claude)
   --no-mirror             Do not mirror Claude responses to Telegram (default: on)
+  --mirror-ux <mode>      Mirror UX: cli (throbber + thinking + tool lines, default) | basic (one message per turn)
   --claude-args "..."     Extra args for claude (space-separated)
   --verbose               Log Telegram poll activity + injection events
   -h, --help              This help`);
@@ -272,7 +286,7 @@ async function main() {
   console.log(`LAG terminal wrapper starting`);
   console.log(`  Claude command:  ${claudeCmd} ${claudeArgs.join(' ') || '(interactive, new session)'}`);
   console.log(`  Telegram chat:   ${chatId}`);
-  console.log(`  Mirror responses:${args.mirror ? ' ON' : ' OFF'}`);
+  console.log(`  Mirror responses:${args.mirror ? ` ON (${args.mirrorUx})` : ' OFF'}`);
   console.log(`  Stop:            Ctrl-C (both claude and the poller unwind)`);
   console.log('');
 
@@ -365,6 +379,7 @@ async function main() {
   const mirrorMinChars = 40;
   let mirrorController = null;
   if (args.mirror) {
+<<<<<<< HEAD
     mirrorController = startJsonlMirror({
       repoRoot: REPO_ROOT,
       resumeSessionId: args.resumeSessionId,
@@ -378,6 +393,64 @@ async function main() {
       },
       verbose: args.verbose,
     });
+=======
+    const useCliMirror = args.mirrorUx === 'cli'
+      && startJsonlMirrorCli !== null
+      && createTelegramChannel !== null
+      && markdownToTelegramHtml !== null
+      && splitMarkdownForTelegram !== null;
+    if (useCliMirror) {
+      // Resolve the session jsonl path so the CLI mirror can tail it.
+      // If --resume-session was passed, the path is deterministic; else
+      // we fall back to the legacy mirror which auto-detects.
+      const jsonlPath = args.resumeSessionId
+        ? join(
+            homedir(),
+            '.claude',
+            'projects',
+            REPO_ROOT.replace(/[:\\/]/g, '-'),
+            `${args.resumeSessionId}.jsonl`,
+          )
+        : null;
+      if (jsonlPath) {
+        const channel = createTelegramChannel({
+          botToken,
+          chatId,
+          fetchImpl: fetch,
+        });
+        const maxChars = 4000;
+        mirrorController = startJsonlMirrorCli({
+          filePath: jsonlPath,
+          channel,
+          renderFinal: (md) => markdownToTelegramHtml(md),
+          splitFinal: (text) => splitMarkdownForTelegram(text, maxChars),
+          label: 'Claude is working',
+          verbose: args.verbose,
+        });
+      } else {
+        if (args.verbose) console.error('[mirror] cli-ux requires --resume-session; falling back to basic mirror');
+        mirrorController = startJsonlMirror({
+          repoRoot: REPO_ROOT,
+          resumeSessionId: args.resumeSessionId,
+          onText: async (text) => {
+            if (text.length < mirrorMinChars) return;
+            await sendMirrorText(injector, text, { verbose: args.verbose });
+          },
+          verbose: args.verbose,
+        });
+      }
+    } else {
+      mirrorController = startJsonlMirror({
+        repoRoot: REPO_ROOT,
+        resumeSessionId: args.resumeSessionId,
+        onText: async (text) => {
+          if (text.length < mirrorMinChars) return;
+          await sendMirrorText(injector, text, { verbose: args.verbose });
+        },
+        verbose: args.verbose,
+      });
+    }
+>>>>>>> 3667525 (cli-renderer: thinking in throbber, never in final + jsonl-mirror primitive)
   }
 
   // If mirror is disabled but we still want verification (the common

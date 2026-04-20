@@ -140,19 +140,30 @@ describe('CliRenderer', () => {
     await renderer.dispose();
   });
 
-  it('complete folds thinking into a tg-spoiler block (Telegram-safe HTML)', async () => {
+  it('thinking shows live in the throbber but is stripped from the final message', async () => {
     let t = 1_000_000;
     const { channel, calls } = mkStubChannel();
     const renderer = new CliRenderer({ channel, now: () => t, editRateLimitMs: 0 });
     await renderer.emit({ type: 'start' });
+    t += 1;
     await renderer.emit({ type: 'thinking', text: 'considering approaches' });
+
+    // Intermediate edit must surface the thinking indicator.
+    const intermediate = calls.filter((c) => c.kind === 'edit');
+    expect(intermediate.length).toBeGreaterThanOrEqual(1);
+    const lastMid = intermediate[intermediate.length - 1]!;
+    expect(lastMid.text).toContain('💭');
+    expect(lastMid.text).toContain('considering approaches');
+
+    t += 1;
     await renderer.emit({ type: 'complete', finalText: 'Answer.' });
 
     const final = calls[calls.length - 1]!;
     expect(final.text).toContain('Answer.');
-    expect(final.text).toContain('considering approaches');
-    expect(final.text).toContain('<tg-spoiler>');
-    // Must NOT use <details>: Telegram HTML rejects that tag.
+    // Thinking must NOT be embedded in the final message; it lives in
+    // the live throbber only.
+    expect(final.text).not.toContain('considering approaches');
+    expect(final.text).not.toContain('<tg-spoiler>');
     expect(final.text).not.toContain('<details>');
     await renderer.dispose();
   });

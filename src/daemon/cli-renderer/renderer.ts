@@ -135,8 +135,11 @@ export class CliRenderer {
         this.thinkingBuffer = this.thinkingBuffer
           ? this.thinkingBuffer + '\n' + event.text
           : event.text;
-        // Thinking doesn't appear in the progress view (too noisy).
-        // It's folded into the final message as a spoiler.
+        // Surface thinking live in the throbber so the operator sees
+        // the model's reasoning arc. It's NEVER embedded into the
+        // final message (long thinking blocks would bust Telegram's
+        // 4096-char split or render as noise after the answer).
+        this.scheduleEdit();
         return;
       case 'text-delta':
         this.accumulatedText += event.text;
@@ -170,9 +173,9 @@ export class CliRenderer {
 
   /**
    * Wait for any pending serialized edits to drain. Exposed for tests
-   * that need to observe intermediate channel traffic synchronously;
-   * production callers do not need this — they await terminal emits
-   * which already chain through the serialized queue.
+   * that need to observe intermediate channel traffic synchronously.
+   * Production callers do not need this: they already await terminal
+   * emits which chain through the serialized queue.
    */
   async waitForIdle(): Promise<void> {
     await this.editChain;
@@ -214,14 +217,12 @@ export class CliRenderer {
       clearTimeout(this.pendingEditTimer);
       this.pendingEditTimer = null;
     }
-    // Thinking is folded into a tg-spoiler block (Telegram HTML whitelist
-    // supports <tg-spoiler>; <details> is NOT supported and would be
-    // stripped or rejected).
-    const withThinking = this.thinkingBuffer
-      ? `${finalText}\n\n<b>thinking</b>\n<tg-spoiler>${escapeHtml(this.thinkingBuffer)}</tg-spoiler>`
-      : finalText;
+    // Thinking is surfaced live in the throbber only; it never lands
+    // in the final message. Long thinking blocks cause split-at-HTML-
+    // tag corruption (tg-spoiler opened in one chunk, closed in the
+    // next) and render as noise appended after the answer.
     const footer = this.renderFooter(meta);
-    const composed = footer ? `${withThinking}\n\n${footer}` : withThinking;
+    const composed = footer ? `${finalText}\n\n${footer}` : finalText;
     const rendered = this.renderFinal(composed);
     const chunks = this.splitFinal(rendered);
     if (chunks.length === 0) return;
@@ -389,9 +390,11 @@ export class CliRenderer {
     const activityLines = this.activity.length === 0
       ? ''
       : '\n\n' + this.activity.map((a) => `${a.icon} ${escapeHtml(a.text)}`).join('\n');
+    const thinking = this.renderLiveThinking();
+    const thinkingBlock = thinking.length === 0 ? '' : `\n\n${thinking}`;
     const preview = this.renderLivePreview();
     const previewBlock = preview.length === 0 ? '' : `\n\n${preview}`;
-    return head + hintLine + activityLines + previewBlock;
+    return head + hintLine + activityLines + thinkingBlock + previewBlock;
   }
 
   /**
@@ -409,6 +412,25 @@ export class CliRenderer {
       ? tail
       : '…' + tail.slice(tail.length - this.livePreviewMaxChars + 1);
     return `<blockquote>${escapeHtml(clipped)}</blockquote>`;
+  }
+
+  /**
+   * Render the tail of accumulated thinking as a compact italic block
+   * prefixed with a 💭. Thinking shows only while the turn is live; it
+   * never enters the final message (see handleComplete).
+   */
+  private renderLiveThinking(): string {
+    if (this.livePreviewMaxChars <= 0) return '';
+    const raw = this.thinkingBuffer.trimEnd();
+    if (raw.length === 0) return '';
+    const lines = raw.split('\n');
+    const tailLines = Math.max(1, Math.min(this.livePreviewLines, 3));
+    const tail = lines.slice(-tailLines).join(' ');
+    const maxThinkingChars = Math.min(this.livePreviewMaxChars, 180);
+    const clipped = tail.length <= maxThinkingChars
+      ? tail
+      : '…' + tail.slice(tail.length - maxThinkingChars + 1);
+    return `💭 <i>${escapeHtml(clipped)}</i>`;
   }
 
   private renderFooter(meta: Readonly<Record<string, string | number>> | undefined): string {

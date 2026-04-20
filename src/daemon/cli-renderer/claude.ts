@@ -32,3 +32,12 @@ export type {
   StreamingExecResult,
   StreamingExecutor,
 } from './claude-streaming.js';
+
+// JsonlMirror reads Claude Code session jsonl files (Claude-specific
+// input format), so it belongs on the Claude barrel rather than the
+// runtime-neutral renderer index.
+export { startJsonlMirror } from './jsonl-mirror.js';
+export type {
+  JsonlMirrorController,
+  JsonlMirrorOptions,
+} from './jsonl-mirror.js';

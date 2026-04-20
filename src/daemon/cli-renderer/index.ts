@@ -20,6 +20,7 @@ export type {
   CliRendererChannel,
   CliRendererEvent,
   CliRendererOptions,
+  InlineAction,
   MessageOptions,
   PostedMessage,
 } from './types.js';
