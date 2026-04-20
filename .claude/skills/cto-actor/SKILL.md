@@ -28,8 +28,12 @@ Actor (mechanism)             -- PlanningActor (src/actors/planning)
   +-- PlanningContext         -- directives + decisions + relevantAtoms
   |                             + openPlans + relevantPrincipals
   |
-  +-- PlanningJudgment        -- classify + draft (stub in 55b;
-  |                             LLM-backed in follow-up phase)
+  +-- PlanningJudgment        -- HostLlmPlanningJudgment (Opus default
+  |                             for classify AND draft; stub opt-in
+  |                             via --stub rollback flag). Two judge
+  |                             calls per run, both schema-validated
+  |                             via zod, both audited with prompt and
+  |                             schema fingerprints.
   |
   +-- runActor driver         -- kill-switch + budget + convergence +
                                  per-action checkToolPolicy gate
@@ -45,9 +49,14 @@ HIL surface                   -- host.notifier.telegraph(event)
 
 ## Run paths
 
-- **Local**: `node scripts/run-cto-actor.mjs --request "<text>"`.
-  Uses the stub judgment (55b). Replace with the LLM-backed
-  judgment when that ships.
+- **Local (thinking CTO, default)**: `node scripts/run-cto-actor.mjs
+  --request "<text>"`. Opus-backed classify + draft through
+  HostLlmPlanningJudgment. Per-call budget cap $0.50; worst-case
+  per-run cost $1.00. Override via `--classify-model`, `--draft-model`,
+  `--max-budget-usd`, `--min-confidence`.
+- **Local (stub rollback)**: add `--stub` to route through the
+  deterministic stub judgment. Use when diagnosing whether a
+  regression lives in the actor or in the LLM path.
 - **Kill switch**: `touch .lag/STOP`. Actor halts at the top of the
   next iteration.
 
@@ -69,17 +78,25 @@ Set by `scripts/bootstrap-cto-actor-canon.mjs`. Current shape:
 To raise the autonomy dial: add a more-specific allow atom with
 higher priority. Edit canon, not src/.
 
-## What 55b ships vs what's deferred
+## What ships vs what is deferred
 
-- **55b (this phase)**: Principal bootstrap, policy atoms, driver
-  script, skill doc. End-to-end runnable with a stub judgment.
-- **LLM judgment** (follow-up): real PlanningJudgment backed by
-  Host.llm with versioned prompt templates, proper classification
-  across all 6 kinds, plan drafting that cites atom contents
-  (not just ids).
-- **55c**: sub-actor delegation. An approved plan can invoke
-  PrLandingActor / DeployActor / etc. with budget + audit
-  composition.
+- **55b**: Principal bootstrap, policy atoms, driver script, skill
+  doc. End-to-end runnable with a stub judgment.
+- **55b+ (LLM judgment, shipped)**: HostLlmPlanningJudgment with
+  PLAN_CLASSIFY + PLAN_DRAFT schemas, provenance guard that rewrites
+  uncited plans into missing-context escalations at the judgment
+  boundary, LLM-failure surfaced as missing-judgment plans (never
+  silent fallback). Default Opus for both calls. See
+  `design/phase-55b-llm-judgment.md`.
+- **55c (deferred)**: sub-actor delegation. An approved plan invokes
+  PrLandingActor / DeployActor / etc. with budget + audit composition.
+  Without this, an approved plan still requires the operator to
+  action it manually.
+- **Auditor role (deferred, first CTO task)**: a code-quality
+  auditor principal running on the same PlanningActor primitive with
+  its own policy atoms. First real use of the thinking CTO: operator
+  asks the CTO to design the auditor; CTO proposes a plan; operator
+  approves; we implement from the approved plan. Dogfood loop.
 
 ## Consult before changing behavior
 

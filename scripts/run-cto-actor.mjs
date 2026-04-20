@@ -1,36 +1,40 @@
 #!/usr/bin/env node
 /**
- * cto-actor driver (Phase 55b).
+ * cto-actor driver (Phase 55b + LLM-judgment).
  *
  * Invokes the PlanningActor under the cto-actor Principal against an
  * operator request, producing Plan atoms + HIL escalations.
  *
  * Usage:
- *   node scripts/run-cto-actor.mjs --request "Should we split 53a.1 into a separate package?"
- *   node scripts/run-cto-actor.mjs --request "..." --dry-run   # don't write atoms; print plans
+ *   # Default: LLM-backed thinking CTO via ClaudeCliLLM (Opus).
+ *   node scripts/run-cto-actor.mjs --request "Should we ship the auditor role?"
  *
- * The script composes LAG primitives explicitly so it reads as a
- * worked example of the full stack:
+ *   # Rollback: deterministic stub judgment (no LLM call).
+ *   node scripts/run-cto-actor.mjs --request "..." --stub
  *
- *   Host (createFileHost)
+ *   # Tune models / caps per run:
+ *   node scripts/run-cto-actor.mjs --request "..." --classify-model claude-opus-4-7
+ *
+ * Composition:
+ *
+ *   Host (createFileHost, llm=ClaudeCliLLM)
  *     -> Principal (cto-actor from host.principals)
  *        -> Actor (PlanningActor)
- *           -> Judgment (stub for 55b; real LLM lands in a follow-up)
+ *           -> Judgment (HostLlmPlanningJudgment, default; stub opt-in via --stub)
  *              -> runActor driver (checkToolPolicy gate, audit, budget)
  *                 -> atoms.put(planAtom) + notifier.telegraph(escalation)
- *
- * The stub judgment in this driver returns a deterministic "needs
- * research" plan so the full pipeline is runnable end-to-end without
- * a Claude CLI call. Replace with HostLlmPlanningJudgment (future
- * phase) to get real plan drafting.
  */
 
 import { resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
+import { ClaudeCliLLM } from '../dist/adapters/claude-cli/index.js';
 import { runActor } from '../dist/actors/index.js';
-import { PlanningActor } from '../dist/actors/planning/index.js';
+import {
+  HostLlmPlanningJudgment,
+  PlanningActor,
+} from '../dist/actors/planning/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -43,12 +47,34 @@ function parseArgs(argv) {
     maxIterations: 2,
     principalId: 'cto-actor',
     origin: 'operator',
+    stub: false,
+    classifyModel: undefined,
+    draftModel: undefined,
+    maxBudgetUsdPerCall: undefined,
+    minConfidence: undefined,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--request' && i + 1 < argv.length) args.request = argv[++i];
     else if (a === '--dry-run') args.dryRun = true;
-    else if (a === '--max-iterations' && i + 1 < argv.length) {
+    else if (a === '--stub') args.stub = true;
+    else if (a === '--classify-model' && i + 1 < argv.length) args.classifyModel = argv[++i];
+    else if (a === '--draft-model' && i + 1 < argv.length) args.draftModel = argv[++i];
+    else if (a === '--max-budget-usd' && i + 1 < argv.length) {
+      const n = Number(argv[++i]);
+      if (!Number.isFinite(n) || n <= 0) {
+        console.error('ERROR: --max-budget-usd expects a positive number');
+        process.exit(2);
+      }
+      args.maxBudgetUsdPerCall = n;
+    } else if (a === '--min-confidence' && i + 1 < argv.length) {
+      const n = Number(argv[++i]);
+      if (!Number.isFinite(n) || n < 0 || n > 1) {
+        console.error('ERROR: --min-confidence expects a number in [0,1]');
+        process.exit(2);
+      }
+      args.minConfidence = n;
+    } else if (a === '--max-iterations' && i + 1 < argv.length) {
       const n = Number(argv[++i]);
       if (!Number.isInteger(n) || n < 1) {
         console.error('ERROR: --max-iterations expects a positive integer');
@@ -58,7 +84,20 @@ function parseArgs(argv) {
     } else if (a === '--principal' && i + 1 < argv.length) args.principalId = argv[++i];
     else if (a === '--origin' && i + 1 < argv.length) args.origin = argv[++i];
     else if (a === '-h' || a === '--help') {
-      console.log('Usage: node scripts/run-cto-actor.mjs --request "<text>" [--dry-run] [--max-iterations n]');
+      console.log([
+        'Usage: node scripts/run-cto-actor.mjs --request "<text>" [options]',
+        '',
+        'Options:',
+        '  --request "<text>"       Required. The operator question.',
+        '  --stub                   Use the deterministic stub judgment (no LLM call).',
+        '  --classify-model <name>  Override the classify-step model. Default claude-opus-4-7.',
+        '  --draft-model <name>     Override the draft-step model. Default claude-opus-4-7.',
+        '  --max-budget-usd <n>     Per-call budget cap. Default 0.50.',
+        '  --min-confidence <n>     Drop plans below this confidence. Default 0.55.',
+        '  --max-iterations <n>     runActor iteration cap. Default 2.',
+        '  --principal <id>         Principal to run as. Default cto-actor.',
+        '  --origin <id>            runActor origin tag. Default operator.',
+      ].join('\n'));
       process.exit(0);
     } else {
       console.error(`Unknown argument: ${a}`);
@@ -160,7 +199,11 @@ async function main() {
     process.exit(2);
   }
 
-  const host = await createFileHost({ rootDir: STATE_DIR });
+  // LLM adapter: ClaudeCliLLM uses the user's existing Claude Code
+  // OAuth (no API key). Only built if we're not running in --stub
+  // mode, so the stub path has zero adapter cost.
+  const llm = args.stub ? undefined : new ClaudeCliLLM({});
+  const host = await createFileHost({ rootDir: STATE_DIR, llm });
 
   const principal = await host.principals.get(args.principalId);
   if (!principal) {
@@ -170,13 +213,31 @@ async function main() {
     process.exit(1);
   }
 
+  // Default: LLM-backed thinking CTO. --stub routes through the old
+  // deterministic judgment as an explicit rollback path (useful for
+  // diagnosing whether a regression is in the actor or in the LLM).
+  const judgment = args.stub
+    ? stubJudgment()
+    : new HostLlmPlanningJudgment(host, {
+        ...(args.classifyModel !== undefined ? { classifyModel: args.classifyModel } : {}),
+        ...(args.draftModel !== undefined ? { draftModel: args.draftModel } : {}),
+        ...(args.maxBudgetUsdPerCall !== undefined
+          ? { maxBudgetUsdPerCall: args.maxBudgetUsdPerCall }
+          : {}),
+        ...(args.minConfidence !== undefined ? { minConfidence: args.minConfidence } : {}),
+      });
+
   const actor = new PlanningActor({
     request: args.request,
-    judgment: stubJudgment(),
+    judgment,
   });
 
-  const deadline = new Date(Date.now() + 60_000).toISOString();
-  console.log(`[cto-actor] LIVE run as ${args.principalId}`);
+  // LLM calls can take a while (Opus on a rich context). Give the
+  // deadline enough headroom for classify + draft + overhead.
+  const deadlineMs = args.stub ? 60_000 : 600_000;
+  const deadline = new Date(Date.now() + deadlineMs).toISOString();
+  const mode = args.stub ? 'STUB' : 'LLM (thinking)';
+  console.log(`[cto-actor] ${mode} run as ${args.principalId}`);
   console.log(`[cto-actor] request: ${args.request}`);
   console.log(`[cto-actor] budget: maxIterations=${args.maxIterations}, deadline=${deadline}`);
 

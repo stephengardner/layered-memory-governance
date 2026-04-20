@@ -22,6 +22,8 @@ export type {
 } from './planning-actor.js';
 export { aggregateRelevantContext } from './aggregate-context.js';
 export type { AggregateContextOptions } from './aggregate-context.js';
+export { HostLlmPlanningJudgment } from './host-llm-judgment.js';
+export type { HostLlmPlanningJudgmentOptions } from './host-llm-judgment.js';
 export type {
   PlanningClassification,
   PlanningClassificationKind,

@@ -11,7 +11,7 @@
  */
 
 import { rm } from 'node:fs/promises';
-import type { Embedder, Host } from '../../interface.js';
+import type { Embedder, Host, LLM } from '../../interface.js';
 import { MemoryLLM } from '../memory/llm.js';
 import { MemoryClock } from '../memory/clock.js';
 import { FileAtomStore } from './atom-store.js';
@@ -26,10 +26,13 @@ import { ensureDir } from './util.js';
 export interface FileHostOptions {
   readonly rootDir: string;
   /**
-   * Override the LLM slot. Defaults to the deterministic in-process mock
-   * so conformance tests can run without a real model or an API key.
+   * Override the LLM slot. Defaults to the deterministic in-process
+   * MemoryLLM so conformance tests can run without a real model or an
+   * API key. Production callers pass a real adapter (e.g.
+   * ClaudeCliLLM from adapters/claude-cli) that implements the LLM
+   * interface.
    */
-  readonly llm?: MemoryLLM;
+  readonly llm?: LLM;
   /**
    * Override the clock. Defaults to the real wall clock. Tests may pass a
    * MemoryClock for deterministic time.
