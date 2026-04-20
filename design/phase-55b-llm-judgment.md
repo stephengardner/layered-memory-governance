@@ -195,7 +195,8 @@ Never fall back silently to the stub. Failures must be visible.
   4. classify LLM failure -> synthetic ambiguous classification
   5. draft LLM failure -> single missing-judgment plan
   6. low-confidence plans (<minConfidence) are filtered; if all drop, missing-judgment
-  7. context serialization caps atom content at ~400 chars (no mid-sentence)
+  7. context serialization passes FULL atom content (no per-atom truncation, per operator directive 2026-04-19)
+  8. principlesApplied on a cleaned plan is a subset of directive ids AND a subset of derivedFrom (no decisions / observations / plans leak in)
 - Golden test with real LLM: opt-in via `LAG_LLM_GOLDEN=1` env, skipped in CI by default.
 
 ## Interaction with existing policy atoms

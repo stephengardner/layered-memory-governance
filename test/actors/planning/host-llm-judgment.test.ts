@@ -152,7 +152,7 @@ describe('HostLlmPlanningJudgment', () => {
         rationale: 'The auditor role has no prior implementation to modify.',
         applicable_directives: ['dev-extreme-rigor', 'dev-kill-switch-first'],
       });
-      const judgment = new HostLlmPlanningJudgment(host);
+      const judgment = new HostLlmPlanningJudgment(host, { classifyModel: 'test-model', draftModel: 'test-model' });
 
       const classification = await judgment.classify(context);
       expect(classification.kind).toBe('greenfield');
@@ -172,7 +172,7 @@ describe('HostLlmPlanningJudgment', () => {
         rationale: 'cites a real directive and a hallucinated one',
         applicable_directives: ['dev-extreme-rigor', 'dev-invented-directive-xyz'],
       });
-      const judgment = new HostLlmPlanningJudgment(host);
+      const judgment = new HostLlmPlanningJudgment(host, { classifyModel: 'test-model', draftModel: 'test-model' });
 
       const classification = await judgment.classify(context);
       expect(classification.applicableDirectives).toEqual(['dev-extreme-rigor']);
@@ -182,7 +182,7 @@ describe('HostLlmPlanningJudgment', () => {
       const host = createMemoryHost();
       const context = makeContext();
       // No register() call -> MemoryLLM throws UnsupportedError.
-      const judgment = new HostLlmPlanningJudgment(host);
+      const judgment = new HostLlmPlanningJudgment(host, { classifyModel: 'test-model', draftModel: 'test-model' });
 
       const classification = await judgment.classify(context);
       expect(classification.kind).toBe('ambiguous');
@@ -227,7 +227,7 @@ describe('HostLlmPlanningJudgment', () => {
           },
         ],
       });
-      const judgment = new HostLlmPlanningJudgment(host);
+      const judgment = new HostLlmPlanningJudgment(host, { classifyModel: 'test-model', draftModel: 'test-model' });
 
       const plans = await judgment.draft(context, classification);
       expect(plans).toHaveLength(1);
@@ -261,7 +261,7 @@ describe('HostLlmPlanningJudgment', () => {
           },
         ],
       });
-      const judgment = new HostLlmPlanningJudgment(host);
+      const judgment = new HostLlmPlanningJudgment(host, { classifyModel: 'test-model', draftModel: 'test-model' });
 
       const plans = await judgment.draft(context, classification);
       expect(plans).toHaveLength(1);
@@ -293,7 +293,7 @@ describe('HostLlmPlanningJudgment', () => {
           },
         ],
       });
-      const judgment = new HostLlmPlanningJudgment(host, { minConfidence: 0.55 });
+      const judgment = new HostLlmPlanningJudgment(host, { classifyModel: 'test-model', draftModel: 'test-model', minConfidence: 0.55 });
 
       const plans = await judgment.draft(context, classification);
       expect(plans).toHaveLength(1);
@@ -316,7 +316,7 @@ describe('HostLlmPlanningJudgment', () => {
           },
         ],
       });
-      const judgment = new HostLlmPlanningJudgment(host);
+      const judgment = new HostLlmPlanningJudgment(host, { classifyModel: 'test-model', draftModel: 'test-model' });
 
       const plans = await judgment.draft(context, classification);
       expect(plans).toHaveLength(1);
@@ -329,7 +329,7 @@ describe('HostLlmPlanningJudgment', () => {
       const host = createMemoryHost();
       const context = makeContext();
       // No register -> throws.
-      const judgment = new HostLlmPlanningJudgment(host);
+      const judgment = new HostLlmPlanningJudgment(host, { classifyModel: 'test-model', draftModel: 'test-model' });
 
       const plans = await judgment.draft(context, classification);
       expect(plans).toHaveLength(1);

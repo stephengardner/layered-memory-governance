@@ -32,9 +32,23 @@ import { createFileHost } from '../dist/adapters/file/index.js';
 import { ClaudeCliLLM } from '../dist/adapters/claude-cli/index.js';
 import { runActor } from '../dist/actors/index.js';
 import {
+  DEFAULT_JUDGE_TIMEOUT_MS,
   HostLlmPlanningJudgment,
   PlanningActor,
 } from '../dist/actors/planning/index.js';
+
+// Instance configuration lives here, NOT in src/. Framework code
+// stays mechanism-focused; vendor model ids are the caller's choice.
+// Per operator directive 2026-04-19: Opus for both classify and
+// draft; plans are the most important thing we build, spare no
+// tokens.
+const DEFAULT_CLASSIFY_MODEL = 'claude-opus-4-7';
+const DEFAULT_DRAFT_MODEL = 'claude-opus-4-7';
+
+// Each iteration spawns (up to) 2 judge calls: classify + draft.
+// Used to size the deadline so we do not budget-deadline a run
+// whose LLM calls are legitimately slow.
+const JUDGE_CALLS_PER_ITERATION = 2;
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -219,8 +233,8 @@ async function main() {
   const judgment = args.stub
     ? stubJudgment()
     : new HostLlmPlanningJudgment(host, {
-        ...(args.classifyModel !== undefined ? { classifyModel: args.classifyModel } : {}),
-        ...(args.draftModel !== undefined ? { draftModel: args.draftModel } : {}),
+        classifyModel: args.classifyModel ?? DEFAULT_CLASSIFY_MODEL,
+        draftModel: args.draftModel ?? DEFAULT_DRAFT_MODEL,
         ...(args.maxBudgetUsdPerCall !== undefined
           ? { maxBudgetUsdPerCall: args.maxBudgetUsdPerCall }
           : {}),
@@ -232,9 +246,14 @@ async function main() {
     judgment,
   });
 
-  // LLM calls can take a while (Opus on a rich context). Give the
-  // deadline enough headroom for classify + draft + overhead.
-  const deadlineMs = args.stub ? 60_000 : 600_000;
+  // Size the deadline so we never budget-deadline a run whose LLM
+  // calls are running at the per-call timeout. Worst case per run is
+  // maxIterations * JUDGE_CALLS_PER_ITERATION * DEFAULT_JUDGE_TIMEOUT_MS,
+  // plus slack for actor overhead + atom writes + notifier posts.
+  const SLACK_MS = 60_000;
+  const llmBudgetMs =
+    args.maxIterations * JUDGE_CALLS_PER_ITERATION * DEFAULT_JUDGE_TIMEOUT_MS + SLACK_MS;
+  const deadlineMs = args.stub ? 60_000 : Math.max(600_000, llmBudgetMs);
   const deadline = new Date(Date.now() + deadlineMs).toISOString();
   const mode = args.stub ? 'STUB' : 'LLM (thinking)';
   console.log(`[cto-actor] ${mode} run as ${args.principalId}`);

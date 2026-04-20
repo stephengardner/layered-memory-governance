@@ -28,11 +28,28 @@ import type {
   ProposedPlan,
 } from './types.js';
 
+/**
+ * Default per-call LLM timeout. Exported so drivers can size their
+ * run deadline against the worst-case wait (maxIterations * 2 calls
+ * per iteration * this value + slack) and not force a
+ * `budget-deadline` halt mid-run.
+ */
+export const DEFAULT_JUDGE_TIMEOUT_MS = 180_000;
+
 export interface HostLlmPlanningJudgmentOptions {
-  /** Model for the classify step. Default claude-opus-4-7. */
-  readonly classifyModel?: string;
-  /** Model for the draft step. Default claude-opus-4-7. */
-  readonly draftModel?: string;
+  /**
+   * Model id for the classify step. REQUIRED. No default: framework
+   * code under src/ stays mechanism-focused, so vendor-specific
+   * model identifiers come from the caller (script, canon, skill
+   * config), never from here. See the "Framework code under src/
+   * must stay mechanism-focused and pluggable" canon directive.
+   */
+  readonly classifyModel: string;
+  /**
+   * Model id for the draft step. REQUIRED. Same rationale as
+   * classifyModel.
+   */
+  readonly draftModel: string;
   /**
    * Per-call budget cap passed to host.llm.judge. Per-run worst case
    * is 2x this value (classify + draft). Default 0.50 USD.
@@ -159,14 +176,14 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
   private readonly temperature: number;
   private readonly timeoutMs: number;
 
-  constructor(host: Host, options: HostLlmPlanningJudgmentOptions = {}) {
+  constructor(host: Host, options: HostLlmPlanningJudgmentOptions) {
     this.host = host;
-    this.classifyModel = options.classifyModel ?? 'claude-opus-4-7';
-    this.draftModel = options.draftModel ?? 'claude-opus-4-7';
+    this.classifyModel = options.classifyModel;
+    this.draftModel = options.draftModel;
     this.maxBudgetUsdPerCall = options.maxBudgetUsdPerCall ?? 0.5;
     this.minConfidence = options.minConfidence ?? 0.55;
     this.temperature = options.temperature ?? 0.2;
-    this.timeoutMs = options.timeoutMs ?? 180_000;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS;
   }
 
   async classify(context: PlanningContext): Promise<PlanningClassification> {
@@ -269,8 +286,21 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
     // zero citations, the plan is rewritten into a missing-context
     // escalation at this layer so the atom store never sees an
     // uncited plan.
+    // Two sets: `citable` for the broad provenance pool (any id the
+    // draft is allowed to put in derivedFrom), and `directiveIds` for
+    // the narrower "what principlesApplied is allowed to cite". The
+    // ProposedPlan contract (see src/actors/planning/types.ts) says
+    // principlesApplied is specifically the directive ids the plan
+    // claims to satisfy; letting decisions / observations / open
+    // plans leak into that field breaks validatePlan's alignment
+    // check downstream.
     const citable = new Set<string>();
-    for (const atom of context.directives) citable.add(String(atom.id));
+    const directiveIds = new Set<string>();
+    for (const atom of context.directives) {
+      const id = String(atom.id);
+      citable.add(id);
+      directiveIds.add(id);
+    }
     for (const atom of context.decisions) citable.add(String(atom.id));
     for (const atom of context.relevantAtoms) citable.add(String(atom.id));
     for (const atom of context.openPlans) citable.add(String(atom.id));
@@ -280,7 +310,14 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
     let droppedByConfidence = 0;
     for (const p of parsed.data.plans) {
       const derivedFrom = p.derived_from.filter((id) => citable.has(id));
-      const principlesApplied = p.principles_applied.filter((id) => citable.has(id));
+      const derivedFromSet = new Set(derivedFrom);
+      // principlesApplied must be BOTH a directive AND part of the
+      // already-scrubbed derivedFrom set. Prevents the draft from
+      // claiming a principle it did not also cite in the provenance
+      // chain.
+      const principlesApplied = p.principles_applied.filter(
+        (id) => directiveIds.has(id) && derivedFromSet.has(id),
+      );
       if (derivedFrom.length === 0) {
         // Uncited plan after scrubbing: the judgment cited atoms that
         // don't exist in the aggregated context, violating the
