@@ -36,7 +36,11 @@ export interface ManifestUrlInput {
 
 export function buildManifestUrl(input: ManifestUrlInput): string {
   const base = input.githubBaseUrl ?? 'https://github.com';
-  const org = input.organization ?? input.role.owner;
+  // Only an explicit `organization` routes to the org-scoped creation
+  // URL. For personal accounts, GitHub creates the App under whoever
+  // is logged in to /settings/apps/new; `role.organization` is the
+  // only authoritative hint.
+  const org = input.organization ?? input.role.organization;
 
   const manifest = {
     name: input.role.displayName,

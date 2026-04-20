@@ -44,11 +44,15 @@ export const roleDefinitionSchema = z
     /** One-sentence description; shown on the App creation screen. */
     description: z.string().min(10).max(240),
     /**
-     * Owner slug the App will be created under. Typically a user login
-     * (e.g. `stephengardner`) for personal accounts or an org login for
-     * organizations. Defaults to the operator's personal account.
+     * Optional. GitHub organization slug to create this App under.
+     * When set, LAG routes the manifest URL to
+     * /organizations/<slug>/settings/apps/new. When omitted, LAG routes
+     * to /settings/apps/new which creates the App under whichever user
+     * is logged in to github.com in the browser at approval time
+     * (personal accounts). This field intentionally does NOT accept
+     * user logins; use the logged-in-browser-user mechanism instead.
      */
-    owner: z.string().min(1).optional(),
+    organization: z.string().min(1).optional(),
     /** GitHub App permissions requested for this role. */
     permissions: rolePermissionsSchema,
     /** Optional webhook events the App subscribes to (mostly unused today). */
