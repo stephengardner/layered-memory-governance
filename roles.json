@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "actors": [
+    {
+      "name": "lag-actor-demo",
+      "displayName": "LAG Actor Demo",
+      "description": "Proof-of-life identity used to validate the Actor provisioning flow end-to-end.",
+      "owner": "stephengardner",
+      "permissions": {
+        "contents": "write",
+        "pull_requests": "write",
+        "metadata": "read"
+      },
+      "events": []
+    }
+  ]
+}
