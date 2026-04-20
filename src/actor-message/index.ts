@@ -56,3 +56,6 @@ export {
   DEFAULT_ORDERING_POLICY,
 } from './ordering-policy.js';
 export type { OrderingPolicyConfig } from './ordering-policy.js';
+
+export { runInboxPoller } from './poller.js';
+export type { InboxPollerOptions } from './poller.js';

@@ -81,6 +81,63 @@ export interface AtomStore {
 
   /** Normalized content hash for deterministic dedup. Pure, synchronous. */
   contentHash(text: string): string;
+
+  /**
+   * Optional capability discovery. Consumers that want to wire a
+   * NOTIFY-style wake (Postgres LISTEN/NOTIFY, Redis pubsub, etc.)
+   * check `capabilities?.hasSubscribe` before calling `subscribe`.
+   * Polling remains correct even when subscribe is available; the
+   * wake is a latency optimization, not a correctness primitive.
+   *
+   * Capability-query shape (not a required method) so adapter
+   * implementations that never opt in carry zero extra code.
+   */
+  readonly capabilities?: AtomStoreCapabilities;
+
+  /**
+   * Optional push wake. When `capabilities.hasSubscribe` is true,
+   * consumers can subscribe to changes matching a filter. The returned
+   * async iterable yields AtomSubscribeEvent values (atom id + event
+   * kind) when a matching write lands. Consumers that need the full
+   * atom re-query the store via `get()`; we keep the event shape
+   * minimal so adapters do not have to serialize the full atom
+   * payload into the event stream.
+   *
+   * Termination via AbortSignal so callers can unwind cleanly; the
+   * iterator MUST return `{done: true}` when the signal aborts.
+   *
+   * Adapters that do not support push-wake must not implement this
+   * method; the presence of the method on the prototype is the
+   * declared contract. `capabilities.hasSubscribe` is the feature
+   * flag a consumer queries to decide whether to call.
+   */
+  subscribe?(filter: AtomFilter, signal?: AbortSignal): AsyncIterable<AtomSubscribeEvent>;
+}
+
+/**
+ * Feature declaration for an AtomStore. Consumers query this before
+ * invoking optional methods like subscribe; missing field is
+ * equivalent to `false`.
+ */
+export interface AtomStoreCapabilities {
+  /**
+   * True when the adapter supports push-wake via `subscribe()`. A
+   * consumer that sees false (or `undefined`) falls back to polling.
+   * A consumer that sees true may STILL poll as a correctness
+   * backstop (NOTIFY can drop silently).
+   */
+  readonly hasSubscribe: boolean;
+}
+
+/**
+ * One subscribe() event. Shape is deliberately minimal: the atom id
+ * + a kind indicator. Consumers re-query the store for the full atom
+ * when they need it, so adapters don't have to serialize the full
+ * atom into the event stream.
+ */
+export interface AtomSubscribeEvent {
+  readonly kind: 'put' | 'update';
+  readonly atomId: AtomId;
 }
 
 // ---------------------------------------------------------------------------
