@@ -90,6 +90,34 @@ function stubJudgment() {
     async draft(context) {
       const principles = context.directives.slice(0, 5).map((a) => a.id);
       const relevant = context.relevantAtoms.slice(0, 5).map((a) => a.id);
+      const citations = [...principles, ...relevant];
+      // Provenance directive (canon): every atom must carry a source
+      // chain. Never emit an uncited plan. If there is no canon
+      // directive and no relevant atom to cite, the right move is to
+      // escalate "missing context" to the operator, not fabricate a
+      // grounding-less plan atom.
+      if (citations.length === 0) {
+        return [{
+          title: 'Missing context: cannot draft a grounded plan',
+          body: [
+            `Request: ${context.request}`,
+            '',
+            'Aggregation returned zero canon directives AND zero',
+            'relevant atoms for this request. Drafting a plan without',
+            'any citation would violate the provenance directive',
+            '(every atom carries a source chain, no exceptions).',
+            '',
+            'Operator action: either provide a more specific request',
+            'that hits current canon, seed canon directives relevant',
+            'to this domain, or broaden aggregate-context caps.',
+          ].join('\n'),
+          derivedFrom: [],
+          principlesApplied: [],
+          alternativesRejected: [],
+          whatBreaksIfRevisit: 'N/A: this plan exists only to surface the missing-context state to the operator.',
+          confidence: 0.2,
+        }];
+      }
       return [{
         title: 'Research and surface options (stub)',
         body: [
@@ -101,7 +129,7 @@ function stubJudgment() {
           'is still grounded; a real plan will enumerate concrete',
           'steps and alternatives.',
         ].join('\n'),
-        derivedFrom: [...principles, ...relevant],
+        derivedFrom: citations,
         principlesApplied: principles,
         alternativesRejected: [
           { option: 'Wait (do nothing)', reason: 'Leaves the operator without a surfaced decision path.' },
@@ -115,6 +143,23 @@ function stubJudgment() {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  // --dry-run is not yet wired: atom writes + notifier calls still
+  // happen through the Host. A "dry-run" that silently mutated the
+  // atom store is a user-visible correctness bug, so we reject the
+  // flag up-front until proper no-op Host decorators ship (paired
+  // with the LLM-judgment phase where cost/side-effect simulation
+  // actually matters).
+  if (args.dryRun) {
+    console.error(
+      'ERROR: --dry-run is not yet implemented. It would require a no-op ' +
+      'Host decorator that skips atoms.put + notifier.telegraph; that ' +
+      'ships alongside the LLM-judgment phase. Rerun without --dry-run ' +
+      'to execute a live run under the cto-actor policy atoms.',
+    );
+    process.exit(2);
+  }
+
   const host = await createFileHost({ rootDir: STATE_DIR });
 
   const principal = await host.principals.get(args.principalId);
@@ -131,18 +176,9 @@ async function main() {
   });
 
   const deadline = new Date(Date.now() + 60_000).toISOString();
-  const mode = args.dryRun ? 'DRY-RUN' : 'LIVE';
-  console.log(`[cto-actor] ${mode} run as ${args.principalId}`);
+  console.log(`[cto-actor] LIVE run as ${args.principalId}`);
   console.log(`[cto-actor] request: ${args.request}`);
   console.log(`[cto-actor] budget: maxIterations=${args.maxIterations}, deadline=${deadline}`);
-
-  // In --dry-run we'd want to skip atom writes + notifier calls; the
-  // stubJudgment already produces a deterministic plan so a real-mode
-  // run is still safe. Production dry-run plumbing ships with the LLM
-  // judgment (it matters more there because LLM calls have cost).
-  if (args.dryRun) {
-    console.log('[cto-actor] NOTE: --dry-run currently only logs intent; atom writes still occur in 55b. Real dry-run lands with the LLM judgment.');
-  }
 
   const report = await runActor(actor, {
     host,

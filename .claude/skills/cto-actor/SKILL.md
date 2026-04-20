@@ -14,7 +14,7 @@ surfaces.
 
 ## Composition (framework -> instance)
 
-```
+```text
 Host (governance)             -- createFileHost(.lag)
   |
   +-- Principal               -- cto-actor (signed_by claude-agent)

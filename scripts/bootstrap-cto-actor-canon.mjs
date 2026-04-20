@@ -146,6 +146,54 @@ function policyAtom(spec) {
   };
 }
 
+/**
+ * Compare stored principal to expected shape. Returns a list of
+ * human-readable drift descriptors (empty = in sync). We only
+ * compare authority-relevant fields; `created_at` is intentionally
+ * ignored so a bootstrap rerun doesn't flag clock drift.
+ */
+function diffPrincipal(existing, expected) {
+  const diffs = [];
+  const scalar = ['name', 'role', 'signed_by', 'active'];
+  for (const k of scalar) {
+    if (existing[k] !== expected[k]) {
+      diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
+    }
+  }
+  const sortedEq = (a, b) => {
+    const as = (a ?? []).slice().sort().join(',');
+    const bs = (b ?? []).slice().sort().join(',');
+    return as === bs;
+  };
+  if (!sortedEq(existing.permitted_scopes?.read, expected.permitted_scopes.read)) diffs.push('permitted_scopes.read');
+  if (!sortedEq(existing.permitted_scopes?.write, expected.permitted_scopes.write)) diffs.push('permitted_scopes.write');
+  if (!sortedEq(existing.permitted_layers?.read, expected.permitted_layers.read)) diffs.push('permitted_layers.read');
+  if (!sortedEq(existing.permitted_layers?.write, expected.permitted_layers.write)) diffs.push('permitted_layers.write');
+  if (!sortedEq(existing.goals, expected.goals)) diffs.push('goals');
+  if (!sortedEq(existing.constraints, expected.constraints)) diffs.push('constraints');
+  return diffs;
+}
+
+/**
+ * Compare stored policy atom's payload to expected. Returns a list
+ * of drift descriptors (empty = in sync). The metadata.policy object
+ * is the authority contract; we compare every field of it plus
+ * layer/type so a silent edit to POLICIES[] is loud.
+ */
+function diffPolicyAtom(existing, expected) {
+  const diffs = [];
+  if (existing.type !== expected.type) diffs.push(`type: ${existing.type} -> ${expected.type}`);
+  if (existing.layer !== expected.layer) diffs.push(`layer: ${existing.layer} -> ${expected.layer}`);
+  const ep = existing.metadata?.policy ?? {};
+  const xp = expected.metadata.policy;
+  for (const k of ['subject', 'tool', 'origin', 'principal', 'action', 'priority']) {
+    if (ep[k] !== xp[k]) {
+      diffs.push(`policy.${k}: stored=${JSON.stringify(ep[k])} expected=${JSON.stringify(xp[k])}`);
+    }
+  }
+  return diffs;
+}
+
 async function main() {
   await mkdir(STATE_DIR, { recursive: true });
   const host = await createFileHost({ rootDir: STATE_DIR });
@@ -154,14 +202,18 @@ async function main() {
   const claudeAgentId = process.env.LAG_AGENT_ID || 'claude-agent';
 
   // Parent chain: operator -> claude-agent -> cto-actor.
+  // On rerun, compare stored principal shape to the expected spec and
+  // fail closed on drift. An authority boundary must not silently
+  // survive a config edit; the operator has to see and reconcile the
+  // change explicitly.
+  let principalsWritten = 0;
+  let principalsOk = 0;
   for (const [pid, name, role, signedBy, writeLayers] of [
     [operatorId, 'Operator (human)', 'user', null, ['L0', 'L1', 'L2', 'L3']],
     [claudeAgentId, 'Agent (Claude Code instance)', 'agent', operatorId, ['L0', 'L1', 'L2']],
     [CTO_ACTOR, 'CTO actor (planning)', 'agent', claudeAgentId, ['L0', 'L1']],
   ]) {
-    const existing = await host.principals.get(pid);
-    if (existing) continue;
-    await host.principals.put({
+    const expected = {
       id: pid,
       name,
       role,
@@ -187,20 +239,51 @@ async function main() {
       compromised_at: null,
       signed_by: signedBy,
       created_at: BOOTSTRAP_TIME,
-    });
+    };
+    const existing = await host.principals.get(pid);
+    if (existing) {
+      const drift = diffPrincipal(existing, expected);
+      if (drift.length > 0) {
+        throw new Error(
+          `[bootstrap-cto-actor] principal '${pid}' drift: ${drift.join(', ')}. ` +
+          `Refusing to silently continue. Either delete .lag state and re-bootstrap, ` +
+          `or update the bootstrap spec to match the stored shape.`,
+        );
+      }
+      principalsOk++;
+      continue;
+    }
+    await host.principals.put(expected);
+    principalsWritten++;
   }
 
+  // Policy drift check: compare the stored atom's policy payload to
+  // the incoming spec. Silent skip-by-id would let a later edit to
+  // `tool`, `action`, `priority`, or `principal` fail to take effect,
+  // leaving stale authority in force. Authority drift must fail loud.
   let written = 0;
   let skipped = 0;
   for (const spec of POLICIES) {
+    const expected = policyAtom(spec);
     const existing = await host.atoms.get(spec.id);
     if (existing) {
+      const drift = diffPolicyAtom(existing, expected);
+      if (drift.length > 0) {
+        throw new Error(
+          `[bootstrap-cto-actor] policy atom '${spec.id}' drift: ${drift.join(', ')}. ` +
+          `Refusing to silently continue. Either delete the atom and re-bootstrap, ` +
+          `or align POLICIES[] to match the stored payload.`,
+        );
+      }
       skipped++;
       continue;
     }
-    await host.atoms.put(policyAtom(spec));
+    await host.atoms.put(expected);
     written++;
   }
+  // Surface the principal-write stats so the operator can see what
+  // the bootstrap did vs what was already correct.
+  console.log(`[bootstrap-cto-actor] Principals: ${principalsWritten} new, ${principalsOk} validated unchanged.`);
 
   console.log(`[bootstrap-cto-actor] Principal chain: ${operatorId} -> ${claudeAgentId} -> ${CTO_ACTOR}`);
   console.log(`[bootstrap-cto-actor] Wrote ${written} new L3 policy atoms (${skipped} already existed, skipped).`);
