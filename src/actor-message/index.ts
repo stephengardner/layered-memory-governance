@@ -1,14 +1,20 @@
 /**
- * Public surface of the actor-message primitive (PR A of the inbox
- * V1 sequence). Later PRs layer the inbox reader (PR B), the
- * lag-inbox CLI (PR C), the hybrid wake seam (PR D), and the
- * sub-actor registry (PR E) on top of these primitives.
+ * Public surface of the actor-message primitive.
  *
  *   import {
  *     ActorMessageRateLimiter,
  *     CircuitBreakerOpenError,
  *     RateLimitedError,
  *   } from 'layered-autonomous-governance/actor-message';
+ *
+ * Exports:
+ * - V1 type shapes for actor-message, actor-message-ack,
+ *   circuit-breaker-trip, and circuit-breaker-reset atoms.
+ * - ActorMessageRateLimiter: write-time token bucket + circuit breaker
+ *   consuming the pol-actor-message-rate and
+ *   pol-actor-message-circuit-breaker policy atoms.
+ * - RateLimitedError / CircuitBreakerOpenError: typed errors thrown by
+ *   checkWrite(), extending TransientError / ValidationError.
  */
 
 export type {
