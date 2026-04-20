@@ -62,9 +62,14 @@ export async function runAuditor(
 
   // Scan: pull a bounded slice of atoms matching the filter. The
   // auditor is not designed to walk an unbounded store; at scale
-  // the operator chunks audits via smaller filters.
+  // the operator chunks audits via smaller filters. Both
+  // principal_id AND type from the payload flow into the query so
+  // type-scoped audits do not silently fan out to the whole store.
   const page = await host.atoms.query({
     ...(payload.filter?.principal_id ? { principal_id: [payload.filter.principal_id] } : {}),
+    ...(payload.filter?.type && payload.filter.type.length > 0
+      ? { type: [...payload.filter.type] as Atom['type'][] }
+      : {}),
   }, 2000);
 
   const findings = collectFindings(page.atoms);

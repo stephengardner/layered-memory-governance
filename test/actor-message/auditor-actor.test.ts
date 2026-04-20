@@ -126,6 +126,39 @@ describe('runAuditor', () => {
     expect(orphan!.severity).toBe('critical');
   });
 
+  it('honors payload.filter.type, excluding other types from the audit scan', async () => {
+    // Regression guard for the CR-flagged filter-drop: the auditor
+    // advertised type filtering but only forwarded principal_id.
+    // A type-scoped audit should not surface taint/orphan counts
+    // from atoms outside the requested type.
+    const host = createMemoryHost();
+    // One tainted observation; auditor should flag it when scoped
+    // to observations.
+    await host.atoms.put(sampleAtom('obs-tainted', { taint: 'tainted' }));
+    // One tainted directive; auditor scoped to observations should
+    // NOT flag it. Before the fix, the auditor scanned the whole
+    // store and included this in the tainted count.
+    await host.atoms.put(sampleAtom('dir-tainted', {
+      type: 'directive',
+      taint: 'tainted',
+    }));
+
+    await runAuditor(host, {
+      reply_to: 'operator' as PrincipalId,
+      filter: { type: ['observation'] },
+    }, 'corr-typefilter');
+
+    const obs = await host.atoms.query({ type: ['observation'] }, 100);
+    const audit = obs.atoms.find((a) => a.metadata?.audit?.correlation_id === 'corr-typefilter');
+    expect(audit).toBeDefined();
+    const findings = audit!.metadata.audit.findings as Array<{ kind: string; atomIds: string[] }>;
+    const tainted = findings.find((f) => f.kind === 'tainted-atoms');
+    expect(tainted).toBeDefined();
+    // Only the observation-typed tainted atom (obs-tainted) should
+    // appear; the directive-typed one is outside the scope.
+    expect(tainted!.atomIds.sort()).toEqual(['obs-tainted']);
+  });
+
   it('reply message preserves correlation_id and urgency reflects severity', async () => {
     const host = createMemoryHost();
     await host.atoms.put(sampleAtom('child', {

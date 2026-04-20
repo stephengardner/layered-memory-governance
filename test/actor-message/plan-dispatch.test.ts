@@ -174,6 +174,78 @@ describe('runDispatchTick', () => {
     expect(result.scanned).toBe(0);
   });
 
+  it('claims the plan (approved -> executing) BEFORE calling the invoker', async () => {
+    // Regression guard for the CR-flagged race: two overlapping
+    // ticks must not both invoke the same plan. The claim step
+    // transitions approved -> executing so a concurrent tick's
+    // candidates filter drops the plan.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+
+    // Invoker that records whether the plan was already in 'executing'
+    // state at the moment it was called. If the claim is correct, YES.
+    let planStateWhenInvoked: string | undefined;
+    registry.register('auditor-actor' as PrincipalId, async (): Promise<InvokeResult> => {
+      const p = await host.atoms.get('p-claim' as AtomId);
+      planStateWhenInvoked = p?.plan_state;
+      return { kind: 'completed', producedAtomIds: [], summary: 'ok' };
+    });
+
+    await host.atoms.put(planAtom('p-claim', {
+      delegation: {
+        sub_actor_principal_id: 'auditor-actor',
+        payload: {},
+        correlation_id: 'corr-claim',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+
+    // Before invoke, the plan must have been moved to 'executing'
+    // to prevent a concurrent tick from also invoking.
+    expect(planStateWhenInvoked).toBe('executing');
+
+    // Final state reaches 'succeeded' as usual.
+    const final = await host.atoms.get('p-claim' as AtomId);
+    expect(final!.plan_state).toBe('succeeded');
+  });
+
+  it('does not clobber concurrent metadata added between claim and result-write', async () => {
+    // Regression guard for the CR note that re-spreading
+    // ...plan.metadata can overwrite metadata keys a concurrent
+    // writer added. The fix relies on AtomStore.update merging
+    // metadata by key; this test proves a writer-added key
+    // survives the dispatch.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('auditor-actor' as PrincipalId, async (): Promise<InvokeResult> => {
+      // Simulate a concurrent writer adding a metadata key while
+      // the invoker is mid-flight.
+      await host.atoms.update('p-concurrent' as AtomId, {
+        metadata: { concurrent_note: 'added-mid-flight' },
+      });
+      return { kind: 'completed', producedAtomIds: [], summary: 'ok' };
+    });
+
+    await host.atoms.put(planAtom('p-concurrent', {
+      delegation: {
+        sub_actor_principal_id: 'auditor-actor',
+        payload: {},
+        correlation_id: 'corr-concurrent',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+
+    const final = await host.atoms.get('p-concurrent' as AtomId);
+    expect(final!.plan_state).toBe('succeeded');
+    // BOTH the concurrent_note and dispatch_result must be present.
+    expect(final!.metadata.concurrent_note).toBe('added-mid-flight');
+    expect((final!.metadata.dispatch_result as { kind: string }).kind).toBe('completed');
+  });
+
   it('ignores superseded and tainted plans', async () => {
     const host = createMemoryHost();
     const registry = new SubActorRegistry();

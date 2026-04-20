@@ -76,6 +76,28 @@ export async function runDispatchTick(
     const envelope = extractDelegation(plan);
     if (envelope === null) continue;
 
+    // Claim the plan BEFORE calling the invoker. Without this, two
+    // overlapping ticks can both see plan_state='approved', both
+    // invoke, and both write duplicate result atoms (plus duplicate
+    // escalations on failure) - classic side-effect replay. Claim
+    // by transitioning approved -> executing; concurrent ticks that
+    // re-read see 'executing' and skip (the candidates filter
+    // requires 'approved').
+    //
+    // Limitation: the AtomStore interface does not expose a true
+    // compare-and-swap today, so the claim is best-effort between
+    // get() and update(). The memory/file adapters serialize calls
+    // in practice and avoid the race; a Postgres adapter with
+    // native `UPDATE ... WHERE plan_state='approved'` is required
+    // for multi-process concurrency. See the load-test commitment
+    // in design/inbox-v1-load-test-commitment.md for the gate.
+    const fresh = await host.atoms.get(plan.id);
+    if (fresh === null || fresh.plan_state !== 'approved') {
+      // Another tick claimed it, or the plan was revoked. Skip.
+      continue;
+    }
+    await host.atoms.update(plan.id, { plan_state: 'executing' });
+
     let result: InvokeResult;
     try {
       result = await registry.invoke(
@@ -90,11 +112,15 @@ export async function runDispatchTick(
       };
     }
 
+    // Final state transition. AtomStore.update merges metadata by
+    // key, so passing only `{ dispatch_result: ... }` is both
+    // correct and avoids clobbering other metadata keys that a
+    // concurrent writer may have added to the plan. Re-spreading
+    // `...plan.metadata` would replay a stale snapshot.
     if (result.kind === 'completed') {
       await host.atoms.update(plan.id, {
         plan_state: 'succeeded',
         metadata: {
-          ...plan.metadata,
           dispatch_result: {
             kind: 'completed',
             summary: result.summary,
@@ -105,10 +131,10 @@ export async function runDispatchTick(
       });
       dispatched += 1;
     } else if (result.kind === 'dispatched') {
+      // Plan is already in 'executing'; record the dispatch_result
+      // but keep the state where the claim put it.
       await host.atoms.update(plan.id, {
-        plan_state: 'executing',
         metadata: {
-          ...plan.metadata,
           dispatch_result: {
             kind: 'dispatched',
             summary: result.summary,
@@ -122,7 +148,6 @@ export async function runDispatchTick(
       await host.atoms.update(plan.id, {
         plan_state: 'failed',
         metadata: {
-          ...plan.metadata,
           dispatch_result: {
             kind: 'error',
             message: result.message,
