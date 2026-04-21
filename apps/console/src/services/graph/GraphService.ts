@@ -264,6 +264,7 @@ export class GraphService {
   }
 
   private rebuild(): void {
+    const wasEmpty = this.nodes.length === 0;
     const kept = this.atoms.filter((a) => this.kinds.has(a.type));
     const keptIds = new Set(kept.map((a) => a.id));
 
@@ -316,6 +317,24 @@ export class GraphService {
     }
 
     this.startSimulation();
+    /*
+     * Pre-settle on the first populated rebuild so the view's first
+     * paint has stable positions and a real bounds object. Without
+     * this, the initial transform is applied to nodes still drifting
+     * through the center-of-canvas, yielding the "not fit on load"
+     * flash. Subsequent rebuilds (filter toggles, new atoms arriving)
+     * preserve continuity via position carry-over and rAF ticks;
+     * they should NOT re-settle synchronously because that would
+     * freeze the main thread on every atom event.
+     */
+    if (wasEmpty && this.nodes.length > 0 && this.sim) {
+      let i = 0;
+      while (i < 400 && this.sim.alpha() > 0.02) {
+        this.sim.tick();
+        i++;
+      }
+      this.settled = true;
+    }
     this.bumpVersion();
   }
 

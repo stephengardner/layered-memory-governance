@@ -1,8 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ExternalLink, X } from 'lucide-react';
+import {
+  zoom as d3Zoom,
+  zoomIdentity,
+  type D3ZoomEvent,
+  type ZoomBehavior,
+  type ZoomTransform,
+} from 'd3-zoom';
+import { select } from 'd3-selection';
 import { listCanonAtoms } from '@/services/canon.service';
 import { listActivities } from '@/services/activities.service';
 import { listPlans } from '@/services/plans.service';
@@ -12,7 +20,7 @@ import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { AtomHoverCard } from '@/components/hover-card/AtomHoverCard';
 import { useHoverCard } from '@/components/hover-card/useHoverCard';
 import { useGraphService } from '@/services/graph/useGraphService';
-import type { GraphNode } from '@/services/graph/GraphService';
+import type { GraphBounds, GraphNode } from '@/services/graph/GraphService';
 import styles from './GraphView.module.css';
 
 const TYPE_COLORS: Record<string, string> = {
@@ -25,30 +33,61 @@ const TYPE_COLORS: Record<string, string> = {
   'actor-message': 'var(--accent-hover)',
 };
 
-const ALL_KINDS = ['directive', 'decision', 'preference', 'reference', 'plan', 'observation', 'actor-message'] as const;
+const ALL_KINDS = [
+  'directive', 'decision', 'preference', 'reference',
+  'plan', 'observation', 'actor-message',
+] as const;
+
+const SCALE_MIN = 0.2;
+const SCALE_MAX = 4;
+const FIT_PADDING = 60;
+const CLICK_DISTANCE_PX = 3;
 
 /*
- * GraphView — pure presentational consumer of GraphService.
+ * GraphView — service-backed, d3-zoom-driven graph viewer.
  *
- * The service owns: the atom set, the filter, the selection, the
- * force simulation, the positions, the bounds. Re-renders of THIS
- * component don't recompute any of that; they just re-read the
- * latest snapshot.
+ * State ownership:
+ *   - GraphService (via useGraphService) owns nodes, edges, filter,
+ *     selection, positions, bounds, simulation.
+ *   - d3-zoom owns the pan/zoom transform. Its transform applies
+ *     directly to the inner <g> as translate+scale in CSS pixels.
+ *   - This component owns only the zoom behavior's React-mirrored
+ *     transform state and the hover-card trigger state.
  *
- * This component owns only: pan/zoom transform, hover-card state.
- * Both are purely visual; neither affects the graph state machine.
+ * Key correctness properties:
+ *   - The SVG has no viewBox. Its internal coordinate system is CSS
+ *     pixels, so d3-zoom's transforms (which come from clientX
+ *     deltas) map 1:1 to child translations. Drag-distance math and
+ *     zoom-at-cursor behavior are correct regardless of container
+ *     size.
+ *   - d3-zoom attaches wheel/mousedown to the SVG and mousemove/
+ *     mouseup to the window (pointer-capture equivalent), so a
+ *     mouseup outside the canvas ends the drag cleanly.
+ *   - d3-zoom calls preventDefault on wheel, so scroll-wheel over
+ *     the graph zooms without scrolling the outer page. React's
+ *     onWheel synthetic handler is passive and can't preventDefault;
+ *     d3-zoom attaches natively via non-passive addEventListener.
+ *   - Initial fit is applied in useLayoutEffect before the first
+ *     paint, using the real svg getBoundingClientRect size. The
+ *     service pre-settles on its first populated rebuild so bounds
+ *     are already available by the time this effect runs.
  */
 export function GraphView() {
-  const canonQ = useQuery({ queryKey: ['canon', [], ''], queryFn: ({ signal }) => listCanonAtoms({}, signal) });
+  const canonQ = useQuery({
+    queryKey: ['canon', [], ''],
+    queryFn: ({ signal }) => listCanonAtoms({}, signal),
+  });
   const plansQ = useQuery({ queryKey: ['plans'], queryFn: ({ signal }) => listPlans(signal) });
   const activitiesQ = useQuery({
     queryKey: ['activities', 500],
     queryFn: ({ signal }) => listActivities({ limit: 500 }, signal),
   });
 
-  // Dedupe atoms across the three queries. Memoized on the three
-  // data arrays; identity-stable when nothing changes so the service
-  // signature check short-circuits.
+  /*
+   * Dedupe atoms across the three queries. Memoized on the three
+   * data arrays; identity-stable when nothing changes so the service
+   * signature check short-circuits.
+   */
   const atoms = useMemo(() => {
     const all = [
       ...(canonQ.data ?? []),
@@ -60,38 +99,91 @@ export function GraphView() {
     return Array.from(seen.values());
   }, [canonQ.data, plansQ.data, activitiesQ.data]);
 
-  const { snapshot, service } = useGraphService(atoms, { width: 1200, height: 800 });
+  const { snapshot, service } = useGraphService(atoms);
   const hoverCard = useHoverCard<GraphNode>();
 
-  // Pan/zoom transform — presentational only, doesn't belong in the
-  // service. initialScale fits below 1 so the whole graph is visible
-  // on first render before the auto-fit runs.
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 0.7 });
-  const dragging = useRef<{ startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const zoomBehaviorRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const autoFitDoneRef = useRef(false);
+  const pressRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Zoom-to-fit: runs once after the sim settles. Subsequent filter
-  // changes don't re-run autofit; user pan/zoom is preserved.
-  useEffect(() => {
-    if (!snapshot.settled || autoFitDoneRef.current || !snapshot.bounds) return;
+  const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
+  const [svgSize, setSvgSize] = useState<{ w: number; h: number } | null>(null);
+
+  /*
+   * Attach d3-zoom + measure + ResizeObserver via a callback ref.
+   * This is intentionally NOT a useEffect because the <svg> is
+   * conditionally rendered (we return early with <LoadingState /> on
+   * pending). An empty-deps useEffect fires on the FIRST render,
+   * sees svgRef.current=null (svg not mounted), and never re-fires
+   * on subsequent renders — so d3-zoom would never attach.
+   * Callback refs, by contrast, run every time React attaches or
+   * detaches the DOM element, which is exactly the lifecycle we need.
+   */
+  const setupSvg = useCallback((el: SVGSVGElement | null) => {
+    if (!el) {
+      if (resizeObserverRef.current) {
+        resizeObserverRef.current.disconnect();
+        resizeObserverRef.current = null;
+      }
+      zoomBehaviorRef.current = null;
+      svgRef.current = null;
+      return;
+    }
+    svgRef.current = el;
+
+    const behavior = d3Zoom<SVGSVGElement, unknown>()
+      .scaleExtent([SCALE_MIN, SCALE_MAX])
+      .filter((event: Event) => {
+        /*
+         * Default filter excludes right-button and ctrl/meta-click
+         * so modifier-click on a node for "open in view" still works.
+         * Primary-button mousedown, wheel, and touch gestures pass.
+         */
+        const me = event as MouseEvent;
+        if (event.type === 'mousedown') {
+          return me.button === 0 && !me.ctrlKey && !me.metaKey;
+        }
+        // Wheel / touchstart etc.
+        return !(event as { button?: number }).button;
+      })
+      .on('zoom', (event: D3ZoomEvent<SVGSVGElement, unknown>) => {
+        setTransform(event.transform);
+      });
+    select(el).call(behavior);
+    zoomBehaviorRef.current = behavior;
+
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) setSvgSize({ w: r.width, h: r.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    resizeObserverRef.current = ro;
+  }, []);
+
+  // Initial fit. Runs before paint as soon as bounds + size are
+  // available. Uses the real SVG pixel size so the fit math is
+  // correct regardless of container size / viewBox drift.
+  useLayoutEffect(() => {
+    if (autoFitDoneRef.current) return;
+    const el = svgRef.current;
+    const behavior = zoomBehaviorRef.current;
+    if (!el || !behavior) return;
+    if (!snapshot.settled || !snapshot.bounds || !svgSize) return;
+    const fit = computeFitTransform(snapshot.bounds, svgSize.w, svgSize.h);
+    /*
+     * Call behavior.transform on a d3 selection — this updates the
+     * internal zoom state AND fires the 'zoom' event, which flows
+     * through to setTransform. If we only called setTransform, the
+     * next user drag would start from an out-of-sync d3-zoom state
+     * and "jump" back to identity on first move.
+     */
+    select(el).call(behavior.transform, fit);
     autoFitDoneRef.current = true;
-    fitToBounds(snapshot.bounds);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [snapshot.settled, snapshot.bounds]);
-
-  const fitToBounds = (b: { minX: number; minY: number; maxX: number; maxY: number }) => {
-    const bboxW = Math.max(1, b.maxX - b.minX);
-    const bboxH = Math.max(1, b.maxY - b.minY);
-    const pad = 80;
-    const scale = Math.min(
-      1.2,
-      Math.max(0.3, Math.min((1200 - pad * 2) / bboxW, (800 - pad * 2) / bboxH)),
-    );
-    const cx = (b.minX + b.maxX) / 2;
-    const cy = (b.minY + b.maxY) / 2;
-    setTransform({ x: 600 - cx * scale, y: 400 - cy * scale, scale });
-  };
+  }, [snapshot.settled, snapshot.bounds, svgSize]);
 
   const pending = canonQ.isPending || plansQ.isPending || activitiesQ.isPending;
   const error = canonQ.error ?? plansQ.error ?? activitiesQ.error;
@@ -107,6 +199,32 @@ export function GraphView() {
   const selectedAtom = snapshot.selection.nodeId
     ? snapshot.nodes.find((n) => n.id === snapshot.selection.nodeId) ?? null
     : null;
+
+  /*
+   * Background click deselects, but only if no drag happened. We
+   * track the mousedown point and compare on click — if the cursor
+   * traveled > CLICK_DISTANCE_PX, it was a pan via d3-zoom and we
+   * suppress the deselect. Clicks on child nodes stopPropagation so
+   * this handler is only invoked for true background clicks.
+   */
+  const handleSvgMouseDown = (e: React.MouseEvent) => {
+    pressRef.current = { x: e.clientX, y: e.clientY };
+  };
+  const handleSvgClick = (e: React.MouseEvent) => {
+    const start = pressRef.current;
+    pressRef.current = null;
+    if (!start) return;
+    if (Math.abs(e.clientX - start.x) + Math.abs(e.clientY - start.y) > CLICK_DISTANCE_PX) return;
+    service.select(null);
+  };
+
+  const handleFitClick = () => {
+    const el = svgRef.current;
+    const behavior = zoomBehaviorRef.current;
+    if (!el || !behavior || !snapshot.bounds || !svgSize) return;
+    const fit = computeFitTransform(snapshot.bounds, svgSize.w, svgSize.h);
+    select(el).call(behavior.transform, fit);
+  };
 
   return (
     <section className={styles.view}>
@@ -135,47 +253,26 @@ export function GraphView() {
         <button
           type="button"
           className={styles.resetBtn}
-          onClick={() => {
-            service.select(null);
-            autoFitDoneRef.current = false;
-            if (snapshot.bounds) fitToBounds(snapshot.bounds);
-          }}
+          onClick={handleFitClick}
           data-testid="graph-reset"
         >
           fit
         </button>
       </header>
-      <div
-        ref={containerRef}
-        className={styles.canvas}
-        onMouseDown={(e) => {
-          dragging.current = { startX: e.clientX, startY: e.clientY, origX: transform.x, origY: transform.y, moved: false };
-        }}
-        onMouseMove={(e) => {
-          if (!dragging.current) return;
-          const dx = e.clientX - dragging.current.startX;
-          const dy = e.clientY - dragging.current.startY;
-          if (Math.abs(dx) + Math.abs(dy) > 4) dragging.current.moved = true;
-          setTransform((t) => ({ ...t, x: dragging.current!.origX + dx, y: dragging.current!.origY + dy }));
-        }}
-        onMouseUp={() => {
-          if (dragging.current && !dragging.current.moved) service.select(null);
-          dragging.current = null;
-        }}
-        onMouseLeave={() => { dragging.current = null; hoverCard.scheduleHide(); }}
-        onWheel={(e) => {
-          const delta = -e.deltaY * 0.0015;
-          setTransform((t) => ({ ...t, scale: Math.max(0.2, Math.min(4, t.scale + delta)) }));
-        }}
-      >
+      <div className={styles.canvas} onMouseLeave={() => hoverCard.scheduleHide()}>
         <svg
+          ref={setupSvg}
           className={styles.svg}
-          viewBox="0 0 1200 800"
           data-testid="graph-svg"
           data-settled={snapshot.settled}
           data-version={snapshot.version}
+          data-transform-k={transform.k.toFixed(4)}
+          data-transform-x={transform.x.toFixed(2)}
+          data-transform-y={transform.y.toFixed(2)}
+          onMouseDown={handleSvgMouseDown}
+          onClick={handleSvgClick}
         >
-          <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`}>
+          <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.k})`}>
             <g className={styles.edges}>
               {snapshot.edges.map((e, i) => {
                 const s = typeof e.source === 'string' ? null : e.source;
@@ -202,6 +299,13 @@ export function GraphView() {
                   className={`${styles.node} ${isDim(n.id) ? styles.nodeDim : ''} ${n.id === snapshot.selection.nodeId ? styles.nodeSelected : ''}`}
                   transform={`translate(${n.x ?? 0}, ${n.y ?? 0})`}
                   onClick={(e) => {
+                    /*
+                     * stopPropagation prevents the svg onClick (which
+                     * deselects on background-click) from also firing.
+                     * Note this only stops REACT propagation — the
+                     * native event still bubbles and d3-zoom sees
+                     * mousedown/mouseup on the svg. That's fine.
+                     */
                     e.stopPropagation();
                     if (e.metaKey || e.ctrlKey) { setRoute(routeForAtomId(n.id), n.id); return; }
                     service.select(n.id);
@@ -223,7 +327,7 @@ export function GraphView() {
             </g>
           </g>
         </svg>
-        {hoverCard.open && hoverCard.data && hoverCard.pos && !dragging.current && createPortal(
+        {hoverCard.open && hoverCard.data && hoverCard.pos && createPortal(
           <GraphHoverPortal
             node={hoverCard.data}
             x={hoverCard.pos.x}
@@ -248,6 +352,27 @@ export function GraphView() {
       )}
     </section>
   );
+}
+
+/*
+ * Fit bounds to the rendered SVG size. Scales to fit the bounding
+ * box with FIT_PADDING on every side, never exceeding SCALE_MAX.
+ * Returns a d3-zoom ZoomTransform that d3-zoom applies as
+ * translate+scale on the inner <g>.
+ */
+function computeFitTransform(bounds: GraphBounds, svgW: number, svgH: number): ZoomTransform {
+  const w = Math.max(1, bounds.maxX - bounds.minX);
+  const h = Math.max(1, bounds.maxY - bounds.minY);
+  const rawScale = Math.min(
+    (svgW - FIT_PADDING * 2) / w,
+    (svgH - FIT_PADDING * 2) / h,
+  );
+  const scale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, rawScale));
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+  const tx = svgW / 2 - cx * scale;
+  const ty = svgH / 2 - cy * scale;
+  return zoomIdentity.translate(tx, ty).scale(scale);
 }
 
 function GraphHoverPortal({

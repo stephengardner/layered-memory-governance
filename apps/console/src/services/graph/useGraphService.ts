@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { GraphService, type GraphAtom, type GraphSnapshot, type GraphServiceOptions } from './GraphService';
 
 /*
@@ -10,6 +10,11 @@ import { GraphService, type GraphAtom, type GraphSnapshot, type GraphServiceOpti
  *   - The service instance survives React re-renders. Parent state
  *     changes don't recreate the service; simulation positions
  *     persist.
+ *   - setAtoms() runs in useLayoutEffect (NOT useEffect) so the
+ *     service's first-pass synchronous settle happens BEFORE the
+ *     browser paints the initial graph. Without this the first
+ *     paint showed drifting nodes with no bounds, and the auto-fit
+ *     deferred into a second frame — the "not fit on load" flash.
  *   - setAtoms() short-circuits when the input signature is
  *     unchanged, so unrelated parent re-renders (TimeAgo, SSE
  *     invalidates of non-graph data) don't restart the sim.
@@ -29,12 +34,22 @@ export function useGraphService(
   const serviceRef = useRef<GraphService | null>(null);
   if (serviceRef.current === null) {
     serviceRef.current = new GraphService(opts);
+    /*
+     * Seed atoms during the very first render so the first snapshot
+     * is already populated and settled (the service pre-settles on
+     * its first non-empty rebuild). Without this seed, the first
+     * render reads an empty snapshot and we paint a blank graph
+     * before the useLayoutEffect below fills it in. Subsequent
+     * renders are handled by the layout effect.
+     */
+    if (atoms.length > 0) serviceRef.current.setAtoms(atoms);
   }
   const service = serviceRef.current;
 
-  // Sync atoms into the service on every render where the input
-  // changed. setAtoms is signature-idempotent so this is cheap.
-  useEffect(() => {
+  // Sync atoms into the service before paint on every render where
+  // the input changed. setAtoms is signature-idempotent so this is
+  // cheap on unrelated re-renders.
+  useLayoutEffect(() => {
     service.setAtoms(atoms);
   }, [service, atoms]);
 

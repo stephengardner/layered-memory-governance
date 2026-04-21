@@ -155,11 +155,42 @@ describe('GraphService', () => {
     expect(ticks).toBe(before);
   });
 
-  it('settle marks the snapshot as settled', () => {
-    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b', provenance: { derived_from: ['a'] } })]);
+  it('pre-settles on the first populated setAtoms so the first snapshot has bounds', () => {
+    /*
+     * Regression: before pre-settle, the view's first paint saw
+     * `settled=false` and nodes still drifting, so initial fit-to-
+     * bounds was deferred several rAF ticks — visible flash. The
+     * first populated rebuild now settles synchronously (up to 400
+     * ticks or alpha < 0.02), so the very first snapshot has stable
+     * positions and a real bounds object.
+     */
     expect(svc.getSnapshot().settled).toBe(false);
-    svc.settle();
+    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b', provenance: { derived_from: ['a'] } })]);
+    const s = svc.getSnapshot();
+    expect(s.settled).toBe(true);
+    expect(s.bounds).not.toBeNull();
+    expect(s.bounds!.maxX).toBeGreaterThan(s.bounds!.minX);
+  });
+
+  it('does not pre-settle on subsequent setAtoms (keeps existing layout continuity)', () => {
+    /*
+     * Once the graph has been populated once, later atom additions
+     * should NOT freeze the main thread with another synchronous
+     * settle — the rAF loop animates the new node into place while
+     * existing nodes hold their positions. This test proxies that
+     * by observing that the second setAtoms call does not re-mark
+     * settled=true-from-false, because settled is already true.
+     */
+    svc.setAtoms([atom({ id: 'a' })]);
     expect(svc.getSnapshot().settled).toBe(true);
+    const posABefore = pos(svc, 'a');
+    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b' })]);
+    // 'a' keeps its position — the second rebuild preserves it.
+    const posAAfter = pos(svc, 'a');
+    expect(posAAfter).toEqual(posABefore);
+    // settled resets to false because startSimulation was called
+    // (new node 'b' needs to animate in); rAF ticks handle the rest.
+    expect(svc.getSnapshot().settled).toBe(false);
   });
 });
 
