@@ -1,16 +1,11 @@
 /**
- * Git operations for the code-author executor.
+ * Git operations primitive: apply a unified diff to a fresh
+ * branch and push to a remote.
  *
- * Given a unified diff produced by `draftCodeChange`, apply it to
- * a worktree via a fresh branch and push the branch to `origin`
- * under the actor's configured identity. Returns the produced
- * branch + commit handles so downstream PR creation can cite them.
- *
- * Where this fits in the chain
- * ----------------------------
- * runCodeAuthor invoker (merged #76) -> loadCodeAuthorFence (#74) ->
- * draftCodeChange (merged #79) -> applyDraftBranch (this module) ->
- * [follow-up] PR creation via AppBackedGhClient.
+ * Pure mechanism. Given a diff + repoDir + branchName +
+ * commitMessage + identity + stagePaths, run the git-ops state
+ * machine and return the produced branch + commit handles.
+ * Composable with any caller that has a diff to ship.
  *
  * Contract
  * --------
@@ -26,13 +21,12 @@
  *   4. Apply the diff via `git apply --check` (dry-run) THEN `git
  *      apply` (real). The two-step check-then-apply catches
  *      malformed diffs before mutating the worktree.
- *   5. Stage the changes listed in `DraftResult.touchedPaths`
- *      explicitly (no `git add -A`) so a stray file elsewhere in
- *      the tree never gets committed.
+ *   5. Stage the explicit `stagePaths` (no `git add -A`) so a stray
+ *      file elsewhere in the tree never gets committed.
  *   6. Commit under the caller-supplied `authorIdentity`.
  *   7. Push the branch to `remote` (default `origin`). A push
  *      failure does NOT roll back the branch; caller handles
- *      retry + revocation.
+ *      retry and any cleanup.
  *
  * Fail-closed posture
  * -------------------
@@ -49,20 +43,17 @@
  * available so the caller can surface a precise observation atom
  * for audit.
  *
- * Explicit non-goals (this revision)
- * ----------------------------------
- * - No PR creation. The caller opens the PR via the appropriate
- *   GhClient after this function returns.
- * - No signed-commit verification. Fence atom #1
- *   (`pol-code-author-signed-pr-only.require_app_identity`) is
- *   enforced at the App-identity layer (the `authorIdentity` field
- *   carries the App's installation token + committer identity);
- *   commits produced via this App are signed by GitHub's App
- *   infrastructure. Post-commit signature inspection is a follow-
- *   up check.
+ * Explicit non-goals
+ * ------------------
+ * - No PR creation. The caller opens the PR via its own GitHub
+ *   client after this function returns.
+ * - No signed-commit verification. Signing / identity policy is
+ *   the caller's responsibility; this module only plumbs
+ *   `authorIdentity` through `-c user.name` / `-c user.email`
+ *   per invocation.
  * - No conflict-resolution retry. A diff that no longer applies
- *   against `baseBranch` HEAD fails loud; retry is a policy
- *   decision the caller makes.
+ *   against `baseBranch` HEAD fails loud; retry is a caller
+ *   decision.
  */
 
 import { execa } from 'execa';
@@ -74,6 +65,18 @@ interface ExecResult {
   readonly stdout: string | Buffer | undefined;
   readonly stderr: string | Buffer | undefined;
   readonly exitCode: number | null | undefined;
+}
+
+// Coerce a possibly-undefined string-or-Buffer to a clean string.
+// Using `String(undefined)` here would yield the literal
+// 'undefined', which would flow into GitOpsError.stdout/stderr and
+// then into observation atoms for audit -- making empty output
+// indistinguishable from the string "undefined." Helper produces
+// '' for missing values and utf-8-decodes buffers.
+function toStr(v: string | Buffer | undefined): string {
+  if (v === undefined) return '';
+  if (typeof v === 'string') return v;
+  return v.toString('utf8');
 }
 
 export type GitOpsErrorReason =
@@ -168,10 +171,9 @@ export interface ApplyDraftBranchResult {
 /**
  * Apply a unified diff on a fresh branch and push to remote.
  * Every step is sequential; a failure at step N does NOT clean up
- * steps 1..N-1 (the caller decides whether to garbage-collect the
- * branch on failure; a future revocation flow will close any PR
- * attached to an orphan branch + write a code-author-revoked atom
- * per fence #4).
+ * steps 1..N-1. The caller decides whether to garbage-collect the
+ * branch, close any attached PR, and/or record a revocation record
+ * on failure.
  */
 export async function applyDraftBranch(
   inputs: ApplyDraftBranchInputs,
@@ -203,18 +205,18 @@ export async function applyDraftBranch(
         `git status failed: ${status.stderr}`,
         'unexpected',
         'status',
-        String(status.stdout),
-        String(status.stderr),
+        toStr(status.stdout),
+        toStr(status.stderr),
         status.exitCode,
       );
     }
-    if (String(status.stdout).trim().length > 0) {
+    if (toStr(status.stdout).trim().length > 0) {
       throw new GitOpsError(
-        `worktree is dirty: ${String(status.stdout).slice(0, 500)}`,
+        `worktree is dirty: ${toStr(status.stdout).slice(0, 500)}`,
         'dirty-worktree',
         'status',
-        String(status.stdout),
-        String(status.stderr),
+        toStr(status.stdout),
+        toStr(status.stderr),
         status.exitCode,
       );
     }
@@ -230,8 +232,8 @@ export async function applyDraftBranch(
         `git fetch ${remote} ${baseBranch} failed: ${fetch.stderr}`,
         'unexpected',
         'fetch',
-        String(fetch.stdout),
-        String(fetch.stderr),
+        toStr(fetch.stdout),
+        toStr(fetch.stderr),
         fetch.exitCode,
       );
     }
@@ -241,8 +243,8 @@ export async function applyDraftBranch(
         `git checkout -b ${inputs.branchName} failed: ${checkout.stderr}`,
         'branch-create-failed',
         'checkout',
-        String(checkout.stdout),
-        String(checkout.stderr),
+        toStr(checkout.stdout),
+        toStr(checkout.stderr),
         checkout.exitCode,
       );
     }
@@ -257,8 +259,8 @@ export async function applyDraftBranch(
         `git apply --check rejected the diff: ${check.stderr}`,
         'diff-apply-failed',
         'apply-check',
-        String(check.stdout),
-        String(check.stderr),
+        toStr(check.stdout),
+        toStr(check.stderr),
         check.exitCode,
       );
     }
@@ -268,8 +270,8 @@ export async function applyDraftBranch(
         `git apply failed after successful --check: ${apply.stderr}`,
         'diff-apply-failed',
         'apply',
-        String(apply.stdout),
-        String(apply.stderr),
+        toStr(apply.stdout),
+        toStr(apply.stderr),
         apply.exitCode,
       );
     }
@@ -292,8 +294,8 @@ export async function applyDraftBranch(
         `git add failed: ${add.stderr}`,
         'commit-failed',
         'stage',
-        String(add.stdout),
-        String(add.stderr),
+        toStr(add.stdout),
+        toStr(add.stderr),
         add.exitCode,
       );
     }
@@ -311,8 +313,8 @@ export async function applyDraftBranch(
         `git commit failed: ${commit.stderr || commit.stdout}`,
         'commit-failed',
         'commit',
-        String(commit.stdout),
-        String(commit.stderr),
+        toStr(commit.stdout),
+        toStr(commit.stderr),
         commit.exitCode,
       );
     }
@@ -328,16 +330,16 @@ export async function applyDraftBranch(
         `git rev-parse HEAD failed: ${rev.stderr}`,
         'unexpected',
         'rev-parse',
-        String(rev.stdout),
-        String(rev.stderr),
+        toStr(rev.stdout),
+        toStr(rev.stderr),
         rev.exitCode,
       );
     }
-    commitSha = String(rev.stdout).trim();
+    commitSha = toStr(rev.stdout).trim();
   }
 
-  // 7. Push. Uses `--set-upstream` so the branch tracks origin for
-  //    subsequent pr-landing observations.
+  // 7. Push with `--set-upstream` so the local branch tracks the
+  //    remote ref for any subsequent git operations.
   {
     const push = await run(['push', '--set-upstream', remote, inputs.branchName]);
     if (push.exitCode !== 0) {
@@ -345,8 +347,8 @@ export async function applyDraftBranch(
         `git push failed: ${push.stderr}`,
         'push-failed',
         'push',
-        String(push.stdout),
-        String(push.stderr),
+        toStr(push.stdout),
+        toStr(push.stderr),
         push.exitCode,
       );
     }

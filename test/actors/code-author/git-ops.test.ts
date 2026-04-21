@@ -101,7 +101,7 @@ describe('applyDraftBranch', () => {
     }
   });
 
-  it('dirty worktree -> DirtyWorktreeError', async () => {
+  it('dirty worktree -> GitOpsError(reason=dirty-worktree)', async () => {
     const { impl } = stubExeca([
       { exitCode: 0, stdout: ' M src/foo.ts\n?? src/bar.ts\n' }, // status: dirty
     ]);
