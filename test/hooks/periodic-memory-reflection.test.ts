@@ -129,9 +129,18 @@ describe('periodic-memory-reflection hook', () => {
     }
     expect(injected).not.toBe(null);
     expect(injected!).toMatch(/memory-reflection/);
-    expect(injected!).toMatch(/user.*memory/);
-    expect(injected!).toMatch(/feedback.*memory/);
+    // Weighted toward "skip" as the default outcome. The reminder
+    // must be terser than the save path so Claude does not default
+    // to synthesising an atom on every nudge.
+    expect(injected!).toMatch(/Default: skip/);
+    expect(injected!).toMatch(/Most nudges should no-op/);
+    // Operator-stated gate is explicit so Claude does not
+    // self-originate a directive and route it through /decide.
+    expect(injected!).toMatch(/operator STATED/);
+    // /decide is still mentioned but flagged as rare and gated.
     expect(injected!).toMatch(/\/decide/);
+    expect(injected!).toMatch(/rare/);
+    expect(injected!).toMatch(/auto-memory/);
   });
 
   it('counter is per-session (two session ids increment independently)', async () => {
@@ -224,7 +233,9 @@ describe('periodic-memory-reflection hook', () => {
     expect(exitCode).toBe(0);
   });
 
-  it('falls back to default N=25 when env is unset', async () => {
+  // 25 sequential subprocess spawns -> ~10s on Windows. Default
+  // vitest timeout is 10_000 which leaves no slack; bump to 30s.
+  it('falls back to default N=25 when env is unset', { timeout: 30_000 }, async () => {
     const session = 'session-default';
     // 24 should be silent; 25th should fire.
     for (let i = 1; i <= 24; i++) {
@@ -241,7 +252,9 @@ describe('periodic-memory-reflection hook', () => {
       tool_input: {},
     });
     expect(last.additionalContext).not.toBe(null);
-    expect(last.additionalContext!).toMatch(/25 tool calls/);
+    // The prompt embeds the count as "Tool call #25".
+    expect(last.additionalContext!).toMatch(/Tool call #25/);
+    expect(last.additionalContext!).toMatch(/nudge every 25/);
   });
 
   it('emitted JSON matches the PostToolUse additionalContext contract', async () => {

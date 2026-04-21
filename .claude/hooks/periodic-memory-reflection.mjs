@@ -124,17 +124,15 @@ function bumpCounter(sessionId) {
 
 function reflectionPrompt(count, every) {
   return [
-    `[memory-reflection] You have completed ${count} tool calls this session; periodic check-in fires every ${every}.`,
+    `[memory-reflection] Tool call #${count} (nudge every ${every}). **Default: skip this reminder.** Most nudges should no-op.`,
     '',
-    'Pause briefly: is there anything from the last batch that should outlive this session?',
+    'Only act when something HARD happened since the last nudge:',
     '',
-    '- **user** memory: the operator said something about how they work, prefer, or are responsible for.',
-    '- **feedback** memory: you were corrected, or a non-obvious approach was validated.',
-    '- **project** memory: a decision, deadline, or motivation you learned.',
-    '- **reference** memory: a pointer to an external system (dashboard, channel, ticket).',
-    '- **canon atom** via the `/decide` skill: a hard governance constraint the operator stated.',
+    '- The operator STATED a preference/fact (not you inferred) -> auto-memory (user / feedback / project).',
+    '- The operator STATED a hard governance rule -> `/decide` (rare; canon writes are load-bearing - skill gate still applies).',
+    '- You hit an external system you will touch again -> auto-memory (reference).',
     '',
-    'If yes, save it now via the auto-memory system or `/decide`. If nothing stands out, this reminder is a no-op - keep going.',
+    'If none of those apply: take no action. Keep going.',
   ].join('\n');
 }
 
