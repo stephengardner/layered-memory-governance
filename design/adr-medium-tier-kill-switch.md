@@ -104,7 +104,11 @@ L1 observation. Written by the actor runner (not the framework) on a trip. Discr
   principal_id: '<actor principal>',
   provenance: {
     kind: 'agent-observed',
-    source: { agent_id: '<principal>', tool: 'kill-switch-revocation' },
+    source: {
+      agent_id: '<principal>',
+      tool: 'kill-switch-revocation',
+      session_id: '<session id>',      // required; lineage projections (D-mbb-V1-4/V2-2) depend on session-scoped provenance
+    },
     derived_from: [],
   },
   // ...rest of the atom envelope...
@@ -115,13 +119,17 @@ Atom id: `kill-switch-tripped-<actor>-<principal>-<iso-timestamp>`. Not idempote
 
 ### 4. ActorContext changes
 
-`ActorContext` gains `readonly abortSignal: AbortSignal` (undefined on the soft path for backward compat). Adapters that perform I/O accept the signal and forward it:
+`ActorContext` gains `readonly abortSignal: AbortSignal` - ALWAYS present, never optional. On the soft path (no `killSwitchSignal` passed to `runActor`), the runner injects a never-aborted `AbortSignal` (an `AbortController` that is constructed and never called) so adapters can thread it unconditionally without null-checking. This keeps the adapter contract single-shape across soft and medium paths, matching the canon's "substrate stays mechanism-only" posture - adapters decide whether to forward; the context always has a signal to forward.
+
+Adapters that perform I/O forward the signal:
 
 - `GhClient`: `fetch(..., { signal })` + `AbortController`-aware `spawn` for child processes.
 - `ClaudeCliLLM`: signal threaded into `execa(..., { cancelSignal: signal })`. SIGTERM to the CLI child on abort.
 - `PrReviewAdapter` methods: signal forwarded to the underlying `GhClient`.
 
-Adapters without I/O (e.g., in-memory stubs in tests) ignore the signal.
+Adapters without I/O (e.g., in-memory stubs in tests) ignore the signal; no-op forwarding costs nothing.
+
+Backward-compat note for existing actors: actors that never read `ctx.abortSignal` still work; the field is additive. A future `ctx.abortSignal.aborted` check is the opt-in for medium-tier awareness.
 
 ### 5. Revocation protocol for the code-author case
 
