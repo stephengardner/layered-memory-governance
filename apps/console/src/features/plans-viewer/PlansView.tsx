@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown } from 'lucide-react';
@@ -90,7 +90,7 @@ export function PlansView() {
           />
           <div className={`${styles.grid} ${focusId ? styles.gridFocused : ''}`}>
             {plans.map((p) => (
-              <PlanCard key={p.id} plan={p} startExpanded={Boolean(focusId)} focused={Boolean(focusId)} />
+              <PlanCard key={p.id} plan={p} focused={Boolean(focusId)} />
             ))}
           </div>
         </>
@@ -99,14 +99,16 @@ export function PlansView() {
   );
 }
 
-function PlanCard({ plan, startExpanded, focused }: { plan: PlanAtom; startExpanded: boolean; focused: boolean }) {
-  const [expanded, setExpanded] = useState(startExpanded);
-
-  // Keep local state in sync when the route focus changes after mount
-  // (user clicks another plan's atom-ref while already on /plans).
-  useEffect(() => {
-    if (startExpanded) setExpanded(true);
-  }, [startExpanded]);
+function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
+  /*
+   * Every plan starts CLAMPED, even in focus mode. The accordion is
+   * the same interaction pattern regardless of which route opened it —
+   * right over easy. Auto-expanding on focus would have been easier
+   * (one less click) but breaks the "Read more" affordance and the
+   * mask-image gradient that signals "there's more below". Focus mode
+   * differs only in grid width (full) and cursor (default, not link).
+   */
+  const [expanded, setExpanded] = useState(false);
 
   const state = plan.plan_state ?? 'unknown';
   const { title, body } = splitTitleAndBody(plan.content);

@@ -5,6 +5,7 @@ import { useRouteId, setRoute } from '@/state/router.store';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
+import { ActivityHeatmap } from '@/components/heatmap/ActivityHeatmap';
 import styles from './ActivitiesView.module.css';
 
 const TYPE_DOT_COLORS: Record<string, string> = {
@@ -20,8 +21,11 @@ const TYPE_DOT_COLORS: Record<string, string> = {
 
 export function ActivitiesView() {
   const query = useQuery({
-    queryKey: ['activities', 200],
-    queryFn: ({ signal }) => listActivities({ limit: 200 }, signal),
+    queryKey: ['activities', 500],
+    // 500 covers the heatmap's 12-week window comfortably. Poll every
+    // 15s so the feed and the heatmap feel live without a WebSocket.
+    queryFn: ({ signal }) => listActivities({ limit: 500 }, signal),
+    refetchInterval: 15_000,
   });
   const focusId = useRouteId();
   const focusRef = useRef<HTMLLIElement | null>(null);
@@ -61,6 +65,7 @@ export function ActivitiesView() {
             label="recent atoms"
             detail={`across ${grouped.length} day${grouped.length === 1 ? '' : 's'}`}
           />
+          <ActivityHeatmap atoms={query.data ?? []} weeks={14} />
           <ol className={styles.timeline}>
             {grouped.map(({ day, items }) => (
               <li key={day} className={styles.dayGroup}>
