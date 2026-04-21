@@ -57,11 +57,27 @@ const ALLOWED_WRAPPER_PATTERNS = [
   /#\s*allow-raw-gh\b/,
 ];
 
+// Wrappers that authenticate git push under a bot App installation
+// token (see scripts/git-as.mjs). Raw `git push` uses the system
+// credential helper, which on this machine caches the operator's
+// personal PAT and attributes the push event to the operator.
+const ALLOWED_GIT_WRAPPER_PATTERNS = [
+  /\bnode\s+(?:scripts[\/\\])?git-as\.mjs\b/,
+  /#\s*allow-raw-git-push\b/,
+];
+
 // Match direct gh invocations. Handles gh / gh.exe, bare or path-prefixed,
 // accounting for the most common ways a command gets composed. The check
 // runs per-statement so chained commands (`foo && gh ...`) are all
 // inspected.
 const RAW_GH_PATTERN = /(^|[\s;&|`(])(?:\.\/|\.\\)?gh(?:\.exe)?(?:\s|$)/;
+
+// Match direct `git push` (only push; other git subcommands like
+// status / diff / log / add / commit / rebase are local-only and
+// never touch GitHub's pusher attribution). Handles `git push`,
+// `git.exe push`, path-prefixed variants, and any subcommand form
+// of push (e.g. `git push --force-with-lease`, `git push origin`).
+const RAW_GIT_PUSH_PATTERN = /(^|[\s;&|`(])(?:\.\/|\.\\)?git(?:\.exe)?\s+(?:-[^\s]+\s+)*push(?:\s|$)/;
 
 const MCP_GITHUB_PREFIX = 'mcp__github__';
 
@@ -124,7 +140,41 @@ function inspectBash(payload) {
   const command = payload.tool_input?.command;
   if (typeof command !== 'string' || command.length === 0) return;
 
-  // Fast path: if gh is not mentioned at all, allow.
+  const clauses = command.split(/\s*(?:\|\||&&|;)\s*/);
+
+  // `git push` attribution check. Raw push uses the system credential
+  // helper (operator PAT on this machine); the push event's pusher
+  // is then recorded as the operator. git-as.mjs threads an App
+  // installation token in via http.extraHeader so the pusher is
+  // the bot instead. Block anything else.
+  if (/\bgit(?:\.exe)?\s+(?:-[^\s]+\s+)*push\b/.test(command)
+      && !ALLOWED_GIT_WRAPPER_PATTERNS.some((p) => p.test(command))) {
+    const offending = clauses.find((c) => RAW_GIT_PUSH_PATTERN.test(c));
+    if (offending !== undefined) {
+      const reason = [
+        `Raw \`git push\` blocked by .claude/hooks/enforce-lag-ceo-for-gh.mjs.`,
+        ``,
+        `Commit authorship is already the bot via local git config, but`,
+        `the PUSH authenticates via the system credential helper, which`,
+        `caches the operator's personal PAT. GitHub records the pusher`,
+        `of the push event as whoever owns that token - leaking operator`,
+        `identity on every force-push / new-branch push.`,
+        ``,
+        `Rewrite:`,
+        ``,
+        `    FROM:  ${offending.trim()}`,
+        `    TO  :  node scripts/git-as.mjs lag-ceo ${stripGitPrefix(offending.trim())}`,
+        ``,
+        `For a narrowly-scoped legitimate case (e.g. pushing a local`,
+        `branch that must be under operator identity), append`,
+        `\`# allow-raw-git-push\` to the command.`,
+      ].join('\n');
+      process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+      return;
+    }
+  }
+
+  // Fast path: if gh is not mentioned at all, skip the gh check.
   if (!/\bgh(?:\.exe)?\b/.test(command)) return;
 
   // If the command is explicitly using one of the allowed wrappers
@@ -133,11 +183,6 @@ function inspectBash(payload) {
     if (p.test(command)) return;
   }
 
-  // Inspect each ; / && / || -separated clause individually so a
-  // compound command like `cd repo && gh pr list` gets caught at the
-  // actual gh clause instead of getting false-allowed by something
-  // earlier in the chain.
-  const clauses = command.split(/\s*(?:\|\||&&|;)\s*/);
   const offending = clauses.find((c) => RAW_GH_PATTERN.test(c));
   if (offending === undefined) return;
 
@@ -209,6 +254,12 @@ function stripGhPrefix(clause) {
   // Best-effort: strip the leading `gh` token so the suggested
   // rewrite reads cleanly. Preserves args.
   return clause.replace(/^(?:\.\/|\.\\)?gh(?:\.exe)?\s+/, '').trim();
+}
+
+function stripGitPrefix(clause) {
+  // Strip the leading `git` token so the suggested rewrite reads
+  // cleanly. Preserves args.
+  return clause.replace(/^(?:\.\/|\.\\)?git(?:\.exe)?\s+/, '').trim();
 }
 
 async function readStdin() {

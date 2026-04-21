@@ -292,3 +292,87 @@ describe('enforce-lag-ceo-for-gh hook (unrelated tools)', () => {
     expect(exitCode).toBe(0);
   });
 });
+
+describe('enforce-lag-ceo-for-gh hook (git push attribution)', () => {
+  it('blocks a raw `git push`', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: { command: 'git push -u origin my-branch' },
+    });
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/Raw `git push` blocked/);
+    expect(result.reason).toMatch(/git-as\.mjs/);
+  });
+
+  it('blocks a raw `git push --force-with-lease`', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --force-with-lease origin main' },
+    });
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/Raw `git push` blocked/);
+  });
+
+  it('blocks `git push` in a compound && chain', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: { command: 'git add . && git commit -m x && git push' },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('allows `git-as.mjs` wrapped push', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: { command: 'node scripts/git-as.mjs lag-ceo push -u origin my-branch' },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows `git-as.mjs` wrapped push with backslash path on Windows', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: { command: 'node scripts\\git-as.mjs lag-ceo push -u origin my-branch' },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows the `# allow-raw-git-push` escape hatch', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --dry-run  # allow-raw-git-push' },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows unrelated git commands (status, log, diff, fetch, add, commit)', async () => {
+    const commands = [
+      'git status',
+      'git log --oneline -5',
+      'git diff',
+      'git fetch origin',
+      'git add .',
+      'git commit -m "x"',
+      'git rebase origin/main',
+      'git switch main',
+    ];
+    for (const cmd of commands) {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: cmd },
+      });
+      expect(result.decision, `expected allow for: ${cmd}`).toBe('allow');
+    }
+  });
+
+  it('allows `git pushd` (not actually a push subcommand)', async () => {
+    // No such git subcommand exists, but the RAW_GIT_PUSH_PATTERN
+    // must require `push` as a token, not a prefix match. A typo or
+    // hypothetical plugin named `pushd` should not be flagged.
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: { command: 'git pushd' },
+    });
+    expect(result.decision).toBe('allow');
+  });
+});
