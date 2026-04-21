@@ -249,15 +249,35 @@ function classifyCrReviews(submittedReviews, headSinceIso) {
     .slice()
     .sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)));
   for (const r of crReviews) {
+    // Prefer the structured review state when present. With
+    // `reviews.request_changes_workflow: true` in .coderabbit.yaml,
+    // CR emits APPROVED / CHANGES_REQUESTED / COMMENTED directly, so
+    // the review object carries the authoritative verdict without
+    // needing to parse free-form body text that may change format.
+    // Body parsing is kept as a fallback for historical reviews
+    // produced before the config flip (verdict lived only in prose
+    // landmarks `No actionable comments were generated` /
+    // `Actionable comments posted: N`).
+    const state = typeof r.state === 'string' ? r.state.toUpperCase() : '';
+    if (state === 'APPROVED') {
+      return { verdict: 'approved', detail: `via review.state=APPROVED at ${r.submittedAt}` };
+    }
+    if (state === 'CHANGES_REQUESTED') {
+      return { verdict: 'has-findings', detail: `via review.state=CHANGES_REQUESTED at ${r.submittedAt}` };
+    }
+    // state === COMMENTED / DISMISSED / PENDING / '' - fall through
+    // to body-text parsing. COMMENTED is the advisory-mode shape
+    // (`request_changes_workflow: false`) and still carries the
+    // prose landmarks that precede the config flip.
     const body = String(r.body ?? '');
     if (/No actionable comments were generated/i.test(body)) {
-      return { verdict: 'approved', detail: `via review at ${r.submittedAt}` };
+      return { verdict: 'approved', detail: `via review body at ${r.submittedAt}` };
     }
     const m = body.match(/Actionable comments? posted:\s*(\d+)/i);
     if (m) {
       const n = Number(m[1]);
       if (n === 0) {
-        return { verdict: 'approved', detail: `via review at ${r.submittedAt}` };
+        return { verdict: 'approved', detail: `via review body at ${r.submittedAt}` };
       }
       return { verdict: 'has-findings', detail: `${n} actionable @ ${r.submittedAt}` };
     }
