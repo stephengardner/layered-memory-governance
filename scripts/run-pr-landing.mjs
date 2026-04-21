@@ -334,8 +334,24 @@ async function maybeTriggerCr({ client, review, reviewTrigger, owner, repo, numb
       console.log('[cr-failsafe] CR already engaged; no trigger needed');
       return;
     }
+    // Idempotency guard: if a prior pr-landing run already posted
+    // the machine-user trigger on this PR (e.g., CR is delayed and
+    // a later pr-landing event fires), do NOT post again. Without
+    // this, multiple runs against the same PR before CR responds
+    // would stack comments. The login is deployment-specific so
+    // it is read from env with a sensible default; callers override
+    // via LAG_OPS_LOGIN for their own machine user.
+    const triggerLogin = process.env.LAG_OPS_LOGIN ?? 'layered-autonomous-governance';
+    const alreadyTriggered = await review.hasReviewerEngaged(
+      { owner, repo, number },
+      [triggerLogin],
+    );
+    if (alreadyTriggered) {
+      console.log(`[cr-failsafe] machine-user (${triggerLogin}) already posted trigger; waiting for CR engagement`);
+      return;
+    }
     console.log(
-      `[cr-failsafe] bot-authored PR #${number} past grace window with no CR engagement; posting trigger as lag-ops`,
+      `[cr-failsafe] bot-authored PR #${number} past grace window with no CR engagement; posting trigger as ${triggerLogin}`,
     );
     const outcome = await reviewTrigger.triggerReview(
       { owner, repo, number },

@@ -1,30 +1,22 @@
 /**
- * ReviewTriggerAdapter: the seam that lets pr-landing (or any future
- * actor that consumes PR reviews) ASK an external reviewer service
- * to run against a PR out-of-band.
+ * ReviewTriggerAdapter: a pluggable seam for asking an external PR
+ * review service to run against a PR out-of-band.
  *
- * Problem this closes: CodeRabbit and similar SaaS reviewers have
- * anti-loop logic that silently ignores comments from `[bot]`
- * accounts (GitHub Apps). When the whole automation flow opens PRs
- * as a bot, the reviewer's own `auto_review` sometimes fires and
- * sometimes does not (rate limits, queue depth, config edge cases),
- * and the usual "@coderabbitai review" comment nudge from a bot
- * also gets ignored by the anti-loop. The only reliable
- * third-party-reviewable surface is a comment from a `type=User`
- * account. This adapter exposes that capability as a first-class,
- * pluggable seam so:
+ * Some reviewer integrations only honor trigger comments authored by
+ * user-authenticated accounts rather than by automation (GitHub App)
+ * accounts. This adapter exposes the "post a trigger comment" step as
+ * a first-class interface so:
  *
- * - pr-landing has one place to call when it observes "reviewer
- *   hasn't engaged after N min" instead of reaching into raw HTTP
- *   from the actor body,
- * - implementations are swappable: the first concrete form
- *   (UserAccountCommentTrigger below) uses a PAT held by a
- *   purpose-built machine-user principal; a future form could drive
- *   a reviewer's own API once they publish one, or post via a
- *   different channel entirely,
- * - callers never hardcode reviewer names or logins (the trigger
- *   body is passed in per-call, and the machine-user prefix is a
- *   config knob).
+ * - Callers (typically an Actor runner) have one place to invoke
+ *   when they need to nudge a reviewer, rather than reaching into
+ *   raw HTTP from inside actor bodies.
+ * - Implementations are swappable: the concrete form in this module
+ *   posts a comment under a user-authenticated token; other
+ *   implementations could drive a reviewer's own API, post via a
+ *   different channel, or short-circuit for tests.
+ * - Callers never hardcode reviewer names or account logins; both
+ *   the trigger body and any token source are passed in at
+ *   composition time.
  *
  * Per the framework-code directive, this module knows nothing about
  * which specific reviewer or which specific account is used;
@@ -113,18 +105,12 @@ const DEFAULT_API_BASE = 'https://api.github.com';
 
 /**
  * Concrete ReviewTriggerAdapter that posts the trigger comment as
- * a GitHub User account authenticated via a PAT. The token is
- * fetched per-invocation (no caching at this layer) so rotations
- * or secret-store changes are picked up immediately; the
- * implementation trades one extra getToken() await for
- * correctness-over-performance.
- *
- * Why "User account" and not App installation token: CodeRabbit's
- * anti-loop ignores comments from `[bot]` accounts. Only a
- * type=User commenter reliably triggers a CR response, which is
- * what the canon-level directive
- * `dev-coderabbit-required-status-check-non-negotiable` forces us
- * to route around.
+ * a user-authenticated bearer token rather than an installation
+ * token, for deployments that use a reviewer integration requiring
+ * a user-authored trigger surface. The token is fetched per-
+ * invocation (no caching at this layer) so rotations or secret-
+ * store changes are picked up immediately; the implementation
+ * trades one extra getToken() await for correctness-over-performance.
  */
 export class UserAccountCommentTrigger implements ReviewTriggerAdapter {
   readonly name = 'user-account-comment-trigger';
@@ -151,7 +137,14 @@ export class UserAccountCommentTrigger implements ReviewTriggerAdapter {
     if (this.dryRun) {
       return { posted: false, dryRun: true };
     }
-    const token = await this.getToken();
+    // Normalize at the boundary: any source (env, secret store,
+    // test stub) that returns whitespace-only or null is treated as
+    // missing-token uniformly. Without the trim, a whitespace-only
+    // token would reach the HTTP layer with an invalid Bearer value
+    // and produce an opaque 401 rather than the clean missing-token
+    // failure shape callers can surface in an escalation.
+    const rawToken = await this.getToken();
+    const token = rawToken?.trim() ?? null;
     if (token === null || token === '') {
       return { posted: false, failure: 'missing-token' };
     }
@@ -214,8 +207,8 @@ export class UserAccountCommentTrigger implements ReviewTriggerAdapter {
  * Convenience: build a getToken function that reads from a process
  * env var. Separated so callers can plumb any secret source (env,
  * Secret Manager, file-backed store) with zero changes to the
- * adapter itself. For CI, `getTokenFromEnv('LAG_OPS_PAT')` is the
- * one-liner.
+ * adapter itself. Callers choose the environment variable name at
+ * composition time.
  */
 export function getTokenFromEnv(varName: string): () => Promise<string | null> {
   return async () => {

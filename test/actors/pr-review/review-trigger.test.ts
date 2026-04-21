@@ -67,6 +67,29 @@ describe('UserAccountCommentTrigger', () => {
     expect(out.failure).toBe('missing-token');
   });
 
+  it('returns missing-token when getToken resolves whitespace-only string', async () => {
+    const fetchImpl = vi.fn();
+    const trigger = new UserAccountCommentTrigger({
+      getToken: async () => '   \t\n  ',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const out = await trigger.triggerReview(PR, 'body');
+    expect(out.failure).toBe('missing-token');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('trims surrounding whitespace on a valid token before using it in Bearer auth', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(mkResponse(201, { id: 7 }));
+    const trigger = new UserAccountCommentTrigger({
+      getToken: async () => '  ghp_padded  ',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const out = await trigger.triggerReview(PR, 'body');
+    expect(out.posted).toBe(true);
+    const headers = (fetchImpl.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer ghp_padded');
+  });
+
   it('POSTs to the issue-comments endpoint with Bearer auth + UA + body', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(mkResponse(201, { id: 12345 }));
     const trigger = new UserAccountCommentTrigger({
