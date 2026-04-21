@@ -132,6 +132,17 @@ export type {
 } from './kill-switch/index.js';
 
 // ---------------------------------------------------------------------------
+// Per-principal LLM tool policy (resolves disallowedTools from canon)
+// ---------------------------------------------------------------------------
+export {
+  LLM_TOOL_POLICY_PREFIX,
+  LlmToolPolicyError,
+  llmToolPolicyAtomId,
+  loadLlmToolPolicy,
+} from './llm-tool-policy.js';
+export type { LlmToolPolicy } from './llm-tool-policy.js';
+
+// ---------------------------------------------------------------------------
 // Promotion
 // ---------------------------------------------------------------------------
 export {

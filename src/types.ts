@@ -373,6 +373,19 @@ export interface LlmOptions {
    * than "judge failed".
    */
   readonly signal?: AbortSignal;
+  /**
+   * Names of tools the LLM subprocess must NOT be allowed to call
+   * during this invocation. Implementations that launch a subagent
+   * capable of tool use (e.g. Claude CLI) forward this list; text-
+   * in-text-out implementations MAY ignore it.
+   *
+   * When undefined, the implementation's own safety default applies.
+   * Per-invocation override exists so a caller holding a principal-
+   * scoped policy can tailor access without reconstructing the
+   * implementation. Deny-list shape matches the Claude CLI contract;
+   * adapters with an allow-list-first surface invert at the boundary.
+   */
+  readonly disallowedTools?: ReadonlyArray<string>;
 }
 
 export interface JudgeMetadata {

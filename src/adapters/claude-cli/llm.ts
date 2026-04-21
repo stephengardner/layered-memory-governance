@@ -130,7 +130,16 @@ export class ClaudeCliLLM implements LLM {
         '\n```\n\n' +
         'Respond with ONE JSON object matching the provided schema. Do NOT call any tool.';
 
-      const disallowed = (this.opts.disallowedTools ?? DEFAULT_DISALLOWED_TOOLS).join(' ');
+      // Precedence: per-invocation options beat the adapter-level
+      // constructor default, which beats the hardcoded safety floor.
+      // A caller holding a principal-scoped policy atom can tailor
+      // tool access without constructing a new ClaudeCliLLM; the
+      // constructor default is the deploy-time baseline; the
+      // hardcoded floor keeps a zero-config install safe.
+      const disallowedList = options.disallowedTools
+        ?? this.opts.disallowedTools
+        ?? DEFAULT_DISALLOWED_TOOLS;
+      const disallowed = disallowedList.join(' ');
       // Use --append-system-prompt-file. Full replace (--system-prompt-file)
       // produced empty responses with -p mode in testing; the default Claude
       // Code frame is load-bearing for -p orchestration. We append our judge

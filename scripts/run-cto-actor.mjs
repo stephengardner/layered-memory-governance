@@ -35,6 +35,7 @@ import {
   HostLlmPlanningJudgment,
   PlanningActor,
 } from '../dist/actors/planning/index.js';
+import { loadLlmToolPolicy } from '../dist/llm-tool-policy.js';
 
 // Instance configuration lives here, NOT in src/. Framework code
 // stays mechanism-focused; vendor model ids are the caller's choice.
@@ -254,6 +255,24 @@ async function main() {
     process.exit(1);
   }
 
+  // Read the per-principal LLM tool policy from canon (if present).
+  // `null` means "no policy atom for this principal yet"; the
+  // HostLlmPlanningJudgment + ClaudeCliLLM chain will fall back to
+  // the adapter's safety default (deny-all). Policy atoms land via
+  // canon bootstrap scripts; this runner is the consumer, not the
+  // seeder.
+  const toolPolicy = await loadLlmToolPolicy(host.atoms, principal.id);
+  if (toolPolicy) {
+    console.log(
+      `[cto-actor] llm-tool-policy loaded for ${principal.id}: `
+      + `disallowed=[${toolPolicy.disallowedTools.join(', ')}]`,
+    );
+  } else {
+    console.log(
+      `[cto-actor] no llm-tool-policy atom for ${principal.id}; using adapter default (deny-all).`,
+    );
+  }
+
   // Default: LLM-backed thinking CTO. --stub routes through the old
   // deterministic judgment as an explicit rollback path (useful for
   // diagnosing whether a regression is in the actor or in the LLM).
@@ -268,6 +287,7 @@ async function main() {
         maxBudgetUsdPerCall: args.maxBudgetUsdPerCall ?? INSTANCE_MAX_BUDGET_USD_PER_CALL,
         timeoutMs: args.timeoutMs ?? INSTANCE_JUDGE_TIMEOUT_MS,
         ...(args.minConfidence !== undefined ? { minConfidence: args.minConfidence } : {}),
+        ...(toolPolicy ? { disallowedTools: toolPolicy.disallowedTools } : {}),
       });
 
   const actor = new PlanningActor({
