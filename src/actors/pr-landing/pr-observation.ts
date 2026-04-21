@@ -1,24 +1,19 @@
 /**
  * pr-observation atom builders + renderer.
  *
- * Extracted from the run-pr-landing.mjs --observe-only code path so
- * the shape can be unit-tested without spawning the script. The .mjs
- * script imports from the compiled dist; tests import directly from
- * TS.
+ * Mechanism: writes one atom per (owner, repo, pr, head_sha), chained
+ * via provenance.derived_from to the prior observation for the same
+ * PR, so consumers can walk the chain without scanning the whole
+ * store.
  *
- * Canon chain: `arch-pr-state-observation-via-actor-only` is the
- * architectural decision this atom shape serves. The observer writes
- * one atom per (owner, repo, pr, head_sha), chained via
- * provenance.derived_from to the prior observation for the same PR
- * so history is traceable without scanning the whole store.
+ * Uses `type: 'observation'` with `metadata.kind: 'pr-observation'`
+ * as the discriminator so downstream consumers can opt into this
+ * observation shape without expanding the core AtomType surface.
  *
- * Framework boundary: `pr-observation` is NOT a new AtomType. The
- * framework's AtomType union is closed (src/types.ts). We use
- * `type: 'observation'` with `metadata.kind: 'pr-observation'` as the
- * discriminator, matching the convention the auditor already uses
- * for its findings observations. This preserves
- * `dev-substrate-not-prescription`: widening a core union for one
- * instance would push instance shape into framework.
+ * Rationale, deployment-specific canon chain, and the long-term
+ * direction of session-agent observation live in design/ADRs, not
+ * in this module. Keep this file mechanism-only so downstream
+ * package users are not coupled to our deployment's canon ids.
  */
 
 import type {
@@ -177,7 +172,7 @@ export function renderPrObservationBody(args: {
     lines.push(renderCommentLine(c));
   }
   lines.push('');
-  lines.push('_Emitted by run-pr-landing.mjs --observe-only. Session agents read this atom (via pr-status.mjs) rather than polling GitHub directly, per canon `arch-pr-state-observation-via-actor-only`._');
+  lines.push('_Emitted by the PR observation runner. Consumers should read this atom (via the pr-status tool) when a fresh observation is available rather than re-querying the backing review service._');
   return lines.join('\n');
 }
 

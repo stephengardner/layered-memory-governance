@@ -223,8 +223,32 @@ describe('renderPrObservationBody', () => {
         checkRuns: [
           { name: 'CI', status: 'completed', conclusion: 'success' },
         ],
-        lineComments: [],
-        bodyNits: [],
+        // Cover BOTH lineComments and bodyNits in the every-surface
+        // test so a regression that drops per-item rendering gets
+        // caught here, not just in the dedicated per-item test.
+        lineComments: [
+          {
+            id: 'lc1',
+            author: 'coderabbitai',
+            body: 'Fix the null handling here',
+            path: 'src/example.ts',
+            line: 12,
+            createdAt: '2026-04-21T03:00:00Z',
+            resolved: false,
+          },
+        ],
+        bodyNits: [
+          {
+            id: 'bn1',
+            author: 'coderabbitai[bot]',
+            body: 'Minor: prefer enum over string literal',
+            path: 'src/enum.ts',
+            line: 8,
+            createdAt: '2026-04-21T03:00:00Z',
+            resolved: false,
+            kind: 'body-nit',
+          },
+        ],
       }),
       headSha: 'abc123def456',
       observedAt: '2026-04-21T04:00:00.000Z' as Time,
@@ -237,7 +261,17 @@ describe('renderPrObservationBody', () => {
     expect(body).toContain('coderabbitai COMMENTED at 2026-04-21T03:00:00Z');
     expect(body).toContain('check-runs: 1');
     expect(body).toContain('CI: success');
-    expect(body).toContain('arch-pr-state-observation-via-actor-only');
+    // Per-item detail (not just counts) so pr-status atom-first path
+    // stays actionable for readers.
+    expect(body).toContain('unresolved line comments: 1');
+    expect(body).toContain('src/example.ts:12');
+    expect(body).toContain('Fix the null handling here');
+    expect(body).toContain('body-scoped nits: 1');
+    expect(body).toContain('src/enum.ts:8');
+    expect(body).toContain('prefer enum over string literal');
+    // Mechanism-level trailer (no deployment-specific canon ids in
+    // src/ per the framework's mechanism-only rule).
+    expect(body).toContain('Emitted by the PR observation runner');
   });
 
   it('renders per-item details for unresolved line comments and body-nits (not just counts)', () => {
