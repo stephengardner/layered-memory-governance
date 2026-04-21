@@ -204,7 +204,7 @@ export type {
 // Daemon (Phase 41): ambient Telegram runtime
 // ---------------------------------------------------------------------------
 export {
-  LAGDaemon,
+  Daemon,
   splitForTelegram,
   invokeClaude,
   assembleContext,

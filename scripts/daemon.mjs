@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { mkdir } from 'node:fs/promises';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { LAGDaemon, StubTranscriber, WhisperLocalTranscriber } from '../dist/runtime/daemon/index.js';
+import { Daemon, StubTranscriber, WhisperLocalTranscriber } from '../dist/runtime/daemon/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -181,7 +181,7 @@ async function main() {
     console.log(`  Extraction:    every ${args.runExtractionEveryMs}ms (L0 to L1 via LLM judge)`);
   }
 
-  const daemon = new LAGDaemon({
+  const daemon = new Daemon({
     host,
     botToken: token,
     chatId,

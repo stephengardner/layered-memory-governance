@@ -11,7 +11,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { LAGDaemon, StubTranscriber } from '../../src/runtime/daemon/index.js';
+import { Daemon, StubTranscriber } from '../../src/runtime/daemon/index.js';
 import type { PrincipalId } from '../../src/substrate/types.js';
 
 const PRINCIPAL = 'stephen-human' as PrincipalId;
@@ -92,7 +92,7 @@ describe('StubTranscriber', () => {
   });
 });
 
-describe('LAGDaemon: voice message path', () => {
+describe('Daemon: voice message path', () => {
   it('downloads + transcribes + routes through handleMessage', async () => {
     const canonPath = await emptyCanonPath();
     const host = createMemoryHost();
@@ -123,7 +123,7 @@ describe('LAGDaemon: voice message path', () => {
     });
     const transcriber = new StubTranscriber('transcribed: hello claude');
 
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,
@@ -172,7 +172,7 @@ describe('LAGDaemon: voice message path', () => {
     ]);
 
     const invoke = vi.fn();
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,
@@ -211,7 +211,7 @@ describe('LAGDaemon: voice message path', () => {
       id: 'fail',
       transcribe: async () => { throw new Error('stt broke'); },
     };
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,

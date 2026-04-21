@@ -61,7 +61,7 @@ import { bindAnswer } from '../questions/index.js';
 /**
  * Transport adapter for the CLI-style streaming response path. The
  * three methods together hide transport-specific details from
- * LAGDaemon (channel construction, the Stop button action payload,
+ * Daemon (channel construction, the Stop button action payload,
  * and the callback-data protocol used to route a Stop press back to
  * the active run). Default implementation wires Telegram; any other
  * transport supplies its own.
@@ -176,7 +176,7 @@ export interface LAGDaemonOptions {
    *
    * Defaults to a Telegram-specific implementation (createTelegramChannel
    * + `lag-stop:<token>` callback protocol). Passing a custom
-   * implementation keeps LAGDaemon framework-neutral: the notifier
+   * implementation keeps Daemon framework-neutral: the notifier
    * seam already exists in Host.notifier for escalations, and this
    * option plays the same role for the streaming cli-render path.
    */
@@ -240,7 +240,7 @@ interface TelegramResponse<T> {
   readonly description?: string;
 }
 
-export class LAGDaemon {
+export class Daemon {
   private readonly options: LAGDaemonOptions;
   private readonly fetch: typeof fetch;
   private readonly invoke: typeof invokeClaude;
@@ -268,7 +268,7 @@ export class LAGDaemon {
     this.invokeStreaming = options.streamingInvokeImpl ?? invokeClaudeStreaming;
     this.onError = options.onError ?? ((err, ctx) => {
       // eslint-disable-next-line no-console
-      console.error(`[LAGDaemon] ${ctx}:`, err);
+      console.error(`[Daemon] ${ctx}:`, err);
     });
     this.chatIdString = String(options.chatId);
   }

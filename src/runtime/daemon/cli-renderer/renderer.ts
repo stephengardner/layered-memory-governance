@@ -69,7 +69,7 @@ export class CliRenderer {
   private startedAtMs = 0;
   private lastEditMs = 0;
   private spinnerIdx = 0;
-  // Default label is vendor-neutral. Callers (e.g. LAGDaemon's
+  // Default label is vendor-neutral. Callers (e.g. Daemon's
   // cliStyle path) pass a specific label via emit({type:'start',
   // label: 'Claude is working'}). The primitive itself must not
   // encode a vendor name.

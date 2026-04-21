@@ -12,7 +12,7 @@ import { writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { LAGDaemon } from '../../src/runtime/daemon/index.js';
+import { Daemon } from '../../src/runtime/daemon/index.js';
 import { EXTRACT_CLAIMS } from '../../src/llm-judge/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
@@ -34,7 +34,7 @@ function noopFetch(): typeof fetch {
     });
 }
 
-describe('LAGDaemon.ambientExtractionTick', () => {
+describe('Daemon.ambientExtractionTick', () => {
   it('runs extraction over L0 atoms and writes L1', async () => {
     const canonPath = await emptyCanonPath();
     const host = createMemoryHost();
@@ -55,7 +55,7 @@ describe('LAGDaemon.ambientExtractionTick', () => {
       { claims: [{ type: 'decision', content: 'Use Postgres.', confidence: 0.9 }] },
     );
 
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: 1,
@@ -73,11 +73,11 @@ describe('LAGDaemon.ambientExtractionTick', () => {
   });
 });
 
-describe('LAGDaemon.ambientLoopTick', () => {
+describe('Daemon.ambientLoopTick', () => {
   it('runs LoopRunner tick without throwing against an empty store', async () => {
     const canonPath = await emptyCanonPath();
     const host = createMemoryHost();
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: 1,

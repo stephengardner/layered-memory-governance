@@ -1,5 +1,5 @@
 /**
- * LAGDaemon unit tests.
+ * Daemon unit tests.
  *
  * All tests use mocked fetch (Telegram wire) and mocked invokeClaude
  * (no actual subprocess spawn). Proves:
@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { LAGDaemon, splitForTelegram } from '../../src/runtime/daemon/index.js';
+import { Daemon, splitForTelegram } from '../../src/runtime/daemon/index.js';
 import type { Disposition, PrincipalId } from '../../src/substrate/types.js';
 
 const PRINCIPAL = 'daemon-test-principal' as PrincipalId;
@@ -78,7 +78,7 @@ afterEach(async () => {
   try { await rm(canonPath.replace(/CLAUDE\.md$/, ''), { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
-describe('LAGDaemon.tick', () => {
+describe('Daemon.tick', () => {
   it('handles a text message: writes 2 atoms, replies, advances offset', async () => {
     const host = createMemoryHost();
     const invoke = vi.fn().mockResolvedValue({
@@ -100,7 +100,7 @@ describe('LAGDaemon.tick', () => {
       },
     ]]);
 
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE:token',
       chatId: CHAT_ID,
@@ -145,7 +145,7 @@ describe('LAGDaemon.tick', () => {
         },
       },
     ]]);
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,
@@ -177,7 +177,7 @@ describe('LAGDaemon.tick', () => {
         },
       },
     ]]);
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,
@@ -210,7 +210,7 @@ describe('LAGDaemon.tick', () => {
         message: { message_id: 1, from: { id: 1 }, chat: { id: CHAT_ID }, text: 'give me a wall' },
       },
     ]]);
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,
@@ -236,7 +236,7 @@ describe('LAGDaemon.tick', () => {
         message: { message_id: 1, from: { id: 1 }, chat: { id: CHAT_ID }, text: 'ping' },
       },
     ]]);
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,
@@ -270,7 +270,7 @@ describe('LAGDaemon.tick', () => {
       }],
       [], // second poll returns empty
     ]);
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,
@@ -314,7 +314,7 @@ describe('LAGDaemon.tick', () => {
       },
     ]]);
 
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE:token',
       chatId: CHAT_ID,
@@ -365,7 +365,7 @@ describe('LAGDaemon.tick', () => {
         },
       },
     ]]);
-    const daemon = new LAGDaemon({
+    const daemon = new Daemon({
       host,
       botToken: 'FAKE',
       chatId: CHAT_ID,
