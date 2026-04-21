@@ -126,7 +126,19 @@ async function main() {
   // emergency bypass.
   const actionAtomId = await writeOperatorActionAtom(role, ghArgs);
   if (actionAtomId !== null) {
-    console.log(`[gh-as] operator-action atom ${actionAtomId}`);
+    // stderr, not stdout: callers frequently pipe gh output into JSON
+    // parsers (`gh api ... | jq`, or passing into a Node consumer),
+    // and any non-JSON line on stdout from the wrapper corrupts those
+    // consumers. Observed in session 2026-04-21 when the audit-log
+    // line broke a `gh api ... --method POST --input ...` PR-create
+    // flow: Node tried to parse the stdout as JSON, hit the
+    // `[gh-as] ...` prefix, and threw. Audit-log visibility is for
+    // the operator watching the terminal; stderr is the right channel
+    // for that, and keeps stdout contractually JSON-clean when gh's
+    // own output is JSON. Also matches the rest of the wrapper's
+    // logs (token mint, signal termination, failures) which already
+    // use stderr.
+    console.error(`[gh-as] operator-action atom ${actionAtomId}`);
   }
 
   // Exec gh with GH_TOKEN overridden for this child only. GH_TOKEN
