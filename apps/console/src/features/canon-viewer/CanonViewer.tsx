@@ -5,8 +5,10 @@ import { Search } from 'lucide-react';
 import { listCanonAtoms, type AtomType, type CanonAtom } from '@/services/canon.service';
 import { useRouteId, setRoute, routeForAtomId, routeHref, type Route } from '@/state/router.store';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
+import { DriftBanner } from '@/components/drift-banner/DriftBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
-import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
+import { ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
+import { SkeletonGrid } from '@/components/skeleton/Skeleton';
 import { CanonCard } from './CanonCard';
 import { TypeFilter, type TypeOption } from './TypeFilter';
 import styles from './CanonViewer.module.css';
@@ -55,6 +57,7 @@ export function CanonViewer() {
 
   return (
     <section className={styles.viewer} aria-busy={dataQuery.isFetching}>
+      {!focusId && <DriftBanner />}
       {focusId && (
         <FocusBanner
           label="Focused on atom"
@@ -92,7 +95,7 @@ export function CanonViewer() {
         />
       </div>
 
-      {dataQuery.isPending && <LoadingState label="Loading canon…" testId="canon-loading" />}
+      {dataQuery.isPending && <SkeletonGrid count={6} />}
       {dataQuery.isError && (
         <ErrorState title="Could not load canon" message={(dataQuery.error as Error).message} testId="canon-error" />
       )}

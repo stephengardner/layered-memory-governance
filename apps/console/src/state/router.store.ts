@@ -27,10 +27,10 @@ import { useSyncExternalStore } from 'react';
  * routes by default, so `/canon/my-atom-id` resolves to the SPA bundle.
  */
 
-export type Route = 'canon' | 'principals' | 'activities' | 'plans';
+export type Route = 'canon' | 'principals' | 'activities' | 'plans' | 'graph';
 
 const DEFAULT: Route = 'canon';
-const VALID: ReadonlyArray<Route> = ['canon', 'principals', 'activities', 'plans'];
+const VALID: ReadonlyArray<Route> = ['canon', 'principals', 'activities', 'plans', 'graph'];
 const NAV_EVENT = 'lag-console:navigate';
 
 export interface Location {

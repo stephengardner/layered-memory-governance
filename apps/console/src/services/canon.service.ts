@@ -147,6 +147,20 @@ export interface ArbitrationResult {
   readonly winner: 'a' | 'b' | 'tie';
 }
 
+export interface CanonDrift {
+  readonly stale: ReadonlyArray<CanonAtom>;
+  readonly expiring: ReadonlyArray<CanonAtom>;
+  readonly lowConfidence: ReadonlyArray<CanonAtom>;
+}
+
+export async function getCanonDrift(signal?: AbortSignal): Promise<CanonDrift> {
+  return transport.call<CanonDrift>(
+    'canon.drift',
+    undefined,
+    signal ? { signal } : undefined,
+  );
+}
+
 export async function compareArbitration(
   aId: string,
   bId: string,

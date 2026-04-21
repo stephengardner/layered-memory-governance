@@ -86,6 +86,20 @@ test.describe('views smoke', () => {
     await expect(page.getByTestId('focus-banner')).toBeVisible();
   });
 
+  test('graph view renders nodes from the substrate', async ({ page }) => {
+    await page.goto('/graph');
+    await expect(page.locator('[data-testid="graph-svg"]')).toBeVisible();
+    await expect.poll(() => page.locator('[data-testid="graph-node"]').count(), { timeout: 10_000 })
+      .toBeGreaterThan(10);
+  });
+
+  test('kill-switch pill renders in header', async ({ page }) => {
+    await page.goto('/canon');
+    await expect(page.getByTestId('kill-switch-pill')).toBeVisible();
+    const tier = await page.getByTestId('kill-switch-pill').getAttribute('data-tier');
+    expect(tier).toMatch(/^(off|soft|medium|hard)$/);
+  });
+
   /*
    * Regression guard for the canon focus flash: when navigating
    * directly to /canon/<id>, the page should never briefly render

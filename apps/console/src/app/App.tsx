@@ -6,10 +6,13 @@ import { CanonViewer } from '@/features/canon-viewer/CanonViewer';
 import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
 import { ActivitiesView } from '@/features/activities-viewer/ActivitiesView';
 import { PlansView } from '@/features/plans-viewer/PlansView';
+import { GraphView } from '@/features/graph-viewer/GraphView';
+import { PageTransition } from '@/components/page-transition/PageTransition';
 import { useRoute, type Route } from '@/state/router.store';
 import { useThemeStore } from '@/state/theme.store';
 import { useDensityStore } from '@/state/density.store';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
+import { useAtomEvents } from '@/hooks/useAtomEvents';
 
 /**
  * App root. Three responsibilities:
@@ -44,10 +47,13 @@ export function App() {
     openPalette: () => setPaletteOpen(true),
   });
 
+  // Subscribe to the atoms SSE channel once; refetches fire on write.
+  useAtomEvents();
+
   return (
     <>
       <AppShell route={route}>
-        {renderRoute(route)}
+        <PageTransition key={route}>{renderRoute(route)}</PageTransition>
       </AppShell>
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
@@ -61,5 +67,6 @@ function renderRoute(r: Route) {
     case 'principals': return <PrincipalsView />;
     case 'activities': return <ActivitiesView />;
     case 'plans': return <PlansView />;
+    case 'graph': return <GraphView />;
   }
 }

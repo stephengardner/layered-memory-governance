@@ -19,6 +19,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
+import { watch as fsWatch } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
@@ -329,6 +330,39 @@ async function handleAtomCascade(id: string, maxDepth: number): Promise<Atom[]> 
  * derived from the principals file if present. If data is missing,
  * the formula still ranks reasonably by layer + confidence.
  */
+/*
+ * Drift / staleness report: canon atoms whose last_reinforced_at is
+ * older than 90 days OR whose expires_at is within 30 days OR whose
+ * confidence dropped below 0.7. Health surface: the operator sees
+ * which canon needs re-validation at a glance.
+ */
+async function handleDriftReport(): Promise<{
+  stale: Atom[];
+  expiring: Atom[];
+  lowConfidence: Atom[];
+}> {
+  const all = await readAllAtoms();
+  const canon = all.filter((a) => a.layer === 'L3' && (!a.superseded_by || a.superseded_by.length === 0) && (!a.taint || a.taint === 'clean'));
+  const now = Date.now();
+  const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  const stale: Atom[] = [];
+  const expiring: Atom[] = [];
+  const lowConfidence: Atom[] = [];
+  for (const a of canon) {
+    const last = (a as unknown as { last_reinforced_at?: string }).last_reinforced_at ?? a.created_at;
+    const lastTs = last ? Date.parse(last) : NaN;
+    if (Number.isFinite(lastTs) && (now - lastTs) > ninetyDaysMs) stale.push(a);
+    const exp = (a as unknown as { expires_at?: string | null }).expires_at;
+    if (exp) {
+      const expTs = Date.parse(exp);
+      if (Number.isFinite(expTs) && (expTs - now) < thirtyDaysMs && expTs > now) expiring.push(a);
+    }
+    if (typeof a.confidence === 'number' && a.confidence < 0.7) lowConfidence.push(a);
+  }
+  return { stale, expiring, lowConfidence };
+}
+
 async function handleArbitrationCompare(aId: string, bId: string): Promise<{
   a: { atom: Atom | null; rank: number; breakdown: Record<string, number> };
   b: { atom: Atom | null; rank: number; breakdown: Record<string, number> };
@@ -366,6 +400,32 @@ async function handleArbitrationCompare(aId: string, bId: string): Promise<{
     b: { atom: bAtom, rank: b.total, breakdown: b.breakdown },
     winner,
   };
+}
+
+async function readKillSwitchState(): Promise<{
+  tier: 'off' | 'soft' | 'medium' | 'hard';
+  since: string | null;
+  reason: string | null;
+  autonomyDial: number;
+}> {
+  try {
+    const raw = await readFile(join(LAG_DIR, 'kill-switch', 'state.json'), 'utf8');
+    const parsed = JSON.parse(raw) as {
+      tier?: 'off' | 'soft' | 'medium' | 'hard';
+      since?: string | null;
+      reason?: string | null;
+      autonomyDial?: number;
+    };
+    return {
+      tier: parsed.tier ?? 'off',
+      since: parsed.since ?? null,
+      reason: parsed.reason ?? null,
+      autonomyDial: typeof parsed.autonomyDial === 'number' ? parsed.autonomyDial : 1,
+    };
+  } catch {
+    // Absent state file = fully autonomous, no tier active.
+    return { tier: 'off', since: null, reason: null, autonomyDial: 1 };
+  }
 }
 
 async function handleDaemonStatus(): Promise<{
@@ -557,6 +617,32 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  if (path === '/api/canon.drift' && req.method === 'POST') {
+    try {
+      const data = await handleDriftReport();
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'canon-drift-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/kill-switch.state' && req.method === 'POST') {
+    /*
+     * Kill-switch tier + autonomy dial. Reads .lag/kill-switch/state.json
+     * if present; defaults to `off` + autonomy 1.0 when the file is
+     * missing. Stays trivial here so the UI doesn't need to branch
+     * on absence — the file is the source of truth.
+     */
+    try {
+      const state = await readKillSwitchState();
+      sendOk(res, state);
+    } catch (err) {
+      sendErr(res, 500, 'kill-switch-state-failed', (err as Error).message);
+    }
+    return;
+  }
+
   if (path === '/api/daemon.status' && req.method === 'POST') {
     try {
       const data = await handleDaemonStatus();
@@ -577,11 +663,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  // SSE stub: per canon dev-web-realtime-ready-transport, the
-  // endpoint exists from day 1 even though v1 just sends a ping
-  // every 30s. Feature code subscribing here will seamlessly pick
-  // up real atom-change events when the backend wires file-watching
-  // or the LAG daemon publishes change notifications.
+  /*
+   * SSE live-tail: clients subscribing to /api/events/atoms get an
+   * "atom.created" push whenever a new .json file lands in
+   * .lag/atoms. The file-watcher is started ONCE per server and
+   * multiplexed across subscribers, so 100 open tabs == 1 watcher.
+   */
   if (path.startsWith('/api/events/') && req.method === 'GET') {
     const channel = path.substring('/api/events/'.length);
     res.writeHead(200, {
@@ -591,10 +678,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       'Access-Control-Allow-Origin': '*',
     });
     res.write(`event: open\ndata: ${JSON.stringify({ channel, at: new Date().toISOString() })}\n\n`);
-    const interval = setInterval(() => {
+    if (channel === 'atoms') {
+      atomSubscribers.add(res);
+    }
+    const pingInterval = setInterval(() => {
       res.write(`event: ping\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`);
     }, 30_000);
-    req.on('close', () => clearInterval(interval));
+    req.on('close', () => {
+      clearInterval(pingInterval);
+      atomSubscribers.delete(res);
+    });
     return;
   }
 
@@ -612,9 +705,56 @@ const server = createServer((req, res) => {
   });
 });
 
+const atomSubscribers = new Set<ServerResponse>();
+const knownAtomFiles = new Set<string>();
+
+async function primeAtomIndex(): Promise<void> {
+  try {
+    const entries = await readdir(ATOMS_DIR);
+    for (const e of entries) if (e.endsWith('.json')) knownAtomFiles.add(e);
+  } catch { /* no atoms dir yet; watcher will still fire */ }
+}
+
+function broadcastAtomEvent(event: string, payload: unknown): void {
+  const msg = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const sub of atomSubscribers) {
+    try { sub.write(msg); } catch { atomSubscribers.delete(sub); }
+  }
+}
+
+async function startAtomWatcher(): Promise<void> {
+  await primeAtomIndex();
+  try {
+    fsWatch(ATOMS_DIR, { persistent: false }, (eventType, filename) => {
+      if (!filename || !filename.endsWith('.json')) return;
+      // `rename` fires on create / delete / move. `change` on write.
+      // Diff against knownAtomFiles to classify.
+      if (eventType === 'rename') {
+        // File may have appeared or disappeared; test existence lazily
+        // via the next readdir from any subscriber — simpler than
+        // a second stat call per event.
+        if (knownAtomFiles.has(filename)) {
+          // Possibly deleted; we don't re-list here to stay cheap.
+        } else {
+          knownAtomFiles.add(filename);
+          const id = filename.replace(/\.json$/, '');
+          broadcastAtomEvent('atom.created', { id, at: new Date().toISOString() });
+        }
+      } else if (eventType === 'change') {
+        const id = filename.replace(/\.json$/, '');
+        broadcastAtomEvent('atom.changed', { id, at: new Date().toISOString() });
+      }
+    });
+    console.log(`[backend] watching ${ATOMS_DIR} for atom changes`);
+  } catch (err) {
+    console.warn(`[backend] file-watch unavailable: ${(err as Error).message}`);
+  }
+}
+
 server.listen(PORT, () => {
   console.log(`[backend] LAG Console backend listening on http://localhost:${PORT}`);
   console.log(`[backend] reading atoms from ${ATOMS_DIR}`);
+  void startAtomWatcher();
 });
 
 // Clean shutdown for dev watch reloads.

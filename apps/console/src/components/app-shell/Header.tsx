@@ -2,6 +2,7 @@ import { Moon, Sun, Flame } from 'lucide-react';
 import { useThemeStore } from '@/state/theme.store';
 import { DensityToggle } from '@/components/density-toggle/DensityToggle';
 import { DaemonStatusPill } from '@/components/daemon-pill/DaemonStatusPill';
+import { KillSwitchPill } from '@/components/kill-switch-pill/KillSwitchPill';
 import type { Route } from '@/state/router.store';
 import logoUrl from '@/assets/lag-logo.png';
 import styles from './Header.module.css';
@@ -28,6 +29,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Plans',
     subtitle: 'Planning atoms with state — proposals, approvals, in-flight work',
   },
+  graph: {
+    title: 'Graph',
+    subtitle: 'The whole substrate as a force-directed map of derived_from relationships',
+  },
 };
 
 /**
@@ -47,6 +52,7 @@ export function Header({ route }: { route: Route }) {
         <span className={styles.subtitle}>{meta.subtitle}</span>
       </div>
       <div className={styles.actions}>
+        <KillSwitchPill />
         <DaemonStatusPill />
         <DensityToggle />
         <button
