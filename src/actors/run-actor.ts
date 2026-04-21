@@ -59,8 +59,6 @@ export interface RunActorOptions<Adapters extends ActorAdapters> {
    * or neither is valid. If both are supplied, either one tripping
    * halts the loop. If neither is supplied, a never-aborted signal is
    * injected so adapters can thread `ctx.abortSignal` unconditionally.
-   *
-   * See design/adr-medium-tier-kill-switch.md.
    */
   readonly killSwitchSignal?: AbortSignal;
   /**

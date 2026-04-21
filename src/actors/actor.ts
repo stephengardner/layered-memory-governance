@@ -54,8 +54,6 @@ export interface ActorContext<Adapters extends ActorAdapters = ActorAdapters> {
    * can thread `ctx.abortSignal` unconditionally without null-
    * checking. Back-compat with actors that never read this field:
    * additive only, zero behavior change when ignored.
-   *
-   * Design reference: design/adr-medium-tier-kill-switch.md.
    */
   readonly abortSignal: AbortSignal;
   /** Structured audit sink. Actors may also call this directly. */
