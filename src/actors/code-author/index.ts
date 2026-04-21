@@ -1,0 +1,39 @@
+/**
+ * CodeAuthorActor (subpath: `/actors/code-author`).
+ *
+ * Outward actor that reifies the `pol-code-author-*` blast-radius
+ * fence. The module name matches the principal id the actor runs
+ * under; the actor's authority surface is defined entirely by the
+ * four fence atoms, loaded + validated at `observe` time.
+ *
+ * Subpath import:
+ *
+ *   import { CodeAuthorActor } from 'layered-autonomous-governance/actors/code-author';
+ *
+ * LAG does not prescribe that you use this actor. It is a reference
+ * implementation of a fence-gated outward actor; any consumer can
+ * write their own against `src/actors/` with their own fence-atom
+ * family.
+ */
+
+export { CodeAuthorActor } from './code-author.js';
+export type {
+  CodeAuthorAction,
+  CodeAuthorAdapters,
+  CodeAuthorObservation,
+  CodeAuthorOutcome,
+} from './code-author.js';
+
+export {
+  FENCE_ATOM_IDS,
+  loadCodeAuthorFence,
+  CodeAuthorFenceError,
+} from './fence.js';
+export type {
+  CiGatePolicy,
+  CodeAuthorFence,
+  FenceAtomId,
+  PerPrCostCapPolicy,
+  SignedPrOnlyPolicy,
+  WriteRevocationOnStopPolicy,
+} from './fence.js';
