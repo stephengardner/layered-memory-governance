@@ -3,8 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ExternalLink, X } from 'lucide-react';
-import { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide, type Simulation } from 'd3-force';
-import { listCanonAtoms, type CanonAtom } from '@/services/canon.service';
+import { listCanonAtoms } from '@/services/canon.service';
 import { listActivities } from '@/services/activities.service';
 import { listPlans } from '@/services/plans.service';
 import { routeForAtomId, setRoute } from '@/state/router.store';
@@ -12,25 +11,9 @@ import { LoadingState, ErrorState } from '@/components/state-display/StateDispla
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { AtomHoverCard } from '@/components/hover-card/AtomHoverCard';
 import { useHoverCard } from '@/components/hover-card/useHoverCard';
+import { useGraphService } from '@/services/graph/useGraphService';
+import type { GraphNode } from '@/services/graph/GraphService';
 import styles from './GraphView.module.css';
-
-type NodeData = {
-  id: string;
-  type: string;
-  layer: string;
-  content: string;
-  principal: string;
-  confidence: number;
-  created_at: string;
-  radius: number;
-  fx?: number;
-  fy?: number;
-} & { x?: number; y?: number; vx?: number; vy?: number };
-
-interface LinkData {
-  source: string | NodeData;
-  target: string | NodeData;
-}
 
 const TYPE_COLORS: Record<string, string> = {
   directive: 'var(--status-danger)',
@@ -42,134 +25,72 @@ const TYPE_COLORS: Record<string, string> = {
   'actor-message': 'var(--accent-hover)',
 };
 
+const ALL_KINDS = ['directive', 'decision', 'preference', 'reference', 'plan', 'observation', 'actor-message'] as const;
+
+/*
+ * GraphView — pure presentational consumer of GraphService.
+ *
+ * The service owns: the atom set, the filter, the selection, the
+ * force simulation, the positions, the bounds. Re-renders of THIS
+ * component don't recompute any of that; they just re-read the
+ * latest snapshot.
+ *
+ * This component owns only: pan/zoom transform, hover-card state.
+ * Both are purely visual; neither affects the graph state machine.
+ */
 export function GraphView() {
-  const canonQ = useQuery({
-    queryKey: ['canon', [], ''],
-    queryFn: ({ signal }) => listCanonAtoms({}, signal),
-  });
+  const canonQ = useQuery({ queryKey: ['canon', [], ''], queryFn: ({ signal }) => listCanonAtoms({}, signal) });
   const plansQ = useQuery({ queryKey: ['plans'], queryFn: ({ signal }) => listPlans(signal) });
   const activitiesQ = useQuery({
     queryKey: ['activities', 500],
     queryFn: ({ signal }) => listActivities({ limit: 500 }, signal),
   });
 
-  const [includeKinds, setIncludeKinds] = useState<Set<string>>(new Set(['directive', 'decision', 'preference', 'reference']));
-
-  const { nodes, links, adjacency } = useMemo(() => {
-    const allAtoms = [
+  // Dedupe atoms across the three queries. Memoized on the three
+  // data arrays; identity-stable when nothing changes so the service
+  // signature check short-circuits.
+  const atoms = useMemo(() => {
+    const all = [
       ...(canonQ.data ?? []),
       ...(plansQ.data ?? []),
       ...(activitiesQ.data ?? []),
     ];
-    const byId = new Map<string, CanonAtom>();
-    for (const a of allAtoms) if (!byId.has(a.id)) byId.set(a.id, a);
-    const kept = Array.from(byId.values()).filter((a) => includeKinds.has(a.type));
-    const keptIds = new Set(kept.map((a) => a.id));
+    const seen = new Map<string, typeof all[number]>();
+    for (const a of all) if (!seen.has(a.id)) seen.set(a.id, a);
+    return Array.from(seen.values());
+  }, [canonQ.data, plansQ.data, activitiesQ.data]);
 
-    const nodeList: NodeData[] = kept.map((a) => ({
-      id: a.id,
-      type: a.type,
-      layer: a.layer,
-      content: a.content,
-      principal: a.principal_id,
-      confidence: a.confidence ?? 0,
-      created_at: a.created_at,
-      radius: radiusFor(a.type, a.confidence ?? 0),
-    }));
-    const linkList: LinkData[] = [];
-    const adj = new Map<string, Set<string>>();
-    const note = (a: string, b: string) => {
-      const s = adj.get(a) ?? new Set<string>();
-      s.add(b);
-      adj.set(a, s);
-    };
-    for (const a of kept) {
-      const derived = (a.provenance?.derived_from ?? []) as ReadonlyArray<string>;
-      for (const d of derived) {
-        if (keptIds.has(d)) {
-          linkList.push({ source: a.id, target: d });
-          note(a.id, d);
-          note(d, a.id);
-        }
-      }
-    }
-    return { nodes: nodeList, links: linkList, adjacency: adj };
-  }, [canonQ.data, plansQ.data, activitiesQ.data, includeKinds]);
+  const { snapshot, service } = useGraphService(atoms, { width: 1200, height: 800 });
+  const hoverCard = useHoverCard<GraphNode>();
 
+  // Pan/zoom transform — presentational only, doesn't belong in the
+  // service. initialScale fits below 1 so the whole graph is visible
+  // on first render before the auto-fit runs.
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 0.7 });
   const dragging = useRef<{ startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null);
-  const simRef = useRef<Simulation<NodeData, LinkData> | null>(null);
-  const svgRef = useRef<SVGSVGElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [, setTick] = useState(0);
-  const hoverCard = useHoverCard<NodeData>();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const autoFitDoneRef = useRef(false);
 
+  // Zoom-to-fit: runs once after the sim settles. Subsequent filter
+  // changes don't re-run autofit; user pan/zoom is preserved.
   useEffect(() => {
-    if (nodes.length === 0) return;
-    const width = 1200;
-    const height = 800;
-    const sim = forceSimulation<NodeData, LinkData>(nodes)
-      .force('link', forceLink<NodeData, LinkData>(links).id((d) => d.id).distance(80).strength(0.6))
-      .force('charge', forceManyBody().strength(-260))
-      .force('center', forceCenter(width / 2, height / 2))
-      .force('collide', forceCollide<NodeData>().radius((d) => d.radius + 4))
-      .alphaDecay(0.03)
-      .on('tick', () => setTick((t) => t + 1));
-    simRef.current = sim;
-
-    /*
-     * Zoom-to-fit once the sim settles (alpha < 0.02). Reads the
-     * node bounding box and fits it inside the container. Runs only
-     * ONCE per layout so subsequent user zooms aren't overridden.
-     */
-    let didFit = false;
-    sim.on('tick.fit', () => {
-      if (didFit) return;
-      if (sim.alpha() > 0.08) return;
-      didFit = true;
-      fitToViewport();
-    });
-
-    return () => { sim.stop(); };
+    if (!snapshot.settled || autoFitDoneRef.current || !snapshot.bounds) return;
+    autoFitDoneRef.current = true;
+    fitToBounds(snapshot.bounds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, links]);
+  }, [snapshot.settled, snapshot.bounds]);
 
-  const fitToViewport = () => {
-    if (nodes.length === 0) return;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const n of nodes) {
-      if (n.x == null || n.y == null) continue;
-      if (n.x < minX) minX = n.x;
-      if (n.y < minY) minY = n.y;
-      if (n.x > maxX) maxX = n.x;
-      if (n.y > maxY) maxY = n.y;
-    }
-    if (!isFinite(minX)) return;
-    /*
-     * Work in viewBox coordinates (1200x800). The SVG's
-     * preserveAspectRatio maps viewBox → container automatically,
-     * so we only need to:
-     *   1. pick `scale` so the bbox fits in the viewBox with pad
-     *   2. translate so the bbox center lands at viewBox center
-     *      (after scaling).
-     */
-    const bboxW = maxX - minX || 1;
-    const bboxH = maxY - minY || 1;
+  const fitToBounds = (b: { minX: number; minY: number; maxX: number; maxY: number }) => {
+    const bboxW = Math.max(1, b.maxX - b.minX);
+    const bboxH = Math.max(1, b.maxY - b.minY);
     const pad = 80;
-    const scale = Math.min(1.2, Math.max(0.3, Math.min((1200 - pad * 2) / bboxW, (800 - pad * 2) / bboxH)));
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
+    const scale = Math.min(
+      1.2,
+      Math.max(0.3, Math.min((1200 - pad * 2) / bboxW, (800 - pad * 2) / bboxH)),
+    );
+    const cx = (b.minX + b.maxX) / 2;
+    const cy = (b.minY + b.maxY) / 2;
     setTransform({ x: 600 - cx * scale, y: 400 - cy * scale, scale });
-  };
-
-  const toggleKind = (kind: string) => {
-    setIncludeKinds((prev) => {
-      const next = new Set(prev);
-      if (next.has(kind)) next.delete(kind);
-      else next.add(kind);
-      return next;
-    });
   };
 
   const pending = canonQ.isPending || plansQ.isPending || activitiesQ.isPending;
@@ -178,29 +99,33 @@ export function GraphView() {
   if (pending) return <LoadingState label="Loading graph…" testId="graph-loading" />;
   if (error) return <ErrorState title="Could not load graph" message={(error as Error).message} testId="graph-error" />;
 
-  // Neighborhood dim: when a node is selected, everything >1 hop away dims.
-  const neighbors = selectedId ? (adjacency.get(selectedId) ?? new Set()) : null;
-  const isDim = (id: string) => selectedId !== null && id !== selectedId && !(neighbors && neighbors.has(id));
+  const isDim = (id: string) =>
+    snapshot.selection.nodeId !== null
+    && id !== snapshot.selection.nodeId
+    && !snapshot.selection.neighbors.has(id);
 
-  const selectedAtom = selectedId ? nodes.find((n) => n.id === selectedId) ?? null : null;
+  const selectedAtom = snapshot.selection.nodeId
+    ? snapshot.nodes.find((n) => n.id === snapshot.selection.nodeId) ?? null
+    : null;
 
   return (
     <section className={styles.view}>
       <header className={styles.toolbar}>
         <div>
-          <div className={styles.statsTotal}>{nodes.length}</div>
+          <div className={styles.statsTotal}>{snapshot.nodes.length}</div>
           <div className={styles.statsLabel}>
-            node{nodes.length === 1 ? '' : 's'} · {links.length} edge{links.length === 1 ? '' : 's'}
+            node{snapshot.nodes.length === 1 ? '' : 's'} · {snapshot.edges.length} edge{snapshot.edges.length === 1 ? '' : 's'}
           </div>
         </div>
         <div className={styles.filters}>
-          {(['directive', 'decision', 'preference', 'reference', 'plan', 'observation', 'actor-message'] as const).map((k) => (
+          {ALL_KINDS.map((k) => (
             <button
               key={k}
               type="button"
-              className={`${styles.filter} ${includeKinds.has(k) ? styles.filterActive : ''}`}
-              onClick={() => toggleKind(k)}
+              className={`${styles.filter} ${snapshot.kinds.has(k) ? styles.filterActive : ''}`}
+              onClick={() => service.toggleKind(k)}
               data-testid={`graph-filter-${k}`}
+              data-active={snapshot.kinds.has(k)}
             >
               <span className={styles.filterDot} style={{ background: TYPE_COLORS[k] ?? 'var(--text-muted)' }} />
               {k}
@@ -210,7 +135,11 @@ export function GraphView() {
         <button
           type="button"
           className={styles.resetBtn}
-          onClick={() => { setSelectedId(null); simRef.current?.alpha(0.6).restart(); setTimeout(fitToViewport, 600); }}
+          onClick={() => {
+            service.select(null);
+            autoFitDoneRef.current = false;
+            if (snapshot.bounds) fitToBounds(snapshot.bounds);
+          }}
           data-testid="graph-reset"
         >
           fit
@@ -230,8 +159,7 @@ export function GraphView() {
           setTransform((t) => ({ ...t, x: dragging.current!.origX + dx, y: dragging.current!.origY + dy }));
         }}
         onMouseUp={() => {
-          // Click-on-canvas (no drag) closes any open node selection.
-          if (dragging.current && !dragging.current.moved) setSelectedId(null);
+          if (dragging.current && !dragging.current.moved) service.select(null);
           dragging.current = null;
         }}
         onMouseLeave={() => { dragging.current = null; hoverCard.scheduleHide(); }}
@@ -241,19 +169,23 @@ export function GraphView() {
         }}
       >
         <svg
-          ref={svgRef}
           className={styles.svg}
           viewBox="0 0 1200 800"
           data-testid="graph-svg"
+          data-settled={snapshot.settled}
+          data-version={snapshot.version}
         >
           <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`}>
             <g className={styles.edges}>
-              {links.map((l, i) => {
-                const s = typeof l.source === 'string' ? null : l.source;
-                const t = typeof l.target === 'string' ? null : l.target;
+              {snapshot.edges.map((e, i) => {
+                const s = typeof e.source === 'string' ? null : e.source;
+                const t = typeof e.target === 'string' ? null : e.target;
                 if (!s || !t || s.x == null || s.y == null || t.x == null || t.y == null) return null;
-                const connected = selectedId !== null && (s.id === selectedId || t.id === selectedId);
-                const dim = selectedId !== null && !connected;
+                const sId = s.id;
+                const tId = t.id;
+                const connected = snapshot.selection.nodeId !== null
+                  && (sId === snapshot.selection.nodeId || tId === snapshot.selection.nodeId);
+                const dim = snapshot.selection.nodeId !== null && !connected;
                 return (
                   <line
                     key={i}
@@ -264,22 +196,23 @@ export function GraphView() {
               })}
             </g>
             <g className={styles.nodes}>
-              {nodes.map((n) => (
+              {snapshot.nodes.map((n) => (
                 <g
                   key={n.id}
-                  className={`${styles.node} ${isDim(n.id) ? styles.nodeDim : ''} ${n.id === selectedId ? styles.nodeSelected : ''}`}
+                  className={`${styles.node} ${isDim(n.id) ? styles.nodeDim : ''} ${n.id === snapshot.selection.nodeId ? styles.nodeSelected : ''}`}
                   transform={`translate(${n.x ?? 0}, ${n.y ?? 0})`}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (e.metaKey || e.ctrlKey) { setRoute(routeForAtomId(n.id), n.id); return; }
-                    setSelectedId(n.id);
+                    service.select(n.id);
                   }}
-                  onMouseEnter={(e) => { hoverCard.show(n, e.clientX, e.clientY); }}
-                  onMouseMove={(e) => { hoverCard.updatePos(e.clientX, e.clientY); }}
-                  onMouseLeave={() => { hoverCard.scheduleHide(); }}
+                  onMouseEnter={(e) => hoverCard.show(n, e.clientX, e.clientY)}
+                  onMouseMove={(e) => hoverCard.updatePos(e.clientX, e.clientY)}
+                  onMouseLeave={hoverCard.scheduleHide}
                   data-testid="graph-node"
                   data-node-id={n.id}
                   data-node-type={n.type}
+                  data-selected={n.id === snapshot.selection.nodeId}
                 >
                   <circle
                     r={n.radius}
@@ -307,7 +240,7 @@ export function GraphView() {
             <GraphDetailPanel
               key={selectedAtom.id}
               node={selectedAtom}
-              onClose={() => setSelectedId(null)}
+              onClose={() => service.select(null)}
             />
           )}
         </AnimatePresence>,
@@ -317,12 +250,6 @@ export function GraphView() {
   );
 }
 
-function radiusFor(type: string, confidence: number): number {
-  const base = type === 'directive' ? 8 : type === 'decision' ? 7 : type === 'plan' ? 6 : 5;
-  // Confidence slightly modulates radius so high-conf atoms pop.
-  return base + Math.round(confidence * 2);
-}
-
 function GraphHoverPortal({
   node,
   x,
@@ -330,14 +257,12 @@ function GraphHoverPortal({
   onEnter,
   onLeave,
 }: {
-  node: NodeData;
+  node: GraphNode;
   x: number;
   y: number;
   onEnter: () => void;
   onLeave: () => void;
 }) {
-  // Position near cursor with bounds-checking so tooltip doesn't
-  // fall off the right edge on wide viewports.
   const width = 360;
   const left = Math.min(x + 16, window.innerWidth - width - 12);
   const top = Math.min(y + 16, window.innerHeight - 220);
@@ -353,7 +278,7 @@ function GraphHoverPortal({
           type: node.type,
           layer: node.layer as 'L0' | 'L1' | 'L2' | 'L3',
           content: node.content,
-          principal_id: node.principal,
+          principal_id: node.principal_id,
           confidence: node.confidence,
           created_at: node.created_at,
         }}
@@ -365,7 +290,7 @@ function GraphHoverPortal({
   );
 }
 
-function GraphDetailPanel({ node, onClose }: { node: NodeData; onClose: () => void }) {
+function GraphDetailPanel({ node, onClose }: { node: GraphNode; onClose: () => void }) {
   const route = routeForAtomId(node.id);
   return (
     <motion.aside
@@ -391,7 +316,7 @@ function GraphDetailPanel({ node, onClose }: { node: NodeData; onClose: () => vo
       <code className={styles.detailId}>{node.id}</code>
       <p className={styles.detailContent}>{node.content}</p>
       <dl className={styles.detailAttrs}>
-        <dt>Principal</dt><dd>{node.principal}</dd>
+        <dt>Principal</dt><dd>{node.principal_id}</dd>
         <dt>Layer</dt><dd>{node.layer}</dd>
         <dt>Confidence</dt><dd>{node.confidence.toFixed(2)}</dd>
       </dl>
@@ -409,4 +334,3 @@ function GraphDetailPanel({ node, onClose }: { node: NodeData; onClose: () => vo
     </motion.aside>
   );
 }
-

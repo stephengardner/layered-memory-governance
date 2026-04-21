@@ -1,0 +1,173 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import { GraphService, type GraphAtom } from './GraphService';
+
+/*
+ * Unit tests for GraphService. These exercise the state machine
+ * directly — no React, no d3 timing, no DOM. The force simulation
+ * runs synchronously via settle() so outputs are deterministic
+ * given the input set (d3-force uses a seeded random internally
+ * via Math.random; positions aren't bit-exact across runs but all
+ * other invariants hold).
+ */
+
+function atom(overrides: Partial<GraphAtom> & { id: string }): GraphAtom {
+  return {
+    type: 'decision',
+    layer: 'L3',
+    content: overrides.id,
+    principal_id: 'stephen-human',
+    confidence: 1,
+    created_at: '2026-04-21T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('GraphService', () => {
+  let svc: GraphService;
+
+  beforeEach(() => {
+    svc = new GraphService({ width: 800, height: 600 });
+  });
+
+  it('starts empty', () => {
+    const s = svc.getSnapshot();
+    expect(s.nodes).toHaveLength(0);
+    expect(s.edges).toHaveLength(0);
+    expect(s.selection.nodeId).toBeNull();
+    expect(s.bounds).toBeNull();
+  });
+
+  it('builds nodes from atoms filtered by default kinds', () => {
+    svc.setAtoms([
+      atom({ id: 'a', type: 'decision' }),
+      atom({ id: 'b', type: 'directive' }),
+      atom({ id: 'c', type: 'plan' }), // excluded by default filter
+    ]);
+    const s = svc.getSnapshot();
+    expect(s.nodes.map((n) => n.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('builds edges from provenance.derived_from within the filtered set', () => {
+    svc.setAtoms([
+      atom({ id: 'a' }),
+      atom({ id: 'b', provenance: { derived_from: ['a'] } }),
+      // 'z' is missing from the set; the edge b→z must be dropped.
+      atom({ id: 'c', provenance: { derived_from: ['a', 'z'] } }),
+    ]);
+    const s = svc.getSnapshot();
+    expect(s.edges).toHaveLength(2);
+    const pairs = s.edges.map((e) => `${stringifyEndpoint(e.source)}>${stringifyEndpoint(e.target)}`).sort();
+    expect(pairs).toEqual(['b>a', 'c>a']);
+  });
+
+  it('setAtoms is a no-op when signature is unchanged', () => {
+    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b' })]);
+    const v1 = svc.getSnapshot().version;
+    // Same atom content → same signature → no rebuild.
+    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b' })]);
+    expect(svc.getSnapshot().version).toBe(v1);
+  });
+
+  it('setAtoms rebuilds when a new atom arrives', () => {
+    svc.setAtoms([atom({ id: 'a' })]);
+    const v1 = svc.getSnapshot().version;
+    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b' })]);
+    expect(svc.getSnapshot().version).toBeGreaterThan(v1);
+  });
+
+  it('setKinds narrows the filtered set without losing positions of kept nodes', () => {
+    svc.setAtoms([
+      atom({ id: 'a', type: 'decision' }),
+      atom({ id: 'b', type: 'directive' }),
+    ]);
+    svc.settle();
+    const posA1 = pos(svc, 'a');
+    svc.setKinds(['decision']); // drop directives
+    const s = svc.getSnapshot();
+    expect(s.nodes.map((n) => n.id)).toEqual(['a']);
+    // 'a' should have kept its position.
+    const posA2 = pos(svc, 'a');
+    expect(posA2).toEqual(posA1);
+  });
+
+  it('toggleKind flips inclusion of a single kind', () => {
+    svc.setAtoms([
+      atom({ id: 'a', type: 'decision' }),
+      atom({ id: 'b', type: 'plan' }),
+    ]);
+    expect(svc.getSnapshot().nodes.map((n) => n.id)).toEqual(['a']);
+    svc.toggleKind('plan');
+    expect(svc.getSnapshot().nodes.map((n) => n.id).sort()).toEqual(['a', 'b']);
+    svc.toggleKind('plan');
+    expect(svc.getSnapshot().nodes.map((n) => n.id)).toEqual(['a']);
+  });
+
+  it('select sets selection and resolves 1-hop neighbors', () => {
+    svc.setAtoms([
+      atom({ id: 'a' }),
+      atom({ id: 'b', provenance: { derived_from: ['a'] } }),
+      atom({ id: 'c', provenance: { derived_from: ['a'] } }),
+    ]);
+    svc.select('a');
+    const s = svc.getSnapshot();
+    expect(s.selection.nodeId).toBe('a');
+    expect(Array.from(s.selection.neighbors).sort()).toEqual(['b', 'c']);
+  });
+
+  it('select with an id outside the filtered set is a no-op', () => {
+    svc.setAtoms([
+      atom({ id: 'a', type: 'decision' }),
+      atom({ id: 'p', type: 'plan' }), // excluded by default filter
+    ]);
+    svc.select('p');
+    expect(svc.getSnapshot().selection.nodeId).toBeNull();
+  });
+
+  it('clears selection when the selected node is filtered out', () => {
+    svc.setAtoms([atom({ id: 'a', type: 'decision' }), atom({ id: 'b', type: 'directive' })]);
+    svc.select('b');
+    expect(svc.getSnapshot().selection.nodeId).toBe('b');
+    svc.setKinds(['decision']);
+    expect(svc.getSnapshot().selection.nodeId).toBeNull();
+  });
+
+  it('bounds compute after settle', () => {
+    svc.setAtoms([
+      atom({ id: 'a' }),
+      atom({ id: 'b', provenance: { derived_from: ['a'] } }),
+      atom({ id: 'c', provenance: { derived_from: ['b'] } }),
+    ]);
+    svc.settle();
+    const b = svc.getSnapshot().bounds;
+    expect(b).not.toBeNull();
+    expect(b!.maxX).toBeGreaterThan(b!.minX);
+    expect(b!.maxY).toBeGreaterThan(b!.minY);
+  });
+
+  it('subscribe notifies listeners on version bumps', () => {
+    let ticks = 0;
+    const unsub = svc.subscribe(() => { ticks++; });
+    svc.setAtoms([atom({ id: 'a' })]);
+    expect(ticks).toBeGreaterThan(0);
+    const before = ticks;
+    unsub();
+    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b' })]);
+    expect(ticks).toBe(before);
+  });
+
+  it('settle marks the snapshot as settled', () => {
+    svc.setAtoms([atom({ id: 'a' }), atom({ id: 'b', provenance: { derived_from: ['a'] } })]);
+    expect(svc.getSnapshot().settled).toBe(false);
+    svc.settle();
+    expect(svc.getSnapshot().settled).toBe(true);
+  });
+});
+
+function pos(svc: GraphService, id: string): { x: number; y: number } {
+  const n = svc.getSnapshot().nodes.find((x) => x.id === id)!;
+  return { x: n.x!, y: n.y! };
+}
+
+function stringifyEndpoint(e: string | { id: string }): string {
+  return typeof e === 'string' ? e : e.id;
+}

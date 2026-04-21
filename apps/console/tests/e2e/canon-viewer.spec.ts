@@ -57,14 +57,22 @@ test.describe('canon viewer', () => {
 
   test('search narrows the grid to matching atoms', async ({ page }) => {
     await page.locator('[data-testid="canon-card"]').first().waitFor();
-    const search = page.getByPlaceholder('Search canon...');
+    const search = page.getByTestId('canon-search');
     await search.fill('atomstore');
-    await expect.poll(async () =>
-      page.locator('[data-testid="canon-card"]').count(),
-    ).toBeGreaterThan(0);
-    const cards = page.locator('[data-testid="canon-card"]');
-    const text = (await cards.first().innerText()).toLowerCase();
-    expect(text).toContain('atomstore');
+    /*
+     * Poll on a filter-applied signal, not count>0. TanStack Query
+     * keeps the previous result visible while the refetch is in
+     * flight, so a count-only poll passes immediately with stale
+     * unfiltered cards and we read a card that doesn't match. Polling
+     * the first card's text covers the stale-while-revalidate window.
+     */
+    await expect.poll(async () => {
+      const first = page.locator('[data-testid="canon-card"]').first();
+      if ((await first.count()) === 0) return 'no-cards';
+      return (await first.innerText()).toLowerCase().includes('atomstore')
+        ? 'match'
+        : 'stale';
+    }, { timeout: 10_000 }).toBe('match');
   });
 
   test('theme toggle cycles through supported themes', async ({ page }) => {

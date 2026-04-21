@@ -1,0 +1,76 @@
+import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { GraphService, type GraphAtom, type GraphSnapshot, type GraphServiceOptions } from './GraphService';
+
+/*
+ * React binding for GraphService. Keeps a single long-lived service
+ * instance in a ref, syncs atoms into it on every input change, and
+ * exposes the snapshot via useSyncExternalStore.
+ *
+ * Key properties this guarantees:
+ *   - The service instance survives React re-renders. Parent state
+ *     changes don't recreate the service; simulation positions
+ *     persist.
+ *   - setAtoms() short-circuits when the input signature is
+ *     unchanged, so unrelated parent re-renders (TimeAgo, SSE
+ *     invalidates of non-graph data) don't restart the sim.
+ *   - Snapshot identity is stable between version bumps, which is
+ *     what makes useSyncExternalStore work without tearing.
+ *   - rAF-driven ticks ONLY run while the sim is unsettled. Once
+ *     alpha drops below threshold we stop polling — no forever
+ *     30fps render loop.
+ */
+export function useGraphService(
+  atoms: ReadonlyArray<GraphAtom>,
+  opts: GraphServiceOptions = {},
+): {
+  readonly snapshot: GraphSnapshot;
+  readonly service: GraphService;
+} {
+  const serviceRef = useRef<GraphService | null>(null);
+  if (serviceRef.current === null) {
+    serviceRef.current = new GraphService(opts);
+  }
+  const service = serviceRef.current;
+
+  // Sync atoms into the service on every render where the input
+  // changed. setAtoms is signature-idempotent so this is cheap.
+  useEffect(() => {
+    service.setAtoms(atoms);
+  }, [service, atoms]);
+
+  // Drive ticks via rAF while the sim is unsettled. The service
+  // tick() returns false when settled, which ends the loop.
+  useEffect(() => {
+    let raf = 0;
+    let running = true;
+    const loop = () => {
+      if (!running) return;
+      const active = service.tick();
+      if (!active) {
+        running = false;
+        return;
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => {
+      running = false;
+      cancelAnimationFrame(raf);
+    };
+    // Restart the tick loop whenever the snapshot version bumps
+    // (new atoms, filter change, selection). A settled sim stops
+    // producing ticks, so restarting is cheap.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [service, service.getSnapshot().version]);
+
+  // Unmount cleanup: stop the sim, drop listeners implicitly.
+  useEffect(() => () => service.stop(), [service]);
+
+  const snapshot = useSyncExternalStore(
+    (listener) => service.subscribe(listener),
+    () => service.getSnapshot(),
+    () => service.getSnapshot(),
+  );
+
+  return { snapshot, service };
+}
