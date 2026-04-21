@@ -7,6 +7,14 @@ Two kinds of configuration:
 - `.claude/settings.json` **IS checked in**. Use it for hooks that encode repo-wide governance rules every contributor should get automatically (e.g., `enforce-lag-ceo-for-gh.mjs`).
 - `.claude/settings.local.json` is **per-operator** and gitignored. Use it for hooks that are preference/workflow choices (e.g., the Stop hook below).
 
+## seed-canon-on-session.mjs (checked-in, always on)
+
+PreToolUse hook that runs `scripts/bootstrap-all-canon.mjs` once per Claude Code session so the canon store is always caught up to whatever has been merged to main. Guard file lives at `.lag/session-seeds/<session-id>.done`; first tool call per session seeds, subsequent calls short-circuit.
+
+Motivation: session 2026-04-21 surfaced the gap. An atom was edited into a `bootstrap-*-canon.mjs` script, the edit merged to main, but the script was never executed, so when the cto-actor drafted a plan it correctly flagged the cited atom as absent from the store. Source-of-truth (bootstrap scripts) was ahead of the atom store.
+
+Fail-open: a failed bootstrap logs to stderr and allows the tool call; the next session retries. A missing `LAG_OPERATOR_ID` skips seeding with a warning and writes the guard so the warning does not spam every tool call. Wired before the other hooks so seeding races to completion before any gh / pr-state hook would matter.
+
 ## enforce-lag-ceo-for-gh.mjs (checked-in, always on)
 
 PreToolUse hook that blocks any raw `gh` CLI call in this repo's Claude Code session and tells the agent to route through `node scripts/gh-as.mjs lag-ceo ...` (or `lag-cto` for decision-bearing ops) instead. This is the third-layer deterministic guarantee described in `docs/bot-identities.md` - in this repo the agent's GitHub attribution is `lag-ceo[bot]` OR the tool call fails loudly; the operator's personal login is never an accidental fallback.
