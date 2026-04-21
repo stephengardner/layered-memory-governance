@@ -18,7 +18,7 @@ import {
   checkToolPolicy,
   matchSpecificity,
   parsePolicy,
-} from '../../src/policy/index.js';
+} from '../../src/substrate/policy/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

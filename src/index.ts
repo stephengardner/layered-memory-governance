@@ -139,8 +139,8 @@ export {
   LlmToolPolicyError,
   llmToolPolicyAtomId,
   loadLlmToolPolicy,
-} from './llm-tool-policy.js';
-export type { LlmToolPolicy } from './llm-tool-policy.js';
+} from './substrate/policy/tool-policy.js';
+export type { LlmToolPolicy } from './substrate/policy/tool-policy.js';
 
 // ---------------------------------------------------------------------------
 // Promotion
@@ -260,12 +260,12 @@ export {
   checkToolPolicy,
   matchSpecificity,
   parsePolicy,
-} from './policy/index.js';
+} from './substrate/policy/index.js';
 export type {
   PolicyContext,
   PolicyDecision,
   PolicyResult,
-} from './policy/index.js';
+} from './substrate/policy/index.js';
 
 // ---------------------------------------------------------------------------
 // Questions (Phase 50b): HIL Q-A with causality binding

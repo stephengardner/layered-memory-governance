@@ -13,7 +13,7 @@
  * existing signed-PR fence.
  *
  * Seeds two policy atoms as the first consumers of the mechanism
- * shipped in PR #75 (`src/llm-tool-policy.ts` loader +
+ * shipped in PR #75 (`src/substrate/policy/tool-policy.ts` loader +
  * `LlmOptions.disallowedTools` threaded through `ClaudeCliLLM`):
  *
  *   pol-llm-tool-policy-cto-actor

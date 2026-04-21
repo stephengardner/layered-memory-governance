@@ -90,7 +90,7 @@ export interface HostLlmPlanningJudgmentOptions {
   /**
    * Tool deny-list forwarded to every `host.llm.judge(...)` call as
    * `LlmOptions.disallowedTools`. Intended to be resolved from a
-   * principal-scoped canon policy atom (see `src/llm-tool-policy.ts`)
+   * principal-scoped canon policy atom (see the policy subpath)
    * so per-actor tool access is a canon edit, not a framework
    * release.
    *

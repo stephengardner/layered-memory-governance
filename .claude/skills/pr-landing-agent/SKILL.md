@@ -66,7 +66,7 @@ with higher priority. Do NOT edit src/ to change behavior; edit canon.
 - `design/actors-and-adapters.md` for the Actor + ActorAdapter shape.
 - `DECISIONS.md` D13 (TG-as-operator trade-off), D16 (two agent
   classes), D17 (ActorAdapter as second seam / D1 narrowed).
-- `src/policy/index.ts` for how checkToolPolicy scores matches.
+- `src/substrate/policy/check.ts` for how checkToolPolicy scores matches.
 - `.lag/atoms/` (via `node scripts/inspect-atoms.mjs` if it exists,
   or a grep over the file adapter store) to see current L3 policies.
 

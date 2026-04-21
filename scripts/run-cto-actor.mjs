@@ -35,7 +35,7 @@ import {
   HostLlmPlanningJudgment,
   PlanningActor,
 } from '../dist/actors/planning/index.js';
-import { loadLlmToolPolicy } from '../dist/llm-tool-policy.js';
+import { loadLlmToolPolicy } from '../dist/substrate/policy/tool-policy.js';
 
 // Instance configuration lives here, NOT in src/. Framework code
 // stays mechanism-focused; vendor model ids are the caller's choice.

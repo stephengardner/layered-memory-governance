@@ -21,8 +21,8 @@
  * phases. Everything else is the actor's problem.
  */
 
-import { checkToolPolicy } from '../policy/index.js';
-import type { PolicyContext } from '../policy/index.js';
+import { checkToolPolicy } from '../substrate/policy/index.js';
+import type { PolicyContext } from '../substrate/policy/index.js';
 import { isKillSwitchAbortReason } from '../substrate/kill-switch/index.js';
 import {
   mkKillSwitchTrippedAtom,
