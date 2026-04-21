@@ -20,6 +20,70 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
+    "./substrate": {
+      "import": "./dist/substrate/index.js",
+      "types": "./dist/substrate/index.d.ts"
+    },
+    "./runtime": {
+      "import": "./dist/runtime/index.js",
+      "types": "./dist/runtime/index.d.ts"
+    },
+    "./runtime/loop": {
+      "import": "./dist/runtime/loop/index.js",
+      "types": "./dist/runtime/loop/index.d.ts"
+    },
+    "./runtime/plans": {
+      "import": "./dist/runtime/plans/index.js",
+      "types": "./dist/runtime/plans/index.d.ts"
+    },
+    "./runtime/questions": {
+      "import": "./dist/runtime/questions/index.js",
+      "types": "./dist/runtime/questions/index.d.ts"
+    },
+    "./runtime/claims-extraction": {
+      "import": "./dist/runtime/claims-extraction/index.js",
+      "types": "./dist/runtime/claims-extraction/index.d.ts"
+    },
+    "./runtime/actors": {
+      "import": "./dist/runtime/actors/index.js",
+      "types": "./dist/runtime/actors/index.d.ts"
+    },
+    "./runtime/actors/pr-landing": {
+      "import": "./dist/runtime/actors/pr-landing/index.js",
+      "types": "./dist/runtime/actors/pr-landing/index.d.ts"
+    },
+    "./runtime/actors/code-author": {
+      "import": "./dist/runtime/actors/code-author/index.js",
+      "types": "./dist/runtime/actors/code-author/index.d.ts"
+    },
+    "./runtime/actors/pr-review": {
+      "import": "./dist/runtime/actors/pr-review/index.js",
+      "types": "./dist/runtime/actors/pr-review/index.d.ts"
+    },
+    "./runtime/actors/planning": {
+      "import": "./dist/runtime/actors/planning/index.js",
+      "types": "./dist/runtime/actors/planning/index.d.ts"
+    },
+    "./runtime/actors/provisioning": {
+      "import": "./dist/runtime/actors/provisioning/index.js",
+      "types": "./dist/runtime/actors/provisioning/index.d.ts"
+    },
+    "./runtime/actor-message": {
+      "import": "./dist/runtime/actor-message/index.js",
+      "types": "./dist/runtime/actor-message/index.d.ts"
+    },
+    "./runtime/actor-message/executor-default": {
+      "import": "./dist/runtime/actor-message/executor-default.js",
+      "types": "./dist/runtime/actor-message/executor-default.d.ts"
+    },
+    "./runtime/daemon": {
+      "import": "./dist/runtime/daemon/index.js",
+      "types": "./dist/runtime/daemon/index.d.ts"
+    },
+    "./integrations": {
+      "import": "./dist/integrations/index.js",
+      "types": "./dist/integrations/index.d.ts"
+    },
     "./adapters/memory": {
       "import": "./dist/adapters/memory/index.js",
       "types": "./dist/adapters/memory/index.d.ts"
@@ -36,37 +100,29 @@
       "import": "./dist/adapters/notifier/index.js",
       "types": "./dist/adapters/notifier/index.d.ts"
     },
-    "./actors": {
-      "import": "./dist/actors/index.js",
-      "types": "./dist/actors/index.d.ts"
+    "./adapters/notifier/telegram": {
+      "import": "./dist/adapters/notifier/telegram/index.js",
+      "types": "./dist/adapters/notifier/telegram/index.d.ts"
     },
-    "./actors/pr-landing": {
-      "import": "./dist/actors/pr-landing/index.js",
-      "types": "./dist/actors/pr-landing/index.d.ts"
+    "./adapters/llm/claude-cli": {
+      "import": "./dist/adapters/llm/claude-cli/index.js",
+      "types": "./dist/adapters/llm/claude-cli/index.d.ts"
     },
-    "./actors/code-author": {
-      "import": "./dist/actors/code-author/index.js",
-      "types": "./dist/actors/code-author/index.d.ts"
+    "./adapters/transcriber/whisper": {
+      "import": "./dist/adapters/transcriber/whisper/index.js",
+      "types": "./dist/adapters/transcriber/whisper/index.d.ts"
     },
-    "./actors/pr-review": {
-      "import": "./dist/actors/pr-review/index.js",
-      "types": "./dist/actors/pr-review/index.d.ts"
+    "./ingestion": {
+      "import": "./dist/ingestion/index.js",
+      "types": "./dist/ingestion/index.d.ts"
     },
-    "./actors/planning": {
-      "import": "./dist/actors/planning/index.js",
-      "types": "./dist/actors/planning/index.d.ts"
+    "./retrieval": {
+      "import": "./dist/retrieval/index.js",
+      "types": "./dist/retrieval/index.d.ts"
     },
-    "./actors/provisioning": {
-      "import": "./dist/actors/provisioning/index.js",
-      "types": "./dist/actors/provisioning/index.d.ts"
-    },
-    "./actor-message": {
-      "import": "./dist/actor-message/index.js",
-      "types": "./dist/actor-message/index.d.ts"
-    },
-    "./actor-message/executor-default": {
-      "import": "./dist/actor-message/executor-default.js",
-      "types": "./dist/actor-message/executor-default.d.ts"
+    "./llm-judge": {
+      "import": "./dist/llm-judge/index.js",
+      "types": "./dist/llm-judge/index.d.ts"
     },
     "./external/github": {
       "import": "./dist/external/github/index.js",
