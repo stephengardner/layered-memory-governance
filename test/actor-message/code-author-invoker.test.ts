@@ -24,6 +24,8 @@ import type {
 import {
   runCodeAuthor,
   mkCodeAuthorInvokedAtomId,
+  type CodeAuthorExecutor,
+  type CodeAuthorExecutorResult,
 } from '../../src/actor-message/code-author-invoker.js';
 
 const OPERATOR = 'test-operator' as PrincipalId;
@@ -254,5 +256,138 @@ describe('runCodeAuthor', () => {
       'cafe01',
     );
     expect(result.producedAtomIds[0]).toBe(String(expected));
+  });
+
+  function stubExecutor(
+    impl: (inputs: Parameters<CodeAuthorExecutor['execute']>[0]) => Promise<CodeAuthorExecutorResult>,
+  ): CodeAuthorExecutor {
+    return { execute: impl };
+  }
+
+  it('with executor injected (dispatched): returns dispatched and stores PR handle on observation', async () => {
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async (inputs) => {
+      expect(inputs.plan.id).toBe('plan-test-1');
+      expect(inputs.fence.perPrCostCap.max_usd_per_pr).toBe(10);
+      expect(inputs.correlationId).toBe('corr-executor');
+      return {
+        kind: 'dispatched',
+        prNumber: 123,
+        prHtmlUrl: 'https://github.com/o/r/pull/123',
+        branchName: 'code-author/plan-test-1-abc',
+        commitSha: 'deadbeefcafe0011223344556677889900aabbcc',
+        totalCostUsd: 0.42,
+        modelUsed: 'claude-opus-4-7',
+        confidence: 0.9,
+        touchedPaths: ['README.md', 'package.json'],
+      };
+    });
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-executor',
+      { idNonce: 'bbbbbb', executor },
+    );
+
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') throw new Error('unreachable');
+    expect(result.summary).toContain('#123');
+    expect(result.summary).toContain('deadbee');
+
+    // Observation atom carries the PR handle + executor metadata.
+    const atomId = mkCodeAuthorInvokedAtomId(
+      'plan-test-1',
+      new Date((result as { summary: string } & object & { _t?: number })._t ?? Date.now()).toISOString() as Time,
+      'bbbbbb',
+    );
+    // Since we don't control `now` here, locate the atom via query.
+    const { atoms: all } = await host.atoms.query({ type: ['observation'] }, 100);
+    const invoked = all.find((a) => a.metadata['kind'] === 'code-author-invoked');
+    expect(invoked).toBeDefined();
+    const exec = invoked!.metadata['executor_result'] as Record<string, unknown>;
+    expect(exec['kind']).toBe('dispatched');
+    expect(exec['pr_number']).toBe(123);
+    expect(exec['pr_html_url']).toBe('https://github.com/o/r/pull/123');
+    expect(exec['commit_sha']).toBe('deadbeefcafe0011223344556677889900aabbcc');
+    expect(exec['model_used']).toBe('claude-opus-4-7');
+    expect(exec['confidence']).toBe(0.9);
+    expect(exec['total_cost_usd']).toBe(0.42);
+    expect(exec['touched_paths']).toEqual(['README.md', 'package.json']);
+    expect(atomId).toBeDefined();
+  });
+
+  it('with executor injected (error): returns error and stores failure stage on observation', async () => {
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async () => ({
+      kind: 'error',
+      stage: 'apply-branch',
+      reason: 'dirty worktree',
+    }));
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-1',
+      { executor, idNonce: 'cccccc' },
+    );
+
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.message).toMatch(/stage=apply-branch/);
+    expect(result.message).toMatch(/dirty worktree/);
+
+    const { atoms: all } = await host.atoms.query({ type: ['observation'] }, 100);
+    const invoked = all.find((a) => a.metadata['kind'] === 'code-author-invoked');
+    expect(invoked).toBeDefined();
+    const exec = invoked!.metadata['executor_result'] as Record<string, unknown>;
+    expect(exec['kind']).toBe('error');
+    expect(exec['stage']).toBe('apply-branch');
+    expect(exec['reason']).toBe('dirty worktree');
+  });
+
+  it('with executor that throws: invoker catches and records executor-threw stage', async () => {
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async () => {
+      throw new Error('kaboom');
+    });
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-1',
+      { executor, idNonce: 'dddddd' },
+    );
+
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.message).toMatch(/stage=executor-threw/);
+    expect(result.message).toMatch(/kaboom/);
+
+    const { atoms: all } = await host.atoms.query({ type: ['observation'] }, 100);
+    const invoked = all.find((a) => a.metadata['kind'] === 'code-author-invoked');
+    expect(invoked!.metadata['executor_result']).toMatchObject({
+      kind: 'error',
+      stage: 'executor-threw',
+    });
+  });
+
+  it('without executor: falls back to observation-only (backward compatibility)', async () => {
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const result = await runCodeAuthor(host, { plan_id: 'plan-test-1' }, 'corr-1');
+    expect(result.kind).toBe('completed');
+    if (result.kind !== 'completed') throw new Error('unreachable');
+
+    const written = await host.atoms.get(result.producedAtomIds[0]! as AtomId);
+    // Backward-compatible metadata shape: executor_result must be absent.
+    expect(written!.metadata['executor_result']).toBeUndefined();
   });
 });

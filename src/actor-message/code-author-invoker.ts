@@ -68,6 +68,7 @@ import type { InvokeResult } from './sub-actor-registry.js';
 import {
   loadCodeAuthorFence,
   CodeAuthorFenceError,
+  type CodeAuthorFence,
 } from '../actors/code-author/fence.js';
 
 /**
@@ -85,6 +86,48 @@ export interface CodeAuthorPayload {
    * dispatch is caught.
    */
   readonly plan_id: AtomId | string;
+}
+
+/**
+ * Result shape the injected executor returns when the full chain
+ * (draft -> apply branch -> open PR) succeeds. The invoker records
+ * the fields on its observation atom and propagates the PR handle
+ * through `InvokeResult.dispatched`.
+ *
+ * The executor is responsible for diff drafting, git ops, and PR
+ * creation. Keeping that composition behind an interface lets a
+ * consumer swap in a different chain (e.g. a LangGraph-orchestrated
+ * executor) without modifying the invoker.
+ */
+export interface CodeAuthorExecutorSuccess {
+  readonly kind: 'dispatched';
+  readonly prNumber: number;
+  readonly prHtmlUrl: string;
+  readonly commitSha: string;
+  readonly branchName: string;
+  readonly totalCostUsd: number;
+  readonly modelUsed: string;
+  readonly confidence: number;
+  readonly touchedPaths: ReadonlyArray<string>;
+}
+
+export interface CodeAuthorExecutorFailure {
+  readonly kind: 'error';
+  readonly stage: string;
+  readonly reason: string;
+}
+
+export type CodeAuthorExecutorResult =
+  | CodeAuthorExecutorSuccess
+  | CodeAuthorExecutorFailure;
+
+export interface CodeAuthorExecutor {
+  execute(inputs: {
+    readonly plan: Atom;
+    readonly fence: CodeAuthorFence;
+    readonly correlationId: string;
+    readonly signal?: AbortSignal;
+  }): Promise<CodeAuthorExecutorResult>;
 }
 
 /**
@@ -116,6 +159,19 @@ export async function runCodeAuthor(
     readonly principalId?: PrincipalId;
     readonly now?: () => number;
     readonly idNonce?: string;
+    /**
+     * Optional executor. When provided, the invoker runs the full
+     * chain (draft -> branch -> PR) and returns `InvokeResult.dispatched`
+     * on success. When undefined, the observation-only path runs and
+     * `InvokeResult.completed` is returned.
+     *
+     * The executor interface isolates the invoker from concrete
+     * primitives (drafter, git-ops, pr-creation) so a consumer can
+     * plug in a different orchestration (LangGraph, Temporal, etc.)
+     * without touching this module.
+     */
+    readonly executor?: CodeAuthorExecutor;
+    readonly signal?: AbortSignal;
   } = {},
 ): Promise<InvokeResult> {
   const principal = options.principalId ?? ('code-author' as PrincipalId);
@@ -162,17 +218,43 @@ export async function runCodeAuthor(
     };
   }
 
-  // 3. Write the observation. `derived_from: [plan.id]` anchors the
+  // 3. Optional full-chain executor. If one is injected, delegate the
+  //    draft -> branch -> PR pipeline to it and record the outcome
+  //    (success or stage-specific failure) on the observation atom.
+  //    Without an executor the path stays observation-only; the
+  //    dispatcher sees `completed`, flips the plan to `succeeded`,
+  //    and links the observation atom.
+  let executorResult: CodeAuthorExecutorResult | undefined;
+  if (options.executor !== undefined) {
+    try {
+      executorResult = await options.executor.execute({
+        plan,
+        fence,
+        correlationId,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+    } catch (err) {
+      executorResult = {
+        kind: 'error',
+        stage: 'executor-threw',
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  // 4. Write the observation. `derived_from: [plan.id]` anchors the
   //    provenance chain so the full trace is plan-atom ->
-  //    code-author-invoked -> (future) pr-observation atom ->
-  //    code-change-delivered atom on merge.
+  //    code-author-invoked -> pr-observation atom -> code-change-
+  //    delivered atom on merge. When the executor ran, the PR handle
+  //    and stage outcome live on the same atom so a downstream
+  //    observer can follow the chain with a single read.
   const nowIso = new Date(now()).toISOString() as Time;
   const atomId = mkCodeAuthorInvokedAtomId(String(plan.id), nowIso, options.idNonce);
 
   const atom: Atom = {
     schema_version: 1,
     id: atomId,
-    content: renderInvokedContent(plan.id, correlationId, fence.warnings),
+    content: renderInvokedContent(plan.id, correlationId, fence.warnings, executorResult),
     type: 'observation',
     layer: 'L1',
     provenance: {
@@ -205,18 +287,35 @@ export async function runCodeAuthor(
       correlation_id: correlationId,
       fence_ok: true,
       fence_warnings: fence.warnings.slice(),
-      // The fence's operative caps at invocation time; a later
-      // auditor reconstructs "what budget was in force for this
-      // run" without rejoining against canon at read time.
       fence_snapshot: {
         max_usd_per_pr: fence.perPrCostCap.max_usd_per_pr,
         required_checks: fence.ciGate.required_checks.slice(),
         on_stop_action: fence.writeRevocationOnStop.on_stop_action,
       },
+      ...(executorResult ? { executor_result: renderExecutorMetadata(executorResult) } : {}),
     },
   };
 
   await host.atoms.put(atom);
+
+  if (executorResult?.kind === 'error') {
+    return {
+      kind: 'error',
+      message: `executor failed at stage=${executorResult.stage}: ${executorResult.reason}`,
+    };
+  }
+
+  if (executorResult?.kind === 'dispatched') {
+    // The PR handle lives on the observation atom's
+    // metadata.executor_result; the dispatcher keeps the plan in
+    // `executing` and a later observer closes the plan on merge.
+    return {
+      kind: 'dispatched',
+      summary:
+        `code-author dispatched plan ${plan.id} as PR #${executorResult.prNumber} `
+        + `(${executorResult.commitSha.slice(0, 7)})`,
+    };
+  }
 
   return {
     kind: 'completed',
@@ -229,6 +328,7 @@ function renderInvokedContent(
   planId: AtomId,
   correlationId: string,
   fenceWarnings: ReadonlyArray<string>,
+  executorResult?: CodeAuthorExecutorResult,
 ): string {
   const lines: string[] = [
     `code-author invoked for plan ${planId}`,
@@ -240,10 +340,47 @@ function renderInvokedContent(
     for (const w of fenceWarnings) lines.push(`  - ${w}`);
   }
   lines.push('');
-  lines.push('This observation records that the code-author principal');
-  lines.push('acknowledged an approved plan under a live fence.');
-  lines.push('PR creation + diff drafting follow in a subsequent');
-  lines.push('revision; the plan stays traceable via derived_from on');
-  lines.push('downstream atoms.');
+  if (executorResult === undefined) {
+    lines.push('This observation records that the code-author principal');
+    lines.push('acknowledged an approved plan under a live fence.');
+    lines.push('No executor was injected; the plan is marked');
+    lines.push('acknowledged-only.');
+  } else if (executorResult.kind === 'dispatched') {
+    lines.push('Executor completed the full chain:');
+    lines.push(`  PR:         #${executorResult.prNumber} ${executorResult.prHtmlUrl}`);
+    lines.push(`  Branch:     ${executorResult.branchName}`);
+    lines.push(`  Commit:     ${executorResult.commitSha}`);
+    lines.push(`  Model:      ${executorResult.modelUsed}`);
+    lines.push(`  Confidence: ${executorResult.confidence.toFixed(2)}`);
+    lines.push(`  Cost (USD): ${executorResult.totalCostUsd.toFixed(4)}`);
+    lines.push(`  Touched paths (${executorResult.touchedPaths.length}):`);
+    for (const p of executorResult.touchedPaths) lines.push(`    - ${p}`);
+  } else {
+    lines.push(`Executor failed at stage "${executorResult.stage}":`);
+    lines.push(`  ${executorResult.reason}`);
+  }
   return lines.join('\n');
+}
+
+function renderExecutorMetadata(
+  result: CodeAuthorExecutorResult,
+): Record<string, unknown> {
+  if (result.kind === 'error') {
+    return {
+      kind: 'error',
+      stage: result.stage,
+      reason: result.reason,
+    };
+  }
+  return {
+    kind: 'dispatched',
+    pr_number: result.prNumber,
+    pr_html_url: result.prHtmlUrl,
+    branch_name: result.branchName,
+    commit_sha: result.commitSha,
+    model_used: result.modelUsed,
+    confidence: result.confidence,
+    total_cost_usd: result.totalCostUsd,
+    touched_paths: result.touchedPaths.slice(),
+  };
 }

@@ -70,7 +70,16 @@ export {
   runCodeAuthor,
   mkCodeAuthorInvokedAtomId,
 } from './code-author-invoker.js';
-export type { CodeAuthorPayload } from './code-author-invoker.js';
+export type {
+  CodeAuthorPayload,
+  CodeAuthorExecutor,
+  CodeAuthorExecutorResult,
+  CodeAuthorExecutorSuccess,
+  CodeAuthorExecutorFailure,
+} from './code-author-invoker.js';
+
+export { buildDefaultCodeAuthorExecutor } from './code-author-executor-default.js';
+export type { DefaultExecutorConfig } from './code-author-executor-default.js';
 
 export { runDispatchTick } from './plan-dispatch.js';
 export type { DelegationEnvelope, DispatchTickResult } from './plan-dispatch.js';
