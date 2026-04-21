@@ -9,6 +9,12 @@
           { "type": "command", "command": "node .claude/hooks/enforce-lag-ceo-for-gh.mjs" },
           { "type": "command", "command": "node .claude/hooks/enforce-pr-status-composite.mjs" }
         ]
+      },
+      {
+        "matcher": "mcp__github__.*",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/enforce-lag-ceo-for-gh.mjs" }
+        ]
       }
     ]
   }
