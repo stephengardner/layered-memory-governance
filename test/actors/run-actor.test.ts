@@ -144,6 +144,149 @@ describe('runActor', () => {
     expect(report.haltReason).toBe('kill-switch');
   });
 
+  it('halts immediately when killSwitchSignal is already aborted', async () => {
+    const host = createMemoryHost();
+    const ac = new AbortController();
+    ac.abort();
+    const actor = new ScriptedActor({ observations: [1, 2, 3] });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 5 },
+      origin: 'test',
+      killSwitchSignal: ac.signal,
+    });
+    expect(report.haltReason).toBe('kill-switch');
+    expect(report.iterations).toBe(1);
+  });
+
+  it('killSwitchSignal aborted mid-iteration halts before next apply', async () => {
+    // Medium-tier contract: when the signal aborts between action N
+    // and action N+1 of the same iteration, action N+1 must not run.
+    // Matches the cooperative-tear-down promise of the
+    // arch-medium-tier-kill-switch ADR.
+    const host = createMemoryHost();
+    const ac = new AbortController();
+    let applyCount = 0;
+    const actor = new ScriptedActor({
+      observations: [1],
+      proposals: [
+        { tool: 'safe-a', payload: 'a' },
+        { tool: 'safe-b', payload: 'b' },
+      ],
+      applyImpl: async () => {
+        applyCount++;
+        if (applyCount === 1) ac.abort();
+        return `ok-${applyCount}`;
+      },
+      reflect: () => ({ done: false, progress: true }),
+    });
+    const report = await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 3 },
+      origin: 'test',
+      killSwitchSignal: ac.signal,
+    });
+    expect(applyCount).toBe(1);
+    expect(report.haltReason).toBe('kill-switch');
+  });
+
+  it('ctx.abortSignal is always present (never-aborted default when no option supplied)', async () => {
+    // Back-compat contract: adapters can thread ctx.abortSignal
+    // unconditionally without null-checking, even on soft-path
+    // invocations that did not supply killSwitchSignal.
+    const host = createMemoryHost();
+    let seen: AbortSignal | null = null;
+    class SignalPeekActor extends ScriptedActor {
+      override async observe(ctx: ActorContext<StubAdapters>): Promise<number> {
+        seen = ctx.abortSignal;
+        return super.observe(ctx);
+      }
+    }
+    const actor = new SignalPeekActor({
+      observations: [1],
+      reflect: () => ({ done: true, progress: true }),
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 1 },
+      origin: 'test',
+    });
+    expect(seen).not.toBe(null);
+    expect(seen!.aborted).toBe(false);
+  });
+
+  it('ctx.abortSignal forwards the supplied killSwitchSignal instance', async () => {
+    // Contract: when killSwitchSignal is supplied, ctx.abortSignal
+    // IS that signal (same referential identity) so downstream
+    // adapters composing on top of AbortSignal.any() see the same
+    // upstream source.
+    const host = createMemoryHost();
+    const ac = new AbortController();
+    let seen: AbortSignal | null = null;
+    class SignalPeekActor extends ScriptedActor {
+      override async observe(ctx: ActorContext<StubAdapters>): Promise<number> {
+        seen = ctx.abortSignal;
+        return super.observe(ctx);
+      }
+    }
+    const actor = new SignalPeekActor({
+      observations: [1],
+      reflect: () => ({ done: true, progress: true }),
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal(),
+      adapters: STUB,
+      budget: { maxIterations: 1 },
+      origin: 'test',
+      killSwitchSignal: ac.signal,
+    });
+    expect(seen).toBe(ac.signal);
+  });
+
+  it('killSwitch predicate AND killSwitchSignal: either halts', async () => {
+    // Back-compat: both forms are simultaneously valid. First trip
+    // wins.
+    const host = createMemoryHost();
+    const ac = new AbortController();
+    // Signal never aborts; predicate wins.
+    {
+      const actor = new ScriptedActor({ observations: [1, 2, 3] });
+      const report = await runActor(actor, {
+        host,
+        principal: samplePrincipal(),
+        adapters: STUB,
+        budget: { maxIterations: 5 },
+        origin: 'test',
+        killSwitch: () => true,
+        killSwitchSignal: ac.signal,
+      });
+      expect(report.haltReason).toBe('kill-switch');
+    }
+    // Predicate never fires; signal wins.
+    {
+      const ac2 = new AbortController();
+      ac2.abort();
+      const actor = new ScriptedActor({ observations: [1, 2, 3] });
+      const report = await runActor(actor, {
+        host,
+        principal: samplePrincipal(),
+        adapters: STUB,
+        budget: { maxIterations: 5 },
+        origin: 'test',
+        killSwitch: () => false,
+        killSwitchSignal: ac2.signal,
+      });
+      expect(report.haltReason).toBe('kill-switch');
+    }
+  });
+
   it('halts when deadline passed before iteration start', async () => {
     const host = createMemoryHost();
     const actor = new ScriptedActor({ observations: [1, 2, 3] });

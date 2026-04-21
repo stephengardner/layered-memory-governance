@@ -50,10 +50,37 @@ export interface RunActorOptions<Adapters extends ActorAdapters> {
    */
   readonly killSwitch?: () => boolean;
   /**
+   * Runtime-revocation signal propagated into `ActorContext.abortSignal`
+   * and checked at every loop-boundary. When aborted, `runActor` halts
+   * at the earliest safe point AND adapters subscribed to the signal
+   * abort their in-flight work (fetch, spawn, execa, LLM stream).
+   *
+   * Compatible with the existing `killSwitch` predicate; either, both,
+   * or neither is valid. If both are supplied, either one tripping
+   * halts the loop. If neither is supplied, a never-aborted signal is
+   * injected so adapters can thread `ctx.abortSignal` unconditionally.
+   *
+   * See design/adr-medium-tier-kill-switch.md.
+   */
+  readonly killSwitchSignal?: AbortSignal;
+  /**
    * Optional audit sink. Receives a structured event per phase. If
    * omitted, the driver still writes a minimal record to host.auditor.
    */
   readonly onAudit?: (event: ActorAuditEvent) => Promise<void>;
+}
+
+/**
+ * A singleton never-aborted signal shared across `runActor` calls
+ * that do not supply their own `killSwitchSignal`. Constructed lazily
+ * so module import is free of side effects.
+ */
+let neverAbortedSignal: AbortSignal | null = null;
+function getNeverAbortedSignal(): AbortSignal {
+  if (neverAbortedSignal === null) {
+    neverAbortedSignal = new AbortController().signal;
+  }
+  return neverAbortedSignal;
 }
 
 export async function runActor<
@@ -76,7 +103,7 @@ export async function runActor<
   for (iteration = 1; iteration <= options.budget.maxIterations; iteration++) {
     const iterStartedAt = options.host.clock.now();
 
-    if (options.killSwitch?.()) {
+    if (options.killSwitch?.() || (options.killSwitchSignal !== undefined && options.killSwitchSignal.aborted)) {
       haltReason = 'kill-switch';
       break;
     }
@@ -172,7 +199,12 @@ export async function runActor<
       // start. This is the contract in design/actors-and-adapters.md:
       // a halt request during a multi-action iteration must land at the
       // earliest safe point (between actions; never mid-adapter-call).
-      if (options.killSwitch?.()) {
+      // Both the predicate and the AbortSignal are consulted; either
+      // tripping halts the loop. Medium-tier adapters that see the
+      // signal should ALREADY be aborting their own in-flight work —
+      // this loop-level check catches the signal between adapter calls
+      // so the actor halts cleanly instead of starting a new apply.
+      if (options.killSwitch?.() || (options.killSwitchSignal !== undefined && options.killSwitchSignal.aborted)) {
         haltReason = 'kill-switch';
         halted = true;
         break;
@@ -303,6 +335,7 @@ function buildContext<Adapters extends ActorAdapters>(
     budget: options.budget,
     iteration,
     killSwitch: options.killSwitch ?? (() => false),
+    abortSignal: options.killSwitchSignal ?? getNeverAbortedSignal(),
     audit: async (partial) => {
       await emitAudit(options, actor, {
         ...partial,
