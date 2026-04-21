@@ -14,6 +14,7 @@
  * interrupted without joining against the audit log.
  */
 
+import { randomBytes } from 'node:crypto';
 import type {
   Atom,
   AtomId,
@@ -43,20 +44,35 @@ export interface MkKillSwitchTrippedAtomInputs {
   readonly sessionId: string;
   readonly inFlightTool?: string;
   readonly revocationNotes?: string;
+  /**
+   * Nonce suffix on the generated atom id. Omit in production
+   * (a fresh random 6-hex nonce is generated per call). Supply
+   * in tests that want to assert on the exact id without
+   * mocking crypto.
+   */
+  readonly idNonce?: string;
 }
 
 /**
- * Deterministic id that distinguishes every trip. Includes the
- * ISO timestamp verbatim so no two trips on the same (actor,
- * principal) collide - a repeated trip creates a new atom, not
- * an accidental duplicate-key conflict.
+ * Id that distinguishes every trip. The ISO timestamp alone is
+ * not a safe uniqueness key: coarse host clocks (some OSes tick
+ * at 10-15 ms) can produce two calls with identical `trippedAt`,
+ * and deterministic test clocks do so by design. A 6-hex nonce
+ * (24 bits, ~1e-7 collision per duplicate-timestamp pair) is
+ * appended so repeated trips on the same (actor, principal)
+ * always land as distinct atoms.
+ *
+ * Passing `nonce` explicitly lets callers reproduce a specific
+ * id in tests; omit it in production and let the default random
+ * bytes run.
  */
 export function mkKillSwitchTrippedAtomId(
   actor: string,
   principalId: PrincipalId,
   trippedAt: Time,
+  nonce: string = randomBytes(3).toString('hex'),
 ): AtomId {
-  return `kill-switch-tripped-${actor}-${String(principalId)}-${trippedAt}` as AtomId;
+  return `kill-switch-tripped-${actor}-${String(principalId)}-${trippedAt}-${nonce}` as AtomId;
 }
 
 export function mkKillSwitchTrippedAtom(
@@ -86,9 +102,13 @@ export function mkKillSwitchTrippedAtom(
   if (inFlightTool !== undefined) metadata['in_flight_tool'] = inFlightTool;
   if (revocationNotes !== undefined) metadata['revocation_notes'] = revocationNotes;
 
+  const id = inputs.idNonce !== undefined
+    ? mkKillSwitchTrippedAtomId(actor, principalId, trippedAt, inputs.idNonce)
+    : mkKillSwitchTrippedAtomId(actor, principalId, trippedAt);
+
   return {
     schema_version: 1,
-    id: mkKillSwitchTrippedAtomId(actor, principalId, trippedAt),
+    id,
     content: renderKillSwitchTrippedContent(inputs),
     type: 'observation',
     layer: 'L1',

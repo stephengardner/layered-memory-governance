@@ -16,15 +16,34 @@ import type { PrincipalId, Time } from '../../src/types.js';
 const PRINCIPAL = 'code-author' as PrincipalId;
 
 describe('mkKillSwitchTrippedAtomId', () => {
-  it('embeds actor, principal, and ISO timestamp so every trip is distinct', () => {
-    const id = mkKillSwitchTrippedAtomId('pr-landing', PRINCIPAL, '2026-04-21T10:00:00.000Z' as Time);
-    expect(id).toBe('kill-switch-tripped-pr-landing-code-author-2026-04-21T10:00:00.000Z');
+  it('embeds actor, principal, ISO timestamp, and nonce so every trip is distinct', () => {
+    // Supply an explicit nonce to pin the exact id in the assertion.
+    const id = mkKillSwitchTrippedAtomId('pr-landing', PRINCIPAL, '2026-04-21T10:00:00.000Z' as Time, 'abc123');
+    expect(id).toBe('kill-switch-tripped-pr-landing-code-author-2026-04-21T10:00:00.000Z-abc123');
   });
 
-  it('distinct timestamps produce distinct ids (no collisions)', () => {
-    const a = mkKillSwitchTrippedAtomId('x', PRINCIPAL, '2026-04-21T10:00:00.000Z' as Time);
-    const b = mkKillSwitchTrippedAtomId('x', PRINCIPAL, '2026-04-21T10:00:00.001Z' as Time);
+  it('distinct timestamps produce distinct ids', () => {
+    const a = mkKillSwitchTrippedAtomId('x', PRINCIPAL, '2026-04-21T10:00:00.000Z' as Time, 'aaaaaa');
+    const b = mkKillSwitchTrippedAtomId('x', PRINCIPAL, '2026-04-21T10:00:00.001Z' as Time, 'aaaaaa');
     expect(a).not.toBe(b);
+  });
+
+  it('identical timestamps still produce distinct ids via random nonce', () => {
+    // Two calls at the SAME ISO timestamp (simulates a coarse
+    // host clock or a fixed test clock colliding). The nonce
+    // suffix keeps ids distinct so the second durable write
+    // does not hit a duplicate-key on the atom store.
+    const when = '2026-04-21T10:00:00.000Z' as Time;
+    const a = mkKillSwitchTrippedAtomId('x', PRINCIPAL, when);
+    const b = mkKillSwitchTrippedAtomId('x', PRINCIPAL, when);
+    expect(a).not.toBe(b);
+  });
+
+  it('explicit nonce is reproducible for test assertions', () => {
+    const when = '2026-04-21T10:00:00.000Z' as Time;
+    const a = mkKillSwitchTrippedAtomId('x', PRINCIPAL, when, 'deadbe');
+    const b = mkKillSwitchTrippedAtomId('x', PRINCIPAL, when, 'deadbe');
+    expect(a).toBe(b);
   });
 });
 
@@ -88,7 +107,7 @@ describe('mkKillSwitchTrippedAtom', () => {
     expect(atom.metadata).not.toHaveProperty('revocation_notes');
   });
 
-  it('deterministic id matches the stand-alone helper', () => {
+  it('atom id matches the stand-alone helper when the same nonce is supplied', () => {
     const when = '2026-04-21T10:00:00.000Z' as Time;
     const atom = mkKillSwitchTrippedAtom({
       actor: 'pr-landing',
@@ -98,8 +117,25 @@ describe('mkKillSwitchTrippedAtom', () => {
       iteration: 1,
       phase: 'between-iterations',
       sessionId: 'session-abc',
+      idNonce: 'abc123',
     });
-    expect(atom.id).toBe(mkKillSwitchTrippedAtomId('pr-landing', PRINCIPAL, when));
+    expect(atom.id).toBe(mkKillSwitchTrippedAtomId('pr-landing', PRINCIPAL, when, 'abc123'));
+  });
+
+  it('same inputs across two atom builds still produce distinct ids (random nonce path)', () => {
+    const when = '2026-04-21T10:00:00.000Z' as Time;
+    const common = {
+      actor: 'pr-landing',
+      principalId: PRINCIPAL,
+      trigger: 'stop-sentinel' as const,
+      trippedAt: when,
+      iteration: 1,
+      phase: 'between-iterations' as const,
+      sessionId: 'session-abc',
+    };
+    const a = mkKillSwitchTrippedAtom(common);
+    const b = mkKillSwitchTrippedAtom(common);
+    expect(a.id).not.toBe(b.id);
   });
 
   it('content text is human-readable with trigger + iteration + phase', () => {

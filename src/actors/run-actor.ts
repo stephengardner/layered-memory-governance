@@ -78,6 +78,15 @@ export interface RunActorOptions<Adapters extends ActorAdapters> {
    */
   readonly killSwitchSessionId?: string;
   /**
+   * Optional free-form narrative stamped into the kill-switch-
+   * tripped atom's metadata.revocation_notes. Use for operator-
+   * supplied context the audit trail should preserve ("operator
+   * STOP mid-merge because rollback branch stale", "pushed wrong
+   * commit, cancelling before it lands", etc). Absent when not
+   * supplied; the metadata key is omitted entirely.
+   */
+  readonly killSwitchRevocationNotes?: string;
+  /**
    * Optional audit sink. Receives a structured event per phase. If
    * omitted, the driver still writes a minimal record to host.auditor.
    */
@@ -114,17 +123,23 @@ export async function runActor<
   let prevKey: string | null = null;
   let prevProgress = true;
   // Tracked so the kill-switch-tripped atom can record the exact
-  // phase that was interrupted. Updated each time we enter an
-  // apply; consulted on halt to attribute the trip accurately.
+  // state that was interrupted. Captured at the detection point so
+  // the attribution is stable even when predicate-then-signal (or
+  // vice-versa) races tip both to true before the post-loop
+  // resolve. Starts as stop-sentinel for the predicate-common
+  // case; overwritten when the signal path wins.
   let trippedPhase: KillSwitchTripPhase = 'between-iterations';
   let trippedInFlightTool: string | undefined;
+  let trippedTrigger: KillSwitchTripTrigger = 'stop-sentinel';
 
   for (iteration = 1; iteration <= options.budget.maxIterations; iteration++) {
     const iterStartedAt = options.host.clock.now();
 
-    if (options.killSwitch?.() || (options.killSwitchSignal !== undefined && options.killSwitchSignal.aborted)) {
+    const detected = detectKillSwitchTrip(options);
+    if (detected !== null) {
       haltReason = 'kill-switch';
       trippedPhase = 'between-iterations';
+      trippedTrigger = detected;
       break;
     }
     if (options.budget.deadline && iterStartedAt >= options.budget.deadline) {
@@ -224,10 +239,12 @@ export async function runActor<
       // signal should ALREADY be aborting their own in-flight work -
       // this loop-level check catches the signal between adapter calls
       // so the actor halts cleanly instead of starting a new apply.
-      if (options.killSwitch?.() || (options.killSwitchSignal !== undefined && options.killSwitchSignal.aborted)) {
+      const detected = detectKillSwitchTrip(options);
+      if (detected !== null) {
         haltReason = 'kill-switch';
         trippedPhase = 'apply';
         trippedInFlightTool = action.tool;
+        trippedTrigger = detected;
         halted = true;
         break;
       }
@@ -340,20 +357,22 @@ export async function runActor<
   // haltReason='kill-switch' so the incident is auditable either way.
   if (haltReason === 'kill-switch') {
     try {
-      const trigger = resolveKillSwitchTrigger(options.killSwitchSignal);
       const sessionId =
         options.killSwitchSessionId
         ?? `run-actor-${actor.name}-${startedAt}`;
       const atom = mkKillSwitchTrippedAtom({
         actor: actor.name,
         principalId: options.principal.id,
-        trigger,
+        trigger: trippedTrigger,
         trippedAt: endedAt,
         iteration,
         phase: trippedPhase,
         sessionId,
         ...(trippedInFlightTool !== undefined
           ? { inFlightTool: trippedInFlightTool }
+          : {}),
+        ...(options.killSwitchRevocationNotes !== undefined
+          ? { revocationNotes: options.killSwitchRevocationNotes }
           : {}),
       });
       await options.host.atoms.put(atom);
@@ -403,21 +422,34 @@ function buildContext<Adapters extends ActorAdapters>(
 }
 
 /**
- * Peek at a signal's abort reason to distinguish signal-originated
- * trips (stop-sentinel vs parent-signal, surfaced via the
- * KillSwitchAbortReason shape from createKillSwitch) from the soft
- * predicate path. Defaults to 'stop-sentinel' because that is the
- * overwhelmingly common predicate trigger (.lag/STOP file); a
- * consumer wiring a different soft predicate can include a
- * revocation_notes string at the call site for nuance.
+ * Check whether the kill-switch has tripped, and return the
+ * attribution of which path tripped first. Returns null when
+ * neither path has fired.
+ *
+ * Signal path is checked BEFORE the predicate path so that a
+ * medium-tier AbortSignal trip (parent-signal or a
+ * KillSwitchAbortReason-tagged stop-sentinel abort) attributes
+ * correctly even when the soft predicate is ALSO true at the same
+ * iteration boundary. When both mechanisms race to true between
+ * checks, the signal's recorded reason is the richer signal and
+ * wins attribution. When only the predicate has fired, the trigger
+ * is classified as stop-sentinel (the .lag/STOP common case for
+ * `killSwitch` predicates).
  */
-function resolveKillSwitchTrigger(
-  signal: AbortSignal | undefined,
-): KillSwitchTripTrigger {
-  if (signal?.aborted && isKillSwitchAbortReason(signal.reason)) {
-    return signal.reason.trigger;
+function detectKillSwitchTrip<A extends ActorAdapters>(
+  options: RunActorOptions<A>,
+): KillSwitchTripTrigger | null {
+  const signal = options.killSwitchSignal;
+  if (signal !== undefined && signal.aborted) {
+    if (isKillSwitchAbortReason(signal.reason)) {
+      return signal.reason.trigger;
+    }
+    return 'stop-sentinel';
   }
-  return 'stop-sentinel';
+  if (options.killSwitch?.()) {
+    return 'stop-sentinel';
+  }
+  return null;
 }
 
 async function emitAudit<Adapters extends ActorAdapters>(
