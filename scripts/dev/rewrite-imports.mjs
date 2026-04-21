@@ -71,6 +71,46 @@ const REWRITES = [
   { kind: 'dir', from: resolve('src/sources'),          to: resolve('src/ingestion') },
   { kind: 'dir', from: resolve('src/schemas'),          to: resolve('src/llm-judge') },
   { kind: 'dir', from: resolve('src/adapters/_common'), to: resolve('src/retrieval') },
+  // Phase H1 (test-dir mirror of the src restructure). These rules let
+  // preMoveDir re-resolve stale specifiers inside moved test files so the
+  // rewriter can compute the correct new relative path from the test's
+  // new location. They never match a src spec (the resolved src path is
+  // never inside test/), so they are safe to leave in REWRITES.
+  // Substrate mirror:
+  { kind: 'dir',  from: resolve('test/arbitration'),    to: resolve('test/substrate/arbitration') },
+  { kind: 'dir',  from: resolve('test/promotion'),      to: resolve('test/substrate/promotion') },
+  { kind: 'dir',  from: resolve('test/taint'),          to: resolve('test/substrate/taint') },
+  { kind: 'dir',  from: resolve('test/kill-switch'),    to: resolve('test/substrate/kill-switch') },
+  { kind: 'dir',  from: resolve('test/policy'),         to: resolve('test/substrate/policy') },
+  { kind: 'dir',  from: resolve('test/canon-md'),       to: resolve('test/substrate/canon') },
+  { kind: 'file', from: resolve('test/llm-tool-policy.test.ts'), to: resolve('test/substrate/policy/tool-policy.test.ts') },
+  // Runtime mirror:
+  { kind: 'dir',  from: resolve('test/loop'),           to: resolve('test/runtime/loop') },
+  { kind: 'dir',  from: resolve('test/plans'),          to: resolve('test/runtime/plans') },
+  { kind: 'dir',  from: resolve('test/questions'),      to: resolve('test/runtime/questions') },
+  { kind: 'dir',  from: resolve('test/actors'),         to: resolve('test/runtime/actors') },
+  { kind: 'dir',  from: resolve('test/actor-message'),  to: resolve('test/runtime/actor-message') },
+  { kind: 'dir',  from: resolve('test/extraction'),     to: resolve('test/runtime/claims-extraction') },
+  { kind: 'dir',  from: resolve('test/daemon'),         to: resolve('test/runtime/daemon') },
+  // Adapter test restructure. Trace back to the ORIGINAL pre-move dir
+  // (test/daemon/, not the intermediate test/runtime/daemon/) so
+  // preMoveDir resolves specs that were written against the original
+  // location. The bulk `test/daemon -> test/runtime/daemon` dir rule
+  // above is still correct for the three files that stayed (ambient,
+  // daemon, cli-renderer/); these two file rules simply bypass it.
+  { kind: 'file', from: resolve('test/daemon/format.test.ts'),           to: resolve('test/adapters/notifier/telegram/format.test.ts') },
+  { kind: 'file', from: resolve('test/daemon/voice.test.ts'),            to: resolve('test/adapters/transcriber/whisper/voice.test.ts') },
+  { kind: 'dir',  from: resolve('test/adapters/claude-cli'),             to: resolve('test/adapters/llm/claude-cli') },
+  { kind: 'file', from: resolve('test/adapters/claude-cli.smoke.test.ts'), to: resolve('test/adapters/llm/claude-cli.smoke.test.ts') },
+  { kind: 'file', from: resolve('test/adapters/telegram-notifier.test.ts'), to: resolve('test/adapters/notifier/telegram/telegram-notifier.test.ts') },
+  // Retrieval mirror:
+  { kind: 'file', from: resolve('test/adapters/caching-embedder.test.ts'),     to: resolve('test/retrieval/caching-embedder.test.ts') },
+  { kind: 'file', from: resolve('test/adapters/custom-embedder.test.ts'),      to: resolve('test/retrieval/custom-embedder.test.ts') },
+  { kind: 'file', from: resolve('test/adapters/onnx-cache-speedup.test.ts'),   to: resolve('test/retrieval/onnx-cache-speedup.test.ts') },
+  { kind: 'file', from: resolve('test/adapters/onnx-embedder.test.ts'),        to: resolve('test/retrieval/onnx-embedder.test.ts') },
+  // Ingestion / llm-judge renames:
+  { kind: 'dir',  from: resolve('test/sources'),        to: resolve('test/ingestion') },
+  { kind: 'dir',  from: resolve('test/schemas'),        to: resolve('test/llm-judge') },
 ];
 
 function resolveSpec(fileDir, spec) {

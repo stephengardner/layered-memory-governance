@@ -1,0 +1,406 @@
+/**
+ * GitHubPrReviewAdapter tests (Phase 53a.1).
+ *
+ * Uses a stub GhClient to assert adapter behavior end-to-end:
+ *   - listUnresolvedComments: paginates, filters resolved/outdated,
+ *     preserves threadId
+ *   - replyToComment: POSTs to the replies endpoint with body field
+ *   - resolveComment: looks up threadId (cached or via re-list) and
+ *     calls the resolveReviewThread mutation
+ *   - dryRun mode: writes short-circuit without shelling out; reads still go through
+ *   - resolveComment is idempotent: no-ops (does not throw) when no thread is found
+ */
+
+import { describe, expect, it } from 'vitest';
+import { GitHubPrReviewAdapter } from '../../../../src/runtime/actors/pr-review/github.js';
+import type { GhClient, GhExecResult, GhRestArgs } from '../../../../src/external/github/gh-client.js';
+import type { PrIdentifier } from '../../../../src/runtime/actors/pr-review/adapter.js';
+
+const PR: PrIdentifier = { owner: 'o', repo: 'r', number: 1 };
+
+interface RestCall { readonly args: GhRestArgs; }
+interface GraphqlCall {
+  readonly query: string;
+  readonly vars: Record<string, unknown>;
+  readonly options: { readonly signal?: AbortSignal } | undefined;
+}
+
+interface StubClient extends GhClient {
+  readonly rests: RestCall[];
+  readonly graphqls: GraphqlCall[];
+}
+
+function mkClient(responses: {
+  readonly rest?: ReadonlyArray<unknown>;
+  readonly graphql?: ReadonlyArray<unknown>;
+}): StubClient {
+  const rests: RestCall[] = [];
+  const graphqls: GraphqlCall[] = [];
+  let restI = 0;
+  let gqlI = 0;
+  const client: StubClient = {
+    executor: async () => ({ stdout: '', stderr: '', exitCode: 0 } satisfies GhExecResult),
+    rests,
+    graphqls,
+    async rest<T>(args: GhRestArgs): Promise<T> {
+      rests.push({ args });
+      const r = (responses.rest ?? [])[restI++];
+      return r as T;
+    },
+    async graphql<T>(
+      query: string,
+      vars: Record<string, unknown> = {},
+      options?: { signal?: AbortSignal },
+    ): Promise<T> {
+      graphqls.push({ query, vars, options });
+      const r = (responses.graphql ?? [])[gqlI++];
+      return r as T;
+    },
+    async raw(): Promise<GhExecResult> {
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  };
+  return client;
+}
+
+function mkThreadsPage(
+  threads: ReadonlyArray<{
+    id: string;
+    isResolved?: boolean;
+    isOutdated?: boolean;
+    path?: string;
+    comments: ReadonlyArray<{ databaseId: number; body: string; author?: string; line?: number }>;
+  }>,
+  pageInfo: { hasNextPage: boolean; endCursor: string | null } = { hasNextPage: false, endCursor: null },
+) {
+  return {
+    repository: {
+      pullRequest: {
+        reviewThreads: {
+          pageInfo,
+          nodes: threads.map((t) => ({
+            id: t.id,
+            isResolved: t.isResolved ?? false,
+            isOutdated: t.isOutdated ?? false,
+            path: t.path,
+            comments: {
+              nodes: t.comments.map((c) => ({
+                id: `gqlid_${c.databaseId}`,
+                databaseId: c.databaseId,
+                author: c.author ? { login: c.author } : undefined,
+                body: c.body,
+                path: t.path,
+                line: c.line ?? null,
+                createdAt: '2026-04-19T00:00:00Z',
+              })),
+            },
+          })),
+        },
+      },
+    },
+  };
+}
+
+describe('GitHubPrReviewAdapter', () => {
+  it('listUnresolvedComments filters resolved and outdated threads', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([
+          { id: 't1', comments: [{ databaseId: 101, body: 'live nit', author: 'coderabbitai' }] },
+          { id: 't2', isResolved: true, comments: [{ databaseId: 102, body: 'skip (resolved)' }] },
+          { id: 't3', isOutdated: true, comments: [{ databaseId: 103, body: 'skip (outdated)' }] },
+        ]),
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.id).toBe('101');
+    expect(comments[0]!.author).toBe('coderabbitai');
+    expect(comments[0]!.threadId).toBe('t1');
+  });
+
+  it('listUnresolvedComments returns only the ROOT comment per thread', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([
+          {
+            id: 't1',
+            comments: [
+              { databaseId: 901, body: 'original nit', author: 'coderabbitai' },
+              { databaseId: 902, body: 'a human reply', author: 'human-reviewer' },
+            ],
+          },
+        ]),
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client, alreadyRepliedAuthors: [] });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.id).toBe('901');
+  });
+
+  it('listUnresolvedComments skips threads already replied by the bot (default)', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([
+          {
+            id: 't1',
+            comments: [
+              { databaseId: 301, body: 'original nit', author: 'coderabbitai' },
+              { databaseId: 302, body: 'bot reply', author: 'github-actions[bot]' },
+            ],
+          },
+          {
+            id: 't2',
+            comments: [{ databaseId: 303, body: 'fresh nit', author: 'coderabbitai' }],
+          },
+        ]),
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.id).toBe('303');
+  });
+
+  it('alreadyRepliedAuthors: [] disables the filter (testing knob)', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([
+          {
+            id: 't1',
+            comments: [
+              { databaseId: 401, body: 'original', author: 'coderabbitai' },
+              { databaseId: 402, body: 'bot reply', author: 'github-actions[bot]' },
+            ],
+          },
+        ]),
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client, alreadyRepliedAuthors: [] });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.id).toBe('401');
+  });
+
+  it('listUnresolvedComments paginates until hasNextPage=false', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage(
+          [{ id: 'tA', comments: [{ databaseId: 201, body: 'page1' }] }],
+          { hasNextPage: true, endCursor: 'cursor1' },
+        ),
+        mkThreadsPage([{ id: 'tB', comments: [{ databaseId: 202, body: 'page2' }] }]),
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(2);
+    expect(client.graphqls).toHaveLength(2);
+    expect(client.graphqls[1]!.vars.cursor).toBe('cursor1');
+  });
+
+  it('replyToComment POSTs to the replies endpoint with body field', async () => {
+    const client = mkClient({ rest: [{ id: 7777, node_id: 'node7', body: 'thanks' }] });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const outcome = await adapter.replyToComment(PR, '101', 'thanks');
+    expect(outcome.posted).toBe(true);
+    expect(outcome.replyId).toBe('7777');
+    expect(client.rests[0]!.args.method).toBe('POST');
+    expect(client.rests[0]!.args.path).toBe('repos/o/r/pulls/1/comments/101/replies');
+    expect(client.rests[0]!.args.fields).toEqual({ body: 'thanks' });
+  });
+
+  it('resolveComment uses cached threadId after a list call', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([{ id: 't1', comments: [{ databaseId: 101, body: 'live nit' }] }]),
+        { resolveReviewThread: { thread: { id: 't1', isResolved: true } } },
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    await adapter.listUnresolvedComments(PR);
+    await adapter.resolveComment(PR, '101');
+    const resolveCall = client.graphqls.find((c) => c.query.includes('resolveReviewThread'));
+    expect(resolveCall).toBeDefined();
+    expect(resolveCall!.vars.threadId).toBe('t1');
+  });
+
+  it('resolveComment re-lists when threadId is not yet cached', async () => {
+    const client = mkClient({
+      graphql: [
+        mkThreadsPage([{ id: 't1', comments: [{ databaseId: 101, body: 'live nit' }] }]),
+        { resolveReviewThread: { thread: { id: 't1', isResolved: true } } },
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    await adapter.resolveComment(PR, '101');
+    expect(client.graphqls).toHaveLength(2);
+  });
+
+  it('resolveComment is idempotent: no-ops when no thread can be found', async () => {
+    // Interface contract: resolveComment MUST be idempotent. A thread
+    // that no longer exists (already resolved elsewhere, or outdated)
+    // is success, not failure. Previous impl threw; aligned now with
+    // the interface doc.
+    const client = mkClient({
+      graphql: [mkThreadsPage([{ id: 't1', comments: [{ databaseId: 101, body: 'x' }] }])],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    await expect(adapter.resolveComment(PR, '999')).resolves.toBeUndefined();
+  });
+
+  it('dryRun: replyToComment short-circuits without calling the client', async () => {
+    const client = mkClient({});
+    const adapter = new GitHubPrReviewAdapter({ client, dryRun: true });
+    const outcome = await adapter.replyToComment(PR, '101', 'thanks');
+    expect(outcome.posted).toBe(false);
+    expect(outcome.dryRun).toBe(true);
+    expect(client.rests).toHaveLength(0);
+  });
+
+  it('dryRun: resolveComment short-circuits without calling the client', async () => {
+    const client = mkClient({});
+    const adapter = new GitHubPrReviewAdapter({ client, dryRun: true });
+    await adapter.resolveComment(PR, '101');
+    expect(client.graphqls).toHaveLength(0);
+  });
+
+  it('hasReviewerEngaged: true when any review comment author matches', async () => {
+    const client = mkClient({
+      rest: [
+        [{ user: { login: 'human-reviewer' } }, { user: { login: 'coderabbitai[bot]' } }],
+        [],
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const engaged = await adapter.hasReviewerEngaged(PR, ['coderabbitai[bot]']);
+    expect(engaged).toBe(true);
+  });
+
+  it('hasReviewerEngaged: true when author appears in top-level issue comments', async () => {
+    const client = mkClient({
+      rest: [
+        [], // review comments empty
+        [{ user: { login: 'coderabbitai[bot]' } }], // issue comments
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const engaged = await adapter.hasReviewerEngaged(PR, ['coderabbitai[bot]']);
+    expect(engaged).toBe(true);
+  });
+
+  it('hasReviewerEngaged: false when none of the given logins appear', async () => {
+    const client = mkClient({
+      rest: [
+        [{ user: { login: 'human-reviewer' } }],
+        [{ user: { login: 'stephengardner' } }],
+      ],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const engaged = await adapter.hasReviewerEngaged(PR, ['coderabbitai[bot]']);
+    expect(engaged).toBe(false);
+  });
+
+  it('hasReviewerEngaged: false when authorLogins is empty (degenerate case)', async () => {
+    const client = mkClient({});
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const engaged = await adapter.hasReviewerEngaged(PR, []);
+    expect(engaged).toBe(false);
+  });
+
+  it('postPrComment: POSTs to the issues/comments endpoint', async () => {
+    const client = mkClient({ rest: [{ id: 5555 }] });
+    const adapter = new GitHubPrReviewAdapter({ client });
+    const outcome = await adapter.postPrComment(PR, '@coderabbitai review');
+    expect(outcome.posted).toBe(true);
+    expect(outcome.commentId).toBe('5555');
+    expect(client.rests[0]!.args.method).toBe('POST');
+    expect(client.rests[0]!.args.path).toBe('repos/o/r/issues/1/comments');
+    expect(client.rests[0]!.args.fields).toEqual({ body: '@coderabbitai review' });
+  });
+
+  it('dryRun: postPrComment short-circuits without calling the client', async () => {
+    const client = mkClient({});
+    const adapter = new GitHubPrReviewAdapter({ client, dryRun: true });
+    const outcome = await adapter.postPrComment(PR, '@coderabbitai review');
+    expect(outcome.posted).toBe(false);
+    expect(outcome.dryRun).toBe(true);
+    expect(client.rests).toHaveLength(0);
+  });
+
+  it('dryRun: listUnresolvedComments still hits the client (reads are not gated)', async () => {
+    const client = mkClient({
+      graphql: [mkThreadsPage([{ id: 't1', comments: [{ databaseId: 101, body: 'nit' }] }])],
+    });
+    const adapter = new GitHubPrReviewAdapter({ client, dryRun: true });
+    const comments = await adapter.listUnresolvedComments(PR);
+    expect(comments).toHaveLength(1);
+    expect(client.graphqls).toHaveLength(1);
+  });
+
+  describe('AbortSignal forwarding', () => {
+    it('forwards adapter-level signal into EVERY graphql call (multi-page surface)', async () => {
+      // Multi-page listUnresolvedComments so we get >1 graphql call
+      // and can assert structurally. Drift-prevention for future
+      // call sites added by D-impl-4 / PR F / PR G: a new adapter
+      // method that forgets to route through callGraphql will
+      // surface here as an options:undefined on a new call.
+      const client = mkClient({
+        graphql: [
+          mkThreadsPage(
+            [{ id: 'tA', comments: [{ databaseId: 1, body: 'a' }] }],
+            { hasNextPage: true, endCursor: 'c1' },
+          ),
+          mkThreadsPage([{ id: 'tB', comments: [{ databaseId: 2, body: 'b' }] }]),
+        ],
+      });
+      const ac = new AbortController();
+      const adapter = new GitHubPrReviewAdapter({ client, signal: ac.signal });
+      await adapter.listUnresolvedComments(PR);
+      expect(client.graphqls.length).toBeGreaterThan(1);
+      for (const call of client.graphqls) {
+        expect(call.options?.signal).toBe(ac.signal);
+      }
+    });
+
+    it('forwards adapter-level signal into rest calls', async () => {
+      const client = mkClient({
+        // postPrComment -> POST /issues/:n/comments
+        rest: [{ id: 42 }],
+      });
+      const ac = new AbortController();
+      const adapter = new GitHubPrReviewAdapter({ client, signal: ac.signal });
+      await adapter.postPrComment(PR, 'hello');
+      for (const call of client.rests) {
+        expect(call.args.signal).toBe(ac.signal);
+      }
+    });
+
+    it('omits signal when none is supplied at construction', async () => {
+      const client = mkClient({
+        graphql: [mkThreadsPage([])],
+      });
+      const adapter = new GitHubPrReviewAdapter({ client });
+      await adapter.listUnresolvedComments(PR);
+      for (const call of client.graphqls) {
+        expect(call.options).toBeUndefined();
+      }
+    });
+
+    it('adapter-level signal always wins (ignores any args.signal a caller threads in)', async () => {
+      // The helper is the single place adapter-wide revocation is
+      // decided; any `args.signal` upstream is intentionally shadowed
+      // at this seam. This test pins that semantic so a future
+      // refactor that changes the precedence surfaces here.
+      const client = mkClient({ rest: [{ id: 42 }] });
+      const adapterSig = new AbortController().signal;
+      const adapter = new GitHubPrReviewAdapter({ client, signal: adapterSig });
+      // Internal calls do not pass args.signal, so we verify the
+      // adapter-signal is what lands at the client, not an undefined.
+      await adapter.postPrComment(PR, 'ping');
+      expect(client.rests[0]!.args.signal).toBe(adapterSig);
+    });
+  });
+});
