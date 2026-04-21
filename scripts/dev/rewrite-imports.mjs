@@ -56,6 +56,10 @@ const REWRITES = [
   { kind: 'dir', from: resolve('src/extraction'),    to: resolve('src/runtime/claims-extraction') },
   { kind: 'dir', from: resolve('src/actors'),        to: resolve('src/runtime/actors') },
   { kind: 'dir', from: resolve('src/actor-message'), to: resolve('src/runtime/actor-message') },
+  // Phase D1:
+  { kind: 'file', from: resolve('src/adapters/notifier/telegram.ts'),            to: resolve('src/adapters/notifier/telegram/notifier.ts') },
+  { kind: 'file', from: resolve('src/daemon/format.ts'),                         to: resolve('src/adapters/notifier/telegram/format.ts') },
+  { kind: 'file', from: resolve('src/daemon/cli-renderer/telegram-channel.ts'),  to: resolve('src/adapters/notifier/telegram/channel.ts') },
 ];
 
 function resolveSpec(fileDir, spec) {

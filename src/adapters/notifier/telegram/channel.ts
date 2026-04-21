@@ -13,7 +13,7 @@ import type {
   CliRendererChannel,
   MessageOptions,
   PostedMessage,
-} from './types.js';
+} from '../../../daemon/cli-renderer/types.js';
 
 export interface TelegramChannelOptions {
   readonly botToken: string;

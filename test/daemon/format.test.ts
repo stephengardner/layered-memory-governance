@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   markdownToTelegramHtml,
   splitMarkdownForTelegram,
-} from '../../src/daemon/format.js';
+} from '../../src/adapters/notifier/telegram/format.js';
 
 describe('markdownToTelegramHtml', () => {
   it('converts **bold** to <b>', () => {

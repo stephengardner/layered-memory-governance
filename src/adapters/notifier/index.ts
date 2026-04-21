@@ -11,4 +11,4 @@ export {
   TelegramNotifier,
   parseCallbackData,
   type TelegramNotifierOptions,
-} from './telegram.js';
+} from './telegram/index.js';
