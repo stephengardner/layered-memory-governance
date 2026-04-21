@@ -159,4 +159,31 @@ describe('ClaudeCliLLM', () => {
       ).rejects.toThrow(/schema validation failed/);
     });
   });
+
+  describe('AbortSignal forwarding', () => {
+    it('passes LlmOptions.signal to execa as cancelSignal', async () => {
+      const { exec, calls } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm = new ClaudeCliLLM({ execImpl: exec });
+      const ac = new AbortController();
+      await llm.judge(
+        SCHEMA,
+        'classify',
+        { ping: 'ping' },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true, signal: ac.signal },
+      );
+      expect(calls[0]!.options).toMatchObject({ cancelSignal: ac.signal });
+    });
+
+    it('omits cancelSignal when no signal is supplied', async () => {
+      const { exec, calls } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm = new ClaudeCliLLM({ execImpl: exec });
+      await llm.judge(
+        SCHEMA,
+        'classify',
+        { ping: 'ping' },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true },
+      );
+      expect(calls[0]!.options).not.toHaveProperty('cancelSignal');
+    });
+  });
 });

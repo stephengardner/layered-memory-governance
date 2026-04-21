@@ -363,6 +363,29 @@ export interface LlmOptions {
   readonly max_budget_usd: number;
   /** Default true. If false, caller accepts the risk of non-sandboxed execution. */
   readonly sandboxed?: boolean;
+  /**
+   * Runtime-revocation signal. Implementations that spawn a child
+   * process or stream from a remote should subscribe; on abort the
+   * call rejects (with AbortError, or an implementation-specific
+   * equivalent) and any in-flight work unwinds. Implementations that
+   * cannot honour mid-call abort MAY ignore this field. Callers
+   * should treat a thrown AbortError as "kill-switch tripped" rather
+   * than "judge failed".
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * Names of tools the LLM subprocess must NOT be allowed to call
+   * during this invocation. Implementations that launch a subagent
+   * capable of tool use (e.g. Claude CLI) forward this list; text-
+   * in-text-out implementations MAY ignore it.
+   *
+   * When undefined, the implementation's own safety default applies.
+   * Per-invocation override exists so a caller holding a principal-
+   * scoped policy can tailor access without reconstructing the
+   * implementation. Deny-list shape matches the Claude CLI contract;
+   * adapters with an allow-list-first surface invert at the boundary.
+   */
+  readonly disallowedTools?: ReadonlyArray<string>;
 }
 
 export interface JudgeMetadata {

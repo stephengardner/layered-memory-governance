@@ -26,6 +26,8 @@ import type {
   GhClient,
   GhExecResult,
   GhExecutor,
+  GhGraphqlOptions,
+  GhRawOptions,
   GhRestArgs,
 } from '../github/gh-client.js';
 import { GhClientError } from '../github/gh-client.js';
@@ -58,7 +60,10 @@ export function createAppBackedGhClient(
     throw new Error('createAppBackedGhClient: .executor is not available; use .rest or .graphql');
   };
 
-  async function raw(_args: ReadonlyArray<string>): Promise<GhExecResult> {
+  async function raw(
+    _args: ReadonlyArray<string>,
+    _opts?: GhRawOptions,
+  ): Promise<GhExecResult> {
     throw new Error('createAppBackedGhClient: .raw is not supported over App-auth HTTP; refactor to .rest / .graphql');
   }
 
@@ -77,6 +82,10 @@ export function createAppBackedGhClient(
       (init.headers as Record<string, string>)['content-type'] = 'application/json';
       init.body = JSON.stringify(args.fields);
     }
+    // Forward caller-supplied AbortSignal to fetch so a kill-switch
+    // trip unwinds in-flight HTTP instead of waiting for the fetch's
+    // own default timeout.
+    if (args.signal !== undefined) init.signal = args.signal;
 
     const res = await fetchApp(path, init);
     const text = await res.text();
@@ -102,12 +111,15 @@ export function createAppBackedGhClient(
   async function graphql<T>(
     query: string,
     variables: Readonly<Record<string, unknown>> = {},
+    options?: GhGraphqlOptions,
   ): Promise<T> {
-    const res = await fetchApp(GRAPHQL_ENDPOINT, {
+    const init: RequestInit = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query, variables }),
-    });
+    };
+    if (options?.signal !== undefined) init.signal = options.signal;
+    const res = await fetchApp(GRAPHQL_ENDPOINT, init);
     const text = await res.text();
     if (!res.ok) {
       throw new GhClientError(

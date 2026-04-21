@@ -87,6 +87,18 @@ export interface HostLlmPlanningJudgmentOptions {
    * Default DEFAULT_JUDGE_TIMEOUT_MS.
    */
   readonly timeoutMs?: number;
+  /**
+   * Tool deny-list forwarded to every `host.llm.judge(...)` call as
+   * `LlmOptions.disallowedTools`. Intended to be resolved from a
+   * principal-scoped canon policy atom (see `src/llm-tool-policy.ts`)
+   * so per-actor tool access is a canon edit, not a framework
+   * release.
+   *
+   * When undefined, the LLM implementation's own safety default
+   * applies. Framework code stays mechanism-focused; the choice of
+   * "which tools for which principal" is canon, not src/.
+   */
+  readonly disallowedTools?: ReadonlyArray<string>;
 }
 
 /**
@@ -226,11 +238,13 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
   private readonly minConfidence: number;
   private readonly temperature: number;
   private readonly timeoutMs: number;
+  private readonly disallowedTools: ReadonlyArray<string> | undefined;
 
   constructor(host: Host, options: HostLlmPlanningJudgmentOptions) {
     this.host = host;
     this.classifyModel = options.classifyModel;
     this.draftModel = options.draftModel;
+    this.disallowedTools = options.disallowedTools;
     const maxBudgetUsdPerCall = options.maxBudgetUsdPerCall ?? DEFAULT_MAX_BUDGET_USD_PER_CALL;
     if (!Number.isFinite(maxBudgetUsdPerCall) || maxBudgetUsdPerCall <= 0) {
       throw new Error(
@@ -263,6 +277,7 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
           timeout_ms: this.timeoutMs,
           max_budget_usd: this.maxBudgetUsdPerCall,
           sandboxed: true,
+          ...(this.disallowedTools !== undefined ? { disallowedTools: this.disallowedTools } : {}),
         },
       );
       rawOutput = result.output;
@@ -323,6 +338,7 @@ export class HostLlmPlanningJudgment implements PlanningJudgment {
           timeout_ms: this.timeoutMs,
           max_budget_usd: this.maxBudgetUsdPerCall,
           sandboxed: true,
+          ...(this.disallowedTools !== undefined ? { disallowedTools: this.disallowedTools } : {}),
         },
       );
       rawOutput = result.output;

@@ -37,6 +37,25 @@ export interface ActorContext<Adapters extends ActorAdapters = ActorAdapters> {
   readonly iteration: number;
   /** Cooperative halt predicate. runActor calls it at the top of every iteration. */
   readonly killSwitch: () => boolean;
+  /**
+   * Runtime-revocation signal plumbed through every actor call.
+   *
+   * Complements the `killSwitch` predicate above: `killSwitch` fires
+   * at iteration / action boundaries (soft); `abortSignal` fires the
+   * moment a trip condition is met and is expected to be subscribed
+   * by every long-running async call the actor or its adapters make
+   * (fetch, spawn, execa, LLM stream). When the signal aborts,
+   * adapters throw AbortError and the actor's current operation
+   * unwinds within milliseconds rather than waiting for the next
+   * loop-level check.
+   *
+   * ALWAYS present. When `RunActorOptions.killSwitchSignal` is not
+   * supplied, runActor injects a never-aborted signal so adapters
+   * can thread `ctx.abortSignal` unconditionally without null-
+   * checking. Back-compat with actors that never read this field:
+   * additive only, zero behavior change when ignored.
+   */
+  readonly abortSignal: AbortSignal;
   /** Structured audit sink. Actors may also call this directly. */
   readonly audit: (event: Omit<ActorAuditEvent, 'at' | 'actor' | 'principal' | 'iteration'>) => Promise<void>;
 }

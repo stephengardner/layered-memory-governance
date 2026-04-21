@@ -122,6 +122,216 @@ function renderComment(c) {
   return `  - ${loc.padEnd(48)} ${c.author.padEnd(20)} ${stripped.slice(0, 80)}`;
 }
 
+/**
+ * Deterministic CodeRabbit verdict.
+ *
+ * Background: when CR reviews a PR and finds no issues, it posts a
+ * summary issue-comment containing "No actionable comments were
+ * generated in the recent review." — NOT a GitHub Review object
+ * (so `status.submittedReviews` doesn't surface it) and NOT always
+ * a legacy `CodeRabbit` status context either (CR's status-posting
+ * has been observed to no-op on small diffs, breaking the
+ * branch-protection gate even though CR did sign off). Before this
+ * helper existed, `unresolved line comments (0)` was the only
+ * visible signal, and that state is identical to "CR hasn't
+ * reviewed yet", so agents could not deterministically tell
+ * "approved, merge" apart from "still waiting".
+ *
+ * This helper reads the PR's issue-level comments (where CR posts
+ * its summary) and the legacy `CodeRabbit` status context, and
+ * returns a single string verdict:
+ *
+ *   approved    - CR posted the "No actionable comments" summary
+ *                 (verdict detail includes the comment timestamp).
+ *   has-findings- CR posted "Actionable comments posted: N" with N>0
+ *                 (detail includes N).
+ *   pending     - CR acknowledged a trigger ("Review triggered.")
+ *                 but hasn't posted a verdict yet.
+ *   success     - legacy CodeRabbit status is success (fallback).
+ *   failure     - legacy CodeRabbit status is failure.
+ *   missing     - no CR comments AND no legacy status; PR has not
+ *                 been reviewed. Agents MUST trigger a review.
+ *
+ * Precedence: issue-comment parse wins over legacy-status fallback
+ * because the comment carries richer information (exact finding
+ * count) and the legacy status has been observed unreliable. Most-
+ * recent comment wins within the comment path.
+ */
+/**
+ * Fetch the committer date of the PR's current head commit. Used
+ * to filter out CR comments from previous heads in the verdict
+ * parse - without this, a stale `No actionable comments` summary
+ * from the PRE-force-push head could be returned as the verdict
+ * for the NEW head, masking a pending real review. Returns null
+ * on any failure (verdict parser will then consider all comments;
+ * legacy behaviour).
+ */
+async function readHeadCommitTimestamp(client, pr) {
+  try {
+    const prMeta = await client.rest({
+      path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`,
+    });
+    const sha = prMeta?.head?.sha;
+    if (typeof sha !== 'string' || sha.length === 0) return null;
+    const commit = await client.rest({
+      path: `repos/${pr.owner}/${pr.repo}/commits/${sha}`,
+    });
+    const iso = commit?.commit?.committer?.date ?? commit?.commit?.author?.date ?? null;
+    return typeof iso === 'string' ? iso : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readCodeRabbitVerdict(client, pr, status, headSinceIso) {
+  const commentVerdict = await tryIssueCommentVerdict(client, pr, headSinceIso);
+  // CR posts its summary EITHER as an issue comment (small diffs, no
+  // findings -> "🎉 No actionable comments...") OR as a PR review
+  // body (larger diffs, with findings -> "Actionable comments
+  // posted: N"). Consult both; most-recent wins.
+  const reviewVerdict = classifyCrReviews(status.submittedReviews ?? [], headSinceIso);
+  const bestCommentPath = pickNewer(commentVerdict, reviewVerdict);
+  const legacyCr = (status.legacyStatuses ?? []).find(
+    (s) => s.context === 'CodeRabbit',
+  );
+  // Definitive comment verdicts beat everything: the summary comment
+  // is CR's richest signal (exact finding count, explicit approval
+  // phrase).
+  if (bestCommentPath && bestCommentPath.verdict !== 'pending') {
+    return bestCommentPath;
+  }
+  // Neither a definitive comment verdict nor trigger-ACK: use the
+  // legacy status if present. On many small-diff PRs CR emits the
+  // legacy `CodeRabbit` status without posting a summary comment,
+  // so this fallback is how the gate actually converges.
+  if (legacyCr) {
+    return {
+      verdict: legacyCr.state === 'success' ? 'success' : legacyCr.state,
+      detail: bestCommentPath?.verdict === 'pending'
+        ? 'legacy status present; CR summary comment not yet emitted'
+        : null,
+    };
+  }
+  // Only trigger-ACKs / pending from either surface, no legacy
+  // status: CR has seen the PR but has not produced a verdict on
+  // this head yet.
+  if (bestCommentPath && bestCommentPath.verdict === 'pending') {
+    return bestCommentPath;
+  }
+  return { verdict: 'missing', detail: null };
+}
+
+/**
+ * Newer-wins between the issue-comment verdict and the review-body
+ * verdict. Both share the same shape (verdict + detail, with the
+ * trailing timestamp encoded in `detail`). When only one path
+ * produced a signal, that one wins.
+ */
+function pickNewer(a, b) {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  // Extract trailing ISO timestamps from detail for comparison.
+  const ta = (a.detail ?? '').match(/\d{4}-\d{2}-\d{2}T[\d:]+Z/)?.[0] ?? '';
+  const tb = (b.detail ?? '').match(/\d{4}-\d{2}-\d{2}T[\d:]+Z/)?.[0] ?? '';
+  return ta >= tb ? a : b;
+}
+
+/**
+ * Parse CR review bodies for the `Actionable comments posted: N`
+ * summary. CR emits this on reviews where it had findings (or
+ * explicitly zero). Filters to the current head via the same
+ * head-commit-timestamp gate the issue-comment path uses.
+ */
+function classifyCrReviews(submittedReviews, headSinceIso) {
+  const crReviews = submittedReviews
+    .filter((r) => r && r.author === 'coderabbitai[bot]')
+    .filter((r) => !headSinceIso || String(r.submittedAt) >= headSinceIso)
+    .slice()
+    .sort((a, b) => String(b.submittedAt).localeCompare(String(a.submittedAt)));
+  for (const r of crReviews) {
+    const body = String(r.body ?? '');
+    if (/No actionable comments were generated/i.test(body)) {
+      return { verdict: 'approved', detail: `via review at ${r.submittedAt}` };
+    }
+    const m = body.match(/Actionable comments? posted:\s*(\d+)/i);
+    if (m) {
+      const n = Number(m[1]);
+      if (n === 0) {
+        return { verdict: 'approved', detail: `via review at ${r.submittedAt}` };
+      }
+      return { verdict: 'has-findings', detail: `${n} actionable @ ${r.submittedAt}` };
+    }
+  }
+  return null;
+}
+
+async function tryIssueCommentVerdict(client, pr, headSinceIso) {
+  try {
+    // Paginate with per_page=100. The REST default is 30, and on a
+    // long-running PR with many review cycles the verdict summary
+    // can fall outside the first page - producing a false 'missing'
+    // that triggers a redundant @coderabbitai review nudge. Mirrors
+    // the pagination pattern /pulls/{n}/reviews already uses.
+    const crComments = [];
+    let page = 1;
+    for (;;) {
+      const batch = await client.rest({
+        path: `repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`,
+        query: { per_page: 100, page },
+      });
+      if (!Array.isArray(batch)) break;
+      for (const c of batch) {
+        if (!c || !c.user || c.user.login !== 'coderabbitai[bot]') continue;
+        // Bind the verdict to the CURRENT head: a summary from an
+        // older head is not a verdict on the new one. `headSinceIso`
+        // is the head commit's committer date; older comments are
+        // skipped. When absent (caller opted out), every comment is
+        // considered (preserves prior behaviour for any consumer
+        // that cannot resolve a head timestamp).
+        if (headSinceIso && String(c.created_at) < headSinceIso) continue;
+        crComments.push(c);
+      }
+      if (batch.length < 100) break;
+      page += 1;
+      if (page > 10) break; // hard cap; >1000 issue comments on one PR is pathological
+    }
+    if (crComments.length === 0) return null;
+
+    crComments.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+
+    // Newest-first classify-per-comment. Return the FIRST recognized
+    // state — a newer `Review triggered.` ACK beats an older
+    // `No actionable comments` summary, which is correct: the
+    // summary was for the PREVIOUS head and CR is actively re-
+    // scanning the new one. Without this ordering, the tool could
+    // report `approved` while CR is genuinely pending.
+    for (const c of crComments) {
+      const body = String(c.body ?? '');
+      if (/No actionable comments were generated/i.test(body)) {
+        return { verdict: 'approved', detail: `via comment at ${c.created_at}` };
+      }
+      const m = body.match(/Actionable comments? posted:\s*(\d+)/i);
+      if (m) {
+        const n = Number(m[1]);
+        if (n === 0) {
+          return { verdict: 'approved', detail: `via comment at ${c.created_at}` };
+        }
+        return { verdict: 'has-findings', detail: `${n} actionable @ ${c.created_at}` };
+      }
+      if (/Review triggered/i.test(body)) {
+        return { verdict: 'pending', detail: `trigger-ACK at ${c.created_at}` };
+      }
+      // Other CR comments (walkthrough, replies, etc.) - keep
+      // scanning for a recognized signal.
+    }
+    return null;
+  } catch {
+    // Fail-soft: a network blip on the issue-comments fetch must
+    // not break the primary composite-read output.
+    return null;
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.prNumber === null) {
@@ -154,6 +364,8 @@ async function main() {
   const adapter = new GitHubPrReviewAdapter({ client });
 
   const status = await adapter.getPrReviewStatus(pr);
+  const headSinceIso = await readHeadCommitTimestamp(client, pr);
+  const crVerdict = await readCodeRabbitVerdict(client, pr, status, headSinceIso);
 
   // Header section: the single-line "at a glance" operators want to
   // see first, then every surface below it. Always render every
@@ -162,6 +374,7 @@ async function main() {
   console.log(`PR ${owner}/${repo}#${pr.number}`);
   console.log(`  mergeable          ${status.mergeable === null ? 'UNKNOWN' : status.mergeable}`);
   console.log(`  mergeStateStatus   ${status.mergeStateStatus ?? '?'}`);
+  console.log(`  cr_verdict         ${crVerdict.verdict}${crVerdict.detail ? ` (${crVerdict.detail})` : ''}`);
   if (status.partial) {
     console.log(`  partial            true (${status.partialSurfaces.length} surfaces failed)`);
     for (const s of status.partialSurfaces) console.log(`    - ${s}`);
@@ -266,6 +479,12 @@ function renderFromAtom(atomHit, pr) {
   console.log(`  observed_at        ${observedAt}`);
   console.log(`  mergeable          ${status.mergeable === null ? 'UNKNOWN' : status.mergeable}`);
   console.log(`  mergeStateStatus   ${status.mergeStateStatus ?? '?'}`);
+  // The cr_verdict surface requires a live issue-comments fetch
+  // (atoms currently do not capture CR's summary-comment text).
+  // Callers that need a definitive CR verdict should re-run with
+  // the atom expired OR wait for the follow-up that stamps
+  // cr_verdict into pr-observation metadata.
+  console.log(`  cr_verdict         unknown-from-atom (wait for atom expiry or use a live-refresh path)`);
   if (status.partial) {
     console.log(`  partial            true (${status.partialSurfaces.length} surfaces failed)`);
     for (const s of status.partialSurfaces) console.log(`    - ${s}`);

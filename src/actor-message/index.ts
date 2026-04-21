@@ -66,6 +66,12 @@ export type { InvokeResult, SubActorInvoker } from './sub-actor-registry.js';
 export { runAuditor } from './auditor-actor.js';
 export type { AuditorPayload, AuditFinding } from './auditor-actor.js';
 
+export {
+  runCodeAuthor,
+  mkCodeAuthorInvokedAtomId,
+} from './code-author-invoker.js';
+export type { CodeAuthorPayload } from './code-author-invoker.js';
+
 export { runDispatchTick } from './plan-dispatch.js';
 export type { DelegationEnvelope, DispatchTickResult } from './plan-dispatch.js';
 
