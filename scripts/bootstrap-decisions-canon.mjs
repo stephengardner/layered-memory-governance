@@ -251,7 +251,20 @@ function diffAtom(existing, expected) {
       diffs.push(`metadata.${k}: stored vs expected differ`);
     }
   }
-  if (JSON.stringify(existing.provenance.derived_from ?? []) !== JSON.stringify(expected.provenance.derived_from)) {
+  // Provenance is load-bearing for audit integrity. Drift checks must
+  // cover ALL four integrity fields (principal_id above, plus the
+  // three provenance sub-fields below) because a rewritten provenance
+  // with unchanged payload would silently reattribute authorship.
+  // Matches the bootstrap-inbox-canon.mjs diffPolicyAtom pattern.
+  if (existing.provenance?.kind !== expected.provenance.kind) {
+    diffs.push(
+      `provenance.kind: stored=${JSON.stringify(existing.provenance?.kind)} expected=${JSON.stringify(expected.provenance.kind)}`,
+    );
+  }
+  if (JSON.stringify(existing.provenance?.source ?? null) !== JSON.stringify(expected.provenance.source)) {
+    diffs.push('provenance.source differs');
+  }
+  if (JSON.stringify(existing.provenance?.derived_from ?? []) !== JSON.stringify(expected.provenance.derived_from)) {
     diffs.push('provenance.derived_from differs');
   }
   return diffs;
