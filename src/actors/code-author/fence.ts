@@ -187,8 +187,8 @@ function parseSignedPrOnly(atom: Atom, warnings: string[]): ParseResult<SignedPr
   if (p['output_channel'] !== 'signed-pr') {
     reasons.push(`${atom.id}: output_channel: expected "signed-pr", got ${JSON.stringify(p['output_channel'])}`);
   }
-  if (!isStringArray(p['allowed_direct_write_paths'])) {
-    reasons.push(`${atom.id}: allowed_direct_write_paths: expected string[]`);
+  if (!isNonBlankStringArray(p['allowed_direct_write_paths'])) {
+    reasons.push(`${atom.id}: allowed_direct_write_paths: expected string[] with non-blank entries`);
   }
   if (typeof p['require_app_identity'] !== 'boolean') {
     reasons.push(`${atom.id}: require_app_identity: expected boolean`);
@@ -217,8 +217,9 @@ function parsePerPrCostCap(atom: Atom, warnings: string[]): ParseResult<PerPrCos
   if (p['subject'] !== 'code-author-per-pr-cost-cap') {
     reasons.push(`${atom.id}: subject: expected "code-author-per-pr-cost-cap", got ${JSON.stringify(p['subject'])}`);
   }
-  if (typeof p['max_usd_per_pr'] !== 'number' || !((p['max_usd_per_pr'] as number) > 0)) {
-    reasons.push(`${atom.id}: max_usd_per_pr: expected positive number, got ${JSON.stringify(p['max_usd_per_pr'])}`);
+  const maxUsdPerPr = p['max_usd_per_pr'];
+  if (typeof maxUsdPerPr !== 'number' || !Number.isFinite(maxUsdPerPr) || maxUsdPerPr <= 0) {
+    reasons.push(`${atom.id}: max_usd_per_pr: expected positive finite number, got ${JSON.stringify(maxUsdPerPr)}`);
   }
   if (typeof p['include_retries'] !== 'boolean') {
     reasons.push(`${atom.id}: include_retries: expected boolean`);
@@ -228,7 +229,7 @@ function parsePerPrCostCap(atom: Atom, warnings: string[]): ParseResult<PerPrCos
   return {
     policy: Object.freeze({
       subject: 'code-author-per-pr-cost-cap',
-      max_usd_per_pr: p['max_usd_per_pr'] as number,
+      max_usd_per_pr: maxUsdPerPr as number,
       include_retries: p['include_retries'] as boolean,
     }),
     reasons,
@@ -247,14 +248,20 @@ function parseCiGate(atom: Atom, warnings: string[]): ParseResult<CiGatePolicy> 
     reasons.push(`${atom.id}: subject: expected "code-author-ci-gate", got ${JSON.stringify(p['subject'])}`);
   }
   const required = p['required_checks'];
-  if (!isStringArray(required) || (required as ReadonlyArray<string>).length === 0) {
-    reasons.push(`${atom.id}: required_checks: expected non-empty string[]`);
+  if (!isNonBlankStringArray(required) || (required as ReadonlyArray<string>).length === 0) {
+    reasons.push(`${atom.id}: required_checks: expected non-empty string[] with non-blank entries`);
   }
   if (typeof p['require_all'] !== 'boolean') {
     reasons.push(`${atom.id}: require_all: expected boolean`);
   }
-  if (typeof p['max_check_age_ms'] !== 'number' || !((p['max_check_age_ms'] as number) > 0)) {
-    reasons.push(`${atom.id}: max_check_age_ms: expected positive number, got ${JSON.stringify(p['max_check_age_ms'])}`);
+  const maxCheckAgeMs = p['max_check_age_ms'];
+  if (
+    typeof maxCheckAgeMs !== 'number'
+    || !Number.isFinite(maxCheckAgeMs)
+    || !Number.isInteger(maxCheckAgeMs)
+    || maxCheckAgeMs <= 0
+  ) {
+    reasons.push(`${atom.id}: max_check_age_ms: expected positive finite integer, got ${JSON.stringify(maxCheckAgeMs)}`);
   }
   if (reasons.length > 0) return { reasons };
   warnForExtraKeys(atom.id, p, EXPECTED_CI_GATE_KEYS, warnings);
@@ -263,7 +270,7 @@ function parseCiGate(atom: Atom, warnings: string[]): ParseResult<CiGatePolicy> 
       subject: 'code-author-ci-gate',
       required_checks: Object.freeze((p['required_checks'] as ReadonlyArray<string>).slice()),
       require_all: p['require_all'] as boolean,
-      max_check_age_ms: p['max_check_age_ms'] as number,
+      max_check_age_ms: maxCheckAgeMs as number,
     }),
     reasons,
   };
@@ -304,12 +311,16 @@ function parseWriteRevocationOnStop(atom: Atom, warnings: string[]): ParseResult
   };
 }
 
-// Strict array-of-strings check. Array.isArray alone passes on
-// [123, true, {}], and `.map(String)` would then silently coerce
-// those into `["123", "true", "[object Object]"]`: exactly the
-// silent policy drift the loader is supposed to catch.
-function isStringArray(v: unknown): v is ReadonlyArray<string> {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+// Strict array-of-non-blank-strings check. Array.isArray alone passes
+// on [123, true, {}]; the silent String() coercion path would then
+// produce `["123", "true", "[object Object]"]`. An all-string array
+// still admits `['']` or `['   ']`, which widens downstream prefix
+// checks (allowed_direct_write_paths) or weakens the CI-gate contract
+// (required_checks); a blank entry is almost always a canon typo that
+// reads like intent. Require non-blank so both failure modes surface
+// as explicit drift rather than silently weakening policy.
+function isNonBlankStringArray(v: unknown): v is ReadonlyArray<string> {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string' && x.trim().length > 0);
 }
 
 function warnForExtraKeys(

@@ -277,4 +277,77 @@ describe('loadCodeAuthorFence', () => {
     }));
     await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/required_checks: expected non-empty string\[\]/);
   });
+
+  it('rejects blank string entries in allowed_direct_write_paths', async () => {
+    // `['']` widens downstream prefix checks (empty prefix matches
+    // everything); `['   ']` is almost always a canon typo that reads
+    // like intent. Both must surface as explicit drift.
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-signed-pr-only', mkAtom('pol-code-author-signed-pr-only', {
+      subject: 'code-author-authorship',
+      output_channel: 'signed-pr',
+      allowed_direct_write_paths: ['src/ok', '   '],
+      require_app_identity: true,
+    }));
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/allowed_direct_write_paths: expected string\[\] with non-blank entries/);
+  });
+
+  it('rejects blank string entries in required_checks', async () => {
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-ci-gate', mkAtom('pol-code-author-ci-gate', {
+      subject: 'code-author-ci-gate',
+      required_checks: ['Node 22 on ubuntu-latest', ''],
+      require_all: true,
+      max_check_age_ms: 600_000,
+    }));
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/required_checks: expected non-empty string\[\] with non-blank entries/);
+  });
+
+  it('rejects Infinity for max_usd_per_pr (non-finite budget)', async () => {
+    // An unbounded budget is not a budget. typeof Infinity === 'number'
+    // AND Infinity > 0, so the naive positive-number check passes;
+    // Number.isFinite is the gate.
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-per-pr-cost-cap', mkAtom('pol-code-author-per-pr-cost-cap', {
+      subject: 'code-author-per-pr-cost-cap',
+      max_usd_per_pr: Infinity,
+      include_retries: true,
+    }));
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/max_usd_per_pr: expected positive finite number/);
+  });
+
+  it('rejects NaN for max_usd_per_pr', async () => {
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-per-pr-cost-cap', mkAtom('pol-code-author-per-pr-cost-cap', {
+      subject: 'code-author-per-pr-cost-cap',
+      max_usd_per_pr: Number.NaN,
+      include_retries: true,
+    }));
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/max_usd_per_pr: expected positive finite number/);
+  });
+
+  it('rejects non-integer max_check_age_ms', async () => {
+    // Ms precision is integer by convention; a fractional ms is
+    // almost always a unit-mix typo (e.g., passing seconds to a
+    // ms field). Require Number.isInteger.
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-ci-gate', mkAtom('pol-code-author-ci-gate', {
+      subject: 'code-author-ci-gate',
+      required_checks: ['Node 22 on ubuntu-latest'],
+      require_all: true,
+      max_check_age_ms: 600.5,
+    }));
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/max_check_age_ms: expected positive finite integer/);
+  });
+
+  it('rejects Infinity for max_check_age_ms', async () => {
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-ci-gate', mkAtom('pol-code-author-ci-gate', {
+      subject: 'code-author-ci-gate',
+      required_checks: ['Node 22 on ubuntu-latest'],
+      require_all: true,
+      max_check_age_ms: Infinity,
+    }));
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/max_check_age_ms: expected positive finite integer/);
+  });
 });
