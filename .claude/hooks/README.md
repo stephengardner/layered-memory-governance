@@ -27,6 +27,35 @@ echo '{"tool_name":"Bash","tool_input":{"command":"node scripts/gh-as.mjs lag-ce
 # -> no output ; exit 0 (allowed)
 ```
 
+## enforce-pr-status-composite.mjs (checked-in, always on)
+
+PreToolUse hook that blocks ad-hoc PR state reads (`gh pr view`, `gh pr checks`, `gh api .../pulls/<N>`, `gh api .../commits/.../status`, `gh api .../commits/.../check-runs`) and redirects the agent to `node scripts/pr-status.mjs <N>` - the canonical composite read that surfaces every review surface (submitted reviews, line comments, body-nits, check-runs, legacy statuses, mergeStateStatus) in one call.
+
+Belief layer: canon directive `dev-multi-surface-review-observation`. Architectural decision: `arch-pr-state-observation-via-actor-only` (long-term: observation flows through the pr-landing actor; this hook + CLI is the short-term bridge).
+
+Wired in `.claude/settings.json`. Every contributor who opens this repo in Claude Code gets the enforcement automatically.
+
+### Why this exists
+
+Two in-session failures (2026-04-20 and 2026-04-21): the agent polled one surface, missed CodeRabbit review completion on another, and reported stale state. The directive layer was atomized after the first failure and violated again in the same session. Proof that beliefs do not bind agents mechanically; the hook does.
+
+### Escape hatch
+
+Append `# allow-partial-pr-read` to opt out (intended for narrow cases like a test fixture or a single-surface comparison). Default is enforcement.
+
+### Smoke tests
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"gh pr view 52"}}' | node .claude/hooks/enforce-pr-status-composite.mjs
+# -> {"decision":"block","reason":"..."}
+
+echo '{"tool_name":"Bash","tool_input":{"command":"node scripts/pr-status.mjs 52"}}' | node .claude/hooks/enforce-pr-status-composite.mjs
+# -> no output (allowed)
+
+echo '{"tool_name":"Bash","tool_input":{"command":"gh api repos/o/r/pulls/52/comments"}}' | node .claude/hooks/enforce-pr-status-composite.mjs
+# -> no output (allowed; comment READS + posting are not state reads)
+```
+
 ## stop-continuation-guard.mjs (opt-in per operator)
 
 Stop-event hook that catches premature agent stops (turns where the
