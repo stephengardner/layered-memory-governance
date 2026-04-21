@@ -1,0 +1,125 @@
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--surface-base);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-overlay) 30%, transparent) 0%,
+    transparent 50%
+  );
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.branch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  position: relative;
+}
+
+.node {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: border-color var(--duration-fast) var(--easing-standard),
+              background var(--duration-fast) var(--easing-standard),
+              transform var(--duration-fast) var(--easing-standard);
+  width: fit-content;
+  max-width: 100%;
+}
+
+.node:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-raised));
+  transform: translateX(2px);
+}
+
+.node:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.nodeInactive {
+  opacity: 0.6;
+}
+
+.nodeCompromised {
+  border-color: color-mix(in srgb, var(--status-danger) 50%, var(--border-subtle));
+}
+
+.nodeCompromised .icon {
+  color: var(--status-danger);
+}
+
+.icon {
+  display: inline-flex;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.name {
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+/*
+ * Children are indented and joined to the parent with two CSS
+ * pseudo-elements: `.children::before` is a vertical line running
+ * from just below the parent to the last child; each child branch's
+ * own `::before` draws a short horizontal line from the vertical
+ * line into the child node. Pure CSS connector — no SVG.
+ */
+.children {
+  margin-left: var(--space-6);
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  position: relative;
+}
+
+.children::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: var(--space-4);
+  width: 1px;
+  background: var(--border-strong);
+}
+
+.children > .branch::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-5));
+  top: var(--space-4);
+  width: var(--space-5);
+  height: 1px;
+  background: var(--border-strong);
+}

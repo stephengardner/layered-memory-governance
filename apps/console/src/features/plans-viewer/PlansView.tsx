@@ -192,8 +192,16 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
         )
       )}
 
+      {/*
+        initial={false} makes framer-motion render the first frame
+        already in the target state (clamped 12rem), no mount-time
+        animation. Without it, the card briefly renders at natural
+        height then animates down to the clamp — visible flash on
+        page load that violates dev-web-interaction-quality-no-jank.
+      */}
       <motion.div
         className={`${styles.content} ${expanded ? styles.contentExpanded : styles.contentClamped}`}
+        initial={false}
         animate={{ height: expanded ? 'auto' : '12rem' }}
         transition={{ duration: 0.32, ease: [0.2, 0, 0, 1] }}
       >
