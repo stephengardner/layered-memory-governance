@@ -21,6 +21,7 @@ import { setRoute, type Route } from '@/state/router.store';
  */
 export interface ShortcutHandlers {
   readonly toggleHelp?: () => void;
+  readonly openPalette?: () => void;
 }
 
 export function useKeyboardShortcuts(handlers: ShortcutHandlers = {}) {
@@ -29,7 +30,15 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers = {}) {
     let prefixAt = 0;
 
     const handler = (e: KeyboardEvent) => {
-      // Never trigger when user is typing in a field.
+      // Cmd/Ctrl+K opens the palette — fires REGARDLESS of focus
+      // (it's how you escape a focused input back to nav).
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        handlers.openPalette?.();
+        return;
+      }
+
+      // Never trigger plain-key shortcuts when user is typing.
       const t = e.target as HTMLElement;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;

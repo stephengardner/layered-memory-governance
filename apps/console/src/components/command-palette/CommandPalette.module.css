@@ -1,0 +1,185 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--palette-ink-950) 70%, transparent);
+  backdrop-filter: blur(6px);
+  z-index: 200;
+}
+
+.wrap {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  padding-left: var(--space-5);
+  padding-right: var(--space-5);
+  z-index: 201;
+  pointer-events: none;
+}
+
+.dialog {
+  pointer-events: auto;
+  width: min(40rem, 100%);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-base);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-overlay) 50%, transparent) 0%,
+    transparent 30%
+  );
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.inputRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-lg);
+  color: var(--text-primary);
+  padding: 0;
+  min-width: 0;
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+.esc {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-xs);
+  color: var(--text-tertiary);
+}
+
+.list {
+  list-style: none;
+  padding: var(--space-2);
+  margin: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.empty {
+  padding: var(--space-5);
+  color: var(--text-muted);
+  text-align: center;
+  font-size: var(--font-size-sm);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--easing-standard);
+}
+
+.itemActive {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.itemKind {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-xs);
+  color: var(--text-on-accent);
+  background: var(--text-muted);
+  min-width: 4.5rem;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.itemKind[data-kind="canon"]     { background: var(--accent); }
+.itemKind[data-kind="principal"] { background: var(--status-success); color: var(--palette-ink-900); }
+.itemKind[data-kind="plan"]      { background: var(--accent-active); }
+.itemKind[data-kind="activity"]  { background: var(--status-warning); color: var(--palette-ink-900); }
+.itemKind[data-kind="nav"]       { background: var(--text-tertiary); color: var(--palette-ink-900); }
+
+.itemBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.itemTitle {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.itemSub {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.itemArrow {
+  color: var(--text-tertiary);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--easing-standard);
+  flex-shrink: 0;
+}
+
+.itemActive .itemArrow {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.hintKbd {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  padding: 0 var(--space-2);
+  margin-right: var(--space-1);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  display: inline-block;
+  line-height: 1.4;
+}

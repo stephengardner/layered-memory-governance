@@ -88,11 +88,33 @@ export function PlansView() {
             label={`plan${plans.length === 1 ? '' : 's'}`}
             detail={focusId ? '(filtered to focus)' : undefined}
           />
-          <div className={`${styles.grid} ${focusId ? styles.gridFocused : ''}`}>
-            {plans.map((p) => (
-              <PlanCard key={p.id} plan={p} focused={Boolean(focusId)} />
-            ))}
-          </div>
+          {focusId ? (
+            <div className={`${styles.grid} ${styles.gridFocused}`}>
+              {plans.map((p) => (
+                <PlanCard key={p.id} plan={p} focused={true} />
+              ))}
+            </div>
+          ) : (
+            /*
+             * Two-stack masonry: plans distributed by index parity
+             * into left/right stacks. Expanding a card only grows
+             * its own stack — CSS-columns would re-balance and jump
+             * cards between columns, which violates the
+             * interaction-quality canon (no visible jank).
+             */
+            <div className={styles.grid}>
+              <div className={styles.stack}>
+                {plans.filter((_, i) => i % 2 === 0).map((p) => (
+                  <PlanCard key={p.id} plan={p} focused={false} />
+                ))}
+              </div>
+              <div className={styles.stack}>
+                {plans.filter((_, i) => i % 2 === 1).map((p) => (
+                  <PlanCard key={p.id} plan={p} focused={false} />
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
     </section>
@@ -170,9 +192,13 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
         )
       )}
 
-      <div className={`${styles.content} ${expanded ? styles.contentExpanded : styles.contentClamped}`}>
+      <motion.div
+        className={`${styles.content} ${expanded ? styles.contentExpanded : styles.contentClamped}`}
+        animate={{ height: expanded ? 'auto' : '12rem' }}
+        transition={{ duration: 0.32, ease: [0.2, 0, 0, 1] }}
+      >
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{body}</ReactMarkdown>
-      </div>
+      </motion.div>
 
       <button
         type="button"

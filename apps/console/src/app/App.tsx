@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AppShell } from '@/components/app-shell/AppShell';
 import { ShortcutsHelp } from '@/components/shortcuts-help/ShortcutsHelp';
+import { CommandPalette } from '@/components/command-palette/CommandPalette';
 import { CanonViewer } from '@/features/canon-viewer/CanonViewer';
 import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
 import { ActivitiesView } from '@/features/activities-viewer/ActivitiesView';
@@ -24,6 +25,7 @@ export function App() {
   const density = useDensityStore((s) => s.density);
   const route = useRoute();
   const [helpOpen, setHelpOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     const body = document.body;
@@ -39,6 +41,7 @@ export function App() {
 
   useKeyboardShortcuts({
     toggleHelp: () => setHelpOpen((x) => !x),
+    openPalette: () => setPaletteOpen(true),
   });
 
   return (
@@ -47,6 +50,7 @@ export function App() {
         {renderRoute(route)}
       </AppShell>
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </>
   );
 }

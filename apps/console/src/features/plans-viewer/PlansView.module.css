@@ -28,45 +28,39 @@
 }
 
 /*
- * Masonry via CSS columns. Native CSS Grid masonry is still behind a
- * flag (Firefox only as of early 2026), so we use the robust
- * column-count pattern: content flows top-to-bottom within a column,
- * wraps to the next column when the first fills up.
+ * Two-stack masonry. Plans are distributed into two vertical stacks
+ * in render order (even-indexed cards → left stack, odd-indexed →
+ * right stack). Each stack is an independent flex column, so
+ * expanding a card grows only its stack — the other column stays
+ * stationary. This fixes the re-balancing jump CSS columns causes
+ * on accordion expand while keeping the layout pure-CSS.
  *
- * Trade-off vs. a true grid: order is top-to-bottom per column, not
- * left-to-right. Plans are sorted by created_at desc so the newest
- * lands in the top-left corner, which is exactly where the eye goes
- * first. `break-inside: avoid` keeps cards intact across columns.
- *
- * The card's own `display: block` + `margin-bottom` replaces the grid
- * `gap` (CSS columns don't participate in gap the same way).
+ * Below 60rem we collapse to a single stack (no distribution
+ * needed). In focus mode (`gridFocused`) a single plan renders in
+ * one full-width column.
  */
 .grid {
-  column-count: 1;
-  column-gap: var(--space-5);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-5);
+  align-items: start;
 }
 
 @media (min-width: 60rem) {
   .grid {
-    column-count: 2;
+    grid-template-columns: 1fr 1fr;
   }
 }
 
-.grid > * {
-  break-inside: avoid;
-  margin-bottom: var(--space-5);
-  display: block;
-  width: 100%;
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
 }
 
-/*
- * When a single plan is focused (via ?focus=<id>), collapse to a
- * single full-width column. Long plan bodies render much more
- * naturally at wide width — paragraphs flow, nested lists don't wrap
- * at every third word.
- */
 .gridFocused {
-  column-count: 1;
+  grid-template-columns: 1fr;
 }
 
 .clearButton {
@@ -183,17 +177,18 @@
   color: var(--text-secondary);
   overflow: hidden;
   position: relative;
-  transition: max-height var(--duration-slow) var(--easing-emphasized);
 }
 
+/*
+ * When clamped, fade the bottom edge so the user sees "there's more
+ * below". When expanded we drop the mask entirely. Height itself is
+ * animated by framer-motion on the wrapping motion.div, which
+ * measures the natural height and interpolates to/from the 12rem
+ * clamp — clean, no max-height hack.
+ */
 .contentClamped {
-  max-height: 12rem;
-  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
-}
-
-.contentExpanded {
-  max-height: none;
+  mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
 }
 
 .content h1, .content h2, .content h3, .content h4 {
