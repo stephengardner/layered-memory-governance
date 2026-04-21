@@ -19,6 +19,9 @@ export type {
   GhClientOptions,
   GhExecResult,
   GhExecutor,
+  GhExecutorOptions,
+  GhGraphqlOptions,
+  GhRawOptions,
   GhRestArgs,
 } from './gh-client.js';
 export type {
