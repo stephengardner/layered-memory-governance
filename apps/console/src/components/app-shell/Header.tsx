@@ -33,6 +33,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Graph',
     subtitle: 'The whole substrate as a force-directed map of derived_from relationships',
   },
+  timeline: {
+    title: 'Timeline',
+    subtitle: 'Who wrote what, when — atoms laid out across the principal hierarchy',
+  },
 };
 
 /**
