@@ -10,7 +10,7 @@ A framework for multi-agent systems where memory has to stay true over time, aut
 
 > **If RAG brings knowledge into an agent, LAG governs knowledge across agents.** Retrieval makes one agent smarter; governance keeps a hundred agents coherent.
 
-Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, an Actor primitive for governed outward-acting agents, and an inbox V1 for actor-to-actor messaging with sub-actor delegation. **776+ unit tests + 30 gated integration tests** (count grows as open PRs land), GitHub Actions CI on Ubuntu + Windows.
+Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, an Actor primitive for governed outward-acting agents, an inbox V1 for actor-to-actor messaging with sub-actor delegation, per-role GitHub App bot identities (operator-proxy + decision-bearing + CR-handling), and an operator-escalation channel so silent halts ping the operator instead of dying in a CI log. **796+ unit tests + 30 gated integration tests** (count grows as open PRs land), GitHub Actions CI on Ubuntu + Windows.
 
 ---
 
@@ -353,17 +353,22 @@ After provisioning, the App still needs to be installed on the target repos (one
 
 ### Runtime use from session scripts
 
-Two thin wrappers route any `gh` CLI call through a provisioned bot identity, so session automation operates as `lag-cto[bot]` / `lag-pr-landing[bot]` / etc. instead of under the operator's personal `gh auth`:
+Two thin wrappers route any `gh` CLI call through a provisioned bot identity, so session automation operates as `lag-ceo[bot]` / `lag-cto[bot]` / `lag-pr-landing[bot]` / etc. instead of under the operator's personal `gh auth`:
 
 ```bash
-# Wrap a gh command under a bot identity:
-node scripts/gh-as.mjs lag-cto pr create --title "feat: ..." --body "..."
+# Wrap a gh command under a bot identity (operator-proxy):
+node scripts/gh-as.mjs lag-ceo pr create --title "feat: ..." --body "..."
+
+# Or decision-bearing authorship when a CTO-authored plan opens the PR:
+node scripts/gh-as.mjs lag-cto pr merge 123 --squash
 
 # Or mint a bare installation token for non-gh consumers:
-GH_TOKEN=$(node scripts/gh-token-for.mjs lag-cto) gh api ...
+GH_TOKEN=$(node scripts/gh-token-for.mjs lag-ceo) gh api ...
 ```
 
-Tokens are short-lived (~1 hour per GitHub), minted fresh per invocation, set in a child process env only, never written to disk. Parent shell `gh auth` state is untouched. Full operator guide: `docs/bot-identities.md`.
+Tokens are short-lived (~1 hour per GitHub), minted fresh per invocation, set in a child process env only, never written to disk. Parent shell `gh auth` state is untouched.
+
+**Three layers give a deterministic repo-scoped guarantee** that agent-produced GitHub artifacts never carry the operator's personal login: credential isolation (per-repo `.lag/apps/<role>.*`), repo-local git identity (`git config --local user.email <APP-ID>+<role>[bot]@users.noreply.github.com`), and a PreToolUse hook (`.claude/hooks/enforce-lag-ceo-for-gh.mjs`, wired in `.claude/settings.json`) that blocks raw `gh` calls in a Claude Code session in this repo and routes them through `gh-as.mjs`. Full operator guide + the enforcement invariant: `docs/bot-identities.md`.
 
 ### Why one App per role (not one shared App)
 
