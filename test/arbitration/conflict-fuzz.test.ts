@@ -195,11 +195,16 @@ describe('arbitration conflict fuzz', () => {
 
     for (const seed of SEEDS) {
       const host = createMemoryHost();
-      const low = sampleAtom({ id: 'c_low', content: 'claim', confidence: 0.5 });
-      const mid = sampleAtom({ id: 'c_mid', content: 'CLAIM', confidence: 0.7 });
-      const high = sampleAtom({ id: 'c_high', content: 'Claim.', confidence: 0.9 });
-      // Make them non-content-hash-equal so the detector LLM is invoked.
-      // Register semantic-conflict response for each pair.
+      // Content must be semantically distinct AFTER the content-hash
+      // normalizer (lowercase + strip trailing punctuation). 'claim'
+      // / 'CLAIM' / 'Claim.' all normalize to 'claim' and detect's
+      // content-hash short-circuit then classifies the pairs as
+      // reinforcement ('kind: none'), bypassing source-rank. Using
+      // distinct text forces the LLM-judge path so the tiebreaker
+      // under test actually runs.
+      const low = sampleAtom({ id: 'c_low', content: 'claim alpha', confidence: 0.5 });
+      const mid = sampleAtom({ id: 'c_mid', content: 'claim beta', confidence: 0.7 });
+      const high = sampleAtom({ id: 'c_high', content: 'claim gamma', confidence: 0.9 });
       await host.atoms.put(low);
       await host.atoms.put(mid);
       await host.atoms.put(high);
@@ -216,8 +221,17 @@ describe('arbitration conflict fuzz', () => {
 
     const first = JSON.stringify(snapshots[0]);
     for (const s of snapshots) expect(JSON.stringify(s)).toBe(first);
-    const highFinal = snapshots[0]!.find((x) => x.id === 'c_high')!;
-    expect(highFinal.superseded_by).toEqual([]);
+    // Pin the exact supersede graph so the confidence tiebreaker
+    // is asserted, not inferred from "high was not beaten". Without
+    // this, three coexisting atoms would still pass the winner
+    // check (highFinal.superseded_by === []) because nobody was
+    // superseded. Literal-expected-value per the test-contract
+    // convention.
+    expect(snapshots[0]).toEqual([
+      { id: 'c_high', supersedes: ['c_low', 'c_mid'], superseded_by: [] },
+      { id: 'c_low', supersedes: [], superseded_by: ['c_high', 'c_mid'] },
+      { id: 'c_mid', supersedes: ['c_low'], superseded_by: ['c_high'] },
+    ]);
   });
 
   it('detector-none: non-conflicting atoms coexist across all orderings', async () => {
@@ -349,10 +363,19 @@ describe('arbitration conflict fuzz', () => {
     const first = JSON.stringify(snapshots[0]);
     for (const s of snapshots) expect(JSON.stringify(s)).toBe(first);
 
-    // The winner should be the highest-confidence atom at the
-    // highest layer (p_e: L3 + confidence 1.0). Everything else
-    // should be superseded by p_e transitively.
-    const eFinal = snapshots[0]!.find((x) => x.id === 'p_e')!;
-    expect(eFinal.superseded_by).toEqual([]);
+    // Pin the exact supersede graph. "p_e is unbeaten" alone would
+    // still pass if other atoms also finished unbeaten (multiple
+    // winners), which defeats the convergence claim. With the five
+    // atoms on a strict source-rank ladder (L0 < L1 < L2 < L3 < L3+
+    // higher confidence), every pair (x, y) with rank(x) > rank(y)
+    // records x.supersedes += [y] and y.superseded_by += [x], so
+    // the final graph is a complete chain.
+    expect(snapshots[0]).toEqual([
+      { id: 'p_a', supersedes: [], superseded_by: ['p_b', 'p_c', 'p_d', 'p_e'] },
+      { id: 'p_b', supersedes: ['p_a'], superseded_by: ['p_c', 'p_d', 'p_e'] },
+      { id: 'p_c', supersedes: ['p_a', 'p_b'], superseded_by: ['p_d', 'p_e'] },
+      { id: 'p_d', supersedes: ['p_a', 'p_b', 'p_c'], superseded_by: ['p_e'] },
+      { id: 'p_e', supersedes: ['p_a', 'p_b', 'p_c', 'p_d'], superseded_by: [] },
+    ]);
   });
 });
