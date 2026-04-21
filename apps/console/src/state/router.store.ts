@@ -96,3 +96,19 @@ function toSearchString(query: Record<string, string>): string {
   const s = sp.toString();
   return s ? `?${s}` : '';
 }
+
+/*
+ * Given an atom id, pick the view it belongs to. Canon atoms use
+ * domain prefixes (arch/dev/inv/pol), so the default is 'canon'. Only
+ * atoms we KNOW live elsewhere get routed away — plans and
+ * activity-like atoms (operator-action, actor-messages, audit replies).
+ */
+export function routeForAtomId(id: string): Route {
+  if (id.startsWith('plan-')) return 'plans';
+  if (
+    id.startsWith('op-action-')
+    || id.startsWith('ama-')
+    || id.startsWith('pr-observation-')
+  ) return 'activities';
+  return 'canon';
+}

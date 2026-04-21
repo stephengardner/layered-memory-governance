@@ -1,6 +1,8 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { X } from 'lucide-react';
 import { listActivities, type Activity } from '@/services/activities.service';
+import { useRouteQuery, setRoute } from '@/state/router.store';
 import styles from './ActivitiesView.module.css';
 
 const TYPE_DOT_COLORS: Record<string, string> = {
@@ -19,6 +21,18 @@ export function ActivitiesView() {
     queryKey: ['activities', 200],
     queryFn: ({ signal }) => listActivities({ limit: 200 }, signal),
   });
+  const routeQuery = useRouteQuery();
+  const focusId = routeQuery.get('focus');
+  const focusRef = useRef<HTMLLIElement | null>(null);
+
+  // When `?focus=<id>` is in the URL and the atom lands in the list,
+  // scroll the matching item into view and pulse-highlight it so the
+  // user immediately sees where the reference resolved.
+  useEffect(() => {
+    if (!focusId || !query.isSuccess) return;
+    const el = focusRef.current;
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [focusId, query.isSuccess]);
 
   const grouped = useMemo(() => groupByDay(query.data ?? []), [query.data]);
 
@@ -43,6 +57,20 @@ export function ActivitiesView() {
       )}
       {query.isSuccess && grouped.length > 0 && (
         <>
+          {focusId && (
+            <div className={styles.focusBanner}>
+              <span className={styles.focusLabel}>Focused on atom</span>
+              <code className={styles.focusId}>{focusId}</code>
+              <button
+                type="button"
+                className={styles.focusClear}
+                onClick={() => setRoute('activities')}
+                aria-label="Clear focus"
+              >
+                <X size={12} strokeWidth={2.5} /> clear
+              </button>
+            </div>
+          )}
           <div className={styles.stats}>
             <span className={styles.statsTotal}>{query.data?.length ?? 0}</span>
             <span className={styles.statsLabel}>recent atoms</span>
@@ -56,7 +84,8 @@ export function ActivitiesView() {
                   {items.map((a) => (
                     <li
                       key={a.id}
-                      className={styles.item}
+                      ref={focusId === a.id ? focusRef : undefined}
+                      className={`${styles.item} ${focusId === a.id ? styles.itemFocused : ''}`}
                       data-testid="activity-item"
                       data-atom-id={a.id}
                       data-atom-type={a.type}
