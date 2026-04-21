@@ -98,6 +98,22 @@ export function setRoute(next: Route, id?: string): void {
   if (window.location.pathname !== target) {
     window.history.pushState({}, '', target);
     window.dispatchEvent(new Event(NAV_EVENT));
+    /*
+     * Programmatic navigation scrolls to top — standard SPA pattern.
+     * Back/forward triggers popstate (NOT NAV_EVENT), and the browser
+     * auto-restores scroll via history.scrollRestoration='auto' (default),
+     * so the user lands where they were. One window handles both cases
+     * without a custom scroll cache.
+     */
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    /*
+     * The app shell's .content element is the actual scrollable area
+     * (the page body doesn't scroll — overflow-y is on the main),
+     * so reset it too. querySelector is safe because AppShell is
+     * always mounted by the time anyone calls setRoute.
+     */
+    const scroller = document.querySelector<HTMLElement>('[data-scroll-root]');
+    if (scroller) scroller.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   }
 }
 

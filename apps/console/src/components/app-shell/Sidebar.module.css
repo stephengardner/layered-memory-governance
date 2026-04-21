@@ -62,6 +62,7 @@
   font-weight: var(--font-weight-medium);
   color: var(--text-secondary);
   text-align: left;
+  text-decoration: none;
   transition: background var(--duration-fast) var(--easing-standard),
               color var(--duration-fast) var(--easing-standard);
 }
@@ -88,19 +89,63 @@
   border-radius: var(--radius-pill);
 }
 
-.itemDisabled {
-  color: var(--text-muted);
-  cursor: not-allowed;
+.itemLabel {
+  display: inline;
 }
 
-.soonBadge {
-  margin-left: auto;
-  font-size: var(--font-size-xs);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-pill);
-  background: var(--surface-raised);
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: var(--font-weight-medium);
+/*
+ * Mobile: sidebar becomes a fixed bottom tab bar. Brand is hidden
+ * (logo lives in header instead at mobile sizes). Nav becomes a
+ * horizontal row, 4 equal tabs, touch targets ≥44px per mobile-first
+ * canon. Safe-area padding for devices with a home-indicator.
+ */
+@media (max-width: 48rem) {
+  .sidebar {
+    flex-direction: row;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto;
+    min-height: 0;
+    height: calc(var(--space-10) + env(safe-area-inset-bottom));
+    padding: var(--space-2) var(--space-3) calc(var(--space-2) + env(safe-area-inset-bottom));
+    gap: 0;
+    border-right: none;
+    border-top: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--surface-base) 85%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    z-index: 50;
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .nav {
+    flex-direction: row;
+    flex: 1;
+    gap: var(--space-1);
+  }
+
+  .item {
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--space-2) var(--space-1);
+    align-items: center;
+    justify-content: center;
+    font-size: var(--font-size-xs);
+    min-height: 44px;
+  }
+
+  .itemActive::before {
+    top: 0;
+    bottom: auto;
+    left: 20%;
+    right: 20%;
+    width: auto;
+    height: 2px;
+  }
 }

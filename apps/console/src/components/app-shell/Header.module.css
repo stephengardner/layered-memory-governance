@@ -58,8 +58,28 @@
   color: var(--text-primary);
 }
 
+.mobileLogo {
+  display: none;
+}
+
 @media (max-width: 48rem) {
   .header {
     padding: var(--space-4) var(--space-5);
+    gap: var(--space-3);
+  }
+  .mobileLogo {
+    display: block;
+    height: var(--space-6);
+    width: auto;
+    flex-shrink: 0;
+  }
+  :global(body.theme-light) .mobileLogo {
+    filter: invert(1) hue-rotate(180deg);
+  }
+  .title {
+    font-size: var(--font-size-lg);
+  }
+  .subtitle {
+    display: none;
   }
 }

@@ -1,6 +1,13 @@
 import { test, expect } from '@playwright/test';
 
+/*
+ * Cmd+K is a desktop-keyboard interaction. Mobile users would invoke
+ * a command palette via a button/FAB (future work), not a shortcut —
+ * so these specs skip on the mobile project.
+ */
 test.describe('command palette', () => {
+  test.skip(({ isMobile }) => isMobile, 'palette is keyboard-shortcut-only; mobile invocation TBD');
+
   test('Cmd+K opens palette, typing filters, Enter navigates', async ({ page }) => {
     await page.goto('/canon');
     await page.locator('[data-testid="canon-card"]').first().waitFor();

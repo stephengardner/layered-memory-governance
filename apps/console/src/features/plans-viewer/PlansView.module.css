@@ -207,14 +207,31 @@
   margin: var(--space-3) 0;
 }
 
+/*
+ * Inline code is a monospace chip — readable but visually subordinate
+ * to AtomRef links. AtomRef uses `var(--accent)` with a dashed
+ * underline; inline code uses `var(--text-primary)` so the hierarchy
+ * reads at a glance: amber underlined = clickable reference, gray
+ * mono = literal value. Removes the visual sameness the operator
+ * flagged as jarring.
+ */
 .content code {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   padding: 0 var(--space-1);
   background: var(--surface-raised);
   border-radius: var(--radius-xs);
-  color: var(--accent);
+  color: var(--text-primary);
   word-break: break-word;
+}
+
+.content strong {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.content em {
+  color: var(--text-primary);
 }
 
 .content pre {
@@ -246,11 +263,6 @@
   border-left: 2px solid var(--border-strong);
   color: var(--text-muted);
   font-style: italic;
-}
-
-.content strong {
-  color: var(--text-primary);
-  font-weight: var(--font-weight-semibold);
 }
 
 .content a {

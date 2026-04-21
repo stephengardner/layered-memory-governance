@@ -123,14 +123,13 @@ export function PlansView() {
 
 function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
   /*
-   * Every plan starts CLAMPED, even in focus mode. The accordion is
-   * the same interaction pattern regardless of which route opened it —
-   * right over easy. Auto-expanding on focus would have been easier
-   * (one less click) but breaks the "Read more" affordance and the
-   * mask-image gradient that signals "there's more below". Focus mode
-   * differs only in grid width (full) and cursor (default, not link).
+   * Focus mode starts EXPANDED — the user opened /plans/<id>
+   * explicitly to read this plan, so defaulting to clamped would
+   * make them click Read more as a second step. Grid view starts
+   * clamped with the accordion; user expands individually.
+   * The "Collapse" button still works in focus mode for re-folding.
    */
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(focused);
 
   const state = plan.plan_state ?? 'unknown';
   const { title, body } = splitTitleAndBody(plan.content);

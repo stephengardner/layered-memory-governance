@@ -16,7 +16,7 @@ export function AppShell({ route, children }: { route: Route; children: ReactNod
       <div className={styles.main}>
         <CompromiseBanner />
         <Header route={route} />
-        <main className={styles.content}>{children}</main>
+        <main className={styles.content} data-scroll-root>{children}</main>
       </div>
     </div>
   );

@@ -67,11 +67,15 @@ test.describe('canon viewer', () => {
     expect(text).toContain('atomstore');
   });
 
-  test('theme toggle cycles through supported themes', async ({ page, context }) => {
+  test('theme toggle cycles through supported themes', async ({ page }) => {
     // Reset persisted theme so every run starts from a known state.
-    await context.clearCookies();
-    await page.addInitScript(() => { localStorage.removeItem('lag-console.theme'); });
+    // Doing it via page.evaluate AFTER first load works in both
+    // Chromium and WebKit — addInitScript had race conditions on
+    // WebKit where the app's theme init ran before the script.
     await page.goto('/');
+    await page.evaluate(() => localStorage.removeItem('lag-console.theme'));
+    await page.reload();
+    await page.locator('[data-testid="canon-card"]').first().waitFor();
     const seen: string[] = [];
     const read = () =>
       page.evaluate(() => {

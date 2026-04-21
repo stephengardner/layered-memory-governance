@@ -26,6 +26,13 @@ export default defineConfig({
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    /*
+     * Mobile project enforces canon `dev-web-mobile-first-required`.
+     * Every spec runs against an iPhone 13 profile so desktop-only
+     * assumptions (hidden mobile nav, oversized cards, un-tappable
+     * buttons) surface at PR time, not after release.
+     */
+    { name: 'mobile', use: { ...devices['iPhone 13'] } },
   ],
   webServer: {
     command: 'npm run dev',

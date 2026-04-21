@@ -3,6 +3,7 @@ import { useThemeStore } from '@/state/theme.store';
 import { DensityToggle } from '@/components/density-toggle/DensityToggle';
 import { DaemonStatusPill } from '@/components/daemon-pill/DaemonStatusPill';
 import type { Route } from '@/state/router.store';
+import logoUrl from '@/assets/lag-logo.png';
 import styles from './Header.module.css';
 
 interface RouteMeta {
@@ -40,6 +41,7 @@ export function Header({ route }: { route: Route }) {
 
   return (
     <header className={styles.header}>
+      <img src={logoUrl} alt="LAG" className={styles.mobileLogo} />
       <div className={styles.titleGroup}>
         <h1 className={styles.title}>{meta.title}</h1>
         <span className={styles.subtitle}>{meta.subtitle}</span>
