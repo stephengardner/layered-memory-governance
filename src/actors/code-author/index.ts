@@ -29,6 +29,18 @@ export {
   loadCodeAuthorFence,
   CodeAuthorFenceError,
 } from './fence.js';
+
+export {
+  DRAFT_SCHEMA,
+  DRAFT_SYSTEM_PROMPT,
+  DrafterError,
+  draftCodeChange,
+  looksLikeUnifiedDiff,
+} from './drafter.js';
+export type {
+  DraftCodeChangeInputs,
+  DraftResult,
+} from './drafter.js';
 export type {
   CiGatePolicy,
   CodeAuthorFence,
