@@ -1,10 +1,13 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { createPortal } from 'react-dom';
 import { listCanonAtoms, type CanonAtom } from '@/services/canon.service';
 import { listActivities } from '@/services/activities.service';
 import { listPrincipals, type Principal } from '@/services/principals.service';
 import { LoadingState, ErrorState } from '@/components/state-display/StateDisplay';
 import { TimeAgo } from '@/components/time-ago/TimeAgo';
+import { AtomHoverCard } from '@/components/hover-card/AtomHoverCard';
+import { useHoverCard } from '@/components/hover-card/useHoverCard';
 import { routeForAtomId, setRoute } from '@/state/router.store';
 import styles from './TimelineView.module.css';
 
@@ -34,6 +37,8 @@ import styles from './TimelineView.module.css';
  *     click to navigate).
  */
 export function TimelineView() {
+  const hoverCard = useHoverCard<CanonAtom>();
+
   const canonQ = useQuery({
     queryKey: ['canon', [], ''],
     queryFn: ({ signal }) => listCanonAtoms({}, signal),
@@ -205,11 +210,18 @@ export function TimelineView() {
                           width: `${size}px`,
                           height: `${size}px`,
                         }}
-                        title={`${a.type} · ${a.id} · ${new Date(t).toLocaleString()}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           setRoute(routeForAtomId(a.id), a.id);
                         }}
+                        onMouseEnter={(e) => hoverCard.show(a, e.clientX, e.clientY)}
+                        onMouseMove={(e) => hoverCard.updatePos(e.clientX, e.clientY)}
+                        onMouseLeave={hoverCard.scheduleHide}
+                        onFocus={(e) => {
+                          const r = e.currentTarget.getBoundingClientRect();
+                          hoverCard.show(a, r.left + r.width / 2, r.top);
+                        }}
+                        onBlur={hoverCard.scheduleHide}
                       >
                         <span className={styles.srOnly}>{a.id}</span>
                       </button>
@@ -228,6 +240,24 @@ export function TimelineView() {
           <span className={styles.footSep} aria-hidden="true">→</span>
           <TimeAgo iso={new Date(latest).toISOString()} prefix="now" />
         </footer>
+      )}
+
+      {hoverCard.open && hoverCard.data && hoverCard.pos && createPortal(
+        <div
+          className={styles.hoverWrap}
+          style={{
+            top: Math.min(hoverCard.pos.y + 16, window.innerHeight - 220),
+            left: Math.min(hoverCard.pos.x + 16, window.innerWidth - 380),
+          }}
+        >
+          <AtomHoverCard
+            atom={hoverCard.data}
+            hint="click · open full page"
+            onPointerEnter={hoverCard.cancelHide}
+            onPointerLeave={hoverCard.scheduleHide}
+          />
+        </div>,
+        document.body,
       )}
     </section>
   );

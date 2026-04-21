@@ -146,83 +146,22 @@
   filter: drop-shadow(0 0 10px var(--accent));
 }
 
-/* Hover tooltip — portal-rendered floating card */
-.hoverTooltip {
+/*
+ * Hover-card portal wrap. Positioning only — the visual belongs to
+ * the shared <AtomHoverCard> component so Graph, Timeline, and
+ * AtomRef all render the same tooltip. pointer-events:auto lets the
+ * user move the cursor ONTO the card without dismissing (matches
+ * useHoverCard's stay-open timing).
+ */
+.hoverWrap {
   position: fixed;
   z-index: 300;
-  padding: var(--space-3);
-  background: var(--surface-base);
-  background-image: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--surface-overlay) 50%, transparent) 0%,
-    transparent 40%
-  );
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  pointer-events: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  animation: fadeIn 0.12s var(--easing-standard);
+  animation: hoverFadeIn 0.12s var(--easing-standard);
 }
 
-@keyframes fadeIn {
+@keyframes hoverFadeIn {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-.hoverHead {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.hoverType {
-  font-size: 0.6875rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 1px var(--space-2);
-  border-radius: var(--radius-xs);
-  color: var(--text-on-accent);
-  background: var(--accent);
-  font-weight: var(--font-weight-semibold);
-}
-
-.hoverType[data-type="directive"]  { background: var(--status-danger); }
-.hoverType[data-type="preference"] { background: var(--status-warning); color: var(--palette-ink-900); }
-.hoverType[data-type="reference"]  { background: var(--status-success); color: var(--palette-ink-900); }
-.hoverType[data-type="plan"]       { background: var(--accent-active); }
-
-.hoverId {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
-  word-break: break-all;
-}
-
-.hoverContent {
-  margin: 0;
-  font-size: var(--font-size-sm);
-  color: var(--text-secondary);
-  line-height: var(--line-height-normal);
-}
-
-.hoverFoot {
-  display: flex;
-  gap: var(--space-2);
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  flex-wrap: wrap;
-}
-
-.hoverHint {
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  border-top: 1px dashed var(--border-subtle);
-  padding-top: var(--space-1);
-  font-family: var(--font-mono);
 }
 
 /* Side panel — slides in from right on node click */

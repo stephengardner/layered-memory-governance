@@ -10,6 +10,8 @@ import { listPlans } from '@/services/plans.service';
 import { routeForAtomId, setRoute } from '@/state/router.store';
 import { LoadingState, ErrorState } from '@/components/state-display/StateDisplay';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { AtomHoverCard } from '@/components/hover-card/AtomHoverCard';
+import { useHoverCard } from '@/components/hover-card/useHoverCard';
 import styles from './GraphView.module.css';
 
 type NodeData = {
@@ -19,6 +21,7 @@ type NodeData = {
   content: string;
   principal: string;
   confidence: number;
+  created_at: string;
   radius: number;
   fx?: number;
   fy?: number;
@@ -70,6 +73,7 @@ export function GraphView() {
       content: a.content,
       principal: a.principal_id,
       confidence: a.confidence ?? 0,
+      created_at: a.created_at,
       radius: radiusFor(a.type, a.confidence ?? 0),
     }));
     const linkList: LinkData[] = [];
@@ -98,8 +102,7 @@ export function GraphView() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [, setTick] = useState(0);
-  const [hoverId, setHoverId] = useState<string | null>(null);
-  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
+  const hoverCard = useHoverCard<NodeData>();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -231,7 +234,7 @@ export function GraphView() {
           if (dragging.current && !dragging.current.moved) setSelectedId(null);
           dragging.current = null;
         }}
-        onMouseLeave={() => { dragging.current = null; setHoverId(null); }}
+        onMouseLeave={() => { dragging.current = null; hoverCard.scheduleHide(); }}
         onWheel={(e) => {
           const delta = -e.deltaY * 0.0015;
           setTransform((t) => ({ ...t, scale: Math.max(0.2, Math.min(4, t.scale + delta)) }));
@@ -271,12 +274,9 @@ export function GraphView() {
                     if (e.metaKey || e.ctrlKey) { setRoute(routeForAtomId(n.id), n.id); return; }
                     setSelectedId(n.id);
                   }}
-                  onMouseEnter={(e) => {
-                    setHoverId(n.id);
-                    setHoverPos({ x: e.clientX, y: e.clientY });
-                  }}
-                  onMouseMove={(e) => { setHoverPos({ x: e.clientX, y: e.clientY }); }}
-                  onMouseLeave={() => { setHoverId(null); setHoverPos(null); }}
+                  onMouseEnter={(e) => { hoverCard.show(n, e.clientX, e.clientY); }}
+                  onMouseMove={(e) => { hoverCard.updatePos(e.clientX, e.clientY); }}
+                  onMouseLeave={() => { hoverCard.scheduleHide(); }}
                   data-testid="graph-node"
                   data-node-id={n.id}
                   data-node-type={n.type}
@@ -290,8 +290,15 @@ export function GraphView() {
             </g>
           </g>
         </svg>
-        {hoverId && hoverPos && !dragging.current && (
-          <GraphHoverTooltip node={nodes.find((n) => n.id === hoverId)!} x={hoverPos.x} y={hoverPos.y} />
+        {hoverCard.open && hoverCard.data && hoverCard.pos && !dragging.current && createPortal(
+          <GraphHoverPortal
+            node={hoverCard.data}
+            x={hoverCard.pos.x}
+            y={hoverCard.pos.y}
+            onEnter={hoverCard.cancelHide}
+            onLeave={hoverCard.scheduleHide}
+          />,
+          document.body,
         )}
       </div>
       {createPortal(
@@ -316,29 +323,45 @@ function radiusFor(type: string, confidence: number): number {
   return base + Math.round(confidence * 2);
 }
 
-function GraphHoverTooltip({ node, x, y }: { node: NodeData; x: number; y: number }) {
+function GraphHoverPortal({
+  node,
+  x,
+  y,
+  onEnter,
+  onLeave,
+}: {
+  node: NodeData;
+  x: number;
+  y: number;
+  onEnter: () => void;
+  onLeave: () => void;
+}) {
   // Position near cursor with bounds-checking so tooltip doesn't
   // fall off the right edge on wide viewports.
-  const width = 320;
+  const width = 360;
   const left = Math.min(x + 16, window.innerWidth - width - 12);
-  const top = Math.min(y + 16, window.innerHeight - 180);
-  return createPortal(
-    <div className={styles.hoverTooltip} style={{ top, left, width }} role="tooltip">
-      <div className={styles.hoverHead}>
-        <span className={styles.hoverType} data-type={node.type}>{node.type}</span>
-        <code className={styles.hoverId}>{node.id}</code>
-      </div>
-      <p className={styles.hoverContent}>{truncate(node.content, 220)}</p>
-      <div className={styles.hoverFoot}>
-        <span>by {node.principal}</span>
-        <span>·</span>
-        <span>layer {node.layer}</span>
-        <span>·</span>
-        <span>conf {node.confidence.toFixed(2)}</span>
-      </div>
-      <div className={styles.hoverHint}>click · view · ⌘-click · open full page</div>
-    </div>,
-    document.body,
+  const top = Math.min(y + 16, window.innerHeight - 220);
+  return (
+    <div
+      className={styles.hoverWrap}
+      style={{ top, left, width }}
+      data-testid="graph-hover-card"
+    >
+      <AtomHoverCard
+        atom={{
+          id: node.id,
+          type: node.type,
+          layer: node.layer as 'L0' | 'L1' | 'L2' | 'L3',
+          content: node.content,
+          principal_id: node.principal,
+          confidence: node.confidence,
+          created_at: node.created_at,
+        }}
+        hint="click · focus neighborhood · ⌘-click · open full page"
+        onPointerEnter={onEnter}
+        onPointerLeave={onLeave}
+      />
+    </div>
   );
 }
 
@@ -387,7 +410,3 @@ function GraphDetailPanel({ node, onClose }: { node: NodeData; onClose: () => vo
   );
 }
 
-function truncate(s: string, n: number): string {
-  if (!s) return '';
-  return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + '…';
-}
