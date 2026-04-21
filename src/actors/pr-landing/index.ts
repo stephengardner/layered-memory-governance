@@ -23,3 +23,11 @@ export type {
   PrLandingOptions,
   PrLandingOutcome,
 } from './pr-landing.js';
+
+export {
+  mkPrObservationAtom,
+  mkPrObservationAtomId,
+  mkPrObservationFailedAtom,
+  renderPrObservationBody,
+} from './pr-observation.js';
+export type { PrObservationInputs } from './pr-observation.js';

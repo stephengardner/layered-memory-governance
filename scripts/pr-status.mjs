@@ -49,8 +49,16 @@ import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { GitHubPrReviewAdapter } from '../dist/actors/pr-review/index.js';
 import { createGhClient } from '../dist/external/github/index.js';
+import { createFileHost } from '../dist/adapters/file/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const STATE_DIR = resolve(REPO_ROOT, '.lag');
+
+// Freshness threshold: if the newest pr-observation atom for this PR is
+// older than this, we still render it (with an age banner) but ALSO
+// refresh from the live API. Tuned toward "show something immediately
+// but warn if stale"; 2 minutes matches the CR failsafe grace window.
+const OBSERVATION_FRESH_MS = 2 * 60_000;
 
 function parseArgs(argv) {
   const args = { prNumber: null, owner: null, repo: null };
@@ -123,6 +131,25 @@ async function main() {
   const { owner, repo } = await resolveOwnerRepo(args);
   const pr = { owner, repo, number: args.prNumber };
 
+  // Atom-first projection path (per arch-pr-state-observation-via-actor-only).
+  // If a recent pr-observation atom exists for this PR, render from it
+  // and note the age. Fall back to live API read when:
+  //   - no atom exists yet (first time observing this PR), OR
+  //   - the atom is older than the freshness threshold (stale).
+  // On fallback, emit a one-line warning to stderr so the operator
+  // sees the degrade.
+  const atomHit = await readLatestPrObservation({ owner, repo, number: pr.number });
+  if (atomHit && atomHit.ageMs < OBSERVATION_FRESH_MS) {
+    renderFromAtom(atomHit, pr);
+    decideExitCode(atomHit.status);
+    return;
+  }
+  if (atomHit && atomHit.ageMs >= OBSERVATION_FRESH_MS) {
+    process.stderr.write(
+      `[pr-status] latest pr-observation atom is ${Math.round(atomHit.ageMs / 1000)}s old; refreshing from live API\n`,
+    );
+  }
+
   const client = createGhClient();
   const adapter = new GitHubPrReviewAdapter({ client });
 
@@ -165,6 +192,10 @@ async function main() {
   if (status.bodyNits.length === 0) console.log('  (none)');
   for (const c of status.bodyNits) console.log(renderComment(c));
 
+  decideExitCode(status);
+}
+
+function decideExitCode(status) {
   // Exit code signals the broad readiness outcome so shell consumers
   // can gate on it. Matches the run-pr-landing exit convention:
   //   0 = CLEAN (mergeable + no blocking surfaces)
@@ -174,6 +205,71 @@ async function main() {
   if (status.mergeable === null || status.mergeStateStatus === null) process.exit(2);
   if (status.mergeStateStatus === 'CLEAN') process.exit(0);
   process.exit(1);
+}
+
+/**
+ * Locate the newest pr-observation atom for (owner, repo, number).
+ * Returns { status, ageMs, atomId, observedAt } or null. The atom's
+ * metadata carries the composite snapshot; callers render from it
+ * without re-querying GitHub.
+ */
+async function readLatestPrObservation({ owner, repo, number }) {
+  try {
+    const host = await createFileHost({ rootDir: STATE_DIR });
+    const { atoms } = await host.atoms.query({ type: ['observation'] }, 500);
+    const prefix = `pr-observation-${owner}-${repo}-${number}-`;
+    const matches = atoms.filter((a) => String(a.id).startsWith(prefix) && a.metadata?.kind === 'pr-observation');
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    const latest = matches[0];
+    const observedAt = latest.metadata?.observed_at ?? latest.created_at;
+    const ageMs = Date.now() - new Date(observedAt).getTime();
+    // Rehydrate the composite-snapshot shape that the renderer expects.
+    // Content-heavy fields (full comment bodies) were not persisted in
+    // metadata; we reflect counts only and leave the per-item lists
+    // empty. The atom's `content` string has the human-readable
+    // summary with per-item detail if the operator wants it.
+    const m = latest.metadata ?? {};
+    const status = {
+      pr: { owner, repo, number },
+      mergeable: m.mergeable ?? null,
+      mergeStateStatus: m.merge_state_status ?? null,
+      lineComments: Array.from({ length: m.counts?.line_comments ?? 0 }, () => ({ id: '?', author: '(from atom)', body: '(see atom content)', resolved: false })),
+      bodyNits: Array.from({ length: m.counts?.body_nits ?? 0 }, () => ({ id: '?', author: '(from atom)', body: '(see atom content)', resolved: false })),
+      submittedReviews: Array.from({ length: m.counts?.submitted_reviews ?? 0 }, () => ({ author: '(from atom)', state: '?', submittedAt: '' })),
+      checkRuns: Array.from({ length: m.counts?.check_runs ?? 0 }, () => ({ name: '(from atom)', status: '?', conclusion: null })),
+      legacyStatuses: Array.from({ length: m.counts?.legacy_statuses ?? 0 }, () => ({ context: '(from atom)', state: '?', updatedAt: '' })),
+      partial: m.partial ?? false,
+      partialSurfaces: m.partial_surfaces ?? [],
+    };
+    return { status, ageMs, atomId: String(latest.id), observedAt, atomContent: latest.content };
+  } catch {
+    return null;
+  }
+}
+
+function renderFromAtom(atomHit, pr) {
+  const { status, ageMs, atomId, observedAt, atomContent } = atomHit;
+  const ageS = Math.round(ageMs / 1000);
+  console.log(`PR ${pr.owner}/${pr.repo}#${pr.number}`);
+  console.log(`  source             pr-observation atom (${ageS}s old, id=${atomId})`);
+  console.log(`  observed_at        ${observedAt}`);
+  console.log(`  mergeable          ${status.mergeable === null ? 'UNKNOWN' : status.mergeable}`);
+  console.log(`  mergeStateStatus   ${status.mergeStateStatus ?? '?'}`);
+  if (status.partial) {
+    console.log(`  partial            true (${status.partialSurfaces.length} surfaces failed)`);
+    for (const s of status.partialSurfaces) console.log(`    - ${s}`);
+  }
+  console.log('');
+  console.log('counts (from atom metadata):');
+  console.log(`  submitted reviews       ${status.submittedReviews.length}`);
+  console.log(`  check-runs              ${status.checkRuns.length}`);
+  console.log(`  legacy statuses         ${status.legacyStatuses.length}`);
+  console.log(`  unresolved line comments ${status.lineComments.length}`);
+  console.log(`  body-scoped nits        ${status.bodyNits.length}`);
+  console.log('');
+  console.log('--- atom content (summary the observer posted as a PR comment) ---');
+  console.log(atomContent);
 }
 
 main().catch((err) => {
