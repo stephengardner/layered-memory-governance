@@ -15,7 +15,19 @@ early_access: false
 
 reviews:
   profile: chill
-  request_changes_workflow: false
+  # Changes CR review posture from advisory (COMMENTED reviews) to
+  # gating (APPROVED on clean, REQUEST_CHANGES on actionable findings).
+  # Two consequences that make the autonomous-loop story work:
+  #   1. CR posts the `CodeRabbit` commit status on EVERY reviewed
+  #      PR, not just ones with findings. Satisfies branch-protection
+  #      "Required status check: CodeRabbit" deterministically.
+  #   2. Enables the `@coderabbitai approve` / `@coderabbitai resolve`
+  #      comment commands, which the bot-driven merge path uses to
+  #      clear CR gating after addressing findings.
+  # Tradeoff: any PR with a real CR finding now BLOCKS merge until
+  # resolved/approved, instead of being a soft comment. That is the
+  # right posture for this repo (governance > advisory).
+  request_changes_workflow: true
   high_level_summary: true
   poem: false
   review_status: true
