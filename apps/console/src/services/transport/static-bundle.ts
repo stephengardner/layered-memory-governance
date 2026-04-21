@@ -45,14 +45,31 @@ export type DemoBundle = Readonly<Record<string, unknown>>;
 const EMPTY_BUNDLE: DemoBundle = Object.freeze({});
 
 export class StaticBundleTransport implements Transport {
-  constructor(private readonly bundle: DemoBundle = EMPTY_BUNDLE) {}
+  constructor(private readonly explicitBundle: DemoBundle | undefined = undefined) {}
+
+  /**
+   * Resolve the active bundle at call time rather than construction
+   * time. The transport singleton (`services/transport/index.ts`)
+   * is created when the first service module loads, which is
+   * BEFORE `main.tsx` can install `window.__LAG_DEMO_BUNDLE__`.
+   * Looking up the bundle per-call keeps install-order independent:
+   * as long as the bundle is on `window` by the time the first
+   * TanStack Query fires, everything renders.
+   */
+  private resolvedBundle(): DemoBundle {
+    if (this.explicitBundle !== undefined) return this.explicitBundle;
+    if (typeof window !== 'undefined' && window.__LAG_DEMO_BUNDLE__ !== undefined) {
+      return window.__LAG_DEMO_BUNDLE__;
+    }
+    return EMPTY_BUNDLE;
+  }
 
   async call<T>(
     method: string,
     params?: Record<string, unknown>,
     _options?: TransportCallOptions,
   ): Promise<T> {
-    const raw = this.bundle[method];
+    const raw = this.resolvedBundle()[method];
     if (raw === undefined) {
       return emptyFallbackFor<T>(method);
     }

@@ -35,9 +35,10 @@ declare global {
 function selectTransport(): Transport {
   // Future: if ('__TAURI__' in globalThis) return new TauriTransport();
   if (import.meta.env.VITE_LAG_TRANSPORT === 'demo') {
-    return new StaticBundleTransport(
-      (typeof window !== 'undefined' ? window.__LAG_DEMO_BUNDLE__ : undefined),
-    );
+    // No explicit bundle here - StaticBundleTransport resolves
+    // `window.__LAG_DEMO_BUNDLE__` at call time so main.tsx can
+    // install the bundle without caring about import order.
+    return new StaticBundleTransport();
   }
   return new HttpTransport();
 }
