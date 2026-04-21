@@ -80,7 +80,15 @@ export function buildDefaultCodeAuthorExecutor(
     async execute(inputs): Promise<CodeAuthorExecutorResult> {
       const { plan, fence, correlationId, signal } = inputs;
       const planId = String(plan.id);
-      const branchName = `${branchPrefix}${planId}-${nonce()}`;
+      // Sanitize plan id for use inside a git branch name. Git
+      // ref-name rules reject `:`, `?`, `[`, `\`, `^`, `~`, control
+      // chars, whitespace, trailing slashes, and `..` sequences.
+      // An atom id is not required to conform; the caller may pass
+      // anything that atoms accept. Replace forbidden bytes with `-`
+      // and collapse repeats so a weird id does not fail at the
+      // `git checkout -b` step downstream.
+      const safeIdForRef = sanitizeGitRefComponent(planId);
+      const branchName = `${branchPrefix}${safeIdForRef}-${nonce()}`;
       const meta = plan.metadata as Record<string, unknown>;
       const targetPaths = extractStringArray(meta, 'target_paths');
       const successCriteria = typeof meta['success_criteria'] === 'string'
@@ -142,8 +150,6 @@ export function buildDefaultCodeAuthorExecutor(
         };
       }
 
-      const observationAtomId = planObservationAtomId(plan);
-
       let prResult;
       try {
         prResult = await createDraftPr({
@@ -158,7 +164,7 @@ export function buildDefaultCodeAuthorExecutor(
             planContent: String(plan.content),
             draftNotes: draftResult.notes,
             draftConfidence: draftResult.confidence,
-            observationAtomId,
+            observationAtomId: String(inputs.observationAtomId),
             commitSha: gitResult.commitSha,
             costUsd: draftResult.totalCostUsd,
             modelUsed: draftResult.modelUsed,
@@ -230,11 +236,15 @@ function buildCommitMessage(plan: Atom, draftNotes: string): string {
   return body.length > 0 ? `${title}\n\n${body}` : title;
 }
 
-function planObservationAtomId(plan: Atom): string {
-  // The real id is constructed by the invoker at observation-write
-  // time. The body-render path needs a stable reference string for the
-  // YAML footer; use the plan id as the correlation anchor. When the
-  // invoker lands, the rendered body + the final atom id are co-located
-  // on the same observation.
-  return `code-author-invoked-${String(plan.id)}`;
+function sanitizeGitRefComponent(s: string): string {
+  // Keep ASCII letters, digits, dot, underscore, slash, dash.
+  // Replace anything else with '-'. Collapse repeat dashes so a
+  // pathological id does not produce a `---` run. Trim leading and
+  // trailing dashes + dots so we never produce `.lock`, `-`, `./..`
+  // shapes that git rejects.
+  return s
+    .replace(/[^A-Za-z0-9._/-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[.\-/]+|[.\-/]+$/g, '')
+    .slice(0, 120) || 'unnamed';
 }

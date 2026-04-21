@@ -96,7 +96,7 @@ export interface CodeAuthorPayload {
  *
  * The executor is responsible for diff drafting, git ops, and PR
  * creation. Keeping that composition behind an interface lets a
- * consumer swap in a different chain (e.g. a LangGraph-orchestrated
+ * consumer swap in a different chain (e.g. an external workflow
  * executor) without modifying the invoker.
  */
 export interface CodeAuthorExecutorSuccess {
@@ -126,6 +126,17 @@ export interface CodeAuthorExecutor {
     readonly plan: Atom;
     readonly fence: CodeAuthorFence;
     readonly correlationId: string;
+    /**
+     * The id the invoker will assign to the observation atom it
+     * writes after the executor returns. Passed in so the executor
+     * can cite it in durable external artifacts (PR body footer,
+     * commit trailer, issue comment) before the atom actually
+     * exists. The invoker is responsible for producing this id
+     * deterministically and writing the atom under exactly this id
+     * after execute() resolves so downstream observers find a
+     * concrete atom under the id the PR footer names.
+     */
+    readonly observationAtomId: AtomId;
     readonly signal?: AbortSignal;
   }): Promise<CodeAuthorExecutorResult>;
 }
@@ -167,7 +178,7 @@ export async function runCodeAuthor(
      *
      * The executor interface isolates the invoker from concrete
      * primitives (drafter, git-ops, pr-creation) so a consumer can
-     * plug in a different orchestration (LangGraph, Temporal, etc.)
+     * plug in a different orchestration (external workflow engine)
      * without touching this module.
      */
     readonly executor?: CodeAuthorExecutor;
@@ -218,12 +229,27 @@ export async function runCodeAuthor(
     };
   }
 
-  // 3. Optional full-chain executor. If one is injected, delegate the
-  //    draft -> branch -> PR pipeline to it and record the outcome
-  //    (success or stage-specific failure) on the observation atom.
-  //    Without an executor the path stays observation-only; the
-  //    dispatcher sees `completed`, flips the plan to `succeeded`,
-  //    and links the observation atom.
+  // 3. Pre-compute the observation atom id BEFORE running the
+  //    executor. Downstream external artifacts the executor writes
+  //    (PR body footer, commit trailer) cite this id so the
+  //    post-merge observer can find the corresponding atom with a
+  //    direct get(). Previously the executor synthesized a
+  //    placeholder id that did not match the final atom id, leaving
+  //    PR footers pointing at nonexistent atoms.
+  const nowIso = new Date(now()).toISOString() as Time;
+  const atomId = mkCodeAuthorInvokedAtomId(String(plan.id), nowIso, options.idNonce);
+
+  // 4. Optional full-chain executor. If one is injected, delegate
+  //    the draft -> branch -> PR pipeline to it and record the
+  //    outcome on the observation atom. Without an executor the
+  //    path stays observation-only.
+  //
+  //    Follow-up noted (not in this PR): the executor runs before
+  //    the atom is persisted, so a crash after PR creation but
+  //    before host.atoms.put() leaves an orphan PR. A started-
+  //    observation-then-update lifecycle closes this gap but needs
+  //    atom-update semantics + crash-recovery tests out of scope
+  //    for the wire-up.
   let executorResult: CodeAuthorExecutorResult | undefined;
   if (options.executor !== undefined) {
     try {
@@ -231,6 +257,7 @@ export async function runCodeAuthor(
         plan,
         fence,
         correlationId,
+        observationAtomId: atomId,
         ...(options.signal ? { signal: options.signal } : {}),
       });
     } catch (err) {
@@ -242,14 +269,10 @@ export async function runCodeAuthor(
     }
   }
 
-  // 4. Write the observation. `derived_from: [plan.id]` anchors the
-  //    provenance chain so the full trace is plan-atom ->
-  //    code-author-invoked -> pr-observation atom -> code-change-
-  //    delivered atom on merge. When the executor ran, the PR handle
-  //    and stage outcome live on the same atom so a downstream
-  //    observer can follow the chain with a single read.
-  const nowIso = new Date(now()).toISOString() as Time;
-  const atomId = mkCodeAuthorInvokedAtomId(String(plan.id), nowIso, options.idNonce);
+  // 5. Write the observation. `derived_from: [plan.id]` anchors the
+  //    provenance chain; PR handle + stage outcome live on this
+  //    atom so a downstream observer can follow the chain in one
+  //    read.
 
   const atom: Atom = {
     schema_version: 1,

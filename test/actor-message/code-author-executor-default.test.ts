@@ -20,7 +20,7 @@ import type { execa } from 'execa';
 import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
-import { buildDefaultCodeAuthorExecutor } from '../../src/actor-message/code-author-executor-default.js';
+import { buildDefaultCodeAuthorExecutor } from '../../src/actor-message/executor-default.js';
 import {
   DRAFT_SCHEMA,
   DRAFT_SYSTEM_PROMPT,
@@ -198,7 +198,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       execImpl,
     });
 
-    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-1' });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-1', observationAtomId: 'obs-test' as AtomId });
 
     expect(result.kind).toBe('dispatched');
     if (result.kind !== 'dispatched') throw new Error('unreachable');
@@ -241,7 +241,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       execImpl,
     });
 
-    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-1' });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-1', observationAtomId: 'obs-test' as AtomId });
     expect(result.kind).toBe('error');
     if (result.kind !== 'error') throw new Error('unreachable');
     expect(result.stage).toBe('drafter/llm-call-failed');
@@ -269,7 +269,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       execImpl,
     });
 
-    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-1' });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-1', observationAtomId: 'obs-test' as AtomId });
     expect(result.kind).toBe('error');
     if (result.kind !== 'error') throw new Error('unreachable');
     expect(result.stage).toBe('apply-branch/dirty-worktree');
@@ -293,11 +293,80 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       execImpl,
     });
 
-    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-1' });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-1', observationAtomId: 'obs-test' as AtomId });
     expect(result.kind).toBe('error');
     if (result.kind !== 'error') throw new Error('unreachable');
     expect(result.stage).toBe('pr-creation/gh-api-failed');
     expect(result.reason).toMatch(/gh boom/);
+  });
+
+  it('plan id with unsafe git-ref chars is sanitized in branch name', async () => {
+    // Git ref-name rules reject `:`, whitespace, `..`, `~`, `^`,
+    // and a handful of others. A plan id is not required to obey
+    // those rules; the executor must sanitize before branch create
+    // or the `git checkout -b` step fails loud.
+    const plan = mkPlan('plan:with bad/chars?and~more', '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    }, '');
+    const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({ number: 1, html_url: '', url: '', node_id: '', state: 'open' })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'nonce1',
+      execImpl,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-id-1' as AtomId });
+    if (result.kind !== 'dispatched') throw new Error('expected dispatched');
+    // Branch name must contain no forbidden chars; specifically no
+    // `:`, `?`, or whitespace from the raw plan id.
+    expect(result.branchName).not.toMatch(/[:?~\s]/);
+    expect(result.branchName).toMatch(/^code-author\/plan-with-bad\/chars-and-more-nonce1$/);
+    // And the checkout -b call must use the sanitized name.
+    const checkoutCall = gitCalls.find((c) => c.args.includes('checkout') && c.args.includes('-b'));
+    expect(checkoutCall).toBeDefined();
+    expect(checkoutCall!.args).toContain(result.branchName);
+  });
+
+  it('observationAtomId from invoker is threaded into PR body footer (not a placeholder)', async () => {
+    const plan = mkPlan('plan-threaded', '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    }, '');
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const prFields: Array<Record<string, unknown>> = [];
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async (args: Record<string, unknown>) => {
+        prFields.push(args);
+        return { number: 1, html_url: '', url: '', node_id: '', state: 'open' };
+      }) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+    });
+    // The caller (invoker) passes the REAL atom id, which includes
+    // timestamp + nonce components. Previously the default executor
+    // synthesized a placeholder `code-author-invoked-<plan.id>` that
+    // did not match any real atom; now it must use the caller id.
+    const realAtomId = 'code-author-invoked-plan-threaded-2026-04-21T00:00:00Z-ff00aa' as AtomId;
+    await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: realAtomId });
+    const body = (prFields[0]?.['fields'] as Record<string, unknown>)['body'] as string;
+    expect(body).toContain(`observation_atom_id: ${JSON.stringify(realAtomId)}`);
+    expect(body).not.toContain('code-author-invoked-plan-threaded"'); // the old placeholder shape
   });
 
   it('commit message carries plan title + draft notes', async () => {

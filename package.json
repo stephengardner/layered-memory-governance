@@ -64,6 +64,10 @@
       "import": "./dist/actor-message/index.js",
       "types": "./dist/actor-message/index.d.ts"
     },
+    "./actor-message/executor-default": {
+      "import": "./dist/actor-message/executor-default.js",
+      "types": "./dist/actor-message/executor-default.d.ts"
+    },
     "./external/github": {
       "import": "./dist/external/github/index.js",
       "types": "./dist/external/github/index.d.ts"
