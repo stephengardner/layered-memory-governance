@@ -118,7 +118,12 @@ async function readStdin() {
  * Wait is bounded; on timeout we return null (hook fails open - no
  * prompt injected, but the tool call proceeds).
  */
-const LOCK_WAIT_MS = 2000;
+// 5s chosen to cover Windows cloud-runner FS latency under contention
+// (initial 2s surfaced partial-success flakes in PR #64's windows-CI
+// re-run — 10 parallel lock-attempts, only 6-8 would win within 2s,
+// the rest timed out silently and dropped increments). 5s is still
+// well under any reasonable tool-call latency budget.
+const LOCK_WAIT_MS = 5000;
 const LOCK_POLL_MS = 25;
 const LOCK_STALE_MS = 10_000;
 
