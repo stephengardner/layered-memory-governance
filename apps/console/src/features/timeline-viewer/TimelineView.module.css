@@ -1,0 +1,239 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-width: 100%;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.total {
+  font-family: var(--font-display);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  letter-spacing: -0.03em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.label {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  margin-top: 2px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.legendChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.legendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+}
+
+.legendDot[data-type="directive"]  { background: var(--status-danger); }
+.legendDot[data-type="decision"]   { background: var(--accent); }
+.legendDot[data-type="preference"] { background: var(--status-warning); }
+.legendDot[data-type="reference"]  { background: var(--status-success); }
+.legendDot[data-type="plan"]       { background: var(--accent-active); }
+.legendDot[data-type="observation"] { background: var(--text-muted); }
+
+/*
+ * Two-column layout: principal name (fixed width) + time lane
+ * (flexible). Single shared rows container keeps them aligned via
+ * grid rows. The xAxis + corner are the first row.
+ */
+.grid {
+  display: grid;
+  grid-template-columns: 14rem 1fr;
+  background: var(--surface-base);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-overlay) 20%, transparent) 0%,
+    transparent 50%
+  );
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.corner {
+  padding: var(--space-3) var(--space-4);
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.cornerHint {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.xAxis {
+  position: relative;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  height: 2rem;
+}
+
+.xTick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed color-mix(in srgb, var(--border-strong) 40%, transparent);
+  padding-left: var(--space-1);
+}
+
+.xLabel {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.rows {
+  display: contents;
+}
+
+.row {
+  display: contents;
+}
+
+.row > .rowLabel { border-top: 1px solid var(--border-subtle); }
+.row > .rowLane  { border-top: 1px solid var(--border-subtle); }
+
+.rowLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-base);
+  min-height: 2.25rem;
+}
+
+.rowIndent {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+.rowName {
+  flex: 1;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowMeta {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  padding: 0 var(--space-2);
+  background: var(--surface-raised);
+  border-radius: var(--radius-pill);
+}
+
+.rowLane {
+  position: relative;
+  min-height: 2.25rem;
+  background:
+    repeating-linear-gradient(
+      to right,
+      transparent,
+      transparent calc(100% / 14 - 1px),
+      color-mix(in srgb, var(--border-subtle) 50%, transparent) calc(100% / 14 - 1px),
+      color-mix(in srgb, var(--border-subtle) 50%, transparent) calc(100% / 14)
+    );
+}
+
+.dot {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--surface-base);
+  cursor: pointer;
+  padding: 0;
+  transition: transform var(--duration-fast) var(--easing-standard),
+              box-shadow var(--duration-fast) var(--easing-standard);
+}
+
+.dot:hover {
+  transform: translate(-50%, -50%) scale(1.4);
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 30%, transparent);
+  z-index: 2;
+}
+
+.dot[data-type="directive"]  { background: var(--status-danger); color: var(--status-danger); }
+.dot[data-type="decision"]   { background: var(--accent); color: var(--accent); }
+.dot[data-type="preference"] { background: var(--status-warning); color: var(--status-warning); }
+.dot[data-type="reference"]  { background: var(--status-success); color: var(--status-success); }
+.dot[data-type="plan"]       { background: var(--accent-active); color: var(--accent-active); }
+.dot[data-type="observation"] { background: var(--text-muted); color: var(--text-muted); }
+.dot[data-type="actor-message"] { background: var(--accent-hover); color: var(--accent-hover); }
+.dot[data-type="question"]   { background: var(--text-tertiary); color: var(--text-tertiary); }
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(1px, 1px, 1px, 1px);
+  white-space: nowrap;
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-content: flex-end;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.footSep {
+  color: var(--text-tertiary);
+}
+
+/*
+ * Hover-card portal wrap. Position-only — the visual comes from the
+ * shared <AtomHoverCard> so the graph and timeline render an
+ * identical tooltip.
+ */
+.hoverWrap {
+  position: fixed;
+  z-index: 300;
+  animation: hoverFadeIn 0.12s var(--easing-standard);
+}
+
+@keyframes hoverFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

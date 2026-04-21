@@ -23,6 +23,12 @@ coverage/
 .vitest-cache/
 *.tsbuildinfo
 
+# Playwright
+test-results/
+playwright-report/
+.playwright-mcp/
+playwright/.cache/
+
 # Simulation scratch
 /scratch/
 *.sim.log

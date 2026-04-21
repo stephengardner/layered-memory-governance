@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LAG Console</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+    />
+    <!--
+      The theme class is applied inline (before React mounts) to
+      avoid a flash-of-wrong-theme on first paint. Reads the
+      user's persisted preference first; falls back to the
+      operating-system color scheme. Storage key must match the
+      one src/services/storage.service.ts uses.
+    -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('lag-console.theme');
+          var stored = raw ? JSON.parse(raw) : null;
+          var valid = stored === 'dark' || stored === 'light' || stored === 'sunset';
+          var theme = valid ? stored : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+          document.body && document.body.classList.add('theme-' + theme);
+          document.documentElement.dataset.initialTheme = theme;
+        } catch (e) {
+          document.documentElement.dataset.initialTheme = 'dark';
+        }
+      })();
+    </script>
+  </head>
+  <body class="theme-dark">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

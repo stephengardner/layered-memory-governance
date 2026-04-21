@@ -1,0 +1,151 @@
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-5);
+  background: var(--surface-base);
+  border-right: 1px solid var(--border-subtle);
+  min-height: 100vh;
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+  margin: 0 calc(-1 * var(--space-5));
+}
+
+.brandLogo {
+  width: auto;
+  height: var(--space-8);
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/*
+ * The logo PNG is authored for dark surfaces (light ink on dark bg).
+ * Light theme flips luminance while preserving hue via the classic
+ * invert + hue-rotate(180deg) pair — blues stay blue, lights turn dark.
+ */
+:global(body.theme-light) .brandLogo {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+.brandTagline {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.24em;
+  text-align: center;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  text-align: left;
+  text-decoration: none;
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard);
+}
+
+.item:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.itemActive {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  position: relative;
+}
+
+.itemActive::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 2px;
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+}
+
+.itemLabel {
+  display: inline;
+}
+
+/*
+ * Mobile: sidebar becomes a fixed bottom tab bar. Brand is hidden
+ * (logo lives in header instead at mobile sizes). Nav becomes a
+ * horizontal row, 4 equal tabs, touch targets ≥44px per mobile-first
+ * canon. Safe-area padding for devices with a home-indicator.
+ */
+@media (max-width: 48rem) {
+  .sidebar {
+    flex-direction: row;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto;
+    min-height: 0;
+    height: calc(var(--space-10) + env(safe-area-inset-bottom));
+    padding: var(--space-2) var(--space-3) calc(var(--space-2) + env(safe-area-inset-bottom));
+    gap: 0;
+    border-right: none;
+    border-top: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--surface-base) 85%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    z-index: 50;
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .nav {
+    flex-direction: row;
+    flex: 1;
+    gap: var(--space-1);
+  }
+
+  .item {
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--space-2) var(--space-1);
+    align-items: center;
+    justify-content: center;
+    font-size: var(--font-size-xs);
+    min-height: 44px;
+  }
+
+  .itemActive::before {
+    top: 0;
+    bottom: auto;
+    left: 20%;
+    right: 20%;
+    width: auto;
+    height: 2px;
+  }
+}

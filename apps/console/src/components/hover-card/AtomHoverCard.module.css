@@ -1,0 +1,82 @@
+.card {
+  max-width: 28rem;
+  min-width: 20rem;
+  padding: var(--space-4);
+  background: var(--surface-base);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-overlay) 50%, transparent) 0%,
+    transparent 40%
+  );
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  pointer-events: auto;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.type {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-xs);
+  color: var(--text-on-accent);
+  background: var(--accent);
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.type[data-type="directive"]  { background: var(--status-danger); }
+.type[data-type="decision"]   { background: var(--accent); }
+.type[data-type="preference"] { background: var(--status-warning); color: var(--palette-ink-900); }
+.type[data-type="reference"]  { background: var(--status-success); color: var(--palette-ink-900); }
+.type[data-type="plan"]       { background: var(--accent-active); }
+.type[data-type="observation"]    { background: var(--text-muted); }
+.type[data-type="actor-message"]  { background: var(--accent-hover); }
+
+.id {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  word-break: break-all;
+  min-width: 0;
+}
+
+.content {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: var(--line-height-normal);
+}
+
+.meta {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.dot {
+  color: var(--text-tertiary);
+}
+
+.hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: var(--space-2);
+  font-family: var(--font-mono);
+}

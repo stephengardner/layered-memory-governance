@@ -1,0 +1,86 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface-base);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-overlay) 25%, transparent) 0%,
+    transparent 60%
+  );
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.legend {
+  display: flex;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.legendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+}
+
+.legendDot[data-role="ancestor"]   { background: var(--status-success); }
+.legendDot[data-role="center"]     { background: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+.legendDot[data-role="referencer"] { background: var(--status-warning); }
+
+.svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.edge {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  opacity: 0.6;
+  transition: stroke var(--duration-fast) var(--easing-standard), opacity var(--duration-fast) var(--easing-standard);
+}
+
+.node {
+  cursor: pointer;
+}
+
+.node:hover .dot {
+  r: 8;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 50%, transparent));
+}
+
+.dot {
+  transition: r var(--duration-fast) var(--easing-standard);
+}
+
+.dot[data-role="ancestor"]   { fill: var(--status-success); }
+.dot[data-role="center"]     { fill: var(--accent); stroke: color-mix(in srgb, var(--accent) 30%, transparent); stroke-width: 3; }
+.dot[data-role="referencer"] { fill: var(--status-warning); }
+
+.dot[data-type="directive"]  { fill: var(--status-danger); }
+.dot[data-type="plan"]       { fill: var(--accent-active); }
+
+.label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: var(--text-secondary);
+  pointer-events: none;
+}
+
+.label[data-anchor="end"]    { text-anchor: end; }
+.label[data-anchor="middle"] { text-anchor: middle; }
+.label[data-anchor="start"]  { text-anchor: start; }
+
+.node:hover .label {
+  fill: var(--text-primary);
+}

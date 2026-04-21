@@ -1,0 +1,38 @@
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  background: color-mix(in srgb, var(--status-danger) 15%, var(--surface-base));
+  border-bottom: 1px solid color-mix(in srgb, var(--status-danger) 40%, transparent);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  flex-wrap: wrap;
+}
+
+.banner svg {
+  color: var(--status-danger);
+  flex-shrink: 0;
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--status-danger);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--status-danger) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-danger) 50%, transparent);
+  transition: background var(--duration-fast) var(--easing-standard);
+}
+
+.action:hover {
+  background: color-mix(in srgb, var(--status-danger) 28%, transparent);
+}

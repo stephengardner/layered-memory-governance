@@ -1,0 +1,140 @@
+/*
+ * Global stylesheet. Declares the cascade layer order FIRST
+ * so every stylesheet downstream (tokens, base, components,
+ * utilities) lands in predictable order no matter the import order.
+ *
+ * Canon: dev-web-multi-theme-layered-tokens.
+ */
+
+@layer tokens, base, components, utilities;
+
+@import "../tokens/tokens.css";
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  /*
+   * Global overflow guard: any h1-h6 heading and any <code>/<kbd>
+   * element can hold a single very long string (atom IDs, JSON
+   * output, URL slugs). `overflow-wrap: anywhere` lets those break
+   * at any character when no soft break point fits. Without this
+   * rule a plan titled with stringified JSON blows past the card
+   * edge and breaks the layout.
+   */
+  h1, h2, h3, h4, h5, h6, code, kbd {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-size: var(--font-size-md);
+    line-height: var(--line-height-normal);
+    font-weight: var(--font-weight-regular);
+    color: var(--text-primary);
+    background-color: var(--surface-canvas);
+    background-image:
+      radial-gradient(
+        ellipse at 100% 0%,
+        var(--bg-decor-primary) 0%,
+        transparent 55%
+      ),
+      radial-gradient(
+        ellipse at 0% 100%,
+        var(--bg-decor-secondary) 0%,
+        transparent 60%
+      );
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    position: relative;
+  }
+
+  /*
+   * Ambient noise overlay. Fixed-positioned fractal noise behind all
+   * content (z-index 0) so it reads as faint grain over the canvas
+   * gradients. #root stacks above at z-index 1. Noise opacity is
+   * token-driven per theme — subtler in light, richer in dark.
+   */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: var(--bg-noise-opacity);
+    background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+
+  button {
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  a:hover {
+    color: var(--accent-hover);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--text-on-accent);
+  }
+
+  ::-webkit-scrollbar {
+    width: var(--space-3);
+    height: var(--space-3);
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: var(--radius-pill);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+  }
+}

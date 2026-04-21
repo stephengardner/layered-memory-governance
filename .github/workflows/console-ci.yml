@@ -1,0 +1,59 @@
+name: Console CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/console/**'
+      - '.github/workflows/console-ci.yml'
+  pull_request:
+    paths:
+      - 'apps/console/**'
+      - '.github/workflows/console-ci.yml'
+
+jobs:
+  verify:
+    name: typecheck + build + lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/console
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/console/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        # `tsc -b --noEmit` enforces exactOptionalPropertyTypes + strict
+        # mode across the app + server workspaces. Any type regression
+        # fails CI here before the build even starts.
+        run: npm run typecheck
+
+      - name: Build
+        # Production build checks that the Vite pipeline succeeds end-
+        # to-end (SWC compile + CSS modules + import analysis + asset
+        # bundling). Catches missing imports, broken CSS, bad aliases.
+        run: npm run build
+
+      - name: Lint
+        # Currently eslint + stylelint are advisory; the flag keeps CI
+        # green even if lint has warnings so we can land the CI gate
+        # without having to clean every lint message first. Graduates
+        # to a hard gate once we've burned down warnings — follow-up.
+        run: npm run lint || true
+
+  # Playwright e2e deferred to follow-up: the tests depend on a .lag/
+  # atoms directory populated with fixture JSON. Running e2e in CI
+  # requires committing a stable test fixture and pointing
+  # LAG_CONSOLE_LAG_DIR at it. Tracked separately so this workflow
+  # can land and start providing typecheck+build signal immediately.
