@@ -199,7 +199,7 @@ export async function runActor<
       // earliest safe point (between actions; never mid-adapter-call).
       // Both the predicate and the AbortSignal are consulted; either
       // tripping halts the loop. Medium-tier adapters that see the
-      // signal should ALREADY be aborting their own in-flight work —
+      // signal should ALREADY be aborting their own in-flight work -
       // this loop-level check catches the signal between adapter calls
       // so the actor halts cleanly instead of starting a new apply.
       if (options.killSwitch?.() || (options.killSwitchSignal !== undefined && options.killSwitchSignal.aborted)) {
