@@ -61,6 +61,15 @@ export interface InvokeClaudeOptions {
    * prior-context tokens.
    */
   readonly resumeSessionId?: string;
+  /**
+   * Runtime-revocation signal. When aborted, the claude child
+   * process is SIGTERMed via execa's cancelSignal and the call
+   * rejects with an AbortError. Callers that thread
+   * `ActorContext.abortSignal` here get kill-switch propagation
+   * into in-flight LLM streams without the call having to complete
+   * or the timeout to elapse.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface InvokeClaudeResult {
@@ -160,6 +169,12 @@ export async function invokeClaude(options: InvokeClaudeOptions): Promise<Invoke
         // Claude CLI loads. Default to the calling process's cwd so the
         // daemon, when run from the LAG repo, naturally loads LAG canon.
         cwd: options.cwd ?? process.cwd(),
+        // cancelSignal SIGTERMs the claude child when the caller's
+        // AbortSignal trips. Execa rejects with AbortError; the
+        // outer catch lets it propagate, which is the right
+        // behaviour: a caller-initiated abort is not a timeout and
+        // not an ENOENT, so it should not be re-classified.
+        ...(options.signal !== undefined ? { cancelSignal: options.signal } : {}),
       });
     } catch (err) {
       if (isExecaError(err) && err.timedOut) {

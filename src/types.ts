@@ -363,6 +363,16 @@ export interface LlmOptions {
   readonly max_budget_usd: number;
   /** Default true. If false, caller accepts the risk of non-sandboxed execution. */
   readonly sandboxed?: boolean;
+  /**
+   * Runtime-revocation signal. Implementations that spawn a child
+   * process or stream from a remote should subscribe; on abort the
+   * call rejects (with AbortError, or an implementation-specific
+   * equivalent) and any in-flight work unwinds. Implementations that
+   * cannot honour mid-call abort MAY ignore this field. Callers
+   * should treat a thrown AbortError as "kill-switch tripped" rather
+   * than "judge failed".
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface JudgeMetadata {
