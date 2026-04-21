@@ -22,8 +22,8 @@
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { execa } from 'execa';
 import {
   createCredentialsStore,
 } from '../dist/actors/provisioning/index.js';
@@ -144,46 +144,44 @@ async function main() {
   // Exec gh with GH_TOKEN overridden for this child only. GH_TOKEN
   // beats any cached `gh auth` state; the parent shell is unaffected.
   //
-  // shell:true ONLY on win32: the gh distribution on Windows ships as
-  // a .cmd/.bat shim (gh.cmd, not gh.exe in every install). Node's
-  // `spawn` with shell:false does NOT resolve .cmd/.bat via PATH, so
-  // on Windows the invocation fails with ENOENT. shell:true hands the
-  // lookup to cmd.exe which DOES resolve the shim. On Linux/macOS we
-  // keep shell:false to avoid the shell-metacharacter injection
-  // surface that shell:true would open up; the forwarded GH_TOKEN
-  // argv is safe but user-passed args flow through unchecked.
-  const isWindows = process.platform === 'win32';
-  const child = spawn('gh', ghArgs, {
-    env: {
-      ...process.env,
-      GH_TOKEN: token.token,
-      // Defensive: some deployments have GITHUB_TOKEN set too.
-      GITHUB_TOKEN: token.token,
-    },
-    stdio: 'inherit',
-    shell: isWindows,
-  });
-
-  // A process can terminate two ways: normal exit (code is a number,
-  // signal is null) or killed by a signal (code is null, signal is a
-  // string like 'SIGTERM'). Forwarding only `code` here masked signal
-  // terminations as exit 0; CI would treat a killed gh child as
-  // success. Translate a signal termination to a non-zero exit so the
-  // downstream check (GitHub Actions, make, shell && chain) fails
-  // loudly. 128 + (Unix signal number) is the POSIX convention; we
-  // don't have the signal number in Node's callback, so use a single
-  // stable non-zero (1) with the signal name surfaced on stderr.
-  child.on('exit', (code, signal) => {
-    if (signal !== null) {
-      console.error(`[gh-as] gh child terminated by signal ${signal}`);
-      process.exit(1);
+  // Uses execa rather than raw spawn. Rationale: a prior revision
+  // used `spawn('gh', args, { shell: true })` on Windows to resolve
+  // the gh.cmd shim, but `shell: true` concatenates argv elements
+  // with spaces and passes the whole string to cmd.exe, which then
+  // re-splits on whitespace. Any arg containing a space (e.g.
+  // `--title "some title with spaces"`, `-f "title=some title"`)
+  // was shredded into multiple tokens, producing gh usage errors.
+  // execa handles .cmd / .bat shims on Windows without invoking a
+  // shell AND preserves argv boundaries, so whitespace-bearing
+  // args survive intact. On Linux/macOS the behavior is
+  // equivalent to the prior shell:false path.
+  let exitCode = 0;
+  try {
+    const result = await execa('gh', ghArgs, {
+      env: {
+        ...process.env,
+        GH_TOKEN: token.token,
+        // Defensive: some deployments have GITHUB_TOKEN set too.
+        GITHUB_TOKEN: token.token,
+      },
+      stdio: 'inherit',
+      reject: false,
+    });
+    // signalDescription is set when the child was killed by a signal.
+    // 128 + (Unix signal number) is the POSIX convention; we don't
+    // have the signal number here, so use a single stable non-zero
+    // (1) with the signal name on stderr.
+    if (result.signalDescription) {
+      console.error(`[gh-as] gh child terminated by signal ${result.signalDescription}`);
+      exitCode = 1;
+    } else {
+      exitCode = typeof result.exitCode === 'number' ? result.exitCode : 0;
     }
-    process.exit(code ?? 0);
-  });
-  child.on('error', (err) => {
+  } catch (err) {
     console.error(`[gh-as] failed to spawn gh: ${err?.message ?? err}`);
-    process.exit(1);
-  });
+    exitCode = 1;
+  }
+  process.exit(exitCode);
 }
 
 /**
