@@ -3,9 +3,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { NotFoundError } from '../../../src/errors.js';
-import type { Host } from '../../../src/interface.js';
-import type { CommitRef, Diff, PrincipalId, ProposalId } from '../../../src/types.js';
+import { NotFoundError } from '../../../src/substrate/errors.js';
+import type { Host } from '../../../src/substrate/interface.js';
+import type { CommitRef, Diff, PrincipalId, ProposalId } from '../../../src/substrate/types.js';
 import type { TargetFactory } from './types.js';
 
 const admin = 'admin_1' as PrincipalId;

@@ -22,7 +22,7 @@ import {
   runExtractionPass,
 } from '../../src/extraction/index.js';
 import { EXTRACT_CLAIMS, type ExtractClaimsOutput } from '../../src/schemas/index.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const extractor = 'extractor-principal' as PrincipalId;

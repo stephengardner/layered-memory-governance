@@ -33,7 +33,7 @@ import type {
   AtomId,
   PrincipalId,
   Time,
-} from '../../src/types.js';
+} from '../../src/substrate/types.js';
 
 const BOOTSTRAP_TIME = '2026-04-20T00:00:00.000Z' as Time;
 

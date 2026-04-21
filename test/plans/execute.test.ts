@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { executePlan, transitionPlanState } from '../../src/plans/index.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const principal = 'exec-test' as PrincipalId;

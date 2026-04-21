@@ -44,8 +44,8 @@
  * them.
  */
 
-import type { AtomStore } from './interface.js';
-import type { AtomId, PrincipalId } from './types.js';
+import type { AtomStore } from './substrate/interface.js';
+import type { AtomId, PrincipalId } from './substrate/types.js';
 
 /**
  * Canonical atom-id prefix. The per-principal atom lives at

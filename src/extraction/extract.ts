@@ -17,8 +17,8 @@
  * the next with provenance preserved.
  */
 
-import { ConflictError } from '../errors.js';
-import type { Host } from '../interface.js';
+import { ConflictError } from '../substrate/errors.js';
+import type { Host } from '../substrate/interface.js';
 import {
   EXTRACT_CLAIMS,
   type ExtractClaimsOutput,
@@ -31,7 +31,7 @@ import type {
   LlmOptions,
   PrincipalId,
   Time,
-} from '../types.js';
+} from '../substrate/types.js';
 
 export interface ExtractClaimsOptions {
   /** Principal attributed to the extraction operation itself (for audit). */

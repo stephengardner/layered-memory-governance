@@ -19,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createBridgeHost, type BridgeHost } from '../../src/adapters/bridge/index.js';
 import { LoopRunner } from '../../src/loop/runner.js';
 import type { LoopTickReport } from '../../src/loop/types.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const RUN_REAL_PALACE = process.env['LAG_REAL_PALACE'] === '1';

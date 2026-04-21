@@ -29,7 +29,7 @@ import type {
   PlanningJudgment,
   ProposedPlan,
 } from '../../../src/actors/planning/types.js';
-import type { AtomId, PrincipalId } from '../../../src/types.js';
+import type { AtomId, PrincipalId } from '../../../src/substrate/types.js';
 import { sampleAtom, samplePrincipal } from '../../fixtures.js';
 
 function stubJudgment(

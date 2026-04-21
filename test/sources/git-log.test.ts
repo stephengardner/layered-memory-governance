@@ -22,7 +22,7 @@ import {
   GitLogSource,
   parseGitLog,
 } from '../../src/sources/git-log.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principal = 'git-test' as PrincipalId;
 

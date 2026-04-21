@@ -27,7 +27,7 @@
  * migrations and new consumers from rigidity.
  */
 
-import type { AtomId, PrincipalId, Time } from '../types.js';
+import type { AtomId, PrincipalId, Time } from '../substrate/types.js';
 
 /**
  * Urgency tier. A policy-atom-driven ordering function uses this plus

@@ -5,7 +5,7 @@
  * for the shape rationale and D16/D17 for the architectural context.
  */
 
-import type { PrincipalId, Time } from '../types.js';
+import type { PrincipalId, Time } from '../substrate/types.js';
 
 // ---------------------------------------------------------------------------
 // Adapters

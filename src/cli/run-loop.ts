@@ -20,8 +20,8 @@ import { createBridgeHost, type BridgeHost } from '../adapters/bridge/index.js';
 import { CachingEmbedder } from '../adapters/_common/caching-embedder.js';
 import { TrigramEmbedder } from '../adapters/_common/trigram-embedder.js';
 import { LoopRunner } from '../loop/runner.js';
-import type { Embedder, Host } from '../interface.js';
-import type { PrincipalId } from '../types.js';
+import type { Embedder, Host } from '../substrate/interface.js';
+import type { PrincipalId } from '../substrate/types.js';
 import type { LoopTickReport } from '../loop/types.js';
 
 type EmbedderChoice = 'trigram' | 'onnx-minilm';

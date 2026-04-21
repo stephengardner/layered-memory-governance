@@ -35,7 +35,7 @@ import type {
   ProposedAction,
   Reflection,
 } from '../types.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
 import { aggregateRelevantContext } from './aggregate-context.js';
 import type { AggregateContextOptions } from './aggregate-context.js';
 import type {

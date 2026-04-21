@@ -20,7 +20,7 @@ import {
   SubActorRegistry,
   type InvokeResult,
 } from '../../src/actor-message/sub-actor-registry.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 
 function planAtom(
   id: string,

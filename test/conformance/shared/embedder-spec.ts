@@ -21,7 +21,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { Embedder } from '../../../src/interface.js';
+import type { Embedder } from '../../../src/substrate/interface.js';
 
 export function runEmbedderSpec(label: string, make: () => Embedder): void {
   describe(`Embedder conformance (${label})`, () => {

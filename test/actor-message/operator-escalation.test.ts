@@ -20,7 +20,7 @@ import {
 } from '../../src/actor-message/operator-escalation.js';
 import type { ActorReport } from '../../src/actors/types.js';
 import type { ReviewComment } from '../../src/actors/pr-review/adapter.js';
-import type { PrincipalId, Time } from '../../src/types.js';
+import type { PrincipalId, Time } from '../../src/substrate/types.js';
 
 function mkReport(over: Partial<ActorReport> = {}): ActorReport {
   return {

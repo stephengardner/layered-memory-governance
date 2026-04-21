@@ -12,8 +12,8 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { ConflictError, NotFoundError } from '../../errors.js';
-import type { CanonStore } from '../../interface.js';
+import { ConflictError, NotFoundError } from '../../substrate/errors.js';
+import type { CanonStore } from '../../substrate/interface.js';
 import type {
   Commit,
   CommitRef,
@@ -21,7 +21,7 @@ import type {
   PrincipalId,
   Proposal,
   ProposalId,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import type { FileClock } from './clock.js';
 import {
   appendLine,

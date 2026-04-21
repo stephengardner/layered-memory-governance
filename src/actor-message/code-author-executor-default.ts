@@ -17,8 +17,8 @@
 
 import { randomBytes } from 'node:crypto';
 import type { execa } from 'execa';
-import type { Atom } from '../types.js';
-import type { Host } from '../interface.js';
+import type { Atom } from '../substrate/types.js';
+import type { Host } from '../substrate/interface.js';
 import type { GhClient } from '../external/github/index.js';
 import {
   draftCodeChange,

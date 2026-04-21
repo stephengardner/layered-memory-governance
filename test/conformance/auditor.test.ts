@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import type { AuditEvent, PrincipalId, Time } from '../../src/types.js';
+import type { AuditEvent, PrincipalId, Time } from '../../src/substrate/types.js';
 import { runAuditorSpec } from './shared/auditor-spec.js';
 
 runAuditorSpec('memory', async () => ({ host: createMemoryHost() }));

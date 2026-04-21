@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFileHost, type FileHost } from '../../src/adapters/file/index.js';
 import { LoopRunner } from '../../src/loop/runner.js';
-import type { AtomId, AtomType, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, AtomType, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom, samplePrincipal } from '../fixtures.js';
 
 const principalId = 'lag-self' as PrincipalId;

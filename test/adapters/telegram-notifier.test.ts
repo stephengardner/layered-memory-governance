@@ -31,7 +31,7 @@ import type {
   NotificationHandle,
   PrincipalId,
   Time,
-} from '../../src/types.js';
+} from '../../src/substrate/types.js';
 
 const principal = 'telegram-test' as PrincipalId;
 

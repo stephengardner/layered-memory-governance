@@ -23,9 +23,9 @@
  * visible to the rate limiter's open-trip scan.
  */
 
-import { PermissionError, ValidationError } from '../errors.js';
-import type { Host } from '../interface.js';
-import type { Atom, AtomId, PrincipalId } from '../types.js';
+import { PermissionError, ValidationError } from '../substrate/errors.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomId, PrincipalId } from '../substrate/types.js';
 import type { CircuitBreakerResetV1 } from './types.js';
 
 /**

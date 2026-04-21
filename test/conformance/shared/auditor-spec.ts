@@ -7,8 +7,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Host } from '../../../src/interface.js';
-import type { AtomId, AuditEvent, PrincipalId, Time } from '../../../src/types.js';
+import type { Host } from '../../../src/substrate/interface.js';
+import type { AtomId, AuditEvent, PrincipalId, Time } from '../../../src/substrate/types.js';
 import type { TargetFactory } from './types.js';
 
 function event(overrides: Partial<AuditEvent> = {}): AuditEvent {

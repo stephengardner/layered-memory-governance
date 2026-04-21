@@ -57,13 +57,13 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type { Host } from '../interface.js';
+import type { Host } from '../substrate/interface.js';
 import type {
   Atom,
   AtomId,
   PrincipalId,
   Time,
-} from '../types.js';
+} from '../substrate/types.js';
 import type { InvokeResult } from './sub-actor-registry.js';
 import {
   loadCodeAuthorFence,

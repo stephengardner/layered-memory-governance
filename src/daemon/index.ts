@@ -28,15 +28,15 @@
 
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Host } from '../interface.js';
+import type { Host } from '../substrate/interface.js';
 import type {
   Atom,
   AtomId,
   Disposition,
   PrincipalId,
   Time,
-} from '../types.js';
-import { ConflictError } from '../errors.js';
+} from '../substrate/types.js';
+import { ConflictError } from '../substrate/errors.js';
 import {
   parseCallbackData,
   type TelegramNotifierOptions,

@@ -14,8 +14,8 @@
  * caring whether the backing store supports push.
  */
 
-import type { Host } from '../interface.js';
-import type { PrincipalId } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { PrincipalId } from '../substrate/types.js';
 import type { PickupOutcome, PickupOptions } from './pickup.js';
 import { pickNextMessage } from './pickup.js';
 

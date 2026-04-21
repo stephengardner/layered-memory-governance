@@ -7,7 +7,7 @@ import {
   DETECT_SYSTEM,
   ValidatorRegistry,
 } from '../../src/arbitration/index.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const principal = 'arbiter_test' as PrincipalId;

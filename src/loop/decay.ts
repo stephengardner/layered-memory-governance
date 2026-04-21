@@ -11,7 +11,7 @@
  * unrecoverable. Superseded atoms are skipped (confidence does not matter).
  */
 
-import type { Atom, AtomType } from '../types.js';
+import type { Atom, AtomType } from '../substrate/types.js';
 import { DEFAULT_HALF_LIVES } from './types.js';
 
 export function decayedConfidence(

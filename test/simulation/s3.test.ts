@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { runScenario } from '../../src/simulation/driver.js';
 import { scenarioS3 } from '../../src/simulation/scenarios/s3-promotion.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principal = 'scripted-agent-3' as PrincipalId;
 

@@ -36,9 +36,9 @@ import {
   TransientError,
   UnsupportedError,
   ValidationError,
-} from '../../errors.js';
-import type { LLM } from '../../interface.js';
-import type { JsonSchema, JudgeResult, LlmOptions } from '../../types.js';
+} from '../../substrate/errors.js';
+import type { LLM } from '../../substrate/interface.js';
+import type { JsonSchema, JudgeResult, LlmOptions } from '../../substrate/types.js';
 
 export interface ClaudeCliOptions {
   /** Path to the claude binary. Defaults to "claude" on PATH. */

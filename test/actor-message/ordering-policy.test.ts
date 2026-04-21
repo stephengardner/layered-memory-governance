@@ -19,7 +19,7 @@ import {
   readOrderingPolicy,
 } from '../../src/actor-message/ordering-policy.js';
 import { pickNextMessage } from '../../src/actor-message/pickup.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import type { ActorMessageV1, UrgencyTier } from '../../src/actor-message/types.js';
 
 function orderingAtom(overrides: {

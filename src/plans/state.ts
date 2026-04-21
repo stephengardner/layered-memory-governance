@@ -14,8 +14,8 @@
  * preserved.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, AtomId, PlanState, PrincipalId, Time } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomId, PlanState, PrincipalId, Time } from '../substrate/types.js';
 
 const ALLOWED: Readonly<Record<PlanState, ReadonlyArray<PlanState>>> = Object.freeze({
   proposed: ['approved', 'abandoned'],

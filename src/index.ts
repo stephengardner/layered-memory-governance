@@ -65,7 +65,7 @@ export type {
   Time,
   ValidationStatus,
   Vector,
-} from './types.js';
+} from './substrate/types.js';
 
 // ---------------------------------------------------------------------------
 // Core interfaces
@@ -83,7 +83,7 @@ export type {
   Scheduler,
   SchedulerHandler,
   Transaction,
-} from './interface.js';
+} from './substrate/interface.js';
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -97,7 +97,7 @@ export {
   TransientError,
   UnsupportedError,
   ValidationError,
-} from './errors.js';
+} from './substrate/errors.js';
 
 // ---------------------------------------------------------------------------
 // Arbitration

@@ -13,7 +13,7 @@
  * declared at the type level.
  */
 
-import type { Atom, AtomId, PrincipalId, Time } from '../../types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
 
 /**
  * The aggregated state the PlanningActor considers when drafting a

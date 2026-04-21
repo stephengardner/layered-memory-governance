@@ -28,12 +28,12 @@ import type {
   AtomId,
   PrincipalId,
   Time,
-} from '../../src/types.js';
+} from '../../src/substrate/types.js';
 import type {
   ActorMessageV1,
   UrgencyTier,
 } from '../../src/actor-message/types.js';
-import type { AtomSubscribeEvent, Host } from '../../src/interface.js';
+import type { AtomSubscribeEvent, Host } from '../../src/substrate/interface.js';
 
 function messageAtom(id: string, to: string, from: string, urgency: UrgencyTier = 'normal'): Atom {
   const envelope: ActorMessageV1 = {

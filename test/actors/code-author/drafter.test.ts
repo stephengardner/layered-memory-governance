@@ -27,7 +27,7 @@ import {
 import type {
   CodeAuthorFence,
 } from '../../../src/actors/code-author/fence.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../../src/substrate/types.js';
 
 const NOW = '2026-04-21T12:00:00.000Z' as Time;
 const CODE_AUTHOR = 'code-author' as PrincipalId;

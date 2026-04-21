@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFileHost, type FileHost } from '../../src/adapters/file/index.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const SPAWN_ENABLED = process.env['LAG_SPAWN_TEST'] === '1';

@@ -19,8 +19,8 @@
 
 import { arbitrate } from '../arbitration/index.js';
 import type { ConflictPair, Decision } from '../arbitration/types.js';
-import type { Host } from '../interface.js';
-import type { Atom, AtomFilter, PrincipalId } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomFilter, PrincipalId } from '../substrate/types.js';
 
 export interface ValidatePlanOptions {
   /**

@@ -1,6 +1,6 @@
-import { NotFoundError } from '../../errors.js';
-import type { PrincipalStore } from '../../interface.js';
-import type { Action, Principal, PrincipalId, Target, Time } from '../../types.js';
+import { NotFoundError } from '../../substrate/errors.js';
+import type { PrincipalStore } from '../../substrate/interface.js';
+import type { Action, Principal, PrincipalId, Target, Time } from '../../substrate/types.js';
 import type { MemoryClock } from './clock.js';
 
 /**

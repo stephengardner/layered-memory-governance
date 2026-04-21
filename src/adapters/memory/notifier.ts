@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { NotFoundError } from '../../errors.js';
-import type { Notifier } from '../../interface.js';
+import { NotFoundError } from '../../substrate/errors.js';
+import type { Notifier } from '../../substrate/interface.js';
 import type {
   Diff,
   Disposition,
@@ -8,7 +8,7 @@ import type {
   NotificationHandle,
   PrincipalId,
   Time,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import type { MemoryClock } from './clock.js';
 
 interface PendingEntry {

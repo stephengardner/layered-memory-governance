@@ -12,15 +12,15 @@
 
 import { createHash } from 'node:crypto';
 import { rename, rm } from 'node:fs/promises';
-import { NotFoundError } from '../../errors.js';
-import type { Notifier } from '../../interface.js';
+import { NotFoundError } from '../../substrate/errors.js';
+import type { Notifier } from '../../substrate/interface.js';
 import type {
   Diff,
   Disposition,
   Event,
   NotificationHandle,
   PrincipalId,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import { isEnoent, p, readJsonOrNull, writeJson } from './util.js';
 
 interface StoredEntry {

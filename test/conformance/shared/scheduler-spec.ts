@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Host } from '../../../src/interface.js';
+import type { Host } from '../../../src/substrate/interface.js';
 import type { TargetFactory } from './types.js';
 
 function sleep(ms: number): Promise<void> {

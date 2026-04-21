@@ -20,7 +20,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { TelegramNotifier } from '../../src/adapters/notifier/telegram.js';
-import type { Event, PrincipalId, Time } from '../../src/types.js';
+import type { Event, PrincipalId, Time } from '../../src/substrate/types.js';
 
 const RUN = process.env.LAG_TELEGRAM_LIVE === '1';
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;

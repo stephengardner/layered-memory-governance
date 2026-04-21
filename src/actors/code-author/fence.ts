@@ -27,8 +27,8 @@
  * atom cannot masquerade as a valid fence.
  */
 
-import type { AtomStore } from '../../interface.js';
-import type { Atom, AtomId, Layer } from '../../types.js';
+import type { AtomStore } from '../../substrate/interface.js';
+import type { Atom, AtomId, Layer } from '../../substrate/types.js';
 
 export const FENCE_ATOM_IDS = [
   'pol-code-author-signed-pr-only',

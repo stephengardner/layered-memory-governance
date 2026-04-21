@@ -16,7 +16,7 @@
  *     idempotent.
  */
 
-import type { Atom, AtomPatch } from '../types.js';
+import type { Atom, AtomPatch } from '../substrate/types.js';
 
 export interface TtlExpireOptions {
   /** Floor confidence for expired atoms. Default 0.01 (matches decay floor). */

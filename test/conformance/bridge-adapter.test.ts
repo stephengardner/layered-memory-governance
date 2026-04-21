@@ -27,7 +27,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBridgeHost } from '../../src/adapters/bridge/index.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 import { runAtomsSpec } from './shared/atoms-spec.js';
 import { runAuditorSpec } from './shared/auditor-spec.js';
 import { runCanonSpec } from './shared/canon-spec.js';

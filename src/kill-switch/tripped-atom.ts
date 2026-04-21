@@ -20,7 +20,7 @@ import type {
   AtomId,
   PrincipalId,
   Time,
-} from '../types.js';
+} from '../substrate/types.js';
 
 export type KillSwitchTripPhase =
   | 'observe'

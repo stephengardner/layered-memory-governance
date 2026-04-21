@@ -5,7 +5,7 @@ import type {
   Principal,
   PrincipalId,
   Time,
-} from '../src/types.js';
+} from '../src/substrate/types.js';
 
 let atomCounter = 0;
 

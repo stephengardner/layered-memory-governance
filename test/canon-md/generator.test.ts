@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderCanonMarkdown } from '../../src/canon-md/generator.js';
-import type { AtomId } from '../../src/types.js';
+import type { AtomId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 describe('renderCanonMarkdown', () => {

@@ -1,6 +1,6 @@
 import { hrtime } from 'node:process';
-import type { Clock } from '../../interface.js';
-import type { Time } from '../../types.js';
+import type { Clock } from '../../substrate/interface.js';
+import type { Time } from '../../substrate/types.js';
 
 /**
  * Real wall-clock clock for the file adapter.

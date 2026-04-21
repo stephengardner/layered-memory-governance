@@ -18,9 +18,9 @@ import {
   applyDecision,
   arbitrate,
 } from '../../src/arbitration/index.js';
-import type { Host } from '../../src/interface.js';
-import type { LLM } from '../../src/interface.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { Host } from '../../src/substrate/interface.js';
+import type { LLM } from '../../src/substrate/interface.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const RUN_REAL = process.env.LAG_REAL_CLI === '1';

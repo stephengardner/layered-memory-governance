@@ -19,8 +19,8 @@
  * keeps the rollback path trivial.
  */
 
-import type { Host } from '../../interface.js';
-import type { Atom, AtomId } from '../../types.js';
+import type { Host } from '../../substrate/interface.js';
+import type { Atom, AtomId } from '../../substrate/types.js';
 import { PLAN_CLASSIFY, PLAN_DRAFT } from '../../schemas/index.js';
 import type {
   PlanningClassification,

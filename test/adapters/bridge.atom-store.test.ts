@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { mapDrawerToAtom, BridgeAtomStore } from '../../src/adapters/bridge/atom-store.js';
-import type { AtomId, PrincipalId } from '../../src/types.js';
+import type { AtomId, PrincipalId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const principal = 'bridge-test' as PrincipalId;

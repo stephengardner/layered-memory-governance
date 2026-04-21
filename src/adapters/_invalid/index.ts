@@ -27,7 +27,7 @@ import type {
   Notifier,
   PrincipalStore,
   Scheduler,
-} from '../../interface.js';
+} from '../../substrate/interface.js';
 import type {
   AuditEvent,
   AuditId,
@@ -35,7 +35,7 @@ import type {
   NotificationHandle,
   PrincipalId,
   Vector,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import { createMemoryHost, type MemoryHost } from '../memory/index.js';
 
 class NonDeterministicAtomStore implements AtomStore {

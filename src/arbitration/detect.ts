@@ -9,9 +9,9 @@
  * DATA never as prompt. Schema is enforced.
  */
 
-import type { Host } from '../interface.js';
+import type { Host } from '../substrate/interface.js';
 import { DETECT_CONFLICT } from '../schemas/index.js';
-import type { Atom } from '../types.js';
+import type { Atom } from '../substrate/types.js';
 import type { ConflictKind, ConflictPair } from './types.js';
 
 // Re-export for backward compatibility with prior call sites.

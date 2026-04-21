@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { LAGDaemon, splitForTelegram } from '../../src/daemon/index.js';
-import type { Disposition, PrincipalId } from '../../src/types.js';
+import type { Disposition, PrincipalId } from '../../src/substrate/types.js';
 
 const PRINCIPAL = 'daemon-test-principal' as PrincipalId;
 const CHAT_ID = 12345;

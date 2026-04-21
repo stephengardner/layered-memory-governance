@@ -12,8 +12,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ValidationError } from '../../src/errors.js';
-import type { PrincipalId } from '../../src/types.js';
+import { ValidationError } from '../../src/substrate/errors.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 import {
   SubActorRegistry,
   type InvokeResult,

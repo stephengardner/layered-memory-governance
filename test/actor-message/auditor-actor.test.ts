@@ -14,7 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { runAuditor } from '../../src/actor-message/auditor-actor.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 
 function sampleAtom(id: string, over: Partial<Atom> = {}): Atom {
   const now = '2026-04-20T00:00:00.000Z' as Time;

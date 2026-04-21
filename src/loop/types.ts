@@ -7,7 +7,7 @@
  * long-running system.
  */
 
-import type { AtomFilter, AtomType, Time } from '../types.js';
+import type { AtomFilter, AtomType, Time } from '../substrate/types.js';
 import type { RenderOptions } from '../canon-md/index.js';
 
 export interface HalfLifeConfig {

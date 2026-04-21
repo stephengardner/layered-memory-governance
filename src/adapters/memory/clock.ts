@@ -1,5 +1,5 @@
-import type { Clock } from '../../interface.js';
-import type { Time } from '../../types.js';
+import type { Clock } from '../../substrate/interface.js';
+import type { Time } from '../../substrate/types.js';
 
 /**
  * Injectable clock for tests and simulation.

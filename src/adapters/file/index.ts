@@ -11,7 +11,7 @@
  */
 
 import { rm } from 'node:fs/promises';
-import type { Embedder, Host, LLM } from '../../interface.js';
+import type { Embedder, Host, LLM } from '../../substrate/interface.js';
 import { MemoryLLM } from '../memory/llm.js';
 import { MemoryClock } from '../memory/clock.js';
 import { FileAtomStore } from './atom-store.js';

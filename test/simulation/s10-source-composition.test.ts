@@ -30,7 +30,7 @@ import {
   ClaudeCodeTranscriptSource,
   FreshSource,
 } from '../../src/sources/index.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principalId = 'source-compose' as PrincipalId;
 

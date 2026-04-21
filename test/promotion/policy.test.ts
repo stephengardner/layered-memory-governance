@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { evaluate } from '../../src/promotion/policy.js';
 import type { PromotionCandidate } from '../../src/promotion/types.js';
-import type { Atom } from '../../src/types.js';
+import type { Atom } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 function candidate(atom: Atom, overrides: Partial<PromotionCandidate> = {}): PromotionCandidate {

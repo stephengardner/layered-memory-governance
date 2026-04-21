@@ -13,7 +13,7 @@ import type {
   Atom,
   AtomId,
   AtomType,
-} from '../types.js';
+} from '../substrate/types.js';
 
 export interface WorldUpdate {
   readonly factId: string;

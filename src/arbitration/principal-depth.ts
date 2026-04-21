@@ -18,8 +18,8 @@
  * feeding this depth into `sourceRank(atom, depth)`.
  */
 
-import type { PrincipalStore } from '../interface.js';
-import type { PrincipalId } from '../types.js';
+import type { PrincipalStore } from '../substrate/interface.js';
+import type { PrincipalId } from '../substrate/types.js';
 
 /**
  * Principal chains deeper than this are capped. Exceeds realistic org

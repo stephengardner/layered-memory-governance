@@ -19,7 +19,7 @@ import {
   matchSpecificity,
   parsePolicy,
 } from '../../src/policy/index.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const operator = 'stephen-human' as PrincipalId;

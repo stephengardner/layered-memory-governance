@@ -17,8 +17,8 @@
  */
 
 import { existsSync } from 'node:fs';
-import type { Host } from '../interface.js';
-import type { PrincipalId, Time } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { PrincipalId, Time } from '../substrate/types.js';
 import type { InboxMessage } from './inbox-reader.js';
 import { emitAck, listUnread } from './inbox-reader.js';
 import {

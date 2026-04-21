@@ -20,7 +20,7 @@ import type {
   AtomSignals,
   PrincipalId,
   Time,
-} from '../types.js';
+} from '../substrate/types.js';
 import type { MemoryHost } from '../adapters/memory/index.js';
 import { applyDecision, arbitrate, ValidatorRegistry } from '../arbitration/index.js';
 import {

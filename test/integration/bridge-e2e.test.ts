@@ -26,7 +26,7 @@ import type {
   AtomSignals,
   PrincipalId,
   Time,
-} from '../../src/types.js';
+} from '../../src/substrate/types.js';
 
 const RUN_REAL_CLI = process.env['LAG_REAL_CLI'] === '1';
 const RUN_REAL_PALACE = process.env['LAG_REAL_PALACE'] === '1';

@@ -15,7 +15,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Host } from '../interface.js';
+import type { Host } from '../substrate/interface.js';
 import type {
   Atom,
   AtomId,
@@ -23,7 +23,7 @@ import type {
   Event,
   PrincipalId,
   Time,
-} from '../types.js';
+} from '../substrate/types.js';
 import { ValidatorRegistry } from '../arbitration/validation.js';
 import {
   DEFAULT_THRESHOLDS,

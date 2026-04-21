@@ -3,7 +3,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { runScenario } from '../../src/simulation/driver.js';
 import { formatReport, summarize } from '../../src/simulation/metrics.js';
 import { scenarioS1 } from '../../src/simulation/scenarios/s1-self-bootstrap.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principal = 'scripted-agent-1' as PrincipalId;
 

@@ -23,7 +23,7 @@ import type {
   ProposedAction,
   Reflection,
 } from '../../src/actors/types.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { samplePrincipal, sampleAtom } from '../fixtures.js';
 
 interface StubAdapters extends ActorAdapters {

@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { UnsupportedError, ValidationError } from '../../errors.js';
-import type { LLM } from '../../interface.js';
+import { UnsupportedError, ValidationError } from '../../substrate/errors.js';
+import type { LLM } from '../../substrate/interface.js';
 import type {
   JsonSchema,
   JudgeMetadata,
   JudgeResult,
   LlmOptions,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import type { MemoryClock } from './clock.js';
 
 /**

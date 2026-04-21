@@ -36,8 +36,8 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { Embedder } from '../../interface.js';
-import type { Vector } from '../../types.js';
+import type { Embedder } from '../../substrate/interface.js';
+import type { Vector } from '../../substrate/types.js';
 
 export interface CachingEmbedderOptions {
   /**

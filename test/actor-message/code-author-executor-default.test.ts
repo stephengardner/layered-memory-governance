@@ -18,7 +18,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import type { execa } from 'execa';
 import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/index.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
 import { buildDefaultCodeAuthorExecutor } from '../../src/actor-message/executor-default.js';
 import {

@@ -24,8 +24,8 @@
  *   mechanism-only.
  */
 
-import { ValidationError } from '../errors.js';
-import type { PrincipalId } from '../types.js';
+import { ValidationError } from '../substrate/errors.js';
+import type { PrincipalId } from '../substrate/types.js';
 
 /**
  * Result shape from a sub-actor invocation. Discriminated union so

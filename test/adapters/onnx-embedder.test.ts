@@ -14,7 +14,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { OnnxMiniLmEmbedder } from '../../src/adapters/_common/onnx-minilm-embedder.js';
-import type { AtomId } from '../../src/types.js';
+import type { AtomId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 import { runEmbedderSpec } from '../conformance/shared/embedder-spec.js';
 

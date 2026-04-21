@@ -9,8 +9,8 @@
  * each atom is used.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom } from '../substrate/types.js';
 import type { ConflictPair, DecisionOutcome } from './types.js';
 
 export type ValidationResult = 'verified' | 'invalid' | 'unverifiable';

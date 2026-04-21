@@ -16,8 +16,8 @@
  *   phase can add an LLM-backed auditor as a separate actor.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, AtomId, AtomType, PrincipalId, Time } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomId, AtomType, PrincipalId, Time } from '../substrate/types.js';
 import type { ActorMessageV1, UrgencyTier } from './types.js';
 import type { InvokeResult } from './sub-actor-registry.js';
 

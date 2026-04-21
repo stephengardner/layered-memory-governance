@@ -11,7 +11,7 @@ import {
   mkKillSwitchTrippedAtom,
   mkKillSwitchTrippedAtomId,
 } from '../../src/kill-switch/tripped-atom.js';
-import type { PrincipalId, Time } from '../../src/types.js';
+import type { PrincipalId, Time } from '../../src/substrate/types.js';
 
 const PRINCIPAL = 'code-author' as PrincipalId;
 

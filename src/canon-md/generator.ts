@@ -19,7 +19,7 @@
  *   - Within each type, atoms are sorted by confidence desc, then created_at desc for stability.
  */
 
-import type { Atom, AtomType } from '../types.js';
+import type { Atom, AtomType } from '../substrate/types.js';
 
 const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'directive',

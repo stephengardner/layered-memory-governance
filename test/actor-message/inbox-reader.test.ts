@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { emitAck, listUnread } from '../../src/actor-message/inbox-reader.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import type {
   ActorMessageV1,
   UrgencyTier,

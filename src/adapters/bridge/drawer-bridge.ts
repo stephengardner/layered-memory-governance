@@ -14,7 +14,7 @@
 import { execa } from 'execa';
 import { fileURLToPath } from 'node:url';
 import { join, dirname, resolve } from 'node:path';
-import { UnsupportedError, ValidationError } from '../../errors.js';
+import { UnsupportedError, ValidationError } from '../../substrate/errors.js';
 
 export interface BridgeDrawer {
   readonly id: string;

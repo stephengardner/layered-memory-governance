@@ -20,8 +20,8 @@
  *   atom.confidence    = 0.5 (default; can be refined by arbitration later)
  */
 
-import type { AtomStore } from '../../interface.js';
-import { ConflictError } from '../../errors.js';
+import type { AtomStore } from '../../substrate/interface.js';
+import { ConflictError } from '../../substrate/errors.js';
 import type {
   Atom,
   AtomFilter,
@@ -32,7 +32,7 @@ import type {
   SearchHit,
   Time,
   Vector,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import {
   dumpDrawers,
   type BootstrapOptions,

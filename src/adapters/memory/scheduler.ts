@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { Scheduler, SchedulerHandler } from '../../interface.js';
-import type { RegistrationId } from '../../types.js';
+import type { Scheduler, SchedulerHandler } from '../../substrate/interface.js';
+import type { RegistrationId } from '../../substrate/types.js';
 import type { MemoryClock } from './clock.js';
 
 interface DeferredRegistration {

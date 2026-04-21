@@ -34,7 +34,7 @@ import type {
   AtomId,
   PrincipalId,
   Time,
-} from '../../src/types.js';
+} from '../../src/substrate/types.js';
 import { sampleAtom, samplePrincipal } from '../fixtures.js';
 
 const rootPrincipal = 'root-human' as PrincipalId;

@@ -21,7 +21,7 @@ import type {
   AtomId,
   Principal,
   Time,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import type { PrReviewStatus } from '../pr-review/adapter.js';
 
 export interface PrObservationInputs {

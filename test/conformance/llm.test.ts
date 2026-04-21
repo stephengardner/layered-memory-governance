@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { UnsupportedError, ValidationError } from '../../src/errors.js';
+import { UnsupportedError, ValidationError } from '../../src/substrate/errors.js';
 
 const SCHEMA = { type: 'object', properties: { answer: { type: 'string' } } };
 

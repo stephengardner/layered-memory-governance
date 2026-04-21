@@ -13,7 +13,7 @@
  * parameterizes the DEFAULT function.
  */
 
-import type { Host } from '../interface.js';
+import type { Host } from '../substrate/interface.js';
 
 export interface OrderingPolicyConfig {
   /**

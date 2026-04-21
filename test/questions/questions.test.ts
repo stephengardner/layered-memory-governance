@@ -21,7 +21,7 @@ import {
   InvalidQuestionTransitionError,
   listPendingQuestions,
 } from '../../src/questions/index.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 
 const agent = 'agent-alice' as PrincipalId;
 const operator = 'stephen-human' as PrincipalId;

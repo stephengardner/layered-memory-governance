@@ -20,8 +20,8 @@
  * 'succeeded' or 'failed' it drops out of the scan.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../substrate/types.js';
 import type { ActorMessageV1 } from './types.js';
 import type { InvokeResult, SubActorRegistry } from './sub-actor-registry.js';
 

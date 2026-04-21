@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFileHost, type FileHost } from '../../src/adapters/file/index.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 import { runAtomsSpec } from './shared/atoms-spec.js';
 import { runAuditorSpec } from './shared/auditor-spec.js';

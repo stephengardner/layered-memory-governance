@@ -25,7 +25,7 @@ import type {
   PlanningClassification,
   PlanningContext,
 } from '../../../src/actors/planning/types.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../../src/substrate/types.js';
 
 function atomAt(
   id: string,

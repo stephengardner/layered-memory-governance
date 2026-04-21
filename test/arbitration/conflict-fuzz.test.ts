@@ -49,7 +49,7 @@ import {
   DETECT_SCHEMA,
   DETECT_SYSTEM,
 } from '../../src/arbitration/index.js';
-import type { Atom, PrincipalId } from '../../src/types.js';
+import type { Atom, PrincipalId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 type MemoryHost = ReturnType<typeof createMemoryHost>;

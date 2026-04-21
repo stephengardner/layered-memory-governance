@@ -22,8 +22,8 @@
 
 import { createFileHost, type FileHost } from '../file/index.js';
 import { ClaudeCliLLM, type ClaudeCliOptions } from '../claude-cli/llm.js';
-import type { Embedder, Host } from '../../interface.js';
-import type { PrincipalId } from '../../types.js';
+import type { Embedder, Host } from '../../substrate/interface.js';
+import type { PrincipalId } from '../../substrate/types.js';
 import { BridgeAtomStore, type BootstrapResult, type BridgeAtomStoreOptions } from './atom-store.js';
 import type { BootstrapOptions, BridgeDrawer } from './drawer-bridge.js';
 

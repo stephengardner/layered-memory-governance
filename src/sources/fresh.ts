@@ -9,7 +9,7 @@
  *     should land.
  */
 
-import type { Host } from '../interface.js';
+import type { Host } from '../substrate/interface.js';
 import type { IngestOptions, IngestReport, SessionSource } from './types.js';
 
 export class FreshSource implements SessionSource {

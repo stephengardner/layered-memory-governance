@@ -11,8 +11,8 @@
  * meaning can wrap escalation with their own semantics.
  */
 
-import type { Host } from '../interface.js';
-import type { Event, PrincipalId } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Event, PrincipalId } from '../substrate/types.js';
 import type { ConflictPair, DecisionOutcome } from './types.js';
 
 export interface EscalationOptions {

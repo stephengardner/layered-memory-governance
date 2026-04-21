@@ -1,4 +1,4 @@
-import type { Vector } from '../../types.js';
+import type { Vector } from '../../substrate/types.js';
 
 /**
  * Cosine similarity of two vectors. Returns a value in [-1, 1].

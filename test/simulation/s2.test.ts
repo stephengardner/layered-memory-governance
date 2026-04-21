@@ -4,7 +4,7 @@ import { DETECT_SCHEMA, DETECT_SYSTEM } from '../../src/arbitration/index.js';
 import { runScenario } from '../../src/simulation/driver.js';
 import { formatReport, summarize } from '../../src/simulation/metrics.js';
 import { scenarioS2 } from '../../src/simulation/scenarios/s2-decision-reversal.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principal = 'scripted-agent-2' as PrincipalId;
 

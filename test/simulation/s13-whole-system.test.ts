@@ -30,7 +30,7 @@ import { executePlan, transitionPlanState, validatePlan } from '../../src/plans/
 import { runExtractionPass } from '../../src/extraction/index.js';
 import { PromotionEngine } from '../../src/promotion/index.js';
 import { EXTRACT_CLAIMS, type ExtractClaimsOutput } from '../../src/schemas/index.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom, samplePrincipal } from '../fixtures.js';
 
 const operator = 'stephen-human' as PrincipalId;

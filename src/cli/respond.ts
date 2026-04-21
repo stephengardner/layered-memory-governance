@@ -25,7 +25,7 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
 import { FileNotifier } from '../adapters/file/notifier.js';
-import type { Disposition, NotificationHandle, PrincipalId } from '../types.js';
+import type { Disposition, NotificationHandle, PrincipalId } from '../substrate/types.js';
 
 interface CliArgs {
   readonly rootDir: string;

@@ -1,4 +1,4 @@
-import type { Embedder, Host } from '../../interface.js';
+import type { Embedder, Host } from '../../substrate/interface.js';
 import { MemoryAtomStore } from './atom-store.js';
 import { MemoryAuditor } from './auditor.js';
 import { MemoryCanonStore } from './canon-store.js';

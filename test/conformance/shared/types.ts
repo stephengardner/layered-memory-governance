@@ -7,7 +7,7 @@
  * cleanup removes a tmp dir).
  */
 
-import type { Host } from '../../../src/interface.js';
+import type { Host } from '../../../src/substrate/interface.js';
 
 export interface ConformanceTarget {
   readonly host: Host;

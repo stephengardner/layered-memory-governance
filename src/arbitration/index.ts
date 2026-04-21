@@ -11,8 +11,8 @@
  * `applyDecision` mutates atoms per the outcome and audit-logs the decision.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, AuditEvent, PrincipalId, Time } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AuditEvent, PrincipalId, Time } from '../substrate/types.js';
 import { detectConflict, type DetectOptions } from './detect.js';
 import { escalate } from './escalation.js';
 import { computePrincipalDepth } from './principal-depth.js';

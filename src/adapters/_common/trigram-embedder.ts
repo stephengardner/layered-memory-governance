@@ -9,8 +9,8 @@
  * content. Adequate as the V0 default.
  */
 
-import type { Embedder } from '../../interface.js';
-import type { Vector } from '../../types.js';
+import type { Embedder } from '../../substrate/interface.js';
+import type { Vector } from '../../substrate/types.js';
 import { embedTrigrams } from './embedding.js';
 import { cosine } from './similarity.js';
 

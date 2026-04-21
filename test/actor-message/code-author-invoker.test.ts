@@ -13,14 +13,14 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import type { Host } from '../../src/interface.js';
+import type { Host } from '../../src/substrate/interface.js';
 import type {
   Atom,
   AtomId,
   PlanState,
   PrincipalId,
   Time,
-} from '../../src/types.js';
+} from '../../src/substrate/types.js';
 import {
   runCodeAuthor,
   mkCodeAuthorInvokedAtomId,

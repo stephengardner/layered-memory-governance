@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { createInvalidHost } from '../../src/adapters/_invalid/index.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 import { sampleEvent } from '../fixtures.js';
 
 describe('Negative: invalid adapter fails the conformance checks it should fail', () => {

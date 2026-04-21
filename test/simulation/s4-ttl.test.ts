@@ -19,7 +19,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { renderCanonMarkdown } from '../../src/canon-md/generator.js';
 import { LoopRunner } from '../../src/loop/runner.js';
 import { ttlExpirePatch } from '../../src/loop/ttl.js';
-import type { AtomId, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const principal = 's4-ttl-loop' as PrincipalId;

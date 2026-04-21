@@ -18,7 +18,7 @@
  */
 
 import { z } from 'zod';
-import type { JsonSchema } from '../types.js';
+import type { JsonSchema } from '../substrate/types.js';
 
 export interface JudgeSchemaSet<TOutput = unknown> {
   readonly id: string;

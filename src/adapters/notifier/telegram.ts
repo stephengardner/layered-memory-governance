@@ -27,14 +27,14 @@
  * 64-byte limit for 24-char handles).
  */
 
-import type { Notifier } from '../../interface.js';
+import type { Notifier } from '../../substrate/interface.js';
 import type {
   Diff,
   Disposition,
   Event,
   NotificationHandle,
   PrincipalId,
-} from '../../types.js';
+} from '../../substrate/types.js';
 
 export interface TelegramNotifierOptions {
   /** Bot token from @BotFather. */

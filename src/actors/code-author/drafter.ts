@@ -44,8 +44,8 @@
  * fence is policy, not advisory.
  */
 
-import type { Host } from '../../interface.js';
-import type { Atom, AtomId, JsonSchema, LlmOptions } from '../../types.js';
+import type { Host } from '../../substrate/interface.js';
+import type { Atom, AtomId, JsonSchema, LlmOptions } from '../../substrate/types.js';
 import type { CodeAuthorFence } from './fence.js';
 
 /**

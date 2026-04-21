@@ -40,8 +40,8 @@ import type {
   ProposedAction,
   Reflection,
 } from './types.js';
-import type { Host } from '../interface.js';
-import type { Principal } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Principal } from '../substrate/types.js';
 
 export interface RunActorOptions<Adapters extends ActorAdapters> {
   readonly host: Host;

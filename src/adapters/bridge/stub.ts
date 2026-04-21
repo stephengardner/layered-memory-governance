@@ -15,7 +15,7 @@
  *    imposes that could warrant an interface revision.
  */
 
-import { UnsupportedError } from '../../errors.js';
+import { UnsupportedError } from '../../substrate/errors.js';
 import type {
   Action,
   Atom,
@@ -43,7 +43,7 @@ import type {
   Target,
   Time,
   Vector,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import type {
   AtomStore,
   Auditor,
@@ -57,7 +57,7 @@ import type {
   SchedulerHandler,
   Transaction,
   TransactionalCapable,
-} from '../../interface.js';
+} from '../../substrate/interface.js';
 
 const NI = (method: string): never => {
   throw new UnsupportedError(

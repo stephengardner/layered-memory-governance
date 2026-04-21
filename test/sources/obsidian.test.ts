@@ -21,7 +21,7 @@ import {
   ObsidianVaultSource,
   parseNote,
 } from '../../src/sources/obsidian.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principalId = 'obsidian-test' as PrincipalId;
 

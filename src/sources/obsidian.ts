@@ -31,8 +31,8 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { ConflictError } from '../errors.js';
-import type { Host } from '../interface.js';
+import { ConflictError } from '../substrate/errors.js';
+import type { Host } from '../substrate/interface.js';
 import type {
   Atom,
   AtomId,
@@ -40,7 +40,7 @@ import type {
   PrincipalId,
   Scope,
   Time,
-} from '../types.js';
+} from '../substrate/types.js';
 import type {
   IngestOptions,
   IngestReport,

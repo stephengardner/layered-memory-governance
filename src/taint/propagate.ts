@@ -27,9 +27,9 @@
  *     principal, and tainted atoms re-examined manually.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../types.js';
-import { NotFoundError } from '../errors.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../substrate/types.js';
+import { NotFoundError } from '../substrate/errors.js';
 
 export interface TaintReport {
   readonly principalId: PrincipalId;

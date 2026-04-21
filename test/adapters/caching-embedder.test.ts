@@ -17,8 +17,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CachingEmbedder, cacheDirFor } from '../../src/adapters/_common/caching-embedder.js';
 import { TrigramEmbedder } from '../../src/adapters/_common/trigram-embedder.js';
-import type { Embedder } from '../../src/interface.js';
-import type { Vector } from '../../src/types.js';
+import type { Embedder } from '../../src/substrate/interface.js';
+import type { Vector } from '../../src/substrate/types.js';
 import { runEmbedderSpec } from '../conformance/shared/embedder-spec.js';
 
 // --- Conformance (non-gated): CachingEmbedder wrapping trigram ---
@@ -216,7 +216,7 @@ describe('CachingEmbedder wired into createFileHost', () => {
     const { sampleAtom } = await import('../fixtures.js');
     for (let i = 0; i < 3; i++) {
       await host.atoms.put(sampleAtom({
-        id: (`a${i}`) as import('../../src/types.js').AtomId,
+        id: (`a${i}`) as import('../../src/substrate/types.js').AtomId,
         content: `atom ${i} content about postgres`,
       }));
     }

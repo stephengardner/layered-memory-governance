@@ -21,8 +21,8 @@
  * the other policy reads in this module.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, Time } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, Time } from '../substrate/types.js';
 
 export interface AutoApprovePolicyConfig {
   /**

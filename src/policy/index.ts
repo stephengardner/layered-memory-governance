@@ -37,8 +37,8 @@
  *   - No match -> default allow (permissive substrate).
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, AtomId, PrincipalId } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomId, PrincipalId } from '../substrate/types.js';
 
 export type PolicyDecision = 'allow' | 'deny' | 'escalate';
 

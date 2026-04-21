@@ -26,7 +26,7 @@ import type {
   AtomId,
   PrincipalId,
   Time,
-} from '../../src/types.js';
+} from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const RUN = process.env['LAG_BENCH_SCALE'] === '1';

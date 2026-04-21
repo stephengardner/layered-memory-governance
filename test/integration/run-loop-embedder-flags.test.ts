@@ -29,7 +29,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CachingEmbedder } from '../../src/adapters/_common/caching-embedder.js';
 import { OnnxMiniLmEmbedder } from '../../src/adapters/_common/onnx-minilm-embedder.js';
 import { createFileHost } from '../../src/adapters/file/index.js';
-import type { AtomId } from '../../src/types.js';
+import type { AtomId } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const SPAWN_ENABLED = process.env['LAG_SPAWN_TEST'] === '1';

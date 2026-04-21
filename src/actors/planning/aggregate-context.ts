@@ -12,8 +12,8 @@
  * class so it is importable as a plain function.
  */
 
-import type { Host } from '../../interface.js';
-import type { Atom, AtomId, PrincipalId } from '../../types.js';
+import type { Host } from '../../substrate/interface.js';
+import type { Atom, AtomId, PrincipalId } from '../../substrate/types.js';
 import type { PlanningContext } from './types.js';
 
 export interface AggregateContextOptions {

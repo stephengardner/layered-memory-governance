@@ -17,8 +17,8 @@
  * backed by the host's Scheduler + defer chain. `stop()` halts.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, AtomType, PrincipalId, Time } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomType, PrincipalId, Time } from '../substrate/types.js';
 import {
   PromotionEngine,
   type PromotableLayer,
@@ -34,7 +34,7 @@ import {
   type LoopStats,
   type LoopTickReport,
 } from './types.js';
-import type { AtomFilter } from '../types.js';
+import type { AtomFilter } from '../substrate/types.js';
 
 /**
  * A canon target after resolution: the manager is instantiated, and the

@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import { aggregateRelevantContext } from '../../../src/actors/planning/aggregate-context.js';
-import type { AtomId, PrincipalId } from '../../../src/types.js';
+import type { AtomId, PrincipalId } from '../../../src/substrate/types.js';
 import { sampleAtom, samplePrincipal } from '../../fixtures.js';
 
 const OPERATOR: PrincipalId = 'stephen-human' as PrincipalId;

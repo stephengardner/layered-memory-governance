@@ -1,4 +1,4 @@
-import type { Atom, AtomFilter } from '../../types.js';
+import type { Atom, AtomFilter } from '../../substrate/types.js';
 
 /**
  * Predicate: does an atom match the given filter?

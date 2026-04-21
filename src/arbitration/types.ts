@@ -6,7 +6,7 @@
  * that prevents "contradictory high-confidence atoms" (north-star criterion).
  */
 
-import type { Atom, AtomId } from '../types.js';
+import type { Atom, AtomId } from '../substrate/types.js';
 
 export type ConflictKind =
   /** Contradictory claims that cannot both be true in the same context. */

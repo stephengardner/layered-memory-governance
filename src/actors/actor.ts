@@ -18,8 +18,8 @@
  *   Adapters - the adapter record this actor requires
  */
 
-import type { Host } from '../interface.js';
-import type { Principal } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Principal } from '../substrate/types.js';
 import type {
   ActorAdapters,
   ActorBudget,

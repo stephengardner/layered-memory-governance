@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import type { Auditor } from '../../interface.js';
-import type { AuditEvent, AuditFilter, AuditId } from '../../types.js';
+import type { Auditor } from '../../substrate/interface.js';
+import type { AuditEvent, AuditFilter, AuditId } from '../../substrate/types.js';
 import type { MemoryClock } from './clock.js';
 
 /**

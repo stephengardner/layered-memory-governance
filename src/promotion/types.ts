@@ -12,7 +12,7 @@
  * contract.
  */
 
-import type { Atom, AtomId, Layer, PrincipalId } from '../types.js';
+import type { Atom, AtomId, Layer, PrincipalId } from '../substrate/types.js';
 import type { ValidationResult } from '../arbitration/validation.js';
 
 export type PromotableLayer = 'L2' | 'L3';

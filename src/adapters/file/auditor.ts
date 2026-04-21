@@ -11,8 +11,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Auditor } from '../../interface.js';
-import type { AuditEvent, AuditFilter, AuditId } from '../../types.js';
+import type { Auditor } from '../../substrate/interface.js';
+import type { AuditEvent, AuditFilter, AuditId } from '../../substrate/types.js';
 import type { FileClock } from './clock.js';
 import { appendLine, p, readFileOrNull } from './util.js';
 

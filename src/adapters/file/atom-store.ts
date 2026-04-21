@@ -13,8 +13,8 @@
  */
 
 import { readdir, rm } from 'node:fs/promises';
-import { ConflictError, NotFoundError } from '../../errors.js';
-import type { AtomStore, Embedder } from '../../interface.js';
+import { ConflictError, NotFoundError } from '../../substrate/errors.js';
+import type { AtomStore, Embedder } from '../../substrate/interface.js';
 import type {
   Atom,
   AtomFilter,
@@ -24,7 +24,7 @@ import type {
   AtomSignals,
   SearchHit,
   Vector,
-} from '../../types.js';
+} from '../../substrate/types.js';
 import { matches } from '../_common/atom-filter.js';
 import { contentHash as computeContentHash } from '../_common/content-hash.js';
 import { cosineToScore } from '../_common/similarity.js';

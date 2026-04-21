@@ -23,7 +23,7 @@ import {
   ClaudeCodeTranscriptSource,
   ObsidianVaultSource,
 } from '../../src/sources/index.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principalId = 's12-principal' as PrincipalId;
 

@@ -9,7 +9,7 @@
  *   if (result.changed) console.log(`wrote ${atoms.length} atoms to ${filePath}`);
  */
 
-import type { Atom } from '../types.js';
+import type { Atom } from '../substrate/types.js';
 import { renderCanonMarkdown, type RenderOptions } from './generator.js';
 import {
   CANON_END,

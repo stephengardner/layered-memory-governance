@@ -17,7 +17,7 @@
  * that lack a Notifier envelope.
  */
 
-import type { Host } from '../interface.js';
+import type { Host } from '../substrate/interface.js';
 import type {
   Atom,
   AtomId,
@@ -25,7 +25,7 @@ import type {
   QuestionState,
   Scope,
   Time,
-} from '../types.js';
+} from '../substrate/types.js';
 
 const ALLOWED: Readonly<Record<QuestionState, ReadonlyArray<QuestionState>>> = Object.freeze({
   pending: ['answered', 'expired', 'abandoned'],

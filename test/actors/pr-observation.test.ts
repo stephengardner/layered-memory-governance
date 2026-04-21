@@ -24,7 +24,7 @@ import type {
   PrIdentifier,
   PrReviewStatus,
 } from '../../src/actors/pr-review/adapter.js';
-import type { AtomId, Principal, PrincipalId, Time } from '../../src/types.js';
+import type { AtomId, Principal, PrincipalId, Time } from '../../src/substrate/types.js';
 
 function mkPrincipal(id = 'pr-landing-agent'): Principal {
   return {

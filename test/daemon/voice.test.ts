@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { LAGDaemon, StubTranscriber } from '../../src/daemon/index.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const PRINCIPAL = 'stephen-human' as PrincipalId;
 const CHAT_ID = 12345;

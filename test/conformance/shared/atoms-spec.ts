@@ -16,9 +16,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ConflictError, NotFoundError } from '../../../src/errors.js';
-import type { Host } from '../../../src/interface.js';
-import type { AtomId, PrincipalId } from '../../../src/types.js';
+import { ConflictError, NotFoundError } from '../../../src/substrate/errors.js';
+import type { Host } from '../../../src/substrate/interface.js';
+import type { AtomId, PrincipalId } from '../../../src/substrate/types.js';
 import { sampleAtom } from '../../fixtures.js';
 import type { TargetFactory } from './types.js';
 

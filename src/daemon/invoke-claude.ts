@@ -24,7 +24,7 @@ import {
   TransientError,
   UnsupportedError,
   ValidationError,
-} from '../errors.js';
+} from '../substrate/errors.js';
 
 export interface InvokeClaudeOptions {
   /** Required. The user's message content. */

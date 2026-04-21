@@ -28,8 +28,8 @@ import { describe, expect, it } from 'vitest';
 import { CachingEmbedder } from '../../src/adapters/_common/caching-embedder.js';
 import { OnnxMiniLmEmbedder } from '../../src/adapters/_common/onnx-minilm-embedder.js';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import type { Embedder } from '../../src/interface.js';
-import type { AtomId, Vector } from '../../src/types.js';
+import type { Embedder } from '../../src/substrate/interface.js';
+import type { AtomId, Vector } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 const RUN = process.env['LAG_REAL_EMBED'] === '1';

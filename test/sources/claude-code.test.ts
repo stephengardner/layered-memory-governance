@@ -22,7 +22,7 @@ import {
   ClaudeCodeTranscriptSource,
   parseLine,
 } from '../../src/sources/claude-code.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const principalId = 'ingest-test' as PrincipalId;
 

@@ -13,8 +13,8 @@
  * the ack's own id.
  */
 
-import type { Host } from '../interface.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../substrate/types.js';
 import type { ActorMessageAckV1, ActorMessageV1 } from './types.js';
 
 /**

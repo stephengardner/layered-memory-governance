@@ -20,7 +20,7 @@
  * need hierarchy.
  */
 
-import type { Atom, Layer, ProvenanceKind } from '../types.js';
+import type { Atom, Layer, ProvenanceKind } from '../substrate/types.js';
 import type { ConflictPair, DecisionOutcome } from './types.js';
 import { MAX_PRINCIPAL_DEPTH } from './principal-depth.js';
 

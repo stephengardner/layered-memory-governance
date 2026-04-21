@@ -21,8 +21,8 @@
  *   }
  */
 
-import type { Host } from '../interface.js';
-import type { AtomId, Layer, PrincipalId, Scope } from '../types.js';
+import type { Host } from '../substrate/interface.js';
+import type { AtomId, Layer, PrincipalId, Scope } from '../substrate/types.js';
 
 export interface IngestOptions {
   /** Principal that authored the ingested atoms. */

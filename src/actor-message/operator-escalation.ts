@@ -34,11 +34,11 @@
  *   count + halt reason.
  */
 
-import type { Host } from '../interface.js';
+import type { Host } from '../substrate/interface.js';
 import type { ActorReport } from '../actors/types.js';
 import type { ReviewComment } from '../actors/pr-review/adapter.js';
-import type { Atom, AtomId, PrincipalId, Time } from '../types.js';
-import { ConflictError } from '../errors.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../substrate/types.js';
+import { ConflictError } from '../substrate/errors.js';
 import type { ActorMessageV1, UrgencyTier } from './types.js';
 
 export interface OperatorEscalationContext {

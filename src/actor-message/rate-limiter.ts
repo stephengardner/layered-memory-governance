@@ -36,9 +36,9 @@
 import {
   TransientError,
   ValidationError,
-} from '../errors.js';
-import type { Host } from '../interface.js';
-import type { Atom, AtomFilter, PrincipalId, Time } from '../types.js';
+} from '../substrate/errors.js';
+import type { Host } from '../substrate/interface.js';
+import type { Atom, AtomFilter, PrincipalId, Time } from '../substrate/types.js';
 
 /**
  * Thrown when a write is denied by the token bucket. Transient because

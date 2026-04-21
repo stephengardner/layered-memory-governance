@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { BridgeAtomStore } from '../../src/adapters/bridge/atom-store.js';
 import { dumpDrawers } from '../../src/adapters/bridge/drawer-bridge.js';
-import type { PrincipalId } from '../../src/types.js';
+import type { PrincipalId } from '../../src/substrate/types.js';
 
 const RUN_REAL = process.env['LAG_REAL_PALACE'] === '1';
 const palacePath =
