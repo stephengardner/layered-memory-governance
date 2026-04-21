@@ -19,7 +19,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { applyDraftBranch, GitOpsError } from '../../../src/actors/code-author/git-ops.js';
+import { applyDraftBranch, GitOpsError } from '../../../src/runtime/actors/code-author/git-ops.js';
 
 interface StubCall {
   readonly bin: string;

@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { DETECT_SCHEMA, DETECT_SYSTEM } from '../../src/substrate/arbitration/index.js';
-import { validatePlan } from '../../src/plans/index.js';
+import { validatePlan } from '../../src/runtime/plans/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

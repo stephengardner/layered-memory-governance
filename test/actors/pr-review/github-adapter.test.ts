@@ -12,9 +12,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { GitHubPrReviewAdapter } from '../../../src/actors/pr-review/github.js';
+import { GitHubPrReviewAdapter } from '../../../src/runtime/actors/pr-review/github.js';
 import type { GhClient, GhExecResult, GhRestArgs } from '../../../src/external/github/gh-client.js';
-import type { PrIdentifier } from '../../../src/actors/pr-review/adapter.js';
+import type { PrIdentifier } from '../../../src/runtime/actors/pr-review/adapter.js';
 
 const PR: PrIdentifier = { owner: 'o', repo: 'r', number: 1 };
 

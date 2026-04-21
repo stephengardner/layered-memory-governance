@@ -49,6 +49,13 @@ const REWRITES = [
   // Phase B3:
   { kind: 'dir',  from: resolve('src/policy'),             to: resolve('src/substrate/policy') },
   { kind: 'file', from: resolve('src/llm-tool-policy.ts'), to: resolve('src/substrate/policy/tool-policy.ts') },
+  // Phase C1:
+  { kind: 'dir', from: resolve('src/loop'),          to: resolve('src/runtime/loop') },
+  { kind: 'dir', from: resolve('src/plans'),         to: resolve('src/runtime/plans') },
+  { kind: 'dir', from: resolve('src/questions'),     to: resolve('src/runtime/questions') },
+  { kind: 'dir', from: resolve('src/extraction'),    to: resolve('src/runtime/claims-extraction') },
+  { kind: 'dir', from: resolve('src/actors'),        to: resolve('src/runtime/actors') },
+  { kind: 'dir', from: resolve('src/actor-message'), to: resolve('src/runtime/actor-message') },
 ];
 
 function resolveSpec(fileDir, spec) {

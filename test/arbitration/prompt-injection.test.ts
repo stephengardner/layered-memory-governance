@@ -30,7 +30,7 @@ import {
   EXTRACT_CLAIMS,
   CLASSIFY_ATOM,
 } from '../../src/schemas/index.js';
-import { extractClaimsFromAtom } from '../../src/extraction/index.js';
+import { extractClaimsFromAtom } from '../../src/runtime/claims-extraction/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

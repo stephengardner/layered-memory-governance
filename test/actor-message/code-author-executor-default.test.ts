@@ -20,12 +20,12 @@ import type { execa } from 'execa';
 import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
-import { buildDefaultCodeAuthorExecutor } from '../../src/actor-message/executor-default.js';
+import { buildDefaultCodeAuthorExecutor } from '../../src/runtime/actor-message/executor-default.js';
 import {
   DRAFT_SCHEMA,
   DRAFT_SYSTEM_PROMPT,
-} from '../../src/actors/code-author/drafter.js';
-import type { CodeAuthorFence } from '../../src/actors/code-author/fence.js';
+} from '../../src/runtime/actors/code-author/drafter.js';
+import type { CodeAuthorFence } from '../../src/runtime/actors/code-author/fence.js';
 
 const BOOT_TIME = '2026-04-21T00:00:00.000Z' as Time;
 

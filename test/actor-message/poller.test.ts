@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { runInboxPoller } from '../../src/actor-message/poller.js';
+import { runInboxPoller } from '../../src/runtime/actor-message/poller.js';
 import type {
   Atom,
   AtomFilter,
@@ -32,7 +32,7 @@ import type {
 import type {
   ActorMessageV1,
   UrgencyTier,
-} from '../../src/actor-message/types.js';
+} from '../../src/runtime/actor-message/types.js';
 import type { AtomSubscribeEvent, Host } from '../../src/substrate/interface.js';
 
 function messageAtom(id: string, to: string, from: string, urgency: UrgencyTier = 'normal'): Atom {

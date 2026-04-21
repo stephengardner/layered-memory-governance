@@ -16,12 +16,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { pickNextMessage } from '../../src/actor-message/pickup.js';
+import { pickNextMessage } from '../../src/runtime/actor-message/pickup.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import type {
   ActorMessageV1,
   UrgencyTier,
-} from '../../src/actor-message/types.js';
+} from '../../src/runtime/actor-message/types.js';
 
 function messageAtom(
   id: string,

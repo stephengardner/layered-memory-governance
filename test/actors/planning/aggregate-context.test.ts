@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
-import { aggregateRelevantContext } from '../../../src/actors/planning/aggregate-context.js';
+import { aggregateRelevantContext } from '../../../src/runtime/actors/planning/aggregate-context.js';
 import type { AtomId, PrincipalId } from '../../../src/substrate/types.js';
 import { sampleAtom, samplePrincipal } from '../../fixtures.js';
 

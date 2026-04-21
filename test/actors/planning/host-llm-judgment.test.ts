@@ -19,12 +19,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
-import { HostLlmPlanningJudgment } from '../../../src/actors/planning/host-llm-judgment.js';
+import { HostLlmPlanningJudgment } from '../../../src/runtime/actors/planning/host-llm-judgment.js';
 import { PLAN_CLASSIFY, PLAN_DRAFT } from '../../../src/schemas/index.js';
 import type {
   PlanningClassification,
   PlanningContext,
-} from '../../../src/actors/planning/types.js';
+} from '../../../src/runtime/actors/planning/types.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../../src/substrate/types.js';
 
 function atomAt(

@@ -13,7 +13,7 @@ import {
   FENCE_ATOM_IDS,
   loadCodeAuthorFence,
   CodeAuthorFenceError,
-} from '../../../src/actors/code-author/fence.js';
+} from '../../../src/runtime/actors/code-author/fence.js';
 import type { AtomStore } from '../../../src/substrate/interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../../src/substrate/types.js';
 

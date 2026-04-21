@@ -17,10 +17,10 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   DEFAULT_ORDERING_POLICY,
   readOrderingPolicy,
-} from '../../src/actor-message/ordering-policy.js';
-import { pickNextMessage } from '../../src/actor-message/pickup.js';
+} from '../../src/runtime/actor-message/ordering-policy.js';
+import { pickNextMessage } from '../../src/runtime/actor-message/pickup.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
-import type { ActorMessageV1, UrgencyTier } from '../../src/actor-message/types.js';
+import type { ActorMessageV1, UrgencyTier } from '../../src/runtime/actor-message/types.js';
 
 function orderingAtom(overrides: {
   threshold?: number | string;

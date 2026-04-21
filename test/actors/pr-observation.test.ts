@@ -19,11 +19,11 @@ import {
   mkPrObservationAtomId,
   mkPrObservationFailedAtom,
   renderPrObservationBody,
-} from '../../src/actors/pr-landing/pr-observation.js';
+} from '../../src/runtime/actors/pr-landing/pr-observation.js';
 import type {
   PrIdentifier,
   PrReviewStatus,
-} from '../../src/actors/pr-review/adapter.js';
+} from '../../src/runtime/actors/pr-review/adapter.js';
 import type { AtomId, Principal, PrincipalId, Time } from '../../src/substrate/types.js';
 
 function mkPrincipal(id = 'pr-landing-agent'): Principal {

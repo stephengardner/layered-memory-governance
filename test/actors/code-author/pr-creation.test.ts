@@ -16,7 +16,7 @@ import {
   PrCreationError,
   createDraftPr,
   renderPrBody,
-} from '../../../src/actors/code-author/pr-creation.js';
+} from '../../../src/runtime/actors/code-author/pr-creation.js';
 import type { GhClient } from '../../../src/external/github/index.js';
 
 function stubClient(restImpl: GhClient['rest']): GhClient {

@@ -28,7 +28,7 @@ import {
 import {
   transitionPlanState,
   validatePlan,
-} from '../../src/plans/index.js';
+} from '../../src/runtime/plans/index.js';
 import type {
   Atom,
   AtomId,

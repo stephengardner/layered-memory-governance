@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { LoopRunner } from '../../src/loop/runner.js';
-import { DEFAULT_HALF_LIVES } from '../../src/loop/types.js';
+import { LoopRunner } from '../../src/runtime/loop/runner.js';
+import { DEFAULT_HALF_LIVES } from '../../src/runtime/loop/types.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

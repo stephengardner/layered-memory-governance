@@ -27,7 +27,7 @@ import {
   ActorMessageRateLimiter,
   CircuitBreakerOpenError,
   RateLimitedError,
-} from '../../src/actor-message/rate-limiter.js';
+} from '../../src/runtime/actor-message/rate-limiter.js';
 import type {
   Atom,
   AtomId,

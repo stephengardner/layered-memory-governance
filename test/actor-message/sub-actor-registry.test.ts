@@ -17,7 +17,7 @@ import type { PrincipalId } from '../../src/substrate/types.js';
 import {
   SubActorRegistry,
   type InvokeResult,
-} from '../../src/actor-message/sub-actor-registry.js';
+} from '../../src/runtime/actor-message/sub-actor-registry.js';
 
 describe('SubActorRegistry', () => {
   it('registers and invokes a sub-actor', async () => {

@@ -14,15 +14,15 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { runActor } from '../../src/actors/run-actor.js';
-import type { Actor, ActorContext } from '../../src/actors/actor.js';
+import { runActor } from '../../src/runtime/actors/run-actor.js';
+import type { Actor, ActorContext } from '../../src/runtime/actors/actor.js';
 import type {
   ActorAdapters,
   ActorAuditEvent,
   Classified,
   ProposedAction,
   Reflection,
-} from '../../src/actors/types.js';
+} from '../../src/runtime/actors/types.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { samplePrincipal, sampleAtom } from '../fixtures.js';
 

@@ -13,15 +13,15 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { runActor } from '../../src/actors/run-actor.js';
-import { PrLandingActor } from '../../src/actors/pr-landing/pr-landing.js';
+import { runActor } from '../../src/runtime/actors/run-actor.js';
+import { PrLandingActor } from '../../src/runtime/actors/pr-landing/pr-landing.js';
 import type {
   PrCommentOutcome,
   PrIdentifier,
   PrReviewAdapter,
   ReviewComment,
   ReviewReplyOutcome,
-} from '../../src/actors/pr-review/adapter.js';
+} from '../../src/runtime/actors/pr-review/adapter.js';
 import { samplePrincipal } from '../fixtures.js';
 
 const PR: PrIdentifier = { owner: 'o', repo: 'r', number: 1 };

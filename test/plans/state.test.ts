@@ -12,7 +12,7 @@ import {
   canTransition,
   InvalidPlanTransitionError,
   transitionPlanState,
-} from '../../src/plans/index.js';
+} from '../../src/runtime/plans/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

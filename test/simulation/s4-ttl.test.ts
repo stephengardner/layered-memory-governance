@@ -17,8 +17,8 @@
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { renderCanonMarkdown } from '../../src/substrate/canon/generator.js';
-import { LoopRunner } from '../../src/loop/runner.js';
-import { ttlExpirePatch } from '../../src/loop/ttl.js';
+import { LoopRunner } from '../../src/runtime/loop/runner.js';
+import { ttlExpirePatch } from '../../src/runtime/loop/ttl.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

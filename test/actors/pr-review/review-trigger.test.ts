@@ -19,8 +19,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   UserAccountCommentTrigger,
   getTokenFromEnv,
-} from '../../../src/actors/pr-review/review-trigger.js';
-import type { PrIdentifier } from '../../../src/actors/pr-review/adapter.js';
+} from '../../../src/runtime/actors/pr-review/review-trigger.js';
+import type { PrIdentifier } from '../../../src/runtime/actors/pr-review/adapter.js';
 
 const PR: PrIdentifier = { owner: 'o', repo: 'r', number: 42 };
 

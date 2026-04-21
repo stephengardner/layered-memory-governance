@@ -45,7 +45,7 @@ import {
   runCodeAuthor,
   runDispatchTick,
   SubActorRegistry,
-} from '../../src/actor-message/index.js';
+} from '../../src/runtime/actor-message/index.js';
 import type {
   Atom,
   AtomId,

@@ -8,12 +8,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { emitAck, listUnread } from '../../src/actor-message/inbox-reader.js';
+import { emitAck, listUnread } from '../../src/runtime/actor-message/inbox-reader.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import type {
   ActorMessageV1,
   UrgencyTier,
-} from '../../src/actor-message/types.js';
+} from '../../src/runtime/actor-message/types.js';
 
 function messageAtom(
   id: string,
