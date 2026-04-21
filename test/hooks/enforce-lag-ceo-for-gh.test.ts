@@ -48,6 +48,21 @@ async function runHook(payload: unknown): Promise<HookResult> {
     child.on('error', rej);
   });
 
+  // The hook is documented as fail-open (exit 0 on any crash) and
+  // every success path also exits 0. A non-zero exit means the hook
+  // itself crashed in a way that bypasses both the allow and block
+  // contracts, which would silently masquerade as "allow" (empty
+  // stdout) and make allow-path tests false-positive. Fail hard so
+  // the contract is the test's assertion, not an accident of the
+  // script's crash behaviour. Surface stderr in the failure message
+  // so the cause is visible in CI output.
+  const stderr = Buffer.concat(stderrChunks).toString('utf8');
+  if (exitCode !== 0) {
+    throw new Error(
+      `enforce-lag-ceo-for-gh.mjs exited non-zero (${exitCode}); stderr:\n${stderr}`,
+    );
+  }
+
   const stdout = Buffer.concat(stdoutChunks).toString('utf8').trim();
   if (stdout.length === 0) {
     return { decision: 'allow', reason: null, exitCode };
