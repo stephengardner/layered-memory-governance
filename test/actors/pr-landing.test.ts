@@ -85,6 +85,28 @@ class StubReviewAdapter implements PrReviewAdapter {
     this.engagedLogins.add('github-actions[bot]');
     return { commentId: `pc${this.prComments.length}`, posted: true };
   }
+  async getPrReviewStatus(pr: PrIdentifier) {
+    // Minimal composite that satisfies the interface for unit tests.
+    // Production adapter fetches from GitHub; this stub reuses the
+    // in-memory iteration state so tests exercising the composite
+    // read get a coherent view without wiring more state.
+    const [lineComments, bodyNits] = await Promise.all([
+      this.listUnresolvedComments(),
+      this.listReviewBodyNits(),
+    ]);
+    return {
+      pr,
+      mergeable: true,
+      mergeStateStatus: 'CLEAN',
+      lineComments,
+      bodyNits,
+      submittedReviews: [],
+      checkRuns: [],
+      legacyStatuses: [],
+      partial: false,
+      partialSurfaces: [],
+    };
+  }
 }
 
 describe('PrLandingActor', () => {

@@ -46,6 +46,7 @@ import { createGhClient } from '../dist/external/github/index.js';
 import {
   sendOperatorEscalation,
   shouldEscalate,
+  renderEscalationBody,
 } from '../dist/actor-message/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -242,14 +243,61 @@ async function main() {
     }
 
     if (shouldEscalate(report, observation)) {
-      const atomId = await sendOperatorEscalation({
+      const escalationCtx = {
         host,
         report,
         pr: { owner, repo, number: args.prNumber },
         origin: args.origin,
         ...(observation ? { observation } : {}),
-      });
-      console.log(`[pr-landing] escalation written as atom ${atomId}`);
+      };
+      const { atomId, alreadyExisted } = await sendOperatorEscalation(escalationCtx);
+
+      // Single if/else covers both the log line and the PR-comment
+      // post. Two sequential `if (alreadyExisted)` blocks read as
+      // bug-prone even when behaviorally fine; collapse for clarity.
+      //
+      // Dedup gate: `alreadyExisted` signals the atom write hit
+      // ConflictError on the deterministic id (same actor + PR +
+      // haltReason + iter). Skipping the PR comment keeps repeat runs
+      // quiet. A genuinely new halt (different haltReason on the
+      // same PR) yields a distinct atom id and posts fresh.
+      //
+      // PR-comment delivery is the CI-ephemeral-filesystem escape
+      // hatch: the atom lands in the runner's .lag/ which disappears
+      // at job end; the PR comment persists in the PR discussion
+      // history and pings the operator via GitHub's notification
+      // stack - no extra secret or daemon. Adapter's dry-run
+      // short-circuits postPrComment internally, so dry-run runs log
+      // the intent but do not call GitHub. Catch is best-effort per
+      // the outer catch's contract: a secondary-delivery failure
+      // does NOT alter the actor's exit code (the actor's own
+      // outcome is what CI gates on). Warning goes to stderr
+      // (console.warn) so CI log readers still see it loudly.
+      if (alreadyExisted) {
+        console.log(
+          `[pr-landing] escalation atom ${atomId} already existed (deduped); skipping PR comment`,
+        );
+      } else {
+        console.log(`[pr-landing] escalation written as atom ${atomId}`);
+        try {
+          const body = renderEscalationBody(escalationCtx);
+          const outcome = await review.postPrComment(
+            { owner, repo, number: args.prNumber },
+            body,
+          );
+          if (outcome.posted) {
+            console.log(
+              `[pr-landing] escalation posted as PR comment ${outcome.commentId ?? '(id unknown)'}`,
+            );
+          } else if (outcome.dryRun) {
+            console.log('[pr-landing] (dry-run) would have posted escalation as PR comment');
+          }
+        } catch (commentErr) {
+          console.warn(
+            `[pr-landing] escalation PR comment failed: ${commentErr?.message ?? commentErr}`,
+          );
+        }
+      }
     }
   } catch (escErr) {
     // Escalation is best-effort: a failure to write the message must

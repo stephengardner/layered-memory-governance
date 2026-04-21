@@ -5,8 +5,14 @@
  *
  * Source plan: plan-seed-8-canon-atoms-recording-proactive-c-cto-actor-
  * 20260420193913, produced by the CTO self-audit run that followed the
- * inbox V1 merge. Eight atoms: three arch/decisions, one decision, and
- * four directives. All additive; none overturn existing canon.
+ * inbox V1 merge. Ten atoms: four arch/decisions, one decision, and
+ * five directives. The fifth directive
+ * `dev-multi-surface-review-observation` and the fourth arch decision
+ * `arch-pr-state-observation-via-actor-only` were added together after
+ * the agent violated the directive in the same session it was
+ * atomized - concrete proof that belief layers do not bind without a
+ * mechanism (hook + CLI) paired with them. All additive; none overturn
+ * existing canon.
  *
  * Idempotent per atom id; drift against stored shape fails loud.
  */
@@ -199,6 +205,68 @@ const ATOMS = [
       SOURCE_PLAN,
     ],
     what_breaks_if_revisited: 'Tied to cto-actor principal continuity; if CTO principal is replaced, re-derive.',
+  },
+  {
+    id: 'arch-pr-state-observation-via-actor-only',
+    type: 'decision',
+    content:
+      'Direct session-agent queries to GitHub for PR state are '
+      + 'prohibited. The pr-landing actor is the canonical PR observer; '
+      + 'its output (escalation actor-message atom + PR comment delivery) '
+      + 'is the source of truth a session agent consumes. When fresh '
+      + 'state is needed, the agent invokes the actor via '
+      + 'scripts/run-pr-landing.mjs (observe-only mode is a follow-up); '
+      + 'the invocation itself is audited through the operator-action '
+      + 'atom trail. Short-term bridge: scripts/pr-status.mjs runs the '
+      + 'same composite read the actor uses, without the full actor loop. '
+      + 'Enforcement layer: .claude/hooks/enforce-pr-status-composite.mjs '
+      + 'blocks ad-hoc `gh pr view` / `gh api .../pulls/<N>` state '
+      + 'queries at the PreToolUse level and redirects to pr-status.mjs. '
+      + 'Motivation: two in-session failures (2026-04-20 and 2026-04-21) '
+      + 'where the agent polled one surface, missed CodeRabbit review '
+      + 'completion on another, and reported stale state; the directive '
+      + 'layer (dev-multi-surface-review-observation) proved insufficient '
+      + 'without a mechanism.',
+    alternatives_rejected: [
+      'Rely on dev-multi-surface-review-observation as a directive (tried; agent violated it twice in the same session; beliefs do not bind agents mechanically)',
+      'Add an ever-growing PreToolUse regex list for every partial-read pattern (whack-a-mole; new gh subcommands and GraphQL paths surface faster than the list can keep up)',
+      'Eliminate getPrReviewStatus and force everyone through raw API (defeats the composite read we just shipped; also does nothing about the decision discipline)',
+      'Let agents poll freely and lean on output-level discipline (we already know agents under-disclose; the operator would have to audit every claim; untenable at scale)',
+    ],
+    derived_from: [
+      'arch-atomstore-source-of-truth',
+      'dev-multi-surface-review-observation',
+      'inv-provenance-every-write',
+      'inv-governance-before-autonomy',
+    ],
+    what_breaks_if_revisited:
+      'Only revisit if the actor-observation loop grows a latency problem that blocks session work; the answer then is to improve the actor, not to let session agents re-introduce unaudited polls.',
+  },
+  {
+    id: 'dev-multi-surface-review-observation',
+    type: 'directive',
+    content:
+      'When observing a pull-request review state, ALL surfaces must be '
+      + 'queried: submitted reviews, line comments, issue comments, '
+      + 'check-runs, legacy statuses, and mergeStateStatus. A single-'
+      + 'surface observation is incomplete and must not drive merge or '
+      + 'escalation decisions. Concrete mechanism: PrReviewAdapter '
+      + 'exposes getPrReviewStatus(pr) which returns the composite '
+      + 'state; callers use that single call instead of polling '
+      + 'individual endpoints and risking stale reads. Partial reads '
+      + 'degrade to partial:true rather than throwing so callers can '
+      + 'make an explicit choice about acting on an incomplete view.',
+    alternatives_rejected: [
+      'Poll one endpoint and hope (observed to miss CR completion in session 2026-04-20; agent checked legacy status, missed review-comments + reviews APIs)',
+      'Poll each endpoint inline at call sites (duplicates logic; easy to regress; no single source of truth for "is this PR ready")',
+      'Rely on mergeStateStatus alone (collapses distinct states; masks which surface is blocking; unusable for debugging)',
+    ],
+    derived_from: [
+      'arch-host-interface-boundary',
+      'inv-provenance-every-write',
+    ],
+    what_breaks_if_revisited:
+      'Only revisit if GitHub consolidates review surfaces into one API; until then, partial reads produce silent-failure bugs in the escalation notifier and any actor observing PR state.',
   },
 ];
 

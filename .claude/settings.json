@@ -5,7 +5,8 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/enforce-lag-ceo-for-gh.mjs" }
+          { "type": "command", "command": "node .claude/hooks/enforce-lag-ceo-for-gh.mjs" },
+          { "type": "command", "command": "node .claude/hooks/enforce-pr-status-composite.mjs" }
         ]
       }
     ]

@@ -96,7 +96,7 @@ describe('sendOperatorEscalation', () => {
       escalations: ['convergence: nit:0 suggestion:2 architectural:0'],
     });
 
-    const atomId = await sendOperatorEscalation({
+    const outcome = await sendOperatorEscalation({
       host,
       report,
       pr: { owner: 'o', repo: 'r', number: 48, title: 'feat: bot identity' },
@@ -104,11 +104,12 @@ describe('sendOperatorEscalation', () => {
       observation: { comments: [], bodyNits: [] },
       now: () => Date.parse('2026-04-20T19:56:36.000Z'),
     });
+    expect(outcome.alreadyExisted).toBe(false);
 
     const { atoms } = await host.atoms.query({ type: ['actor-message'] }, 10);
     expect(atoms.length).toBe(1);
     const atom = atoms[0]!;
-    expect(atom.id).toBe(atomId);
+    expect(atom.id).toBe(outcome.atomId);
     expect(atom.principal_id).toBe('pr-landing-agent');
 
     const env = atom.metadata?.actor_message as Record<string, unknown>;
@@ -183,7 +184,7 @@ describe('sendOperatorEscalation', () => {
     expect(content).toContain('+ const x = 2;');
   });
 
-  it('produces a deterministic atom id so repeat sends are idempotent', async () => {
+  it('produces a deterministic atom id so repeat sends are idempotent + signals alreadyExisted', async () => {
     const host = createMemoryHost();
     const ctx = {
       host,
@@ -191,13 +192,18 @@ describe('sendOperatorEscalation', () => {
       pr: { owner: 'o', repo: 'r', number: 48 },
     };
 
-    const idA = await sendOperatorEscalation(ctx);
-    const idB = await sendOperatorEscalation(ctx);
-    expect(idA).toBe(idB);
+    const outA = await sendOperatorEscalation(ctx);
+    const outB = await sendOperatorEscalation(ctx);
+    expect(outA.atomId).toBe(outB.atomId);
+    // First call writes; second call is a dedup. This is the signal
+    // run-pr-landing uses to skip a duplicate PR comment post on
+    // repeat runs for the same halt.
+    expect(outA.alreadyExisted).toBe(false);
+    expect(outB.alreadyExisted).toBe(true);
 
     const { atoms } = await host.atoms.query({ type: ['actor-message'] }, 10);
-    // put() for the same id is an overwrite in memory host, not a
-    // duplicate, so we expect exactly one atom.
+    // ConflictError is swallowed on the second put, so exactly one
+    // atom exists in the store.
     expect(atoms.length).toBe(1);
   });
 

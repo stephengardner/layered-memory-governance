@@ -118,10 +118,110 @@ export interface PrReviewAdapter extends ActorAdapter {
    * return an empty array.
    */
   listReviewBodyNits(pr: PrIdentifier): Promise<ReadonlyArray<ReviewComment>>;
+
+  /**
+   * Composite multi-surface read. Per canon directive
+   * `dev-multi-surface-review-observation`, any actor observing PR
+   * state MUST use this single call rather than polling individual
+   * endpoints; partial reads are the root cause of silent-failure
+   * bugs like the one observed in session 2026-04-20 where CR's
+   * review completion landed on one surface but was missed because
+   * the observer only read the legacy status API.
+   *
+   * Returns a point-in-time snapshot covering every surface that
+   * can contribute to a merge/escalation decision: line comments,
+   * body-nits, submitted reviews, check-runs, legacy statuses, and
+   * GitHub's mergeStateStatus + mergeable flag. Per-surface fetch
+   * failures degrade the snapshot to `partial: true` rather than
+   * throwing, so callers can make an explicit choice about acting
+   * on an incomplete view.
+   */
+  getPrReviewStatus(pr: PrIdentifier): Promise<PrReviewStatus>;
 }
 
 export interface PrCommentOutcome {
   readonly commentId?: string;
   readonly posted: boolean;
   readonly dryRun?: boolean;
+}
+
+/**
+ * A composite snapshot of a PR's review state. Consumers that want
+ * to answer "can I merge?" / "has my reviewer finished?" / "what is
+ * unresolved?" read this one object instead of correlating five
+ * separate API calls. See `dev-multi-surface-review-observation` in
+ * canon for why partial snapshots are forbidden as a decision input
+ * unless the specific missing surface is irrelevant to the decision.
+ */
+export interface PrReviewStatus {
+  readonly pr: PrIdentifier;
+  /** GitHub's mergeable boolean; null if GitHub has not computed it. */
+  readonly mergeable: boolean | null;
+  /**
+   * GitHub's mergeStateStatus enum: CLEAN, BLOCKED, UNKNOWN, BEHIND,
+   * DIRTY, DRAFT, HAS_HOOKS, UNSTABLE. BLOCKED with all checks green
+   * typically means a required status check has not posted yet
+   * (e.g., an external reviewer like CodeRabbit still thinking).
+   * `null` when GitHub has not computed it.
+   */
+  readonly mergeStateStatus: string | null;
+  /**
+   * Line-level unresolved review comments. Same shape as
+   * listUnresolvedComments; duplicated in this composite so a
+   * caller never has to make a second call.
+   */
+  readonly lineComments: ReadonlyArray<ReviewComment>;
+  /**
+   * Body-scoped nits parsed from review bodies (e.g., CodeRabbit's
+   * 🧹 block). Always read alongside lineComments to avoid silently
+   * dropping nits.
+   */
+  readonly bodyNits: ReadonlyArray<ReviewComment>;
+  /**
+   * Submitted PR reviews: author + state (COMMENTED, APPROVED,
+   * CHANGES_REQUESTED, DISMISSED) + submittedAt. The "review has
+   * been submitted at all" signal that legacy status misses.
+   */
+  readonly submittedReviews: ReadonlyArray<SubmittedReview>;
+  /**
+   * Check-runs posted against the head commit. Modern replacement
+   * for legacy statuses; most CI systems post here.
+   */
+  readonly checkRuns: ReadonlyArray<CheckRun>;
+  /**
+   * Legacy commit statuses (pre-Check-Runs API). Some services
+   * still post only here (e.g., some CodeRabbit configurations).
+   * Read both so we never miss the surface the blocking check
+   * happens to live on.
+   */
+  readonly legacyStatuses: ReadonlyArray<LegacyStatus>;
+  /**
+   * When true, at least one surface failed to fetch and the snapshot
+   * is incomplete. Callers must treat a partial snapshot as a hard
+   * "do not decide" signal unless the specific missing surface is
+   * irrelevant to the decision being made.
+   */
+  readonly partial: boolean;
+  /** Surfaces that failed to fetch, when partial is true. Empty otherwise. */
+  readonly partialSurfaces: ReadonlyArray<string>;
+}
+
+export interface SubmittedReview {
+  readonly author: string;
+  readonly state: string;
+  readonly submittedAt: string;
+  readonly body?: string;
+}
+
+export interface CheckRun {
+  readonly name: string;
+  readonly status: string;
+  readonly conclusion: string | null;
+  readonly appSlug?: string;
+}
+
+export interface LegacyStatus {
+  readonly context: string;
+  readonly state: string;
+  readonly updatedAt: string;
 }

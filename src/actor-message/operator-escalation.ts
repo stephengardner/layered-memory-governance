@@ -20,10 +20,13 @@
  *   pattern would justify extracting a runActor hook; one concrete
  *   caller is enough for inline-today.
  *
- * - The message body is markdown-friendly plain text with Telegram's
- *   reasonable limits in mind: every PR link, halt reason, and
- *   escalation item is one line; proposed-fix diffs are inlined as
- *   fenced diff blocks so the operator can copy + `git apply`.
+ * - The message body is rendered by `renderEscalationBody` and follows
+ *   a line-per-intent contract: every PR link, halt reason, and
+ *   escalation item is one logical line so channels with tight line
+ *   limits (chat apps, email previews, terminal-width dashboards) can
+ *   all show a useful prefix without truncation mid-claim. Proposed-fix
+ *   diffs are inlined as fenced ```diff blocks so the operator can
+ *   copy them straight into `git apply`.
  *
  * - Caller-determined atom id. A deterministic id lets callers make
  *   the emit idempotent (same halt on the same PR → same atom id, so
@@ -100,14 +103,35 @@ export function shouldEscalate(
 }
 
 /**
- * Write the escalation actor-message atom. Returns the id of the atom
- * written. Idempotent per call-site: the caller can re-invoke with
- * the same context and get the same atom id (duplicate puts are
- * overwrites in most AtomStore adapters, not errors).
+ * Outcome of an escalation atom write. The caller needs to know
+ * whether this was a new write or a deduped retry so secondary
+ * delivery channels (PR comments, Slack posts, etc.) can stay
+ * idempotent too. A repeat call for the same halt on the same PR
+ * returns `alreadyExisted: true` and should NOT trigger another
+ * secondary post.
+ */
+export interface EscalationWriteOutcome {
+  readonly atomId: AtomId;
+  readonly alreadyExisted: boolean;
+}
+
+/**
+ * Deterministic id for a given escalation context. Exported so
+ * callers can pre-check whether this specific halt has already been
+ * surfaced without having to re-render the full context.
+ */
+export function escalationAtomId(ctx: OperatorEscalationContext): AtomId {
+  return mkEscalationId(ctx);
+}
+
+/**
+ * Write the escalation actor-message atom. Idempotent per call-site:
+ * a repeat call with the same context returns the same atom id and
+ * signals via `alreadyExisted: true` that no new write happened.
  */
 export async function sendOperatorEscalation(
   ctx: OperatorEscalationContext,
-): Promise<AtomId> {
+): Promise<EscalationWriteOutcome> {
   const now = ctx.now ?? (() => Date.now());
   const nowIso = new Date(now()).toISOString() as Time;
   const operator: PrincipalId = ctx.operator ?? ('operator' as PrincipalId);
@@ -177,15 +201,19 @@ export async function sendOperatorEscalation(
 
   // Idempotency: deterministic ids mean repeat invocations for the
   // same halt on the same PR should be no-ops. The AtomStore contract
-  // rejects duplicate ids with ConflictError; we treat that as success
-  // (the message is already in the inbox) so callers can safely retry
-  // without needing their own dedup. Any other error propagates.
+  // rejects duplicate ids with ConflictError; we treat that as a
+  // successful "already-present" state so callers can safely retry
+  // without needing their own dedup. The return signals which branch
+  // took so secondary delivery channels can stay idempotent too
+  // (e.g., don't re-post a PR comment for a halt already surfaced).
+  let alreadyExisted = false;
   try {
     await ctx.host.atoms.put(atom);
   } catch (err) {
     if (!(err instanceof ConflictError)) throw err;
+    alreadyExisted = true;
   }
-  return atomId;
+  return { atomId, alreadyExisted };
 }
 
 function pickUrgency(report: ActorReport): UrgencyTier {
@@ -206,12 +234,27 @@ function mkEscalationId(ctx: OperatorEscalationContext): AtomId {
   return `escalation-${ctx.report.actor}-${prKey}-${ctx.report.haltReason}-it${ctx.report.iterations}` as AtomId;
 }
 
-function renderEscalationBody(ctx: OperatorEscalationContext): string {
+/**
+ * Render the operator-escalation message as a markdown string.
+ *
+ * Exported so callers in contexts with an ephemeral atom store
+ * (most commonly GitHub Actions runners, where `.lag/` is torn
+ * down at job end) can ALSO post this same body as a PR comment
+ * or pipe it into another delivery channel (Slack, email, etc.).
+ * Without that second channel, a halt-escalation would reach the
+ * AtomStore and die there along with the runner.
+ *
+ * The body renders identically whether it is used for the atom's
+ * `content` field or for a PR comment: markdown-flavored, PR link
+ * in body, fenced `diff` blocks for proposed fixes, sectioned
+ * headings for unresolved items.
+ */
+export function renderEscalationBody(ctx: OperatorEscalationContext): string {
   const { report, pr, observation } = ctx;
   const lines: string[] = [];
 
   const titleStub = pr
-    ? `pr-landing halt on ${pr.owner}/${pr.repo}#${pr.number}`
+    ? `${report.actor} halt on ${pr.owner}/${pr.repo}#${pr.number}`
     : `${report.actor} halt`;
   lines.push(`**${titleStub}**`);
   lines.push('');
@@ -294,6 +337,15 @@ function firstLineOf(body: string): string {
 function renderProposedFixBlock(diff: string): string {
   // Trim outer blank lines but preserve the diff content exactly so
   // the operator can copy it into `git apply` without reformatting.
+  //
+  // Two-space indent on the fences is deliberate: the fenced block is
+  // nested inside an existing list item (the caller renders it right
+  // after a `- <path>:<line> - <author>: <title>` line), and Markdown
+  // renderers need >= 2-space indentation to treat the fenced block
+  // as a continuation of the list item rather than a top-level code
+  // block breaking out of the list. GitHub's renderer, Telegram's
+  // markdown flavor, and most chat/mail clients agree on this. Do
+  // not strip the indent.
   const trimmed = diff.replace(/^\n+/, '').replace(/\n+$/, '');
   return ['  ```diff', trimmed, '  ```'].join('\n');
 }

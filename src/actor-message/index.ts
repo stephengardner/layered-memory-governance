@@ -81,5 +81,10 @@ export type {
 export {
   sendOperatorEscalation,
   shouldEscalate,
+  renderEscalationBody,
+  escalationAtomId,
 } from './operator-escalation.js';
-export type { OperatorEscalationContext } from './operator-escalation.js';
+export type {
+  OperatorEscalationContext,
+  EscalationWriteOutcome,
+} from './operator-escalation.js';
