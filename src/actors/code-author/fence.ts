@@ -106,7 +106,7 @@ export async function loadCodeAuthorFence(atoms: AtomStore): Promise<CodeAuthorF
       failures.push(`${id}: taint=${atom.taint}, not clean`);
       continue;
     }
-    if ((atom.superseded_by?.length ?? 0) > 0) {
+    if (atom.superseded_by.length > 0) {
       failures.push(`${id}: superseded by ${atom.superseded_by.join(', ')}`);
       continue;
     }
@@ -120,36 +120,55 @@ export async function loadCodeAuthorFence(atoms: AtomStore): Promise<CodeAuthorF
     );
   }
 
-  const signedPrOnly = parseSignedPrOnly(
-    loaded.get('pol-code-author-signed-pr-only')!, warnings,
-  );
-  const perPrCostCap = parsePerPrCostCap(
-    loaded.get('pol-code-author-per-pr-cost-cap')!, warnings,
-  );
-  const ciGate = parseCiGate(
-    loaded.get('pol-code-author-ci-gate')!, warnings,
-  );
-  const writeRevocationOnStop = parseWriteRevocationOnStop(
-    loaded.get('pol-code-author-write-revocation-on-stop')!, warnings,
-  );
+  // Parse phase: every parser accumulates its own reasons and never
+  // throws, so a multi-atom shape drift reports every broken atom in
+  // one pass instead of fix-one-rerun-trip-on-next. Matches the
+  // discipline the presence/taint/supersession loop above already
+  // follows. The type coercion to the policy interfaces at the end
+  // is safe because we only reach it after reasons.length === 0.
+  const sp = parseSignedPrOnly(loaded.get('pol-code-author-signed-pr-only')!, warnings);
+  const cc = parsePerPrCostCap(loaded.get('pol-code-author-per-pr-cost-cap')!, warnings);
+  const ci = parseCiGate(loaded.get('pol-code-author-ci-gate')!, warnings);
+  const wr = parseWriteRevocationOnStop(loaded.get('pol-code-author-write-revocation-on-stop')!, warnings);
+
+  const parseReasons = [...sp.reasons, ...cc.reasons, ...ci.reasons, ...wr.reasons];
+  if (parseReasons.length > 0) {
+    throw new CodeAuthorFenceError(
+      'code-author fence shape validation failed',
+      parseReasons,
+    );
+  }
 
   return Object.freeze({
-    signedPrOnly,
-    perPrCostCap,
-    ciGate,
-    writeRevocationOnStop,
+    signedPrOnly: sp.policy!,
+    perPrCostCap: cc.policy!,
+    ciGate: ci.policy!,
+    writeRevocationOnStop: wr.policy!,
     warnings: Object.freeze(warnings.slice()),
   });
 }
 
-function atomPolicy(atom: Atom): Record<string, unknown> {
+/**
+ * Result of a per-atom parser. Policy is set only when reasons is
+ * empty; reasons aggregates every shape failure across the atom so
+ * loadCodeAuthorFence can combine them into one error at the end.
+ */
+interface ParseResult<T> {
+  readonly policy?: T;
+  readonly reasons: ReadonlyArray<string>;
+}
+
+/**
+ * Extracts `metadata.policy` as a record, pushing a reason and
+ * returning null on any failure. Does not throw so callers can
+ * continue gathering reasons from the rest of the atom's shape.
+ */
+function atomPolicy(atom: Atom, reasons: string[]): Record<string, unknown> | null {
   const md = atom.metadata as { policy?: Record<string, unknown> } | undefined;
   const p = md?.policy;
   if (!p || typeof p !== 'object') {
-    throw new CodeAuthorFenceError(
-      `${atom.id}: metadata.policy missing or not an object`,
-      [`stored metadata=${JSON.stringify(atom.metadata)}`],
-    );
+    reasons.push(`${atom.id}: metadata.policy missing or not an object (stored=${JSON.stringify(atom.metadata)})`);
+    return null;
   }
   return p;
 }
@@ -158,87 +177,96 @@ const EXPECTED_SIGNED_PR_ONLY_KEYS = new Set([
   'subject', 'output_channel', 'allowed_direct_write_paths', 'require_app_identity',
 ]);
 
-function parseSignedPrOnly(atom: Atom, warnings: string[]): SignedPrOnlyPolicy {
-  const p = atomPolicy(atom);
+function parseSignedPrOnly(atom: Atom, warnings: string[]): ParseResult<SignedPrOnlyPolicy> {
   const reasons: string[] = [];
+  const p = atomPolicy(atom, reasons);
+  if (p === null) return { reasons };
   if (p['subject'] !== 'code-author-authorship') {
-    reasons.push(`subject: expected "code-author-authorship", got ${JSON.stringify(p['subject'])}`);
+    reasons.push(`${atom.id}: subject: expected "code-author-authorship", got ${JSON.stringify(p['subject'])}`);
   }
   if (p['output_channel'] !== 'signed-pr') {
-    reasons.push(`output_channel: expected "signed-pr", got ${JSON.stringify(p['output_channel'])}`);
+    reasons.push(`${atom.id}: output_channel: expected "signed-pr", got ${JSON.stringify(p['output_channel'])}`);
   }
-  if (!Array.isArray(p['allowed_direct_write_paths'])) {
-    reasons.push('allowed_direct_write_paths: expected array');
+  if (!isStringArray(p['allowed_direct_write_paths'])) {
+    reasons.push(`${atom.id}: allowed_direct_write_paths: expected string[]`);
   }
   if (typeof p['require_app_identity'] !== 'boolean') {
-    reasons.push('require_app_identity: expected boolean');
+    reasons.push(`${atom.id}: require_app_identity: expected boolean`);
   }
-  if (reasons.length > 0) {
-    throw new CodeAuthorFenceError(`${atom.id}: invalid policy shape`, reasons);
-  }
+  if (reasons.length > 0) return { reasons };
   warnForExtraKeys(atom.id, p, EXPECTED_SIGNED_PR_ONLY_KEYS, warnings);
-  return Object.freeze({
-    subject: 'code-author-authorship',
-    output_channel: 'signed-pr',
-    allowed_direct_write_paths: Object.freeze((p['allowed_direct_write_paths'] as ReadonlyArray<unknown>).map(String)),
-    require_app_identity: p['require_app_identity'] as boolean,
-  });
+  return {
+    policy: Object.freeze({
+      subject: 'code-author-authorship',
+      output_channel: 'signed-pr',
+      // isStringArray has already asserted every element is a string;
+      // the frozen copy below is now guaranteed string[] by construction.
+      allowed_direct_write_paths: Object.freeze((p['allowed_direct_write_paths'] as ReadonlyArray<string>).slice()),
+      require_app_identity: p['require_app_identity'] as boolean,
+    }),
+    reasons,
+  };
 }
 
 const EXPECTED_COST_CAP_KEYS = new Set(['subject', 'max_usd_per_pr', 'include_retries']);
 
-function parsePerPrCostCap(atom: Atom, warnings: string[]): PerPrCostCapPolicy {
-  const p = atomPolicy(atom);
+function parsePerPrCostCap(atom: Atom, warnings: string[]): ParseResult<PerPrCostCapPolicy> {
   const reasons: string[] = [];
+  const p = atomPolicy(atom, reasons);
+  if (p === null) return { reasons };
   if (p['subject'] !== 'code-author-per-pr-cost-cap') {
-    reasons.push(`subject: expected "code-author-per-pr-cost-cap", got ${JSON.stringify(p['subject'])}`);
+    reasons.push(`${atom.id}: subject: expected "code-author-per-pr-cost-cap", got ${JSON.stringify(p['subject'])}`);
   }
-  if (typeof p['max_usd_per_pr'] !== 'number' || !(p['max_usd_per_pr'] as number > 0)) {
-    reasons.push(`max_usd_per_pr: expected positive number, got ${JSON.stringify(p['max_usd_per_pr'])}`);
+  if (typeof p['max_usd_per_pr'] !== 'number' || !((p['max_usd_per_pr'] as number) > 0)) {
+    reasons.push(`${atom.id}: max_usd_per_pr: expected positive number, got ${JSON.stringify(p['max_usd_per_pr'])}`);
   }
   if (typeof p['include_retries'] !== 'boolean') {
-    reasons.push('include_retries: expected boolean');
+    reasons.push(`${atom.id}: include_retries: expected boolean`);
   }
-  if (reasons.length > 0) {
-    throw new CodeAuthorFenceError(`${atom.id}: invalid policy shape`, reasons);
-  }
+  if (reasons.length > 0) return { reasons };
   warnForExtraKeys(atom.id, p, EXPECTED_COST_CAP_KEYS, warnings);
-  return Object.freeze({
-    subject: 'code-author-per-pr-cost-cap',
-    max_usd_per_pr: p['max_usd_per_pr'] as number,
-    include_retries: p['include_retries'] as boolean,
-  });
+  return {
+    policy: Object.freeze({
+      subject: 'code-author-per-pr-cost-cap',
+      max_usd_per_pr: p['max_usd_per_pr'] as number,
+      include_retries: p['include_retries'] as boolean,
+    }),
+    reasons,
+  };
 }
 
 const EXPECTED_CI_GATE_KEYS = new Set([
   'subject', 'required_checks', 'require_all', 'max_check_age_ms',
 ]);
 
-function parseCiGate(atom: Atom, warnings: string[]): CiGatePolicy {
-  const p = atomPolicy(atom);
+function parseCiGate(atom: Atom, warnings: string[]): ParseResult<CiGatePolicy> {
   const reasons: string[] = [];
+  const p = atomPolicy(atom, reasons);
+  if (p === null) return { reasons };
   if (p['subject'] !== 'code-author-ci-gate') {
-    reasons.push(`subject: expected "code-author-ci-gate", got ${JSON.stringify(p['subject'])}`);
+    reasons.push(`${atom.id}: subject: expected "code-author-ci-gate", got ${JSON.stringify(p['subject'])}`);
   }
-  if (!Array.isArray(p['required_checks']) || (p['required_checks'] as ReadonlyArray<unknown>).length === 0) {
-    reasons.push('required_checks: expected non-empty array');
+  const required = p['required_checks'];
+  if (!isStringArray(required) || (required as ReadonlyArray<string>).length === 0) {
+    reasons.push(`${atom.id}: required_checks: expected non-empty string[]`);
   }
   if (typeof p['require_all'] !== 'boolean') {
-    reasons.push('require_all: expected boolean');
+    reasons.push(`${atom.id}: require_all: expected boolean`);
   }
-  if (typeof p['max_check_age_ms'] !== 'number' || !(p['max_check_age_ms'] as number > 0)) {
-    reasons.push(`max_check_age_ms: expected positive number, got ${JSON.stringify(p['max_check_age_ms'])}`);
+  if (typeof p['max_check_age_ms'] !== 'number' || !((p['max_check_age_ms'] as number) > 0)) {
+    reasons.push(`${atom.id}: max_check_age_ms: expected positive number, got ${JSON.stringify(p['max_check_age_ms'])}`);
   }
-  if (reasons.length > 0) {
-    throw new CodeAuthorFenceError(`${atom.id}: invalid policy shape`, reasons);
-  }
+  if (reasons.length > 0) return { reasons };
   warnForExtraKeys(atom.id, p, EXPECTED_CI_GATE_KEYS, warnings);
-  return Object.freeze({
-    subject: 'code-author-ci-gate',
-    required_checks: Object.freeze((p['required_checks'] as ReadonlyArray<unknown>).map(String)),
-    require_all: p['require_all'] as boolean,
-    max_check_age_ms: p['max_check_age_ms'] as number,
-  });
+  return {
+    policy: Object.freeze({
+      subject: 'code-author-ci-gate',
+      required_checks: Object.freeze((p['required_checks'] as ReadonlyArray<string>).slice()),
+      require_all: p['require_all'] as boolean,
+      max_check_age_ms: p['max_check_age_ms'] as number,
+    }),
+    reasons,
+  };
 }
 
 const EXPECTED_REVOCATION_KEYS = new Set([
@@ -247,31 +275,41 @@ const EXPECTED_REVOCATION_KEYS = new Set([
 
 const LAYERS: ReadonlySet<Layer> = new Set(['L0', 'L1', 'L2', 'L3']);
 
-function parseWriteRevocationOnStop(atom: Atom, warnings: string[]): WriteRevocationOnStopPolicy {
-  const p = atomPolicy(atom);
+function parseWriteRevocationOnStop(atom: Atom, warnings: string[]): ParseResult<WriteRevocationOnStopPolicy> {
   const reasons: string[] = [];
+  const p = atomPolicy(atom, reasons);
+  if (p === null) return { reasons };
   if (p['subject'] !== 'code-author-write-revocation') {
-    reasons.push(`subject: expected "code-author-write-revocation", got ${JSON.stringify(p['subject'])}`);
+    reasons.push(`${atom.id}: subject: expected "code-author-write-revocation", got ${JSON.stringify(p['subject'])}`);
   }
   if (p['on_stop_action'] !== 'close-pr-with-revocation-comment') {
-    reasons.push(`on_stop_action: expected "close-pr-with-revocation-comment", got ${JSON.stringify(p['on_stop_action'])}`);
+    reasons.push(`${atom.id}: on_stop_action: expected "close-pr-with-revocation-comment", got ${JSON.stringify(p['on_stop_action'])}`);
   }
   if (typeof p['draft_atoms_layer'] !== 'string' || !LAYERS.has(p['draft_atoms_layer'] as Layer)) {
-    reasons.push(`draft_atoms_layer: expected one of L0..L3, got ${JSON.stringify(p['draft_atoms_layer'])}`);
+    reasons.push(`${atom.id}: draft_atoms_layer: expected one of L0..L3, got ${JSON.stringify(p['draft_atoms_layer'])}`);
   }
   if (typeof p['revocation_atom_type'] !== 'string' || p['revocation_atom_type'] === '') {
-    reasons.push('revocation_atom_type: expected non-empty string');
+    reasons.push(`${atom.id}: revocation_atom_type: expected non-empty string`);
   }
-  if (reasons.length > 0) {
-    throw new CodeAuthorFenceError(`${atom.id}: invalid policy shape`, reasons);
-  }
+  if (reasons.length > 0) return { reasons };
   warnForExtraKeys(atom.id, p, EXPECTED_REVOCATION_KEYS, warnings);
-  return Object.freeze({
-    subject: 'code-author-write-revocation',
-    on_stop_action: 'close-pr-with-revocation-comment',
-    draft_atoms_layer: p['draft_atoms_layer'] as Layer,
-    revocation_atom_type: p['revocation_atom_type'] as string,
-  });
+  return {
+    policy: Object.freeze({
+      subject: 'code-author-write-revocation',
+      on_stop_action: 'close-pr-with-revocation-comment',
+      draft_atoms_layer: p['draft_atoms_layer'] as Layer,
+      revocation_atom_type: p['revocation_atom_type'] as string,
+    }),
+    reasons,
+  };
+}
+
+// Strict array-of-strings check. Array.isArray alone passes on
+// [123, true, {}], and `.map(String)` would then silently coerce
+// those into `["123", "true", "[object Object]"]`: exactly the
+// silent policy drift the loader is supposed to catch.
+function isStringArray(v: unknown): v is ReadonlyArray<string> {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
 }
 
 function warnForExtraKeys(

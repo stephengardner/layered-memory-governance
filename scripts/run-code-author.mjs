@@ -18,19 +18,21 @@
  *   - Budget defaults to 1 iteration, 30s deadline: a fence-only
  *     skeleton should never need more.
  *
- * Env:
- *   LAG_OPERATOR_ID  -- required. Operator principal id that rooted
- *                       the bootstrap. No silent fallback; a
- *                       code-author run without an explicit operator
- *                       id has unverifiable provenance.
- *
  * Usage:
- *   LAG_OPERATOR_ID=<id> node scripts/run-code-author.mjs
- *   LAG_OPERATOR_ID=<id> node scripts/run-code-author.mjs --max-iterations 1
+ *   node scripts/run-code-author.mjs
+ *   node scripts/run-code-author.mjs --max-iterations 1
+ *   node scripts/run-code-author.mjs --preflight-only
+ *
+ * The script does NOT consume an operator env var. Principal
+ * provenance is rooted at the code-author principal stored in
+ * `.lag/principals/code-author.json` (created by the bootstrap,
+ * which does enforce LAG_OPERATOR_ID); the runner's responsibility
+ * is loading that already-rooted principal and starting the loop.
  */
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { runActor } from '../dist/actors/index.js';
 import {
@@ -64,7 +66,7 @@ function parseArgs(argv) {
     else if (a === '--preflight-only') args.preflightOnly = true;
     else if (a === '--help' || a === '-h') {
       console.log(
-        'Usage: LAG_OPERATOR_ID=<id> node scripts/run-code-author.mjs [options]\n'
+        'Usage: node scripts/run-code-author.mjs [options]\n'
         + '  --preflight-only    load + validate fence; skip runActor (CI smoke mode).\n'
         + '  --max-iterations N  default 1 (actor halts on first iteration in this revision).\n'
         + '  --deadline-ms N     default 30000.',
@@ -79,14 +81,6 @@ function parseArgs(argv) {
 }
 
 async function main() {
-  if (!process.env.LAG_OPERATOR_ID) {
-    console.error(
-      '[run-code-author] ERROR: LAG_OPERATOR_ID is not set. Export it and re-run.\n'
-      + '  export LAG_OPERATOR_ID=<your-operator-id>',
-    );
-    process.exit(2);
-  }
-
   const args = parseArgs(process.argv.slice(2));
   const host = await createFileHost({ rootDir: STATE_DIR });
 
@@ -111,7 +105,10 @@ async function main() {
     if (err instanceof CodeAuthorFenceError) {
       console.error(`[run-code-author] ABORT: ${err.message}`);
     } else {
-      console.error(`[run-code-author] ABORT: unexpected fence-load error: ${err?.stack ?? err}`);
+      // err may be a non-Error rejection (string, {code}, etc). Prefer
+      // stack when present and fall back to String(err) so a plain
+      // object never surfaces as "[object Object]" in the log.
+      console.error(`[run-code-author] ABORT: unexpected fence-load error: ${err instanceof Error ? err.stack : String(err)}`);
     }
     process.exit(1);
   }
@@ -141,7 +138,11 @@ async function main() {
       deadlineMs: args.deadlineMs,
     },
     origin: 'scheduled',
-    killSwitchSessionId: `run-code-author-${Date.now()}`,
+    // Millisecond-only session ids collide under coarse clocks, fixed
+    // test clocks, or rapid re-invocation. 6-hex nonce matches the
+    // mkKillSwitchTrippedAtomId discipline shipped in #72; future
+    // parallel-runner revisions inherit uniqueness for free.
+    killSwitchSessionId: `run-code-author-${Date.now()}-${randomBytes(3).toString('hex')}`,
   });
 
   console.log(`[run-code-author] halted: ${result.haltReason} after ${result.iterations} iteration(s)`);

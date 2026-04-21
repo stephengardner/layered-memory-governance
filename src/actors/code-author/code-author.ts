@@ -48,11 +48,12 @@ export interface CodeAuthorObservation {
   readonly fence: CodeAuthorFence;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export type CodeAuthorAction = { readonly kind: never };
-
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export type CodeAuthorOutcome = { readonly kind: never };
+// Uninhabitable action and outcome types: the skeleton never proposes
+// an action, so `propose()` returns ReadonlyArray<never> and `apply()`
+// is unreachable. Follow-up revisions widen these to real unions as
+// plan-picker, LLM-draft, and PR-creation lands.
+export type CodeAuthorAction = never;
+export type CodeAuthorOutcome = never;
 
 export type CodeAuthorAdapters = ActorAdapters;
 
@@ -88,7 +89,7 @@ export class CodeAuthorActor implements Actor<
   }
 
   async classify(
-    _obs: CodeAuthorObservation,
+    observation: CodeAuthorObservation,
     _ctx: ActorContext<CodeAuthorAdapters>,
   ): Promise<Classified<CodeAuthorObservation>> {
     // One fixed key -- convergence detection halts after one empty
@@ -96,7 +97,7 @@ export class CodeAuthorActor implements Actor<
     // observed plan count so the loop progresses iteration-to-iteration.
     return {
       key: 'code-author-idle',
-      observation: _obs,
+      observation,
     };
   }
 

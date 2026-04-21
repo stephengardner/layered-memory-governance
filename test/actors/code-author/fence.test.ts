@@ -9,7 +9,6 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
 import {
   FENCE_ATOM_IDS,
   loadCodeAuthorFence,
@@ -18,7 +17,7 @@ import {
 import type { AtomStore } from '../../../src/interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../../src/types.js';
 
-const OPERATOR_ID = 'stephen-human' as PrincipalId;
+const OPERATOR_ID = 'test-operator' as PrincipalId;
 const BOOT_TIME = '2026-04-21T00:00:00.000Z' as Time;
 
 function mkAtom(id: string, policy: Record<string, unknown>, overrides: Partial<Atom> = {}): Atom {
@@ -172,7 +171,7 @@ describe('loadCodeAuthorFence', () => {
       max_usd_per_pr: -5,           // must be positive
       include_retries: 'yes' as unknown as boolean,  // must be boolean
     }));
-    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/invalid policy shape/);
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/fence shape validation failed/);
   });
 
   it('treats unexpected policy keys as non-fatal warnings (forward-compat)', async () => {
@@ -209,17 +208,73 @@ describe('loadCodeAuthorFence', () => {
     // first. Pinned by the store.get contract, but cheap to assert.
     const atoms1 = new Map(defaultFenceAtoms());
     const atoms2 = new Map(defaultFenceAtoms());
-    const newCapKey = randomUUID();
     atoms2.set('pol-code-author-per-pr-cost-cap', mkAtom('pol-code-author-per-pr-cost-cap', {
       subject: 'code-author-per-pr-cost-cap',
       max_usd_per_pr: 25.0,
       include_retries: true,
-      // Unique key so the first store could not match if it were cached.
-      _test_key: newCapKey,
     }));
     const f1 = await loadCodeAuthorFence(mockAtomStore(atoms1));
     const f2 = await loadCodeAuthorFence(mockAtomStore(atoms2));
     expect(f1.perPrCostCap.max_usd_per_pr).toBe(10);
     expect(f2.perPrCostCap.max_usd_per_pr).toBe(25);
+  });
+
+  it('aggregates parse-phase failures across multiple atoms (not just presence)', async () => {
+    // Companion to the presence-phase aggregation test above. Seed
+    // TWO present-but-malformed atoms and verify both atom ids appear
+    // in the single thrown error. This pins the fence-loader's
+    // batch-reporting discipline to the parse phase, not just the
+    // presence/taint/supersession loop. Without this, a regression
+    // where parse*() throws on the first bad atom would silently
+    // hide the second one.
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-signed-pr-only', mkAtom('pol-code-author-signed-pr-only', {
+      subject: 'WRONG-SUBJECT',
+      output_channel: 'signed-pr',
+      allowed_direct_write_paths: [],
+      require_app_identity: true,
+    }));
+    atoms.set('pol-code-author-ci-gate', mkAtom('pol-code-author-ci-gate', {
+      subject: 'WRONG-SUBJECT-2',
+      required_checks: ['Node 22 on ubuntu-latest'],
+      require_all: true,
+      max_check_age_ms: 600_000,
+    }));
+    try {
+      await loadCodeAuthorFence(mockAtomStore(atoms));
+      throw new Error('expected fence load to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(CodeAuthorFenceError);
+      const e = err as CodeAuthorFenceError;
+      const joined = e.reasons.join('\n');
+      expect(joined).toContain('pol-code-author-signed-pr-only');
+      expect(joined).toContain('pol-code-author-ci-gate');
+    }
+  });
+
+  it('rejects non-string elements in allowed_direct_write_paths (finding: silent String() coercion)', async () => {
+    // Array.isArray alone passes on [123, true, {}], and the old
+    // `.map(String)` would coerce those into
+    // `["123", "true", "[object Object]"]`: silent policy drift that
+    // the loader was nominally preventing but in fact allowing.
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-signed-pr-only', mkAtom('pol-code-author-signed-pr-only', {
+      subject: 'code-author-authorship',
+      output_channel: 'signed-pr',
+      allowed_direct_write_paths: ['/ok/path', 123, { path: 'src' }] as ReadonlyArray<unknown>,
+      require_app_identity: true,
+    }));
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/allowed_direct_write_paths: expected string\[\]/);
+  });
+
+  it('rejects non-string elements in required_checks (same class)', async () => {
+    const atoms = new Map(defaultFenceAtoms());
+    atoms.set('pol-code-author-ci-gate', mkAtom('pol-code-author-ci-gate', {
+      subject: 'code-author-ci-gate',
+      required_checks: ['Node 22', 42, null] as ReadonlyArray<unknown>,
+      require_all: true,
+      max_check_age_ms: 600_000,
+    }));
+    await expect(loadCodeAuthorFence(mockAtomStore(atoms))).rejects.toThrow(/required_checks: expected non-empty string\[\]/);
   });
 });
