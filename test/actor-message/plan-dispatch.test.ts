@@ -15,11 +15,11 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { runDispatchTick } from '../../src/actor-message/plan-dispatch.js';
+import { runDispatchTick } from '../../src/runtime/actor-message/plan-dispatch.js';
 import {
   SubActorRegistry,
   type InvokeResult,
-} from '../../src/actor-message/sub-actor-registry.js';
+} from '../../src/runtime/actor-message/sub-actor-registry.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 
 function planAtom(

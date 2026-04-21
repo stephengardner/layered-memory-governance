@@ -56,7 +56,7 @@ import {
   type TelegramVoice,
   type VoiceTranscriber,
 } from './voice.js';
-import { bindAnswer } from '../questions/index.js';
+import { bindAnswer } from '../runtime/questions/index.js';
 
 /**
  * Transport adapter for the CLI-style streaming response path. The
@@ -351,7 +351,7 @@ export class LAGDaemon {
    * for tests to drive deterministically.
    */
   async ambientLoopTick(): Promise<void> {
-    const { LoopRunner } = await import('../loop/index.js');
+    const { LoopRunner } = await import('../runtime/loop/index.js');
     const principalId = this.resolveAmbientPrincipal();
     const runner = new LoopRunner(this.options.host, {
       principalId,
@@ -367,7 +367,7 @@ export class LAGDaemon {
    * tests.
    */
   async ambientExtractionTick(): Promise<void> {
-    const { runExtractionPass } = await import('../extraction/index.js');
+    const { runExtractionPass } = await import('../runtime/claims-extraction/index.js');
     const principalId = this.resolveAmbientPrincipal();
     await runExtractionPass(this.options.host, {
       principalId,

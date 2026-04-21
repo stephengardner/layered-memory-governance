@@ -19,10 +19,10 @@ import { createFileHost, type FileHost } from '../adapters/file/index.js';
 import { createBridgeHost, type BridgeHost } from '../adapters/bridge/index.js';
 import { CachingEmbedder } from '../adapters/_common/caching-embedder.js';
 import { TrigramEmbedder } from '../adapters/_common/trigram-embedder.js';
-import { LoopRunner } from '../loop/runner.js';
+import { LoopRunner } from '../runtime/loop/runner.js';
 import type { Embedder, Host } from '../substrate/interface.js';
 import type { PrincipalId } from '../substrate/types.js';
-import type { LoopTickReport } from '../loop/types.js';
+import type { LoopTickReport } from '../runtime/loop/types.js';
 
 type EmbedderChoice = 'trigram' | 'onnx-minilm';
 

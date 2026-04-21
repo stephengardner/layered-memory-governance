@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { decayedConfidence, shouldUpdateConfidence } from '../../src/loop/decay.js';
+import { decayedConfidence, shouldUpdateConfidence } from '../../src/runtime/loop/decay.js';
 import type { Atom, Time } from '../../src/substrate/types.js';
-import { DEFAULT_HALF_LIVES } from '../../src/loop/types.js';
+import { DEFAULT_HALF_LIVES } from '../../src/runtime/loop/types.js';
 import { sampleAtom } from '../fixtures.js';
 
 describe('decayedConfidence', () => {

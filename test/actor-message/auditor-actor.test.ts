@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { runAuditor } from '../../src/actor-message/auditor-actor.js';
+import { runAuditor } from '../../src/runtime/actor-message/auditor-actor.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 
 function sampleAtom(id: string, over: Partial<Atom> = {}): Atom {

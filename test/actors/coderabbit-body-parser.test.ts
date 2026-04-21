@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { parseCodeRabbitReviewBody } from '../../src/actors/pr-review/coderabbit-body-parser.js';
+import { parseCodeRabbitReviewBody } from '../../src/runtime/actors/pr-review/coderabbit-body-parser.js';
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 

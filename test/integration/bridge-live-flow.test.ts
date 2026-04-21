@@ -17,8 +17,8 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createBridgeHost, type BridgeHost } from '../../src/adapters/bridge/index.js';
-import { LoopRunner } from '../../src/loop/runner.js';
-import type { LoopTickReport } from '../../src/loop/types.js';
+import { LoopRunner } from '../../src/runtime/loop/runner.js';
+import type { LoopTickReport } from '../../src/runtime/loop/types.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';
 

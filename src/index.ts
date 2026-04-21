@@ -171,7 +171,7 @@ export {
   LoopRunner,
   shouldUpdateConfidence,
   ttlExpirePatch,
-} from './loop/index.js';
+} from './runtime/loop/index.js';
 export type {
   CanonTarget,
   HalfLifeConfig,
@@ -179,7 +179,7 @@ export type {
   LoopStats,
   LoopTickReport,
   TtlExpireOptions,
-} from './loop/index.js';
+} from './runtime/loop/index.js';
 
 // ---------------------------------------------------------------------------
 // Canon-md manager
@@ -245,13 +245,13 @@ export type {
 export {
   extractClaimsFromAtom,
   runExtractionPass,
-} from './extraction/index.js';
+} from './runtime/claims-extraction/index.js';
 export type {
   ExtractClaimsOptions,
   ExtractionPassOptions,
   ExtractionReport,
   ExtractionPassReport,
-} from './extraction/index.js';
+} from './runtime/claims-extraction/index.js';
 
 // ---------------------------------------------------------------------------
 // Policy (Phase 52a): canon-driven autonomy dial above Claude's permission mode
@@ -277,12 +277,12 @@ export {
   expirePastDueQuestions,
   InvalidQuestionTransitionError,
   listPendingQuestions,
-} from './questions/index.js';
+} from './runtime/questions/index.js';
 export type {
   AskQuestionOptions,
   BindAnswerOptions,
   BindAnswerResult,
-} from './questions/index.js';
+} from './runtime/questions/index.js';
 
 // ---------------------------------------------------------------------------
 // Plans (Phase 38): intent governance
@@ -294,7 +294,7 @@ export {
   summarizeValidation,
   transitionPlanState,
   validatePlan,
-} from './plans/index.js';
+} from './runtime/plans/index.js';
 export type {
   ExecutePlanOptions,
   ExecutionOutcomeAtom,
@@ -304,7 +304,7 @@ export type {
   PlanValidationResult,
   PlanValidationStatus,
   ValidatePlanOptions,
-} from './plans/index.js';
+} from './runtime/plans/index.js';
 
 // ---------------------------------------------------------------------------
 // Taint

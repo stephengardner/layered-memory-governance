@@ -21,14 +21,14 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
-import { runActor } from '../../../src/actors/run-actor.js';
-import { PlanningActor } from '../../../src/actors/planning/planning-actor.js';
+import { runActor } from '../../../src/runtime/actors/run-actor.js';
+import { PlanningActor } from '../../../src/runtime/actors/planning/planning-actor.js';
 import type {
   PlanningClassification,
   PlanningContext,
   PlanningJudgment,
   ProposedPlan,
-} from '../../../src/actors/planning/types.js';
+} from '../../../src/runtime/actors/planning/types.js';
 import type { AtomId, PrincipalId } from '../../../src/substrate/types.js';
 import { sampleAtom, samplePrincipal } from '../../fixtures.js';
 

@@ -26,7 +26,7 @@ import {
   mkCodeAuthorInvokedAtomId,
   type CodeAuthorExecutor,
   type CodeAuthorExecutorResult,
-} from '../../src/actor-message/code-author-invoker.js';
+} from '../../src/runtime/actor-message/code-author-invoker.js';
 
 const OPERATOR = 'test-operator' as PrincipalId;
 const BOOT_TIME = '2026-04-21T00:00:00.000Z' as Time;

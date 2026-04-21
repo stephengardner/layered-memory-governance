@@ -20,7 +20,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   extractClaimsFromAtom,
   runExtractionPass,
-} from '../../src/extraction/index.js';
+} from '../../src/runtime/claims-extraction/index.js';
 import { EXTRACT_CLAIMS, type ExtractClaimsOutput } from '../../src/schemas/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';

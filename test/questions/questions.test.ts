@@ -20,7 +20,7 @@ import {
   expirePastDueQuestions,
   InvalidQuestionTransitionError,
   listPendingQuestions,
-} from '../../src/questions/index.js';
+} from '../../src/runtime/questions/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 
 const agent = 'agent-alice' as PrincipalId;

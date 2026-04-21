@@ -16,7 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { runAutoApprovePass } from '../../src/actor-message/auto-approve.js';
+import { runAutoApprovePass } from '../../src/runtime/actor-message/auto-approve.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 
 const NOW = '2026-04-20T00:00:00.000Z' as Time;

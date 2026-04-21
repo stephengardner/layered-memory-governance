@@ -23,10 +23,10 @@ import {
   DrafterError,
   draftCodeChange,
   looksLikeUnifiedDiff,
-} from '../../../src/actors/code-author/drafter.js';
+} from '../../../src/runtime/actors/code-author/drafter.js';
 import type {
   CodeAuthorFence,
-} from '../../../src/actors/code-author/fence.js';
+} from '../../../src/runtime/actors/code-author/fence.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../../src/substrate/types.js';
 
 const NOW = '2026-04-21T12:00:00.000Z' as Time;

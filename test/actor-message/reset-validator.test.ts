@@ -21,9 +21,9 @@ import {
   ResetAuthorityError,
   ResetShapeError,
   validateResetWrite,
-} from '../../src/actor-message/reset-validator.js';
+} from '../../src/runtime/actor-message/reset-validator.js';
 import type { Atom, AtomId, Principal, PrincipalId, Time } from '../../src/substrate/types.js';
-import type { CircuitBreakerResetV1 } from '../../src/actor-message/types.js';
+import type { CircuitBreakerResetV1 } from '../../src/runtime/actor-message/types.js';
 
 const BOOTSTRAP_TIME = '2026-04-20T00:00:00.000Z' as Time;
 

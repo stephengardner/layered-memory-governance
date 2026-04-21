@@ -17,9 +17,9 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   sendOperatorEscalation,
   shouldEscalate,
-} from '../../src/actor-message/operator-escalation.js';
-import type { ActorReport } from '../../src/actors/types.js';
-import type { ReviewComment } from '../../src/actors/pr-review/adapter.js';
+} from '../../src/runtime/actor-message/operator-escalation.js';
+import type { ActorReport } from '../../src/runtime/actors/types.js';
+import type { ReviewComment } from '../../src/runtime/actors/pr-review/adapter.js';
 import type { PrincipalId, Time } from '../../src/substrate/types.js';
 
 function mkReport(over: Partial<ActorReport> = {}): ActorReport {
