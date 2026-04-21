@@ -210,6 +210,39 @@ export async function proposeAtom(
   );
 }
 
+/**
+ * Operator maintenance: reinforce an atom ("yes, this still
+ * applies"). Updates last_reinforced_at to now. Does NOT change
+ * content, provenance, or confidence.
+ */
+export async function reinforceAtom(
+  params: { id: string; actor_id: string },
+  signal?: AbortSignal,
+): Promise<{ id: string; last_reinforced_at: string }> {
+  return transport.call<{ id: string; last_reinforced_at: string }>(
+    'atoms.reinforce',
+    params as unknown as Record<string, unknown>,
+    signal ? { signal } : undefined,
+  );
+}
+
+/**
+ * Operator maintenance: mark an atom stale. Sets expires_at to now
+ * and records the marker's id + optional reason in metadata. The
+ * atom stays in canon — this is a FLAG, not a removal. Retirement
+ * proper goes through supersession.
+ */
+export async function markAtomStale(
+  params: { id: string; actor_id: string; reason?: string },
+  signal?: AbortSignal,
+): Promise<{ id: string; expires_at: string }> {
+  return transport.call<{ id: string; expires_at: string }>(
+    'atoms.mark-stale',
+    params as unknown as Record<string, unknown>,
+    signal ? { signal } : undefined,
+  );
+}
+
 export async function compareArbitration(
   aId: string,
   bId: string,

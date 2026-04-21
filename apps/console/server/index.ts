@@ -543,6 +543,114 @@ function computeSourceRank(atom: Atom, principalDepth: number): number {
  * tenant local deployment. Multi-tenant deployments must wrap this
  * endpoint with auth middleware before shipping.
  */
+/*
+ * Reinforce / mark-stale: low-risk atom maintenance actions the
+ * operator can do from the UI without touching structural fields.
+ *
+ * REINFORCE updates `last_reinforced_at` to now. Moves the atom out
+ * of the drift banner's "stale" bucket. The canon atom itself is
+ * unchanged — content, provenance, confidence all preserved. This
+ * is the operator's "yes, this still applies" signal.
+ *
+ * MARK-STALE sets `expires_at` to now (makes the atom immediately
+ * expired) AND writes metadata fields recording who did it and why.
+ * The drift banner surfaces expiring/expired atoms so the operator
+ * can see what they've flagged. The atom stays in canon — this is a
+ * flag, not a removal. L3 supersession or retirement still goes
+ * through the existing decision flow.
+ *
+ * Both actions preserve the atom's source-of-truth contract: they
+ * update existing mutable fields on the existing on-disk JSON, they
+ * do not rewrite the id/content/provenance/type.
+ */
+async function handleAtomReinforce(params: {
+  id: string;
+  actor_id: string;
+}): Promise<{ id: string; last_reinforced_at: string }> {
+  const filename = `${params.id}.json`;
+  const raw = await readFile(join(ATOMS_DIR, filename), 'utf8');
+  const atom = JSON.parse(raw) as Atom & { last_reinforced_at?: string; metadata?: Record<string, unknown> };
+  const now = new Date().toISOString();
+  atom.last_reinforced_at = now;
+  atom.metadata = {
+    ...(atom.metadata ?? {}),
+    reinforced_by: params.actor_id,
+    reinforced_at: now,
+  };
+  const fsWriteModule = await import('node:fs/promises');
+  await fsWriteModule.writeFile(
+    join(ATOMS_DIR, filename),
+    JSON.stringify(atom, null, 2),
+    'utf8',
+  );
+  return { id: params.id, last_reinforced_at: now };
+}
+
+async function handleAtomMarkStale(params: {
+  id: string;
+  actor_id: string;
+  reason?: string;
+}): Promise<{ id: string; expires_at: string }> {
+  const filename = `${params.id}.json`;
+  const raw = await readFile(join(ATOMS_DIR, filename), 'utf8');
+  const atom = JSON.parse(raw) as Atom & { expires_at?: string | null; metadata?: Record<string, unknown> };
+  const now = new Date().toISOString();
+  atom.expires_at = now;
+  atom.metadata = {
+    ...(atom.metadata ?? {}),
+    marked_stale_by: params.actor_id,
+    marked_stale_at: now,
+    ...(params.reason ? { marked_stale_reason: params.reason } : {}),
+  };
+  const fsWriteModule = await import('node:fs/promises');
+  await fsWriteModule.writeFile(
+    join(ATOMS_DIR, filename),
+    JSON.stringify(atom, null, 2),
+    'utf8',
+  );
+  return { id: params.id, expires_at: now };
+}
+
+/*
+ * Kill-switch soft-tier transition from the UI. Canon constraint
+ * (dec-kill-switch-design-first + inv-l3-requires-human): medium
+ * and hard tiers must be CLI-gated; the UI can only flip off↔soft.
+ * This endpoint enforces that at the server layer so a crafted
+ * client request can't escalate beyond soft.
+ */
+async function handleKillSwitchTransition(params: {
+  to: 'off' | 'soft';
+  actor_id: string;
+  reason?: string;
+}): Promise<{ tier: string; since: string; reason: string | null; autonomyDial: number }> {
+  if (params.to !== 'off' && params.to !== 'soft') {
+    throw new Error('UI kill-switch transitions are restricted to off|soft; medium/hard require CLI per dec-kill-switch-design-first');
+  }
+  const current = await readKillSwitchState();
+  // Also refuse transitions OUT OF medium/hard via UI — once elevated
+  // above soft, only the CLI can bring it back down. This prevents
+  // the UI being used to silently lower the gate.
+  if (current.tier === 'medium' || current.tier === 'hard') {
+    throw new Error('Kill-switch is above soft; use CLI to transition out of medium/hard per dec-kill-switch-design-first');
+  }
+  const now = new Date().toISOString();
+  const newState = {
+    tier: params.to,
+    since: now,
+    reason: params.reason ?? null,
+    autonomyDial: params.to === 'off' ? 1 : 0.5,
+  };
+  const fsWriteModule = await import('node:fs/promises');
+  const dir = join(LAG_DIR, 'kill-switch');
+  await fsWriteModule.mkdir(dir, { recursive: true });
+  await fsWriteModule.writeFile(
+    join(dir, 'state.json'),
+    JSON.stringify({ ...newState, transitioned_by: params.actor_id }, null, 2),
+    'utf8',
+  );
+  return newState;
+}
+
 async function handleAtomPropose(params: {
   content: string;
   type: string;
@@ -808,6 +916,63 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(res, data);
     } catch (err) {
       sendErr(res, 500, 'canon-applicable-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.reinforce' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
+    const actor_id = typeof body['actor_id'] === 'string' ? (body['actor_id'] as string) : '';
+    if (!id || !actor_id) {
+      sendErr(res, 400, 'missing-params', 'atoms.reinforce requires { id, actor_id }');
+      return;
+    }
+    try {
+      const data = await handleAtomReinforce({ id, actor_id });
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'atom-reinforce-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.mark-stale' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
+    const actor_id = typeof body['actor_id'] === 'string' ? (body['actor_id'] as string) : '';
+    const reason = typeof body['reason'] === 'string' ? (body['reason'] as string) : undefined;
+    if (!id || !actor_id) {
+      sendErr(res, 400, 'missing-params', 'atoms.mark-stale requires { id, actor_id }');
+      return;
+    }
+    try {
+      const data = await handleAtomMarkStale({ id, actor_id, ...(reason !== undefined ? { reason } : {}) });
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 500, 'atom-mark-stale-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/kill-switch.transition' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const to = typeof body['to'] === 'string' ? (body['to'] as string) : '';
+    const actor_id = typeof body['actor_id'] === 'string' ? (body['actor_id'] as string) : '';
+    const reason = typeof body['reason'] === 'string' ? (body['reason'] as string) : undefined;
+    if (to !== 'off' && to !== 'soft') {
+      sendErr(res, 403, 'tier-not-ui-transitionable', 'UI may only transition kill-switch to off|soft');
+      return;
+    }
+    if (!actor_id) {
+      sendErr(res, 400, 'missing-actor', 'kill-switch.transition requires { actor_id }');
+      return;
+    }
+    try {
+      const data = await handleKillSwitchTransition({ to: to as 'off' | 'soft', actor_id, ...(reason !== undefined ? { reason } : {}) });
+      sendOk(res, data);
+    } catch (err) {
+      sendErr(res, 403, 'kill-switch-transition-refused', (err as Error).message);
     }
     return;
   }

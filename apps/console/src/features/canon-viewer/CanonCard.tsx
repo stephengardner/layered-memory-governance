@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useQuery } from '@tanstack/react-query';
-import { ChevronDown, AlertTriangle, Archive } from 'lucide-react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ChevronDown, AlertTriangle, Archive, RefreshCw, Clock, ShieldCheck } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { AtomGraph } from '@/components/atom-graph/AtomGraph';
 import { SupersedesDiff } from '@/components/supersedes-diff/SupersedesDiff';
@@ -9,7 +9,8 @@ import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
 import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
 import { RawJson } from '@/components/raw-json/RawJson';
 import { TimeAgo } from '@/components/time-ago/TimeAgo';
-import { asAlternative, listReferencers, listAtomChain, listAtomCascade, type CanonAtom } from '@/services/canon.service';
+import { AttributionAuditDialog } from '@/components/attribution-audit/AttributionAuditDialog';
+import { asAlternative, listReferencers, listAtomChain, listAtomCascade, reinforceAtom, markAtomStale, type CanonAtom } from '@/services/canon.service';
 import { routeForAtomId, routeHref } from '@/state/router.store';
 import styles from './CanonCard.module.css';
 
@@ -186,7 +187,73 @@ function DetailsPanel({ atom }: { atom: CanonAtom }) {
       <div className={styles.actionsRow}>
         <CopyLinkButton href={routeHref(routeForAtomId(atom.id), atom.id)} />
         <RawJson value={atom} testId={`raw-json-${atom.id}`} />
+        <MaintenanceActions atom={atom} />
       </div>
+    </>
+  );
+}
+
+/*
+ * Operator maintenance buttons — reinforce and mark-stale. Small
+ * writable surface; no structural changes to the atom. Both actions
+ * invalidate the canon + drift queries on success so the UI
+ * refreshes in place.
+ */
+function MaintenanceActions({ atom }: { atom: CanonAtom }) {
+  const [auditOpen, setAuditOpen] = useState(false);
+  const qc = useQueryClient();
+  const reinforce = useMutation({
+    mutationFn: () => reinforceAtom({ id: atom.id, actor_id: 'stephen-human' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['canon'] });
+      qc.invalidateQueries({ queryKey: ['canon.drift'] });
+      qc.invalidateQueries({ queryKey: ['activities'] });
+    },
+  });
+  const markStale = useMutation({
+    mutationFn: () => markAtomStale({ id: atom.id, actor_id: 'stephen-human', reason: 'UI mark-stale' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['canon'] });
+      qc.invalidateQueries({ queryKey: ['canon.drift'] });
+      qc.invalidateQueries({ queryKey: ['activities'] });
+    },
+  });
+  return (
+    <>
+      <button
+        type="button"
+        className={styles.maintenance}
+        onClick={() => reinforce.mutate()}
+        disabled={reinforce.isPending}
+        data-testid={`reinforce-${atom.id}`}
+        title="Mark this atom as still applying — updates last_reinforced_at"
+      >
+        <RefreshCw size={12} strokeWidth={2} />
+        {reinforce.isSuccess ? 'reinforced' : reinforce.isPending ? 'reinforcing…' : 'reinforce'}
+      </button>
+      <button
+        type="button"
+        className={styles.maintenance}
+        data-variant="warning"
+        onClick={() => markStale.mutate()}
+        disabled={markStale.isPending}
+        data-testid={`mark-stale-${atom.id}`}
+        title="Flag this atom as stale — sets expires_at to now; atom stays in canon but surfaces in the drift banner"
+      >
+        <Clock size={12} strokeWidth={2} />
+        {markStale.isSuccess ? 'marked stale' : markStale.isPending ? 'marking…' : 'mark stale'}
+      </button>
+      <button
+        type="button"
+        className={styles.maintenance}
+        onClick={() => setAuditOpen(true)}
+        data-testid={`audit-${atom.id}`}
+        title="Audit the principal chain + provenance — governance-native integrity check"
+      >
+        <ShieldCheck size={12} strokeWidth={2} />
+        audit
+      </button>
+      <AttributionAuditDialog atom={auditOpen ? atom : null} onClose={() => setAuditOpen(false)} />
     </>
   );
 }

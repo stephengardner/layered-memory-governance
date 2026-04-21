@@ -21,3 +21,20 @@ export async function getKillSwitchState(signal?: AbortSignal): Promise<KillSwit
     signal ? { signal } : undefined,
   );
 }
+
+/**
+ * UI-restricted kill-switch transition. Server enforces: only
+ * off↔soft is allowed from the UI; medium and hard require CLI per
+ * `dec-kill-switch-design-first`. Client-side validation mirrors
+ * the server for UX clarity but the server is authoritative.
+ */
+export async function transitionKillSwitch(
+  params: { to: 'off' | 'soft'; actor_id: string; reason?: string },
+  signal?: AbortSignal,
+): Promise<KillSwitchState> {
+  return transport.call<KillSwitchState>(
+    'kill-switch.transition',
+    params as unknown as Record<string, unknown>,
+    signal ? { signal } : undefined,
+  );
+}
