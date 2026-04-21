@@ -60,6 +60,20 @@ if (!OPERATOR_ID) {
   process.exit(2);
 }
 
+// Canonical agent id. Soft-fallback matches bootstrap-pr-landing-canon.mjs
+// and bootstrap-cto-actor-canon.mjs: 'claude-agent' is the project's canonical
+// agent-principal id, and every bootstrap script in this repo roots its
+// agent chain on it. If a deployment chooses a different agent id, it MUST
+// set LAG_AGENT_ID consistently for all bootstrap scripts; setting it for
+// one but not the others would fork the principal tree and leave the
+// default-id principal orphaned.
+//
+// The risk this fallback could create (silent re-attribution through a
+// freshly-minted 'claude-agent' parent) is closed by the parent-chain
+// drift check in ensureParentChain: if an existing claude-agent principal
+// has drifted shape (different signed_by, compromised_at, permitted_scopes,
+// permitted_layers), the script fails loud rather than adopting the
+// compromise into code-author.signed_by.
 const CLAUDE_AGENT_ID = process.env.LAG_AGENT_ID || 'claude-agent';
 const CODE_AUTHOR_ID = 'code-author';
 
@@ -240,9 +254,63 @@ function codeAuthorPrincipal() {
   };
 }
 
+// Expected shape of the `operator` parent principal. Factored into a builder
+// so ensureParentChain seeds it AND drift-checks an existing record against
+// the same source of truth. The drift check covers compromised_at and
+// permitted_scopes because a mutated parent (e.g. scope broadened, or
+// compromised_at cleared under a tainted key) silently re-attributes every
+// child's signed_by edge to a weakened parent, and code-author inherits.
+function operatorPrincipal() {
+  return {
+    id: OPERATOR_ID,
+    name: 'Operator (human)',
+    role: 'user',
+    permitted_scopes: {
+      read: ['session', 'project', 'user', 'global'],
+      write: ['session', 'project', 'user', 'global'],
+    },
+    permitted_layers: {
+      read: ['L0', 'L1', 'L2', 'L3'],
+      write: ['L0', 'L1', 'L2', 'L3'],
+    },
+    goals: [],
+    constraints: [],
+    active: true,
+    compromised_at: null,
+    signed_by: null,
+    created_at: BOOTSTRAP_TIME,
+  };
+}
+
+function claudeAgentPrincipal() {
+  return {
+    id: CLAUDE_AGENT_ID,
+    name: 'Agent (Claude Code instance)',
+    role: 'agent',
+    permitted_scopes: {
+      read: ['session', 'project', 'user', 'global'],
+      write: ['session', 'project', 'user'],
+    },
+    permitted_layers: {
+      read: ['L0', 'L1', 'L2', 'L3'],
+      write: ['L0', 'L1', 'L2'],
+    },
+    goals: [],
+    constraints: [],
+    active: true,
+    compromised_at: null,
+    signed_by: OPERATOR_ID,
+    created_at: BOOTSTRAP_TIME,
+  };
+}
+
 function diffPrincipal(existing, expected) {
   const diffs = [];
-  for (const k of ['name', 'role', 'signed_by', 'active']) {
+  // compromised_at drift is load-bearing: a stored parent with a
+  // non-null compromised_at (or a cleared value under a rotated key)
+  // is exactly the class of silent re-attribution this bootstrap
+  // exists to prevent. Same reason provenance is in diffFenceAtom.
+  for (const k of ['name', 'role', 'signed_by', 'active', 'compromised_at']) {
     if (existing[k] !== expected[k]) {
       diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
     }
@@ -283,62 +351,52 @@ async function verifyGraduationCriteria(host) {
   // Criterion 4: judgment fallback ladder is live in canon. Probed via
   // host.atoms so the check honors the same store a consuming actor
   // would read through.
+  //
+  // Fail-closed on taint + supersession: host.atoms.get returns the atom
+  // regardless of `taint` or `superseded_by`, but the runtime policy-read
+  // (queryPolicyAtoms + consumer actors) skips dirty/archived/superseded
+  // atoms and falls back to the restrictive default. A graduation gate
+  // that accepted what the runtime rejects would unblock a principal
+  // that can push commits under a policy its live readers ignore, which
+  // is exactly the fail-open class of bug reset-validator.ts was written
+  // to prevent.
   const ladder = await host.atoms.get('pol-judgment-fallback-ladder');
   if (!ladder) {
     missing.push('pol-judgment-fallback-ladder (not present in the atom store)');
+  } else if (ladder.taint !== 'clean') {
+    missing.push(`pol-judgment-fallback-ladder (taint=${ladder.taint}, not clean)`);
+  } else if ((ladder.superseded_by?.length ?? 0) > 0) {
+    missing.push(`pol-judgment-fallback-ladder (superseded by ${ladder.superseded_by.join(', ')})`);
   }
 
   return missing;
 }
 
 async function ensureParentChain(host) {
-  // Re-assert the operator + claude-agent chain so this script is runnable
-  // standalone. Matches the pattern in bootstrap-pr-landing-canon.mjs;
-  // ensures code-author's signed_by edge terminates at a live parent.
-  const existingOperator = await host.principals.get(OPERATOR_ID);
-  if (!existingOperator) {
-    await host.principals.put({
-      id: OPERATOR_ID,
-      name: 'Operator (human)',
-      role: 'user',
-      permitted_scopes: {
-        read: ['session', 'project', 'user', 'global'],
-        write: ['session', 'project', 'user', 'global'],
-      },
-      permitted_layers: {
-        read: ['L0', 'L1', 'L2', 'L3'],
-        write: ['L0', 'L1', 'L2', 'L3'],
-      },
-      goals: [],
-      constraints: [],
-      active: true,
-      compromised_at: null,
-      signed_by: null,
-      created_at: BOOTSTRAP_TIME,
-    });
-  }
-
-  const existingClaude = await host.principals.get(CLAUDE_AGENT_ID);
-  if (!existingClaude) {
-    await host.principals.put({
-      id: CLAUDE_AGENT_ID,
-      name: 'Agent (Claude Code instance)',
-      role: 'agent',
-      permitted_scopes: {
-        read: ['session', 'project', 'user', 'global'],
-        write: ['session', 'project', 'user'],
-      },
-      permitted_layers: {
-        read: ['L0', 'L1', 'L2', 'L3'],
-        write: ['L0', 'L1', 'L2'],
-      },
-      goals: [],
-      constraints: [],
-      active: true,
-      compromised_at: null,
-      signed_by: OPERATOR_ID,
-      created_at: BOOTSTRAP_TIME,
-    });
+  // Seed OR drift-check the operator + claude-agent chain so this script
+  // is runnable standalone AND surfaces a compromised / tampered parent
+  // as loudly as it would a compromised code-author. Earlier versions of
+  // this script seeded parents only when absent and silently accepted any
+  // existing shape; that is the exact silent-re-attribution class the
+  // fence atoms exist to close, applied one hop up. If the parent is
+  // tampered, the write that inherits from it is already suspect.
+  for (const expected of [operatorPrincipal(), claudeAgentPrincipal()]) {
+    const existing = await host.principals.get(expected.id);
+    if (!existing) {
+      await host.principals.put(expected);
+      continue;
+    }
+    const pdiffs = diffPrincipal(existing, expected);
+    if (pdiffs.length > 0) {
+      console.error(
+        `[bootstrap-code-author] DRIFT on parent principal ${expected.id}:\n  ${pdiffs.join('\n  ')}\n`
+        + 'code-author cannot safely inherit a signed_by edge to a drifted '
+        + 'parent. Resolve by: (a) aligning the stored parent with the canonical '
+        + 'shape, or (b) explicitly revoking the stored parent through an operator '
+        + 'tool before re-bootstrapping. No principals or fence atoms have been written.',
+      );
+      process.exit(1);
+    }
   }
 }
 
