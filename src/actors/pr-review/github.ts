@@ -13,7 +13,7 @@
  * shelling out; reads still go through.
  */
 
-import type { GhClient } from '../../external/github/index.js';
+import type { GhClient, GhRestArgs } from '../../external/github/index.js';
 import type {
   GithubPullRequestReviewRest,
   GithubReplyResponse,
@@ -35,6 +35,19 @@ import { extractProposedFixFromCommentBody, parseCodeRabbitReviewBody } from './
 
 export interface GitHubPrReviewAdapterOptions {
   readonly client: GhClient;
+  /**
+   * Runtime-revocation signal applied to every call this adapter
+   * makes through its client. A caller that received
+   * ActorContext.abortSignal passes it here so an in-flight
+   * review-threads fetch or reply-post unwinds on a kill-switch
+   * trip instead of finishing its HTTP round-trip.
+   *
+   * Composes with any client-level signal (GhClientOptions.signal):
+   * the adapter adds its signal to each call; GhClient's per-call
+   * resolution picks the adapter's value over the client-level
+   * default. When both are absent, calls run with no revocation.
+   */
+  readonly signal?: AbortSignal;
   /**
    * When true, write methods (reply / resolve) short-circuit: they log
    * intent and return stub outcomes without making any API calls. Reads
@@ -117,6 +130,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
   readonly version = '0.1.0';
 
   private readonly client: GhClient;
+  private readonly signal?: AbortSignal;
   private readonly dryRun: boolean;
   private readonly maxThreadPages: number;
   private readonly alreadyRepliedAuthors: ReadonlySet<string>;
@@ -125,6 +139,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
 
   constructor(options: GitHubPrReviewAdapterOptions) {
     this.client = options.client;
+    if (options.signal !== undefined) this.signal = options.signal;
     this.dryRun = options.dryRun ?? false;
     this.maxThreadPages = options.maxThreadPages ?? 10;
     this.alreadyRepliedAuthors = new Set(
@@ -132,6 +147,27 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     );
     this.bodyNitReviewerPrefixes =
       options.bodyNitReviewerPrefixes ?? DEFAULT_BODY_NIT_REVIEWER_PREFIXES;
+  }
+
+  /**
+   * Every adapter-initiated GhClient call routes through this so the
+   * adapter-level AbortSignal is applied uniformly. Alternative to
+   * threading signal into each of the ~11 call sites individually,
+   * which would drift on future edits and invite a miss. Per-call
+   * beats client-level (per GhClient contract), so this is idempotent
+   * when the underlying client also has a signal.
+   */
+  private callRest<T>(args: GhRestArgs): Promise<T | undefined> {
+    if (this.signal === undefined) return this.client.rest<T>(args);
+    return this.client.rest<T>({ ...args, signal: this.signal });
+  }
+
+  private callGraphql<T>(
+    query: string,
+    variables?: Readonly<Record<string, unknown>>,
+  ): Promise<T> {
+    if (this.signal === undefined) return this.client.graphql<T>(query, variables);
+    return this.client.graphql<T>(query, variables, { signal: this.signal });
   }
 
   async listUnresolvedComments(pr: PrIdentifier): Promise<ReadonlyArray<ReviewComment>> {
@@ -147,7 +183,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       };
       if (cursor !== null) variables.cursor = cursor;
 
-      const data = await this.client.graphql<GithubReviewThreadsResponse>(
+      const data = await this.callGraphql<GithubReviewThreadsResponse>(
         REVIEW_THREADS_QUERY,
         variables,
       );
@@ -184,7 +220,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     if (this.dryRun) {
       return { commentId, posted: false, dryRun: true };
     }
-    const response = await this.client.rest<GithubReplyResponse>({
+    const response = await this.callRest<GithubReplyResponse>({
       method: 'POST',
       path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments/${commentId}/replies`,
       fields: { body },
@@ -211,7 +247,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     const threadId = await this.resolveThreadId(pr, commentId);
     if (threadId === null) return;
 
-    await this.client.graphql<GithubResolveReviewThreadResponse>(
+    await this.callGraphql<GithubResolveReviewThreadResponse>(
       RESOLVE_THREAD_MUTATION,
       { threadId },
     );
@@ -231,7 +267,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     const logins = new Set(authorLogins);
 
     type CommentLike = { readonly user?: { readonly login?: string } };
-    const reviewComments = await this.client.rest<ReadonlyArray<CommentLike>>({
+    const reviewComments = await this.callRest<ReadonlyArray<CommentLike>>({
       path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments`,
       query: { per_page: 100 },
     });
@@ -240,7 +276,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       if (login && logins.has(login)) return true;
     }
 
-    const issueComments = await this.client.rest<ReadonlyArray<CommentLike>>({
+    const issueComments = await this.callRest<ReadonlyArray<CommentLike>>({
       path: `repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`,
       query: { per_page: 100 },
     });
@@ -282,7 +318,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     // notifier still surfaces the PR to the operator.
     const reviews: GithubPullRequestReviewRest[] = [];
     for (let page = 1; page <= this.maxThreadPages; page++) {
-      const batch = await this.client.rest<ReadonlyArray<GithubPullRequestReviewRest>>({
+      const batch = await this.callRest<ReadonlyArray<GithubPullRequestReviewRest>>({
         path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
         query: { per_page: 100, page },
       });
@@ -454,7 +490,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
         };
       };
     };
-    const data = await this.client.graphql<Resp>(query, {
+    const data = await this.callGraphql<Resp>(query, {
       owner: pr.owner,
       repo: pr.repo,
       number: pr.number,
@@ -490,7 +526,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       readonly submitted_at?: string;
       readonly body?: string;
     }>;
-    const reviews = await this.client.rest<Resp>({
+    const reviews = await this.callRest<Resp>({
       path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
       query: { per_page: 100 },
     });
@@ -522,7 +558,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
         readonly app?: { readonly slug?: string };
       }>;
     };
-    const data = await this.client.rest<Resp>({
+    const data = await this.callRest<Resp>({
       path: `repos/${pr.owner}/${pr.repo}/commits/${sha}/check-runs`,
       query: { per_page: 100 },
     });
@@ -554,7 +590,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
         readonly updated_at: string;
       }>;
     };
-    const data = await this.client.rest<Resp>({
+    const data = await this.callRest<Resp>({
       path: `repos/${pr.owner}/${pr.repo}/commits/${sha}/status`,
     });
     if (!data) return [];
@@ -577,7 +613,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     if (this.dryRun) {
       return { posted: false, dryRun: true };
     }
-    const response = await this.client.rest<{ id: number }>({
+    const response = await this.callRest<{ id: number }>({
       method: 'POST',
       path: `repos/${pr.owner}/${pr.repo}/issues/${pr.number}/comments`,
       fields: { body },
