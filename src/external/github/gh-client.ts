@@ -25,14 +25,38 @@ export interface GhExecResult {
   readonly exitCode: number;
 }
 
-/** A pluggable executor. Default is execa('gh', args); tests inject a stub. */
-export type GhExecutor = (args: ReadonlyArray<string>, stdin?: string) => Promise<GhExecResult>;
+export interface GhExecutorOptions {
+  readonly stdin?: string;
+  /**
+   * Abort the gh child process when this signal fires. Adapters
+   * wired to the actor's revocation signal pass it here so long-
+   * running gh calls (polling PR state, graphql with retries) halt
+   * within the few-millisecond range instead of whatever timeout
+   * gh would otherwise wait for.
+   */
+  readonly signal?: AbortSignal;
+}
 
-export const defaultGhExecutor: GhExecutor = async (args, stdin) => {
-  const options = stdin === undefined
-    ? { reject: false as const }
-    : { reject: false as const, input: stdin };
-  const result = await execa('gh', [...args], options);
+/** A pluggable executor. Default is execa('gh', args); tests inject a stub. */
+export type GhExecutor = (
+  args: ReadonlyArray<string>,
+  options?: GhExecutorOptions,
+) => Promise<GhExecResult>;
+
+export const defaultGhExecutor: GhExecutor = async (args, options) => {
+  const stdin = options?.stdin;
+  const signal = options?.signal;
+  // execa's cancelSignal wires AbortSignal into the spawned child:
+  // on abort it SIGTERMs the gh process and rejects with
+  // AbortError. The underlying execa also surfaces an
+  // ExecaError when the child exits non-zero, which we convert to
+  // a normalized GhExecResult regardless of source.
+  const execOptions = {
+    reject: false as const,
+    ...(stdin !== undefined ? { input: stdin } : {}),
+    ...(signal !== undefined ? { cancelSignal: signal } : {}),
+  };
+  const result = await execa('gh', [...args], execOptions);
   return {
     stdout: typeof result.stdout === 'string' ? result.stdout : '',
     stderr: typeof result.stderr === 'string' ? result.stderr : '',
@@ -60,6 +84,22 @@ export interface GhRestArgs {
   readonly fields?: Readonly<Record<string, string | number | boolean>>;
   /** Query params appended to the path when method is GET. */
   readonly query?: Readonly<Record<string, string | number>>;
+  /**
+   * Per-call AbortSignal. When aborted, the underlying gh child
+   * process is terminated with SIGTERM and the call rejects with
+   * AbortError. Overrides the client-level signal if both are set.
+   */
+  readonly signal?: AbortSignal;
+}
+
+export interface GhGraphqlOptions {
+  /** Per-call AbortSignal; see GhRestArgs.signal. */
+  readonly signal?: AbortSignal;
+}
+
+export interface GhRawOptions {
+  /** Per-call AbortSignal; see GhRestArgs.signal. */
+  readonly signal?: AbortSignal;
 }
 
 export interface GhClient {
@@ -71,19 +111,44 @@ export interface GhClient {
    * like POST that always returns JSON.
    */
   rest<T>(args: GhRestArgs): Promise<T | undefined>;
-  graphql<T>(query: string, variables?: Readonly<Record<string, unknown>>): Promise<T>;
-  raw(args: ReadonlyArray<string>): Promise<GhExecResult>;
+  graphql<T>(
+    query: string,
+    variables?: Readonly<Record<string, unknown>>,
+    options?: GhGraphqlOptions,
+  ): Promise<T>;
+  raw(args: ReadonlyArray<string>, options?: GhRawOptions): Promise<GhExecResult>;
 }
 
 export interface GhClientOptions {
   readonly executor?: GhExecutor;
+  /**
+   * Default AbortSignal applied to every call. Per-call `signal`
+   * arguments override this. Typical use: actors construct a
+   * client with their ActorContext.abortSignal so every gh call
+   * made during the actor's run unwinds on a kill-switch trip.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export function createGhClient(options: GhClientOptions = {}): GhClient {
   const executor = options.executor ?? defaultGhExecutor;
+  const clientSignal = options.signal;
 
-  async function raw(args: ReadonlyArray<string>): Promise<GhExecResult> {
-    const result = await executor(args);
+  // Per-call `signal` takes precedence over client-level `signal`.
+  // Returning undefined when neither is set avoids constructing an
+  // empty object and lets the executor skip the cancelSignal wiring
+  // entirely.
+  function resolveSignal(callSignal: AbortSignal | undefined): AbortSignal | undefined {
+    return callSignal ?? clientSignal;
+  }
+
+  async function raw(
+    args: ReadonlyArray<string>,
+    rawOpts?: GhRawOptions,
+  ): Promise<GhExecResult> {
+    const signal = resolveSignal(rawOpts?.signal);
+    const execOpts: GhExecutorOptions | undefined = signal === undefined ? undefined : { signal };
+    const result = await executor(args, execOpts);
     if (result.exitCode !== 0) {
       throw new GhClientError('gh exited non-zero', args, result);
     }
@@ -109,13 +174,16 @@ export function createGhClient(options: GhClientOptions = {}): GhClient {
         }
       }
     }
-    const result = await raw(args);
+    const signal = resolveSignal(reqArgs.signal);
+    const rawOpts = signal === undefined ? undefined : { signal };
+    const result = await raw(args, rawOpts);
     return parseJson<T>(result.stdout, args);
   }
 
   async function graphql<T>(
     query: string,
     variables: Readonly<Record<string, unknown>> = {},
+    gqlOpts?: GhGraphqlOptions,
   ): Promise<T> {
     // Variable typing in `gh api graphql` is sharp-edged:
     //   - --raw-field: value is sent as a JSON string literally.
@@ -130,7 +198,9 @@ export function createGhClient(options: GhClientOptions = {}): GhClient {
     for (const [k, v] of Object.entries(variables)) {
       pushVariableArg(args, k, v);
     }
-    const result = await raw(args);
+    const signal = resolveSignal(gqlOpts?.signal);
+    const rawOpts = signal === undefined ? undefined : { signal };
+    const result = await raw(args, rawOpts);
     const parsed = parseJson<{ data: T; errors?: ReadonlyArray<{ message: string }> }>(result.stdout, args);
     if (!parsed) {
       throw new GhClientError(

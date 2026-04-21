@@ -17,6 +17,7 @@ import type { GhExecResult, GhExecutor } from '../../../src/external/github/gh-c
 interface RecordedCall {
   readonly args: ReadonlyArray<string>;
   readonly stdin: string | undefined;
+  readonly signal: AbortSignal | undefined;
 }
 
 function mkStub(responses: ReadonlyArray<GhExecResult>): {
@@ -25,8 +26,8 @@ function mkStub(responses: ReadonlyArray<GhExecResult>): {
 } {
   const calls: RecordedCall[] = [];
   let i = 0;
-  const executor: GhExecutor = async (args, stdin) => {
-    calls.push({ args, stdin });
+  const executor: GhExecutor = async (args, options) => {
+    calls.push({ args, stdin: options?.stdin, signal: options?.signal });
     const result = responses[i] ?? { stdout: '', stderr: '', exitCode: 0 };
     i++;
     return result;
@@ -149,5 +150,62 @@ describe('createGhClient', () => {
     const client = createGhClient({ executor });
     const result = await client.rest<unknown>({ method: 'DELETE', path: 'repos/a/b/issues/1' });
     expect(result).toBeUndefined();
+  });
+
+  it('signal: per-call signal is forwarded to the executor', async () => {
+    const { executor, calls } = mkStub([{ stdout: '{}', stderr: '', exitCode: 0 }]);
+    const client = createGhClient({ executor });
+    const ac = new AbortController();
+    await client.rest({ path: 'repos/a/b/pulls/1', signal: ac.signal });
+    expect(calls[0]!.signal).toBe(ac.signal);
+  });
+
+  it('signal: client-level signal applies to every call by default', async () => {
+    const { executor, calls } = mkStub([
+      { stdout: '{}', stderr: '', exitCode: 0 },
+      { stdout: '{"data":{}}', stderr: '', exitCode: 0 },
+      { stdout: '', stderr: '', exitCode: 0 },
+    ]);
+    const ac = new AbortController();
+    const client = createGhClient({ executor, signal: ac.signal });
+    await client.rest({ path: 'r/a/b/pulls/1' });
+    await client.graphql('query { viewer { login } }');
+    await client.raw(['repo', 'view']);
+    expect(calls[0]!.signal).toBe(ac.signal);
+    expect(calls[1]!.signal).toBe(ac.signal);
+    expect(calls[2]!.signal).toBe(ac.signal);
+  });
+
+  it('signal: per-call signal wins over client-level signal', async () => {
+    const { executor, calls } = mkStub([{ stdout: '{}', stderr: '', exitCode: 0 }]);
+    const clientSig = new AbortController().signal;
+    const perCallSig = new AbortController().signal;
+    const client = createGhClient({ executor, signal: clientSig });
+    await client.rest({ path: 'r/a/b', signal: perCallSig });
+    expect(calls[0]!.signal).toBe(perCallSig);
+    expect(calls[0]!.signal).not.toBe(clientSig);
+  });
+
+  it('signal: no signal anywhere = no signal on the executor call', async () => {
+    const { executor, calls } = mkStub([{ stdout: '{}', stderr: '', exitCode: 0 }]);
+    const client = createGhClient({ executor });
+    await client.rest({ path: 'r/a/b' });
+    expect(calls[0]!.signal).toBeUndefined();
+  });
+
+  it('signal: graphql forwards per-call signal', async () => {
+    const { executor, calls } = mkStub([{ stdout: '{"data":{}}', stderr: '', exitCode: 0 }]);
+    const client = createGhClient({ executor });
+    const ac = new AbortController();
+    await client.graphql('query { x }', {}, { signal: ac.signal });
+    expect(calls[0]!.signal).toBe(ac.signal);
+  });
+
+  it('signal: raw forwards per-call signal', async () => {
+    const { executor, calls } = mkStub([{ stdout: 'ok', stderr: '', exitCode: 0 }]);
+    const client = createGhClient({ executor });
+    const ac = new AbortController();
+    await client.raw(['repo', 'view'], { signal: ac.signal });
+    expect(calls[0]!.signal).toBe(ac.signal);
   });
 });
