@@ -198,6 +198,11 @@ export class ClaudeCliLLM implements LLM {
           // CLAUDE.md into the judge session. We still pay for the default
           // Claude Code system prompt, but this trims project-specific memory.
           cwd: tmpDir,
+          // Wire the caller's AbortSignal into execa's cancelSignal:
+          // on abort, SIGTERM the claude child and reject with
+          // AbortError. A trip from an actor-level revocation signal
+          // unwinds mid-stream instead of waiting for the timeout.
+          ...(options.signal !== undefined ? { cancelSignal: options.signal } : {}),
         });
       } catch (err) {
         if (isExecaError(err) && err.timedOut) {
