@@ -55,7 +55,7 @@ import {
   downloadTelegramFile,
   type TelegramVoice,
   type VoiceTranscriber,
-} from './voice.js';
+} from '../adapters/transcriber/whisper/whisper.js';
 import { bindAnswer } from '../runtime/questions/index.js';
 
 /**
@@ -1084,7 +1084,7 @@ export {
   StubTranscriber,
   WhisperLocalTranscriber,
   downloadTelegramFile,
-} from './voice.js';
-export type { VoiceTranscriber, TelegramVoice, WhisperLocalOptions } from './voice.js';
+} from '../adapters/transcriber/whisper/whisper.js';
+export type { VoiceTranscriber, TelegramVoice, WhisperLocalOptions } from '../adapters/transcriber/whisper/whisper.js';
 // Re-export TelegramNotifierOptions for parity; daemons often compose both.
 export type { TelegramNotifierOptions };
