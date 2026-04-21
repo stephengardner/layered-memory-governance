@@ -19,8 +19,10 @@
 import { spawn } from 'node:child_process';
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -207,6 +209,12 @@ describe('periodic-memory-reflection hook', () => {
     );
     expect(r.additionalContext).toBe(null);
     expect(r.exitCode).toBe(0);
+    // Assert the actual filesystem side-effect, not just the
+    // absence of the prompt: the guard dir must not exist at all
+    // for a rejected session id (safe-session regex is meant to
+    // short-circuit BEFORE any mkdir / openSync / lock / counter
+    // file touches disk).
+    expect(existsSync(join(repoRoot, '.lag', 'session-memory-reflection'))).toBe(false);
   });
 
   it('missing session_id is a silent no-op', async () => {
@@ -226,11 +234,21 @@ describe('periodic-memory-reflection hook', () => {
     });
     child.stdin.write('{not-json');
     child.stdin.end();
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => stdoutChunks.push(c));
+    child.stderr.on('data', (c: Buffer) => stderrChunks.push(c));
     const exitCode: number = await new Promise((res, rej) => {
       child.on('close', (code) => res(code ?? 0));
       child.on('error', rej);
     });
     expect(exitCode).toBe(0);
+    // Fail-open means: exit 0 AND no output. A stderr dump from
+    // an unhandled error would mean the hook crashed loudly
+    // rather than silently failing open, which still pollutes
+    // the session's log surface.
+    expect(Buffer.concat(stdoutChunks).toString('utf8')).toBe('');
+    expect(Buffer.concat(stderrChunks).toString('utf8')).toBe('');
   });
 
   // 25 sequential subprocess spawns -> ~10s on Windows. Default
@@ -257,6 +275,37 @@ describe('periodic-memory-reflection hook', () => {
     expect(last.additionalContext!).toMatch(/nudge every 25/);
   });
 
+  it('counter is serialized under concurrent writes (no lost increments)', async () => {
+    const session = 'session-concurrent';
+    const parallel = 10;
+    // Launch `parallel` hook subprocesses concurrently for the
+    // same session. If the read-modify-write is NOT serialized,
+    // two or more will read the same base count and produce the
+    // same post-increment value, so the final count ends up <
+    // parallel. The lock makes the final count exactly parallel.
+    const runs = Array.from({ length: parallel }, () =>
+      runHookIn(
+        repoRoot,
+        { session_id: session, tool_name: 'Bash', tool_input: {} },
+        { LAG_MEMORY_REFLECTION_EVERY: String(parallel) },
+      ),
+    );
+    const results = await Promise.all(runs);
+    // Exactly one of the parallel runs should have landed on the
+    // Nth-call (count === parallel) and emitted the nudge.
+    const hits = results.filter((r) => r.additionalContext !== null);
+    expect(hits.length).toBe(1);
+    // The counter file's terminal value must be exactly `parallel`.
+    const counterPath = join(
+      repoRoot,
+      '.lag',
+      'session-memory-reflection',
+      `${session}.json`,
+    );
+    const parsed = JSON.parse(readFileSync(counterPath, 'utf8'));
+    expect(parsed.count).toBe(parallel);
+  });
+
   it('emitted JSON matches the PostToolUse additionalContext contract', async () => {
     const session = 'session-shape';
     // Burn down to just before the trigger.
@@ -268,10 +317,18 @@ describe('periodic-memory-reflection hook', () => {
       );
     }
     // Raw-stdout capture so we can assert the envelope shape too.
+    // Explicitly clear LAG_MEMORY_REFLECTION_DISABLED in case a
+    // dev is running tests with it exported - inherited env would
+    // silently short-circuit the hook and break the JSON.parse
+    // below.
     const hookPath = join(repoRoot, '.claude', 'hooks', 'periodic-memory-reflection.mjs');
     const child = spawn('node', [hookPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, LAG_MEMORY_REFLECTION_EVERY: '3' },
+      env: {
+        ...process.env,
+        LAG_MEMORY_REFLECTION_EVERY: '3',
+        LAG_MEMORY_REFLECTION_DISABLED: '',
+      },
     });
     child.stdin.write(JSON.stringify({
       session_id: session,

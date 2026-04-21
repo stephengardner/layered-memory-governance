@@ -60,9 +60,13 @@
  */
 
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -77,8 +81,13 @@ const SAFE_SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 function getEvery() {
   const raw = process.env['LAG_MEMORY_REFLECTION_EVERY'];
   if (raw === undefined || raw === '') return DEFAULT_EVERY;
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_EVERY;
+  // Strict integer: reject '5x', '1.5', '08', ' 5 ', etc. A
+  // malformed operator override should fall back to the default
+  // cadence, not silently degrade to parseInt's partial-prefix
+  // interpretation.
+  if (!/^[1-9]\d*$/.test(raw)) return DEFAULT_EVERY;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n <= 0) return DEFAULT_EVERY;
   return n;
 }
 
@@ -93,6 +102,62 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * Per-session read-modify-write on the counter file must be
+ * serialized. Two concurrent PostToolUse processes for the same
+ * session (parallel tool calls, or Claude Code's internal fan-out)
+ * would otherwise both read the same count and both write the
+ * same incremented value, losing increments and shifting the
+ * Nth-call cadence. The org-scale clause of
+ * `dev-indie-floor-org-ceiling` makes this a load-bearing
+ * correctness concern at 50+ concurrent actors.
+ *
+ * Implementation mirrors `.claude/hooks/seed-canon-on-session.mjs`:
+ * atomic `openSync(path, 'wx')` on a sibling `.lock` file, with a
+ * stale-lock reclaim so a crashed holder can't wedge the session.
+ * Wait is bounded; on timeout we return null (hook fails open - no
+ * prompt injected, but the tool call proceeds).
+ */
+const LOCK_WAIT_MS = 2000;
+const LOCK_POLL_MS = 25;
+const LOCK_STALE_MS = 10_000;
+
+function acquireLock(lockPath) {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      closeSync(fd);
+      return true;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      // Stale-lock reclaim: if the existing lock is older than
+      // LOCK_STALE_MS, delete it and retry immediately. A crashed
+      // prior holder should not be able to wedge every future
+      // PostToolUse invocation for this session.
+      try {
+        const st = statSync(lockPath);
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        // Lock disappeared between stat and our retry - fine.
+        continue;
+      }
+      // Busy-wait briefly; the contending writer is normally done
+      // in a few ms.
+      const until = Date.now() + LOCK_POLL_MS;
+      while (Date.now() < until) { /* spin */ }
+    }
+  }
+  return false;
+}
+
+function releaseLock(lockPath) {
+  try { unlinkSync(lockPath); } catch { /* already gone */ }
+}
+
 function bumpCounter(sessionId) {
   try {
     if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
@@ -100,26 +165,33 @@ function bumpCounter(sessionId) {
     return null;
   }
   const path = resolve(STATE_DIR, `${sessionId}.json`);
-  let count = 0;
-  if (existsSync(path)) {
-    try {
-      const raw = readFileSync(path, 'utf8');
-      const parsed = JSON.parse(raw);
-      if (typeof parsed.count === 'number' && parsed.count >= 0) {
-        count = parsed.count;
-      }
-    } catch {
-      // Corrupt / unreadable - reset.
-      count = 0;
-    }
-  }
-  count += 1;
+  const lockPath = resolve(STATE_DIR, `${sessionId}.lock`);
+
+  if (!acquireLock(lockPath)) return null;
   try {
-    writeFileSync(path, JSON.stringify({ count }, null, 2), 'utf8');
-  } catch {
-    return null;
+    let count = 0;
+    if (existsSync(path)) {
+      try {
+        const raw = readFileSync(path, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.count === 'number' && parsed.count >= 0) {
+          count = parsed.count;
+        }
+      } catch {
+        // Corrupt / unreadable - reset.
+        count = 0;
+      }
+    }
+    count += 1;
+    try {
+      writeFileSync(path, JSON.stringify({ count }, null, 2), 'utf8');
+    } catch {
+      return null;
+    }
+    return count;
+  } finally {
+    releaseLock(lockPath);
   }
-  return count;
 }
 
 function reflectionPrompt(count, every) {
