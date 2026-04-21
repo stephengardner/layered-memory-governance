@@ -16,12 +16,15 @@
  * Two-pass resolution per specifier:
  *   1. Resolve the spec from the importer's CURRENT dir and look for a
  *      matching REWRITES `from` entry.
- *   2. If no match, check whether the importer itself lives inside a
- *      moved directory. If so, re-resolve the spec from the importer's
- *      PRE-MOVE dir and take the rule `to` (or the unmoved target) as
- *      the true target. This handles "importer moved in phase N+1, spec
- *      already pointed at a phase-N post-move target" - the rewriter
- *      produces the new relative path from the importer's current dir.
+ *   2. If no match, check whether the importer itself has been moved
+ *      in this or a prior phase. The importer is considered moved when
+ *      (a) its directory lives inside a moved `dir` rule's `to`, OR
+ *      (b) its absolute file path equals a moved `file` rule's `to`.
+ *      If so, re-resolve the spec from the importer's PRE-MOVE dir and
+ *      take the rule `to` (or the unmoved target) as the true target.
+ *      This handles "importer moved in phase N+1, spec already pointed
+ *      at a phase-N post-move target" - the rewriter produces the new
+ *      relative path from the importer's current dir.
  *
  * Only relative specifiers (starting with './' or '../') are rewritten;
  * bare-specifier imports (npm packages) are left alone.
@@ -43,6 +46,9 @@ const REWRITES = [
   { kind: 'dir', from: resolve('src/taint'),         to: resolve('src/substrate/taint') },
   { kind: 'dir', from: resolve('src/kill-switch'),   to: resolve('src/substrate/kill-switch') },
   { kind: 'dir', from: resolve('src/canon-md'),      to: resolve('src/substrate/canon') },
+  // Phase B3:
+  { kind: 'dir',  from: resolve('src/policy'),             to: resolve('src/substrate/policy') },
+  { kind: 'file', from: resolve('src/llm-tool-policy.ts'), to: resolve('src/substrate/policy/tool-policy.ts') },
 ];
 
 function resolveSpec(fileDir, spec) {
@@ -67,10 +73,23 @@ function matchRewrite(resolved) {
   return null;
 }
 
-// If the importer lives inside a moved dir (its abs path starts with some
-// rule's `to`), map that path back to the pre-move location so stale specs
-// written before the importer moved can still be resolved.
-function preMoveDir(fileDir) {
+// If the importer itself has been moved, map its CURRENT location back
+// to the PRE-MOVE dir so stale specs written before the importer moved
+// can still be resolved. The importer is considered moved when either:
+//   - a `file` rule's `to` equals the importer's absolute file path, OR
+//   - a `dir` rule's `to` covers its current directory.
+// File rules are checked first because they are strictly more specific
+// than dir rules - a file moved INTO a moved directory (which is the
+// case for tool-policy.ts landing inside substrate/policy/) should map
+// back to its own pre-move dir, not the containing dir's pre-move dir.
+function preMoveDir(fileDir, absPath) {
+  if (absPath) {
+    for (const r of REWRITES) {
+      if (r.kind === 'file' && r.to === absPath) {
+        return dirname(r.from);
+      }
+    }
+  }
   for (const r of REWRITES) {
     if (r.kind !== 'dir') continue;
     const withSep = r.to + sep;
@@ -96,7 +115,7 @@ function isValidTarget(resolved) {
   return false;
 }
 
-function rewriteSpec(fileDir, spec) {
+function rewriteSpec(fileDir, spec, absPath) {
   const resolved = resolveSpec(fileDir, spec);
   const newResolved = matchRewrite(resolved);
   if (newResolved) {
@@ -112,7 +131,7 @@ function rewriteSpec(fileDir, spec) {
   // spec that resolves to a bogus (non-existent) path. Re-resolve from
   // its pre-move directory; if that points at a valid current target,
   // compute the correct relative path from the importer's CURRENT dir.
-  const preDir = preMoveDir(fileDir);
+  const preDir = preMoveDir(fileDir, absPath);
   if (preDir) {
     const preResolved = resolveSpec(preDir, spec);
     const preRewritten = matchRewrite(preResolved);
@@ -140,7 +159,7 @@ for (const file of files) {
   try { text = readFileSync(abs, 'utf8'); } catch { continue; }
   const fileDir = dirname(abs);
   const updated = text.replace(IMPORT_RE, (m, a, spec, b) => {
-    const rewritten = rewriteSpec(fileDir, spec);
+    const rewritten = rewriteSpec(fileDir, spec, abs);
     return rewritten ? a + rewritten + b : m;
   });
   if (updated !== text) {

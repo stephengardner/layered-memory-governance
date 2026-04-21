@@ -14,7 +14,7 @@ import {
   loadLlmToolPolicy,
   LlmToolPolicyError,
   LLM_TOOL_POLICY_PREFIX,
-} from '../src/llm-tool-policy.js';
+} from '../src/substrate/policy/tool-policy.js';
 import type { AtomStore } from '../src/substrate/interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../src/substrate/types.js';
 
