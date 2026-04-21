@@ -253,22 +253,40 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
    * `🧹 Nitpick comments (N)` block, and return the extracted items as
    * synthetic `ReviewComment`s with `kind: 'body-nit'`.
    *
-   * Synthetic ids have the form `body-nit:<reviewId>:<path>:<lineStart>`
-   * so they're stable across iterations (important for de-dup and
-   * escalation-message idempotency). Body-nits have no threadId and
-   * must not be fed into reply/resolve paths; pr-landing enforces
-   * this via the `kind` check.
+   * Synthetic ids have the form
+   * `body-nit:<reviewId>:<path>:<lineStart>:<ordinal>` so they are
+   * stable across re-runs AND unique within a single review. The
+   * ordinal is the nit's index inside the parser's ordered output
+   * for that review; the parser walks the review body
+   * deterministically, so the same review body yields the same
+   * ordinal for the same nit on every run.
+   *
+   * Body-nits have no threadId and must not be fed into reply/resolve
+   * paths; pr-landing enforces this via the `kind` check.
    *
    * Only CodeRabbit reviews are parsed today. A second reviewer format
    * would justify moving the parse dispatch into a registry; one
    * concrete consumer, one inline branch.
    */
   async listReviewBodyNits(pr: PrIdentifier): Promise<ReadonlyArray<ReviewComment>> {
-    const reviews = await this.client.rest<ReadonlyArray<GithubPullRequestReviewRest>>({
-      path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
-      query: { per_page: 100 },
-    });
-    if (!reviews || reviews.length === 0) return [];
+    // Page through /pulls/{n}/reviews. GitHub caps per_page at 100;
+    // large PRs can have more than 100 reviews (bot + human + bot
+    // over many rounds) and a single-page fetch silently drops the
+    // tail. Bounded by maxThreadPages like listUnresolvedComments so
+    // a pathological case cannot stall the actor; if the cap is hit
+    // we emit with the first N pages' body-nits and the escalation
+    // notifier still surfaces the PR to the operator.
+    const reviews: GithubPullRequestReviewRest[] = [];
+    for (let page = 1; page <= this.maxThreadPages; page++) {
+      const batch = await this.client.rest<ReadonlyArray<GithubPullRequestReviewRest>>({
+        path: `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`,
+        query: { per_page: 100, page },
+      });
+      if (!batch || batch.length === 0) break;
+      reviews.push(...batch);
+      if (batch.length < 100) break;
+    }
+    if (reviews.length === 0) return [];
 
     const out: ReviewComment[] = [];
     for (const review of reviews) {
@@ -280,8 +298,15 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       if (!this.bodyNitReviewerPrefixes.some((p) => author.startsWith(p))) continue;
       if (!review.body) continue;
       const parsed = parseCodeRabbitReviewBody(review.body);
-      for (const nit of parsed.nitpicks) {
-        const syntheticId = `body-nit:${review.id}:${nit.path}:${nit.lineStart ?? 0}`;
+      for (let i = 0; i < parsed.nitpicks.length; i++) {
+        const nit = parsed.nitpicks[i]!;
+        // Append the per-review ordinal so two nits on the same
+        // (review, path, lineStart) do not collide. The parser's
+        // ordering is deterministic given the same input body, so
+        // the same nit always maps to the same ordinal -> same id
+        // across re-runs. Downstream idempotency and de-dup rely
+        // on this stability.
+        const syntheticId = `body-nit:${review.id}:${nit.path}:${nit.lineStart ?? 0}:${i}`;
         const base: ReviewComment = {
           id: syntheticId,
           author,
