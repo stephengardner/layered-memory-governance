@@ -25,3 +25,12 @@ export type {
 } from './adapter.js';
 export { GitHubPrReviewAdapter } from './github.js';
 export type { GitHubPrReviewAdapterOptions } from './github.js';
+export {
+  UserAccountCommentTrigger,
+  getTokenFromEnv,
+} from './review-trigger.js';
+export type {
+  ReviewTriggerAdapter,
+  ReviewTriggerOutcome,
+  UserAccountCommentTriggerOptions,
+} from './review-trigger.js';

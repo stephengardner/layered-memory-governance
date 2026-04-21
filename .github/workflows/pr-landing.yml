@@ -116,6 +116,17 @@ jobs:
       - name: Run pr-landing actor (${{ steps.mode.outputs.label }})
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # LAG_OPS_PAT is only injected for same-repo (non-fork)
+          # PRs. Fork PRs execute PR-controlled code from the
+          # checkout; exposing the machine-user PAT there would
+          # let a malicious fork exfiltrate the token. Same-repo
+          # PRs can only be opened by collaborators, so the code-
+          # trust assumption holds. Fork PRs see LAG_OPS_PAT as
+          # empty; the failsafe pre-check logs 'missing-token' and
+          # proceeds without triggering the review failsafe. The
+          # external reviewer's own auto-review still runs on fork
+          # PRs independently of this branch.
+          LAG_OPS_PAT: ${{ (github.event.pull_request == null || github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name) && secrets.LAG_OPS_PAT || '' }}
         run: |
           node scripts/run-pr-landing.mjs \
             --pr "${{ steps.pr.outputs.number }}" \
