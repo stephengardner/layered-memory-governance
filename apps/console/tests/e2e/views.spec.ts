@@ -105,17 +105,19 @@ test.describe('views smoke', () => {
    * directly to /canon/<id>, the page should never briefly render
    * the unfiltered canon grid. We sample the visible card set on
    * every animation frame for 500ms after navigation and assert
-   * that it NEVER exceeded 1 card. If the flash returns, this
-   * assertion fails because during the flash the grid shows all
-   * 70+ atoms.
+   * that the count never exceeded the search-match cardinality.
+   *
+   * Earlier this test asserted <= 1 but backend search is a
+   * substring filter — any atom whose CONTENT cites the focused
+   * id also matches (e.g. "per arch-atomstore-source-of-truth").
+   * A handful of legitimate matches is not a flash. 10 is a
+   * generous ceiling — the pre-fix flash exceeded 70.
    */
   test('/canon/:id never flashes the unfiltered grid', async ({ page }) => {
     await page.goto('/');
     await page.locator('[data-testid="canon-card"]').first().waitFor();
-    // Hit the focused route directly — cold start for this route.
     const atomId = 'arch-atomstore-source-of-truth';
     await page.goto(`/canon/${atomId}`);
-    // Poll aggressively: any sample > 1 visible cards is a flash.
     const samples: number[] = [];
     const end = Date.now() + 500;
     while (Date.now() < end) {
@@ -123,7 +125,7 @@ test.describe('views smoke', () => {
       await page.waitForTimeout(25);
     }
     const maxSeen = Math.max(...samples, 0);
-    expect(maxSeen, `canon focus flashed unfiltered data: saw up to ${maxSeen} cards`).toBeLessThanOrEqual(1);
+    expect(maxSeen, `canon focus flashed unfiltered data: saw up to ${maxSeen} cards`).toBeLessThanOrEqual(10);
     await expect(page.locator(`[data-testid="canon-card"][data-atom-id="${atomId}"]`)).toBeVisible();
   });
 });
