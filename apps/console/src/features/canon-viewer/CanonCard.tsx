@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, AlertTriangle, Archive } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { AtomGraph } from '@/components/atom-graph/AtomGraph';
+import { SupersedesDiff } from '@/components/supersedes-diff/SupersedesDiff';
 import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
 import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
 import { RawJson } from '@/components/raw-json/RawJson';
@@ -177,6 +178,7 @@ function DetailsPanel({ atom }: { atom: CanonAtom }) {
       <ReferencedBy atomId={atom.id} />
       <WhyThisAtom atomId={atom.id} />
       <CascadeIfTainted atomId={atom.id} />
+      <SupersedesDiff atom={atom} />
 
       <div className={styles.actionsRow}>
         <CopyLinkButton href={routeHref(routeForAtomId(atom.id), atom.id)} />
