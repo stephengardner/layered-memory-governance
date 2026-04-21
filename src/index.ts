@@ -118,6 +118,20 @@ export type {
 } from './arbitration/index.js';
 
 // ---------------------------------------------------------------------------
+// Kill switch (medium-tier runtime revocation)
+// ---------------------------------------------------------------------------
+export {
+  createKillSwitch,
+  isKillSwitchAbortReason,
+} from './kill-switch/index.js';
+export type {
+  CreateKillSwitchOptions,
+  KillSwitchAbortReason,
+  KillSwitchController,
+  KillSwitchTrigger,
+} from './kill-switch/index.js';
+
+// ---------------------------------------------------------------------------
 // Promotion
 // ---------------------------------------------------------------------------
 export {
