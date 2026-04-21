@@ -152,10 +152,16 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
   /**
    * Every adapter-initiated GhClient call routes through this so the
    * adapter-level AbortSignal is applied uniformly. Alternative to
-   * threading signal into each of the ~11 call sites individually,
-   * which would drift on future edits and invite a miss. Per-call
-   * beats client-level (per GhClient contract), so this is idempotent
-   * when the underlying client also has a signal.
+   * threading the signal into each call site individually, which
+   * would drift on future edits and invite a miss. Per GhClient's
+   * contract, a per-call signal overrides any client-level signal;
+   * when the adapter holds no signal we pass args through unchanged
+   * so the client-level default (if any) still applies.
+   *
+   * Adapter-level signal always wins at this seam: any `args.signal`
+   * passed by a caller is intentionally shadowed. That is the point
+   * of the helper - it is the single place that decides "this run
+   * uses THIS revocation signal for every external call."
    */
   private callRest<T>(args: GhRestArgs): Promise<T | undefined> {
     if (this.signal === undefined) return this.client.rest<T>(args);

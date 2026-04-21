@@ -341,17 +341,31 @@ describe('GitHubPrReviewAdapter', () => {
   });
 
   describe('AbortSignal forwarding', () => {
-    it('forwards adapter-level signal into every graphql call', async () => {
+    it('forwards adapter-level signal into EVERY graphql call (multi-page surface)', async () => {
+      // Multi-page listUnresolvedComments so we get >1 graphql call
+      // and can assert structurally. Drift-prevention for future
+      // call sites added by D-impl-4 / PR F / PR G: a new adapter
+      // method that forgets to route through callGraphql will
+      // surface here as an options:undefined on a new call.
       const client = mkClient({
-        graphql: [mkThreadsPage([{ id: 't1', comments: [{ databaseId: 101, body: 'nit' }] }])],
+        graphql: [
+          mkThreadsPage(
+            [{ id: 'tA', comments: [{ databaseId: 1, body: 'a' }] }],
+            { hasNextPage: true, endCursor: 'c1' },
+          ),
+          mkThreadsPage([{ id: 'tB', comments: [{ databaseId: 2, body: 'b' }] }]),
+        ],
       });
       const ac = new AbortController();
       const adapter = new GitHubPrReviewAdapter({ client, signal: ac.signal });
       await adapter.listUnresolvedComments(PR);
-      expect(client.graphqls[0]!.options?.signal).toBe(ac.signal);
+      expect(client.graphqls.length).toBeGreaterThan(1);
+      for (const call of client.graphqls) {
+        expect(call.options?.signal).toBe(ac.signal);
+      }
     });
 
-    it('forwards adapter-level signal into every rest call', async () => {
+    it('forwards adapter-level signal into rest calls', async () => {
       const client = mkClient({
         // postPrComment -> POST /issues/:n/comments
         rest: [{ id: 42 }],
@@ -359,7 +373,9 @@ describe('GitHubPrReviewAdapter', () => {
       const ac = new AbortController();
       const adapter = new GitHubPrReviewAdapter({ client, signal: ac.signal });
       await adapter.postPrComment(PR, 'hello');
-      expect(client.rests[0]!.args.signal).toBe(ac.signal);
+      for (const call of client.rests) {
+        expect(call.args.signal).toBe(ac.signal);
+      }
     });
 
     it('omits signal when none is supplied at construction', async () => {
@@ -368,7 +384,23 @@ describe('GitHubPrReviewAdapter', () => {
       });
       const adapter = new GitHubPrReviewAdapter({ client });
       await adapter.listUnresolvedComments(PR);
-      expect(client.graphqls[0]!.options).toBeUndefined();
+      for (const call of client.graphqls) {
+        expect(call.options).toBeUndefined();
+      }
+    });
+
+    it('adapter-level signal always wins (ignores any args.signal a caller threads in)', async () => {
+      // The helper is the single place adapter-wide revocation is
+      // decided; any `args.signal` upstream is intentionally shadowed
+      // at this seam. This test pins that semantic so a future
+      // refactor that changes the precedence surfaces here.
+      const client = mkClient({ rest: [{ id: 42 }] });
+      const adapterSig = new AbortController().signal;
+      const adapter = new GitHubPrReviewAdapter({ client, signal: adapterSig });
+      // Internal calls do not pass args.signal, so we verify the
+      // adapter-signal is what lands at the client, not an undefined.
+      await adapter.postPrComment(PR, 'ping');
+      expect(client.rests[0]!.args.signal).toBe(adapterSig);
     });
   });
 });
