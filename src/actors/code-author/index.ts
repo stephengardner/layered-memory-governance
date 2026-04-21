@@ -49,3 +49,14 @@ export type {
   SignedPrOnlyPolicy,
   WriteRevocationOnStopPolicy,
 } from './fence.js';
+
+export {
+  GitOpsError,
+  applyDraftBranch,
+} from './git-ops.js';
+export type {
+  ApplyDraftBranchInputs,
+  ApplyDraftBranchResult,
+  GitIdentity,
+  GitOpsErrorReason,
+} from './git-ops.js';
