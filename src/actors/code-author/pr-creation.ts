@@ -104,12 +104,23 @@ export async function createDraftPr(
       },
     });
   } catch (err) {
+    /*
+     * Preserve the full error chain via `cause`. `GhClientError`
+     * carries exitCode/stderr/args that are the only actionable
+     * diagnostic signal when a gh CLI call fails (rate limit,
+     * 422 validation, token scope mismatch); discarding it would
+     * leave debuggers staring at a generic "gh-api-failed" with
+     * no path to root cause. Error.cause is ES2022 and propagates
+     * through `toString`-style chains so it shows up in logs.
+     */
     const reason = err instanceof Error ? err.message : String(err);
-    throw new PrCreationError(
+    const wrapped = new PrCreationError(
       `gh REST pulls create failed: ${reason}`,
       'gh-api-failed',
       'rest-call',
     );
+    (wrapped as Error).cause = err;
+    throw wrapped;
   }
 
   if (!resp) {

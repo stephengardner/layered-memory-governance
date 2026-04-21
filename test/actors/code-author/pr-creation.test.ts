@@ -84,6 +84,28 @@ describe('createDraftPr', () => {
     })).rejects.toMatchObject({ name: 'PrCreationError', reason: 'gh-api-failed', stage: 'rest-call' });
   });
 
+  it('preserves the original error via Error.cause', async () => {
+    /*
+     * CodeRabbit flagged that a raw new PrCreationError() loses the
+     * GhClientError context (exitCode, stderr, args). Without those,
+     * operators staring at a `gh-api-failed` have no path to root
+     * cause. Regression: any future rewrite that drops `.cause`
+     * must trip this test.
+     */
+    const original = Object.assign(new Error('gh boom'), { exitCode: 128, stderr: 'rate limit' });
+    const client = stubClient((async () => { throw original; }) as GhClient['rest']);
+    try {
+      await createDraftPr({ client, owner: 'o', repo: 'r', title: 't', body: 'b', head: 'h' });
+      throw new Error('expected PrCreationError');
+    } catch (err) {
+      expect((err as Error).name).toBe('PrCreationError');
+      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+      const cause = (err as Error & { cause?: Error & { exitCode?: number; stderr?: string } }).cause;
+      expect(cause?.exitCode).toBe(128);
+      expect(cause?.stderr).toBe('rate limit');
+    }
+  });
+
   it('empty response -> invalid-response', async () => {
     const client = stubClient((async () => undefined) as GhClient['rest']);
     await expect(createDraftPr({
