@@ -22,7 +22,7 @@ export function AtomRef({ id, variant = 'chip' }: Props) {
   return (
     <a
       className={variant === 'chip' ? styles.chip : styles.inline}
-      href={routeHref(target, { focus: id })}
+      href={routeHref(target, id)}
       data-testid="atom-ref"
       data-atom-ref-id={id}
       data-atom-ref-target={target}
@@ -31,7 +31,8 @@ export function AtomRef({ id, variant = 'chip' }: Props) {
         if (e.button !== 0) return;
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
-        setRoute(target, { focus: id });
+        e.stopPropagation();
+        setRoute(target, id);
       }}
       title={`Open ${id} in ${target}`}
     >

@@ -1,42 +1,16 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ChevronDown, X } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { FocusBanner } from '@/components/focus-banner/FocusBanner';
+import { StatsHeader } from '@/components/stats-header/StatsHeader';
+import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { listPlans, type PlanAtom } from '@/services/plans.service';
-import { useRouteQuery, setRoute } from '@/state/router.store';
+import { useRouteId, setRoute, routeHref } from '@/state/router.store';
 import styles from './PlansView.module.css';
-
-/*
- * Atom IDs have at least 4 hyphen-separated segments. That's stricter
- * than "has hyphens" — filters out short identifiers like bot names
- * (`lag-ceo`, `lag-pr-landing`) that would otherwise get false-linked.
- * Real atoms: `arch-host-interface-boundary`, `inv-provenance-every-write`,
- * `dev-coderabbit-required-status-check-non-negotiable`.
- */
-const ATOM_ID_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+){3,}$/;
-
-/*
- * Custom markdown renderer: inline `code` that matches an atom-ID
- * pattern gets promoted to a clickable AtomRef. Block code is left
- * alone. This is the glue that makes references inside plan bodies
- * navigable just like the structured refs in a CanonCard.
- */
-const MARKDOWN_COMPONENTS = {
-  code({ children, ...props }: { children?: ReactNode; className?: string | undefined }) {
-    const text = String(children ?? '');
-    // Block vs inline: block renderer passes className like `language-*`
-    // OR contains a newline. We also conservatively only promote short
-    // strings so long code blocks stay intact.
-    const isBlock = Boolean(props.className) || text.includes('\n');
-    if (!isBlock && text.length <= 120 && ATOM_ID_RE.test(text)) {
-      return <AtomRef id={text} variant="inline" />;
-    }
-    return <code {...props}>{children}</code>;
-  },
-};
 
 const STATE_TONE: Record<string, string> = {
   approved: 'var(--status-success)',
@@ -46,13 +20,31 @@ const STATE_TONE: Record<string, string> = {
   draft: 'var(--text-tertiary)',
 };
 
+const ATOM_ID_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+){3,}$/;
+
+/*
+ * Custom markdown renderer: inline `code` that matches an atom-id
+ * pattern gets promoted to a clickable AtomRef. Block code is left
+ * alone. Lets references inside plan bodies cross-navigate to canon
+ * / plans / activities just like structured refs in a CanonCard.
+ */
+const MARKDOWN_COMPONENTS = {
+  code({ children, ...props }: { children?: ReactNode; className?: string | undefined }) {
+    const text = String(children ?? '');
+    const isBlock = Boolean(props.className) || text.includes('\n');
+    if (!isBlock && text.length <= 120 && ATOM_ID_RE.test(text)) {
+      return <AtomRef id={text} variant="inline" />;
+    }
+    return <code {...props}>{children}</code>;
+  },
+};
+
 export function PlansView() {
   const query = useQuery({
     queryKey: ['plans'],
     queryFn: ({ signal }) => listPlans(signal),
   });
-  const routeQuery = useRouteQuery();
-  const focusId = routeQuery.get('focus');
+  const focusId = useRouteId();
 
   const allPlans = query.data ?? [];
   const plans = useMemo(() => {
@@ -62,73 +54,43 @@ export function PlansView() {
 
   return (
     <section className={styles.view}>
-      {query.isPending && (
-        <div className={styles.state} data-testid="plans-loading">
-          <div className={styles.spinner} aria-hidden="true" />
-          <p>Loading plans…</p>
-        </div>
-      )}
+      {query.isPending && <LoadingState label="Loading plans…" testId="plans-loading" />}
       {query.isError && (
-        <div className={styles.state} data-testid="plans-error">
-          <p className={styles.errorTitle}>Could not load plans</p>
-          <code className={styles.errorDetail}>{(query.error as Error).message}</code>
-        </div>
+        <ErrorState title="Could not load plans" message={(query.error as Error).message} testId="plans-error" />
       )}
       {query.isSuccess && plans.length === 0 && (
-        <div className={styles.state} data-testid="plans-empty">
-          {focusId ? (
-            <>
-              <p className={styles.errorTitle}>Plan not found</p>
-              <p className={styles.hint}>
-                <code>{focusId}</code> is not in the current plan set.
-              </p>
-              <button
-                type="button"
-                className={styles.focusClear}
-                onClick={() => setRoute('plans')}
-              >
-                <X size={12} strokeWidth={2.5} /> Clear focus
+        focusId ? (
+          <EmptyState
+            title="Plan not found"
+            detail={<><code>{focusId}</code> is not in the current plan set.</>}
+            action={
+              <button type="button" className={styles.clearButton} onClick={() => setRoute('plans')}>
+                Clear focus
               </button>
-            </>
-          ) : (
-            <>
-              <p>No plan atoms found.</p>
-              <p className={styles.hint}>
-                Plans appear here when an atom has type=plan or a top-level
-                plan_state field. Currently the repo has neither.
-              </p>
-            </>
-          )}
-        </div>
+            }
+            testId="plans-empty"
+          />
+        ) : (
+          <EmptyState
+            title="No plan atoms found"
+            detail="Plans appear here when an atom has type=plan or a top-level plan_state field. The repo currently has neither."
+            testId="plans-empty"
+          />
+        )
       )}
       {query.isSuccess && plans.length > 0 && (
         <>
           {focusId && (
-            <div className={styles.focusBanner}>
-              <span className={styles.focusLabel}>Focused on plan</span>
-              <code className={styles.focusId}>{focusId}</code>
-              <button
-                type="button"
-                className={styles.focusClear}
-                onClick={() => setRoute('plans')}
-                aria-label="Clear focus"
-              >
-                <X size={12} strokeWidth={2.5} /> clear
-              </button>
-            </div>
+            <FocusBanner label="Focused on plan" id={focusId} onClear={() => setRoute('plans')} />
           )}
-          <div className={styles.stats}>
-            <span className={styles.statsTotal}>{plans.length}</span>
-            <span className={styles.statsLabel}>
-              plan{plans.length === 1 ? '' : 's'}
-            </span>
-            {focusId && (
-              <span className={styles.statsDetail}>(filtered to focus)</span>
-            )}
-          </div>
-          <div className={styles.grid}>
+          <StatsHeader
+            total={plans.length}
+            label={`plan${plans.length === 1 ? '' : 's'}`}
+            detail={focusId ? '(filtered to focus)' : undefined}
+          />
+          <div className={`${styles.grid} ${focusId ? styles.gridFocused : ''}`}>
             {plans.map((p) => (
-              <PlanCard key={p.id} plan={p} startExpanded={Boolean(focusId)} />
+              <PlanCard key={p.id} plan={p} startExpanded={Boolean(focusId)} focused={Boolean(focusId)} />
             ))}
           </div>
         </>
@@ -137,7 +99,7 @@ export function PlansView() {
   );
 }
 
-function PlanCard({ plan, startExpanded }: { plan: PlanAtom; startExpanded: boolean }) {
+function PlanCard({ plan, startExpanded, focused }: { plan: PlanAtom; startExpanded: boolean; focused: boolean }) {
   const [expanded, setExpanded] = useState(startExpanded);
 
   // Keep local state in sync when the route focus changes after mount
@@ -148,8 +110,32 @@ function PlanCard({ plan, startExpanded }: { plan: PlanAtom; startExpanded: bool
 
   const state = plan.plan_state ?? 'unknown';
   const { title, body } = splitTitleAndBody(plan.content);
+
+  /*
+   * Delegated click: clicking whitespace/text in the card navigates to
+   * focus mode. Clicks on interactive descendants (a, button, code in
+   * pre, form controls) fall through. Text selection is preserved —
+   * if the user drag-selected text, skip navigation. Only fires when
+   * NOT already focused (no-op if we're already on /plans/:id).
+   */
+  const handleCardClick = (e: React.MouseEvent<HTMLElement>) => {
+    if (focused) return;
+    if (e.defaultPrevented || e.button !== 0) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('a, button, input, textarea, select, pre')) return;
+    if (window.getSelection()?.toString()) return;
+    e.preventDefault();
+    setRoute('plans', plan.id);
+  };
+
   return (
-    <article className={styles.card} data-testid="plan-card" data-atom-id={plan.id}>
+    <article
+      className={`${styles.card} ${!focused ? styles.cardClickable : ''}`}
+      data-testid="plan-card"
+      data-atom-id={plan.id}
+      onClick={handleCardClick}
+    >
       <header className={styles.header}>
         <span
           className={styles.statePill}
@@ -160,7 +146,27 @@ function PlanCard({ plan, startExpanded }: { plan: PlanAtom; startExpanded: bool
         <code className={styles.id}>{plan.id}</code>
       </header>
 
-      {title && <h3 className={styles.title}>{title}</h3>}
+      {title && (
+        focused ? (
+          <h3 className={styles.title}>{title}</h3>
+        ) : (
+          <h3 className={styles.title}>
+            <a
+              className={styles.titleLink}
+              href={routeHref('plans', plan.id)}
+              data-testid="plan-card-link"
+              onClick={(e) => {
+                if (e.defaultPrevented || e.button !== 0) return;
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                setRoute('plans', plan.id);
+              }}
+            >
+              {title}
+            </a>
+          </h3>
+        )
+      )}
 
       <div className={`${styles.content} ${expanded ? styles.contentExpanded : styles.contentClamped}`}>
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{body}</ReactMarkdown>
@@ -199,7 +205,6 @@ function PlanCard({ plan, startExpanded }: { plan: PlanAtom; startExpanded: bool
 
 function splitTitleAndBody(md: string): { title: string | null; body: string } {
   const lines = md.split('\n');
-  // Find first non-blank line; if it's a H1/H2/H3, strip it.
   let firstNonBlank = 0;
   while (firstNonBlank < lines.length && lines[firstNonBlank]!.trim().length === 0) {
     firstNonBlank++;

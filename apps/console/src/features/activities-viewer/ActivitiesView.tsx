@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { X } from 'lucide-react';
 import { listActivities, type Activity } from '@/services/activities.service';
-import { useRouteQuery, setRoute } from '@/state/router.store';
+import { useRouteId, setRoute } from '@/state/router.store';
+import { FocusBanner } from '@/components/focus-banner/FocusBanner';
+import { StatsHeader } from '@/components/stats-header/StatsHeader';
+import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import styles from './ActivitiesView.module.css';
 
 const TYPE_DOT_COLORS: Record<string, string> = {
@@ -21,13 +23,9 @@ export function ActivitiesView() {
     queryKey: ['activities', 200],
     queryFn: ({ signal }) => listActivities({ limit: 200 }, signal),
   });
-  const routeQuery = useRouteQuery();
-  const focusId = routeQuery.get('focus');
+  const focusId = useRouteId();
   const focusRef = useRef<HTMLLIElement | null>(null);
 
-  // When `?focus=<id>` is in the URL and the atom lands in the list,
-  // scroll the matching item into view and pulse-highlight it so the
-  // user immediately sees where the reference resolved.
   useEffect(() => {
     if (!focusId || !query.isSuccess) return;
     const el = focusRef.current;
@@ -38,44 +36,31 @@ export function ActivitiesView() {
 
   return (
     <section className={styles.view}>
-      {query.isPending && (
-        <div className={styles.state} data-testid="activities-loading">
-          <div className={styles.spinner} aria-hidden="true" />
-          <p>Loading activity…</p>
-        </div>
-      )}
+      {query.isPending && <LoadingState label="Loading activity…" testId="activities-loading" />}
       {query.isError && (
-        <div className={styles.state} data-testid="activities-error">
-          <p className={styles.errorTitle}>Could not load activity</p>
-          <code className={styles.errorDetail}>{(query.error as Error).message}</code>
-        </div>
+        <ErrorState
+          title="Could not load activity"
+          message={(query.error as Error).message}
+          testId="activities-error"
+        />
       )}
       {query.isSuccess && grouped.length === 0 && (
-        <div className={styles.state} data-testid="activities-empty">
-          <p>No atoms with activity yet.</p>
-        </div>
+        <EmptyState
+          title="No atoms with activity yet"
+          detail="The atom store is empty for the current filter window."
+          testId="activities-empty"
+        />
       )}
       {query.isSuccess && grouped.length > 0 && (
         <>
           {focusId && (
-            <div className={styles.focusBanner}>
-              <span className={styles.focusLabel}>Focused on atom</span>
-              <code className={styles.focusId}>{focusId}</code>
-              <button
-                type="button"
-                className={styles.focusClear}
-                onClick={() => setRoute('activities')}
-                aria-label="Clear focus"
-              >
-                <X size={12} strokeWidth={2.5} /> clear
-              </button>
-            </div>
+            <FocusBanner label="Focused on atom" id={focusId} onClear={() => setRoute('activities')} />
           )}
-          <div className={styles.stats}>
-            <span className={styles.statsTotal}>{query.data?.length ?? 0}</span>
-            <span className={styles.statsLabel}>recent atoms</span>
-            <span className={styles.statsDetail}>across {grouped.length} days</span>
-          </div>
+          <StatsHeader
+            total={query.data?.length ?? 0}
+            label="recent atoms"
+            detail={`across ${grouped.length} day${grouped.length === 1 ? '' : 's'}`}
+          />
           <ol className={styles.timeline}>
             {grouped.map(({ day, items }) => (
               <li key={day} className={styles.dayGroup}>

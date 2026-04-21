@@ -1,0 +1,26 @@
+.stats {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.total {
+  font-family: var(--font-display);
+  font-size: var(--font-size-3xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.label {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+}
+
+.detail {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}

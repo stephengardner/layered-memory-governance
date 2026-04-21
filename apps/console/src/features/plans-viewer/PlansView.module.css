@@ -27,10 +27,66 @@
   font-size: var(--font-size-sm);
 }
 
+/*
+ * Masonry via CSS columns. Native CSS Grid masonry is still behind a
+ * flag (Firefox only as of early 2026), so we use the robust
+ * column-count pattern: content flows top-to-bottom within a column,
+ * wraps to the next column when the first fills up.
+ *
+ * Trade-off vs. a true grid: order is top-to-bottom per column, not
+ * left-to-right. Plans are sorted by created_at desc so the newest
+ * lands in the top-left corner, which is exactly where the eye goes
+ * first. `break-inside: avoid` keeps cards intact across columns.
+ *
+ * The card's own `display: block` + `margin-bottom` replaces the grid
+ * `gap` (CSS columns don't participate in gap the same way).
+ */
 .grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(24rem, 1fr));
-  gap: var(--space-5);
+  column-count: 1;
+  column-gap: var(--space-5);
+}
+
+@media (min-width: 60rem) {
+  .grid {
+    column-count: 2;
+  }
+}
+
+.grid > * {
+  break-inside: avoid;
+  margin-bottom: var(--space-5);
+  display: block;
+  width: 100%;
+}
+
+/*
+ * When a single plan is focused (via ?focus=<id>), collapse to a
+ * single full-width column. Long plan bodies render much more
+ * naturally at wide width — paragraphs flow, nested lists don't wrap
+ * at every third word.
+ */
+.gridFocused {
+  column-count: 1;
+}
+
+.clearButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard);
+}
+
+.clearButton:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-hover);
 }
 
 .card {
@@ -47,12 +103,36 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   transition: border-color var(--duration-fast) var(--easing-standard),
+              box-shadow var(--duration-fast) var(--easing-standard),
               transform var(--duration-fast) var(--easing-standard);
+  position: relative;
+  isolation: isolate;
 }
 
 .card:hover {
   border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
   transform: translateY(-1px);
+}
+
+.cardClickable {
+  cursor: pointer;
+}
+
+.titleLink {
+  color: inherit;
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--easing-standard);
+}
+
+.titleLink:hover {
+  color: var(--accent);
+}
+
+.titleLink:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
 }
 
 .header {

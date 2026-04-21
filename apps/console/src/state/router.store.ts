@@ -1,18 +1,30 @@
 import { useSyncExternalStore } from 'react';
 
 /**
- * Minimal HTML5 pathname router. Uses History API for clean URLs
- * (`/canon`, `/principals`, etc.) instead of hash fragments.
+ * Minimal HTML5 pathname router with two-segment support.
  *
- * Exposes route (pathname) + query (?foo=bar) because v1 features
- * want to permalink to "this atom focused" or "this search applied".
+ * Every URL in the app is one of:
+ *   /canon
+ *   /canon/<atom-id>
+ *   /principals
+ *   /principals/<principal-id>
+ *   /activities
+ *   /activities/<atom-id>
+ *   /plans
+ *   /plans/<plan-id>
  *
- * Design notes:
- *   - Four top-level views is not worth a router dep
- *   - `useSyncExternalStore` + pushState + popstate is ~50 lines and
- *     covers the whole contract we need
- *   - Tauri's webview serves the SPA from a root path; this code
- *     runs identically there
+ * This is an enterprise-style path structure — the second segment is
+ * a first-class URL citizen (permalinkable, bookmarkable, shareable)
+ * rather than a `?focus=...` query param dangling off a list view.
+ *
+ * Why we roll our own instead of pulling react-router:
+ *   - Four top-level views + a single slug is not worth a router dep
+ *   - `useSyncExternalStore` + pushState + popstate is ~60 lines
+ *   - Tauri's webview serves the SPA from a root path; this code runs
+ *     identically there
+ *
+ * For dev + prod static hosts, Vite serves index.html for unknown
+ * routes by default, so `/canon/my-atom-id` resolves to the SPA bundle.
  */
 
 export type Route = 'canon' | 'principals' | 'activities' | 'plans';
@@ -23,14 +35,19 @@ const NAV_EVENT = 'lag-console:navigate';
 
 export interface Location {
   readonly route: Route;
+  /** The second path segment (atom / plan / principal id) if present. */
+  readonly id: string | null;
   readonly query: URLSearchParams;
 }
 
 function parseLocation(pathname: string, search: string): Location {
-  const first = pathname.replace(/^\/+/, '').split('/')[0]?.trim() ?? '';
+  const segs = pathname.replace(/^\/+/, '').replace(/\/+$/, '').split('/');
+  const first = segs[0]?.trim() ?? '';
   const route: Route = (VALID as ReadonlyArray<string>).includes(first) ? (first as Route) : DEFAULT;
+  const rawId = segs[1]?.trim();
+  const id = rawId ? decodeURIComponent(rawId) : null;
   const query = new URLSearchParams(search);
-  return { route, query };
+  return { route, id, query };
 }
 
 function subscribe(onChange: () => void): () => void {
@@ -42,17 +59,16 @@ function subscribe(onChange: () => void): () => void {
   };
 }
 
-const DEFAULT_LOCATION: Location = { route: DEFAULT, query: new URLSearchParams() };
+const DEFAULT_LOCATION: Location = { route: DEFAULT, id: null, query: new URLSearchParams() };
+let _cached: Location | undefined;
 
 function getSnapshot(): Location {
   if (typeof window === 'undefined') return DEFAULT_LOCATION;
-  // Recompute on every snapshot — useSyncExternalStore treats the
-  // returned value identity as "did state change". We cache inside
-  // a module-level slot so identity is stable between events.
   const loc = parseLocation(window.location.pathname, window.location.search);
   if (
     _cached
     && _cached.route === loc.route
+    && _cached.id === loc.id
     && _cached.query.toString() === loc.query.toString()
   ) {
     return _cached;
@@ -60,8 +76,6 @@ function getSnapshot(): Location {
   _cached = loc;
   return loc;
 }
-
-let _cached: Location | undefined;
 
 export function useLocation(): Location {
   return useSyncExternalStore(subscribe, getSnapshot, () => DEFAULT_LOCATION);
@@ -71,30 +85,24 @@ export function useRoute(): Route {
   return useLocation().route;
 }
 
+export function useRouteId(): string | null {
+  return useLocation().id;
+}
+
 export function useRouteQuery(): URLSearchParams {
   return useLocation().query;
 }
 
-export function setRoute(next: Route, query?: Record<string, string>): void {
-  const qs = query ? toSearchString(query) : '';
-  const target = `/${next}${qs}`;
-  if (window.location.pathname + window.location.search !== target) {
+export function setRoute(next: Route, id?: string): void {
+  const target = id ? `/${next}/${encodeURIComponent(id)}` : `/${next}`;
+  if (window.location.pathname !== target) {
     window.history.pushState({}, '', target);
     window.dispatchEvent(new Event(NAV_EVENT));
   }
 }
 
-export function routeHref(r: Route, query?: Record<string, string>): string {
-  return `/${r}${query ? toSearchString(query) : ''}`;
-}
-
-function toSearchString(query: Record<string, string>): string {
-  const sp = new URLSearchParams();
-  for (const [k, v] of Object.entries(query)) {
-    if (v) sp.set(k, v);
-  }
-  const s = sp.toString();
-  return s ? `?${s}` : '';
+export function routeHref(r: Route, id?: string): string {
+  return id ? `/${r}/${encodeURIComponent(id)}` : `/${r}`;
 }
 
 /*

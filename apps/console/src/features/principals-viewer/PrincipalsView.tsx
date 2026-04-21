@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { listPrincipals } from '@/services/principals.service';
+import { StatsHeader } from '@/components/stats-header/StatsHeader';
+import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { PrincipalCard } from './PrincipalCard';
 import styles from './PrincipalsView.module.css';
 
@@ -13,31 +15,27 @@ export function PrincipalsView() {
 
   return (
     <section className={styles.view}>
-      {query.isPending && (
-        <div className={styles.state} data-testid="principals-loading">
-          <div className={styles.spinner} aria-hidden="true" />
-          <p>Loading principals…</p>
-        </div>
-      )}
+      {query.isPending && <LoadingState label="Loading principals…" testId="principals-loading" />}
       {query.isError && (
-        <div className={styles.state} data-testid="principals-error">
-          <p className={styles.errorTitle}>Could not load principals</p>
-          <code className={styles.errorDetail}>{(query.error as Error).message}</code>
-        </div>
+        <ErrorState
+          title="Could not load principals"
+          message={(query.error as Error).message}
+          testId="principals-error"
+        />
       )}
       {query.isSuccess && principals.length === 0 && (
-        <div className={styles.state} data-testid="principals-empty">
-          <p>No principals found in .lag/principals/.</p>
-        </div>
+        <EmptyState
+          title="No principals found"
+          detail="Nothing in .lag/principals/."
+          testId="principals-empty"
+        />
       )}
       {query.isSuccess && principals.length > 0 && (
         <>
-          <div className={styles.stats}>
-            <span className={styles.statsTotal}>{principals.length}</span>
-            <span className={styles.statsLabel}>
-              principal{principals.length === 1 ? '' : 's'}
-            </span>
-          </div>
+          <StatsHeader
+            total={principals.length}
+            label={`principal${principals.length === 1 ? '' : 's'}`}
+          />
           <div className={styles.grid}>
             {principals.map((p) => (
               <PrincipalCard key={p.id} principal={p} />

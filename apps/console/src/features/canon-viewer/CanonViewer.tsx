@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Search, X } from 'lucide-react';
+import { Search } from 'lucide-react';
 import { listCanonAtoms, type AtomType, type CanonAtom } from '@/services/canon.service';
-import { useRouteQuery, setRoute } from '@/state/router.store';
+import { useRouteId, setRoute, routeForAtomId, routeHref, type Route } from '@/state/router.store';
+import { FocusBanner } from '@/components/focus-banner/FocusBanner';
+import { StatsHeader } from '@/components/stats-header/StatsHeader';
+import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { CanonCard } from './CanonCard';
 import { TypeFilter, type TypeOption } from './TypeFilter';
 import styles from './CanonViewer.module.css';
@@ -19,13 +22,12 @@ const TYPE_OPTIONS: ReadonlyArray<TypeOption> = [
 export function CanonViewer() {
   const [activeFilterId, setActiveFilterId] = useState<string>('all');
   const [search, setSearch] = useState<string>('');
-  const query = useRouteQuery();
-  const focusId = query.get('focus');
+  const focusId = useRouteId();
 
-  // React to `?focus=<id>` in the URL: pre-fill search with that id
+  // When `?focus=<id>` is in the URL, pre-fill search with that id
   // and reset the type filter so the focused atom is always visible.
-  // When user clears search we DON'T strip the URL param — it serves
-  // as a permalink; the search field is the ephemeral UI surface.
+  // Clearing the URL param is the only way to unpin — clearing the
+  // search field is ephemeral UI.
   useEffect(() => {
     if (focusId) {
       setSearch(focusId);
@@ -39,9 +41,6 @@ export function CanonViewer() {
     queryKey: ['canon', activeFilter.types, search],
     queryFn: async ({ signal }) => {
       const trimmed = search.trim();
-      // Build the params object all-at-once because ListCanonParams
-      // uses readonly fields (exactOptionalPropertyTypes forbids
-      // post-construction assignment of undefined-valued optionals).
       const params: Parameters<typeof listCanonAtoms>[0] = {
         ...(activeFilter.types.length > 0 ? { types: activeFilter.types } : {}),
         ...(trimmed.length > 0 ? { search: trimmed } : {}),
@@ -56,23 +55,14 @@ export function CanonViewer() {
   return (
     <section className={styles.viewer} aria-busy={dataQuery.isFetching}>
       {focusId && (
-        <div className={styles.focusBanner} data-testid="canon-focus-banner">
-          <span className={styles.focusLabel}>Focused on atom</span>
-          <code className={styles.focusId}>{focusId}</code>
-          <button
-            type="button"
-            className={styles.focusClear}
-            onClick={() => {
-              setSearch('');
-              setRoute('canon');
-            }}
-            aria-label="Clear focus"
-            data-testid="canon-focus-clear"
-          >
-            <X size={12} strokeWidth={2.5} />
-            clear
-          </button>
-        </div>
+        <FocusBanner
+          label="Focused on atom"
+          id={focusId}
+          onClear={() => {
+            setSearch('');
+            setRoute('canon');
+          }}
+        />
       )}
 
       <div className={styles.toolbar}>
@@ -95,20 +85,18 @@ export function CanonViewer() {
         />
       </div>
 
-      {dataQuery.isPending && <LoadingState />}
-      {dataQuery.isError && <ErrorState message={(dataQuery.error as Error).message} />}
-      {dataQuery.isSuccess && atoms.length === 0 && <EmptyState focusId={focusId} />}
+      {dataQuery.isPending && <LoadingState label="Loading canon…" testId="canon-loading" />}
+      {dataQuery.isError && (
+        <ErrorState title="Could not load canon" message={(dataQuery.error as Error).message} testId="canon-error" />
+      )}
+      {dataQuery.isSuccess && atoms.length === 0 && <FocusOrEmpty focusId={focusId} />}
 
       {dataQuery.isSuccess && atoms.length > 0 && (
-        <div className={styles.stats}>
-          <span className={styles.statsTotal}>{atoms.length}</span>
-          <span className={styles.statsLabel}>
-            atom{atoms.length === 1 ? '' : 's'}
-          </span>
-          <span className={styles.statsDetail}>
-            {summarizeCounts(counts)}
-          </span>
-        </div>
+        <StatsHeader
+          total={atoms.length}
+          label={`atom${atoms.length === 1 ? '' : 's'}`}
+          detail={summarizeCounts(counts)}
+        />
       )}
 
       <motion.div className={styles.grid} layout>
@@ -131,6 +119,55 @@ export function CanonViewer() {
   );
 }
 
+function FocusOrEmpty({ focusId }: { focusId: string | null }) {
+  // Focus-aware empty state. When the user landed here via an
+  // atom-ref that isn't an L3 canon atom, hint at where to find it
+  // (plans or activities). AtomRef already routes plan-* and
+  // op-action-*/ama-* refs to the right view at click-time, so this
+  // only triggers when someone manually opens a canon URL with a
+  // non-canon focus id (copy-pasted permalink, etc.).
+  if (!focusId) {
+    return (
+      <EmptyState
+        title="No atoms match the current filter."
+        detail="Try clearing the search or selecting a different type."
+        testId="canon-empty"
+      />
+    );
+  }
+  const target: Route = routeForAtomId(focusId);
+  if (target === 'canon') {
+    return (
+      <EmptyState
+        title="Atom not found in canon"
+        detail={<><code>{focusId}</code> is not in the current canon set.</>}
+        testId="canon-empty"
+      />
+    );
+  }
+  const label = target === 'plans' ? 'Plans' : 'Activities';
+  return (
+    <EmptyState
+      title="Not in canon"
+      detail={<><code>{focusId}</code> is a non-canon atom. Open it in its native view.</>}
+      testId="canon-empty"
+      action={
+        <a
+          className={styles.emptyAction}
+          href={routeHref(target, focusId)}
+          onClick={(e) => {
+            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            setRoute(target, focusId);
+          }}
+        >
+          Open in {label} →
+        </a>
+      }
+    />
+  );
+}
+
 function countByType(atoms: ReadonlyArray<CanonAtom>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const a of atoms) out[a.type] = (out[a.type] ?? 0) + 1;
@@ -147,67 +184,4 @@ function summarizeCounts(counts: Record<string, number>): string {
     if (!order.includes(t as AtomType)) parts.push(`${n} ${t}`);
   }
   return parts.join(' • ');
-}
-
-function LoadingState() {
-  return (
-    <div className={styles.state} data-testid="canon-loading">
-      <div className={styles.spinner} aria-hidden="true" />
-      <p>Loading canon…</p>
-    </div>
-  );
-}
-
-function ErrorState({ message }: { message: string }) {
-  return (
-    <div className={styles.state} data-testid="canon-error">
-      <p className={styles.errorTitle}>Could not load canon</p>
-      <code className={styles.errorDetail}>{message}</code>
-    </div>
-  );
-}
-
-function EmptyState({ focusId }: { focusId: string | null }) {
-  // When the user landed here via an atom-ref focus but canon doesn't
-  // have that atom, suggest Activities or Plans — the atom graph is
-  // bigger than canon and the ref might point to a plan, observation,
-  // or actor-message.
-  if (focusId) {
-    const suggest = inferRouteForId(focusId);
-    return (
-      <div className={styles.state} data-testid="canon-empty">
-        <p className={styles.emptyTitle}>Not in canon</p>
-        <p className={styles.emptyDetail}>
-          <code>{focusId}</code> isn't an L3 canon atom. It may be a {suggest.kind}.
-        </p>
-        <a
-          className={styles.emptyAction}
-          href={`/${suggest.route}?focus=${encodeURIComponent(focusId)}`}
-          onClick={(e) => {
-            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-            e.preventDefault();
-            setRoute(suggest.route, { focus: focusId });
-          }}
-        >
-          Open in {suggest.routeLabel} →
-        </a>
-      </div>
-    );
-  }
-  return (
-    <div className={styles.state} data-testid="canon-empty">
-      <p className={styles.emptyTitle}>No atoms match the current filter.</p>
-      <p className={styles.emptyDetail}>
-        Try clearing the search or selecting a different type.
-      </p>
-    </div>
-  );
-}
-
-function inferRouteForId(id: string): { route: 'plans' | 'activities'; routeLabel: string; kind: string } {
-  if (id.startsWith('plan-')) return { route: 'plans', routeLabel: 'Plans', kind: 'plan' };
-  if (id.startsWith('op-action-') || id.startsWith('ama-')) {
-    return { route: 'activities', routeLabel: 'Activities', kind: 'non-canon atom (observation / actor-message)' };
-  }
-  return { route: 'activities', routeLabel: 'Activities', kind: 'non-canon atom' };
 }

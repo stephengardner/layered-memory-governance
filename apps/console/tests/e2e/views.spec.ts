@@ -57,7 +57,7 @@ test.describe('views smoke', () => {
     expect(after).toBeGreaterThan(before);
   });
 
-  test('atom-ref link navigates to canon with focus query', async ({ page }) => {
+  test('atom-ref link navigates to /<view>/<id>', async ({ page }) => {
     await page.goto('/canon');
     await page.locator('[data-testid="canon-card"]').first().waitFor();
     // Expand the first card and click an atom-ref chip if any.
@@ -66,8 +66,23 @@ test.describe('views smoke', () => {
     await expand.click();
     const ref = firstCard.locator('[data-testid="atom-ref"]').first();
     const targetId = await ref.getAttribute('data-atom-ref-id');
-    if (!targetId) test.skip(true, 'no atom-ref to click');
+    const targetRoute = await ref.getAttribute('data-atom-ref-target');
+    if (!targetId || !targetRoute) test.skip(true, 'no atom-ref to click');
     await ref.click();
-    await expect(page).toHaveURL(new RegExp(`/canon\\?focus=${encodeURIComponent(targetId!).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
+    const escaped = encodeURIComponent(targetId!).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(page).toHaveURL(new RegExp(`/${targetRoute}/${escaped}$`));
+  });
+
+  test('plan card is clickable → opens in focus mode', async ({ page }) => {
+    await page.goto('/plans');
+    const firstCard = page.locator('[data-testid="plan-card"]').first();
+    await firstCard.waitFor();
+    const planId = await firstCard.getAttribute('data-atom-id');
+    if (!planId) test.skip(true, 'no plan card to click');
+    const link = firstCard.locator('[data-testid="plan-card-link"]');
+    await link.click();
+    const escaped = encodeURIComponent(planId!).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await expect(page).toHaveURL(new RegExp(`/plans/${escaped}$`));
+    await expect(page.getByTestId('focus-banner')).toBeVisible();
   });
 });
