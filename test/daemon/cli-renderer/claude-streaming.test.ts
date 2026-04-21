@@ -11,8 +11,8 @@ import { describe, expect, it } from 'vitest';
 import {
   invokeClaudeStreaming,
   makeStubStreamingExecutor,
-} from '../../../src/daemon/cli-renderer/claude-streaming.js';
-import type { CliRendererEvent } from '../../../src/daemon/cli-renderer/types.js';
+} from '../../../src/runtime/daemon/cli-renderer/claude-streaming.js';
+import type { CliRendererEvent } from '../../../src/runtime/daemon/cli-renderer/types.js';
 
 const LINES = [
   JSON.stringify({ type: 'system', subtype: 'init', session_id: 'abc123' }),

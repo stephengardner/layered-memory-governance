@@ -8,12 +8,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CliRenderer } from '../../../src/daemon/cli-renderer/renderer.js';
+import { CliRenderer } from '../../../src/runtime/daemon/cli-renderer/renderer.js';
 import type {
   CliRendererChannel,
   MessageOptions,
   PostedMessage,
-} from '../../../src/daemon/cli-renderer/types.js';
+} from '../../../src/runtime/daemon/cli-renderer/types.js';
 
 interface Call {
   readonly kind: 'post' | 'edit';

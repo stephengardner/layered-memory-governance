@@ -208,14 +208,14 @@ export {
   splitForTelegram,
   invokeClaude,
   assembleContext,
-} from './daemon/index.js';
+} from './runtime/daemon/index.js';
 export type {
   LAGDaemonOptions,
   InvokeClaudeOptions,
   InvokeClaudeResult,
   AssembleContextOptions,
   AssembledContext,
-} from './daemon/index.js';
+} from './runtime/daemon/index.js';
 
 // ---------------------------------------------------------------------------
 // Session sources (Phase 40): pluggable kick-off adapters

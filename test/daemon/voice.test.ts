@@ -11,7 +11,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { LAGDaemon, StubTranscriber } from '../../src/daemon/index.js';
+import { LAGDaemon, StubTranscriber } from '../../src/runtime/daemon/index.js';
 import type { PrincipalId } from '../../src/substrate/types.js';
 
 const PRINCIPAL = 'stephen-human' as PrincipalId;

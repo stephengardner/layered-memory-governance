@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { mkdir } from 'node:fs/promises';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { LAGDaemon, StubTranscriber, WhisperLocalTranscriber } from '../dist/daemon/index.js';
+import { LAGDaemon, StubTranscriber, WhisperLocalTranscriber } from '../dist/runtime/daemon/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 

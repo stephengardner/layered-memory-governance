@@ -12,7 +12,7 @@ import { writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { LAGDaemon } from '../../src/daemon/index.js';
+import { LAGDaemon } from '../../src/runtime/daemon/index.js';
 import { EXTRACT_CLAIMS } from '../../src/schemas/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/substrate/types.js';
 import { sampleAtom } from '../fixtures.js';

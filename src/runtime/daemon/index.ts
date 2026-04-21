@@ -28,25 +28,25 @@
 
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Host } from '../substrate/interface.js';
+import type { Host } from '../../substrate/interface.js';
 import type {
   Atom,
   AtomId,
   Disposition,
   PrincipalId,
   Time,
-} from '../substrate/types.js';
-import { ConflictError } from '../substrate/errors.js';
+} from '../../substrate/types.js';
+import { ConflictError } from '../../substrate/errors.js';
 import {
   parseCallbackData,
   type TelegramNotifierOptions,
-} from '../adapters/notifier/telegram/notifier.js';
+} from '../../adapters/notifier/telegram/notifier.js';
 import { assembleContext, type AssembleContextOptions } from './context.js';
-import { markdownToTelegramHtml, splitMarkdownForTelegram } from '../adapters/notifier/telegram/format.js';
-import { invokeClaude, type InvokeClaudeOptions } from '../adapters/llm/claude-cli/invoke.js';
+import { markdownToTelegramHtml, splitMarkdownForTelegram } from '../../adapters/notifier/telegram/format.js';
+import { invokeClaude, type InvokeClaudeOptions } from '../../adapters/llm/claude-cli/invoke.js';
 import { CliRenderer } from './cli-renderer/index.js';
 import type { CliRendererChannel, InlineAction } from './cli-renderer/index.js';
-import { createTelegramChannel } from '../adapters/notifier/telegram/channel.js';
+import { createTelegramChannel } from '../../adapters/notifier/telegram/channel.js';
 import {
   invokeClaudeStreaming,
   type InvokeClaudeStreamingOptions,
@@ -55,8 +55,8 @@ import {
   downloadTelegramFile,
   type TelegramVoice,
   type VoiceTranscriber,
-} from '../adapters/transcriber/whisper/whisper.js';
-import { bindAnswer } from '../runtime/questions/index.js';
+} from '../../adapters/transcriber/whisper/whisper.js';
+import { bindAnswer } from '../questions/index.js';
 
 /**
  * Transport adapter for the CLI-style streaming response path. The
@@ -351,7 +351,7 @@ export class LAGDaemon {
    * for tests to drive deterministically.
    */
   async ambientLoopTick(): Promise<void> {
-    const { LoopRunner } = await import('../runtime/loop/index.js');
+    const { LoopRunner } = await import('../loop/index.js');
     const principalId = this.resolveAmbientPrincipal();
     const runner = new LoopRunner(this.options.host, {
       principalId,
@@ -367,7 +367,7 @@ export class LAGDaemon {
    * tests.
    */
   async ambientExtractionTick(): Promise<void> {
-    const { runExtractionPass } = await import('../runtime/claims-extraction/index.js');
+    const { runExtractionPass } = await import('../claims-extraction/index.js');
     const principalId = this.resolveAmbientPrincipal();
     await runExtractionPass(this.options.host, {
       principalId,
@@ -1076,15 +1076,15 @@ export function splitForTelegram(text: string, maxChars: number): string[] {
 }
 
 // Re-exports for callers that compose the daemon.
-export { invokeClaude } from '../adapters/llm/claude-cli/invoke.js';
-export type { InvokeClaudeOptions, InvokeClaudeResult } from '../adapters/llm/claude-cli/invoke.js';
+export { invokeClaude } from '../../adapters/llm/claude-cli/invoke.js';
+export type { InvokeClaudeOptions, InvokeClaudeResult } from '../../adapters/llm/claude-cli/invoke.js';
 export { assembleContext } from './context.js';
 export type { AssembleContextOptions, AssembledContext } from './context.js';
 export {
   StubTranscriber,
   WhisperLocalTranscriber,
   downloadTelegramFile,
-} from '../adapters/transcriber/whisper/whisper.js';
-export type { VoiceTranscriber, TelegramVoice, WhisperLocalOptions } from '../adapters/transcriber/whisper/whisper.js';
+} from '../../adapters/transcriber/whisper/whisper.js';
+export type { VoiceTranscriber, TelegramVoice, WhisperLocalOptions } from '../../adapters/transcriber/whisper/whisper.js';
 // Re-export TelegramNotifierOptions for parity; daemons often compose both.
 export type { TelegramNotifierOptions };

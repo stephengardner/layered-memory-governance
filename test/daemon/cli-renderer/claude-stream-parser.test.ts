@@ -12,7 +12,7 @@ import {
   emptyAccumulator,
   parseClaudeStreamLine,
   summarizeToolUse,
-} from '../../../src/daemon/cli-renderer/claude-stream-parser.js';
+} from '../../../src/runtime/daemon/cli-renderer/claude-stream-parser.js';
 
 describe('parseClaudeStreamLine', () => {
   it('blank / non-JSON lines produce no events', () => {

@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { LAGDaemon, splitForTelegram } from '../../src/daemon/index.js';
+import { LAGDaemon, splitForTelegram } from '../../src/runtime/daemon/index.js';
 import type { Disposition, PrincipalId } from '../../src/substrate/types.js';
 
 const PRINCIPAL = 'daemon-test-principal' as PrincipalId;

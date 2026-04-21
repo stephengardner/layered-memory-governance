@@ -65,6 +65,8 @@ const REWRITES = [
   { kind: 'file', from: resolve('src/daemon/invoke-claude.ts'), to: resolve('src/adapters/llm/claude-cli/invoke.ts') },
   // Phase D3:
   { kind: 'file', from: resolve('src/daemon/voice.ts'), to: resolve('src/adapters/transcriber/whisper/whisper.ts') },
+  // Phase D4:
+  { kind: 'dir', from: resolve('src/daemon'), to: resolve('src/runtime/daemon') },
 ];
 
 function resolveSpec(fileDir, spec) {

@@ -9,8 +9,8 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import type { Host } from '../substrate/interface.js';
-import type { Atom, AtomFilter } from '../substrate/types.js';
+import type { Host } from '../../substrate/interface.js';
+import type { Atom, AtomFilter } from '../../substrate/types.js';
 
 export interface AssembleContextOptions {
   /** Path to the canon file to inject (typically `.lag/../CLAUDE.md`). */

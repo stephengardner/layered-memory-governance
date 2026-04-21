@@ -61,16 +61,16 @@ let splitMarkdownForTelegram = null;
 let startJsonlMirrorCli = null;
 let createTelegramChannel = null;
 try {
-  const fmt = await import('../dist/daemon/format.js');
+  const fmt = await import('../dist/adapters/notifier/telegram/format.js');
   markdownToTelegramHtml = fmt.markdownToTelegramHtml;
   splitMarkdownForTelegram = fmt.splitMarkdownForTelegram;
-  const cli = await import('../dist/daemon/cli-renderer/index.js');
+  const cli = await import('../dist/runtime/daemon/cli-renderer/index.js');
   startJsonlMirrorCli = cli.startJsonlMirror;
   createTelegramChannel = cli.createTelegramChannel;
 } catch {
   // Fallback: plain-text mirror. Log once on startup; do not block boot.
   // eslint-disable-next-line no-console
-  console.error('[tg] note: dist/daemon/format.js not found; mirror will send plain text.');
+  console.error('[tg] note: dist/adapters/notifier/telegram/format.js not found; mirror will send plain text.');
   console.error('[tg]       run `npm run build` to enable the CLI-style throbber mirror.');
 }
 
