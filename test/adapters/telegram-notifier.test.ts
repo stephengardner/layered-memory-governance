@@ -25,7 +25,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
   TelegramNotifier,
   parseCallbackData,
-} from '../../src/adapters/notifier/telegram.js';
+} from '../../src/adapters/notifier/telegram/notifier.js';
 import type {
   Event,
   NotificationHandle,

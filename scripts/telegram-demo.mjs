@@ -23,7 +23,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMemoryHost } from '../dist/adapters/memory/index.js';
-import { TelegramNotifier } from '../dist/adapters/notifier/telegram.js';
+import { TelegramNotifier } from '../dist/adapters/notifier/telegram/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 

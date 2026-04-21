@@ -40,13 +40,13 @@ import { ConflictError } from '../substrate/errors.js';
 import {
   parseCallbackData,
   type TelegramNotifierOptions,
-} from '../adapters/notifier/telegram.js';
+} from '../adapters/notifier/telegram/notifier.js';
 import { assembleContext, type AssembleContextOptions } from './context.js';
-import { markdownToTelegramHtml, splitMarkdownForTelegram } from './format.js';
+import { markdownToTelegramHtml, splitMarkdownForTelegram } from '../adapters/notifier/telegram/format.js';
 import { invokeClaude, type InvokeClaudeOptions } from './invoke-claude.js';
 import { CliRenderer } from './cli-renderer/index.js';
 import type { CliRendererChannel, InlineAction } from './cli-renderer/index.js';
-import { createTelegramChannel } from './cli-renderer/telegram-channel.js';
+import { createTelegramChannel } from '../adapters/notifier/telegram/channel.js';
 import {
   invokeClaudeStreaming,
   type InvokeClaudeStreamingOptions,
