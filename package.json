@@ -44,6 +44,10 @@
       "import": "./dist/actors/pr-landing/index.js",
       "types": "./dist/actors/pr-landing/index.d.ts"
     },
+    "./actors/code-author": {
+      "import": "./dist/actors/code-author/index.js",
+      "types": "./dist/actors/code-author/index.d.ts"
+    },
     "./actors/pr-review": {
       "import": "./dist/actors/pr-review/index.js",
       "types": "./dist/actors/pr-review/index.d.ts"
