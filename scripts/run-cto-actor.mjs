@@ -30,11 +30,11 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { ClaudeCliLLM } from '../dist/adapters/llm/claude-cli/index.js';
-import { runActor } from '../dist/actors/index.js';
+import { runActor } from '../dist/runtime/actors/index.js';
 import {
   HostLlmPlanningJudgment,
   PlanningActor,
-} from '../dist/actors/planning/index.js';
+} from '../dist/runtime/actors/planning/index.js';
 import { loadLlmToolPolicy } from '../dist/substrate/policy/tool-policy.js';
 
 // Instance configuration lives here, NOT in src/. Framework code

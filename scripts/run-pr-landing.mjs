@@ -35,25 +35,25 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { runActor } from '../dist/actors/index.js';
+import { runActor } from '../dist/runtime/actors/index.js';
 import {
   PrLandingActor,
   mkPrObservationAtom,
   mkPrObservationAtomId,
   mkPrObservationFailedAtom,
   renderPrObservationBody,
-} from '../dist/actors/pr-landing/index.js';
+} from '../dist/runtime/actors/pr-landing/index.js';
 import {
   GitHubPrReviewAdapter,
   UserAccountCommentTrigger,
   getTokenFromEnv,
-} from '../dist/actors/pr-review/index.js';
+} from '../dist/runtime/actors/pr-review/index.js';
 import { createGhClient } from '../dist/external/github/index.js';
 import {
   sendOperatorEscalation,
   shouldEscalate,
   renderEscalationBody,
-} from '../dist/actor-message/index.js';
+} from '../dist/runtime/actor-message/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -635,7 +635,7 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
   process.exit(0);
 }
 
-// mkPrObservationAtomId now imported from dist/actors/pr-landing
+// mkPrObservationAtomId now imported from dist/runtime/actors/pr-landing
 
 async function resolveHeadSha({ review, owner, repo, number }) {
   // We already have getPrReviewStatus, but the composite does NOT
@@ -698,7 +698,7 @@ async function findPriorObservationId({ host, owner, repo, number, skipId }) {
 }
 
 // mkPrObservationAtom, mkPrObservationFailedAtom, and
-// renderPrObservationBody are imported from dist/actors/pr-landing so
+// renderPrObservationBody are imported from dist/runtime/actors/pr-landing so
 // the atom shape is unit-testable without spawning this script.
 
 async function writeFailedObservation({ host, principal, owner, repo, number, origin, reason }) {

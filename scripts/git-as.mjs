@@ -28,7 +28,7 @@
  * Mechanism
  * ---------
  * 1. Mint a short-lived installation token for <role> via the same
- *    credentials store gh-as.mjs uses (dist/actors/provisioning +
+ *    credentials store gh-as.mjs uses (dist/runtime/actors/provisioning +
  *    dist/external/github-app).
  * 2. Pass the token to git via `-c http.extraHeader=Authorization:
  *    Bearer <token>`. GitHub accepts App installation tokens in the
@@ -65,7 +65,7 @@ import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import {
   createCredentialsStore,
-} from '../dist/actors/provisioning/index.js';
+} from '../dist/runtime/actors/provisioning/index.js';
 import {
   fetchInstallationToken,
 } from '../dist/external/github-app/index.js';

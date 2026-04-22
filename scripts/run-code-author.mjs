@@ -34,12 +34,12 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { runActor } from '../dist/actors/index.js';
+import { runActor } from '../dist/runtime/actors/index.js';
 import {
   CodeAuthorActor,
   loadCodeAuthorFence,
   CodeAuthorFenceError,
-} from '../dist/actors/code-author/index.js';
+} from '../dist/runtime/actors/code-author/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');

@@ -17,7 +17,7 @@ import {
   runAutoApprovePass,
   runDispatchTick,
   pickNextMessage,
-} from '../dist/actor-message/index.js';
+} from '../dist/runtime/actor-message/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');

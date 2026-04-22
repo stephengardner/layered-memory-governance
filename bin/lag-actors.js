@@ -21,7 +21,7 @@ import {
   findRole,
   provisionRole,
   createCredentialsStore,
-} from '../dist/actors/provisioning/index.js';
+} from '../dist/runtime/actors/provisioning/index.js';
 import {
   createAppAuthedFetch,
   listAppInstallations,

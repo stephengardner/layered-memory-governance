@@ -25,7 +25,7 @@ import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { listUnread } from '../dist/actor-message/index.js';
+import { listUnread } from '../dist/runtime/actor-message/index.js';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
 const DEFAULT_STATE_DIR = resolve(REPO_ROOT, '.lag');

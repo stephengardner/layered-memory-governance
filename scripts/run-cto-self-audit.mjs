@@ -37,18 +37,18 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { ClaudeCliLLM } from '../dist/adapters/llm/claude-cli/index.js';
-import { runActor } from '../dist/actors/index.js';
+import { runActor } from '../dist/runtime/actors/index.js';
 import {
   HostLlmPlanningJudgment,
   PlanningActor,
-} from '../dist/actors/planning/index.js';
+} from '../dist/runtime/actors/planning/index.js';
 import {
   SubActorRegistry,
   runAuditor,
   runAutoApprovePass,
   runDispatchTick,
   pickNextMessage,
-} from '../dist/actor-message/index.js';
+} from '../dist/runtime/actor-message/index.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');

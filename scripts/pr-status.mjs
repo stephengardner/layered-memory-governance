@@ -47,7 +47,7 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
-import { GitHubPrReviewAdapter } from '../dist/actors/pr-review/index.js';
+import { GitHubPrReviewAdapter } from '../dist/runtime/actors/pr-review/index.js';
 import { createGhClient } from '../dist/external/github/index.js';
 import { createFileHost } from '../dist/adapters/file/index.js';
 

@@ -26,7 +26,7 @@ import { randomUUID } from 'node:crypto';
 import { execa } from 'execa';
 import {
   createCredentialsStore,
-} from '../dist/actors/provisioning/index.js';
+} from '../dist/runtime/actors/provisioning/index.js';
 import {
   fetchInstallationToken,
 } from '../dist/external/github-app/index.js';

@@ -28,7 +28,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createCredentialsStore,
-} from '../dist/actors/provisioning/index.js';
+} from '../dist/runtime/actors/provisioning/index.js';
 import {
   fetchInstallationToken,
 } from '../dist/external/github-app/index.js';
