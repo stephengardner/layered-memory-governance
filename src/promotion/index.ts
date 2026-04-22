@@ -1,16 +1,5 @@
-export { PromotionEngine } from './engine.js';
-export { evaluate } from './policy.js';
-export {
-  DEFAULT_THRESHOLDS,
-  sourceLayerFor,
-} from './types.js';
-export type {
-  LayerThresholds,
-  PromotableLayer,
-  PromotionCandidate,
-  PromotionDecision,
-  PromotionOutcome,
-  PromotionOutcomeKind,
-  PromotionThresholds,
-} from './types.js';
-export type { PromotionEngineOptions } from './engine.js';
+// Compatibility shim: moved to src/substrate/promotion/index.ts as part of the
+// substrate/runtime/adapters/integrations layer split. Re-exports from the
+// new location so existing consumer imports compile unchanged. The shim
+// will be removed after consumer imports migrate in a follow-up PR.
+export * from '../substrate/promotion/index.js';
