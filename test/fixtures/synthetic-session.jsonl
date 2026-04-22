@@ -1,0 +1,10 @@
+{"type":"user","sessionId":"sess-001","timestamp":"2026-04-22T10:00:00.000Z","message":{"role":"user","content":"add a scan-interventions script that finds course-corrections"}}
+{"type":"assistant","sessionId":"sess-001","timestamp":"2026-04-22T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"I'll read the existing scripts first to learn the patterns."},{"type":"tool_use","name":"Read","input":{"file_path":"scripts/example.mjs"}}]}}
+{"type":"user","sessionId":"sess-001","timestamp":"2026-04-22T10:01:00.000Z","message":{"role":"user","content":"no, actually I want you to start by writing the failing test first, then implement"}}
+{"type":"assistant","sessionId":"sess-001","timestamp":"2026-04-22T10:01:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Right. Starting with the failing test."},{"type":"tool_use","name":"Write","input":{"file_path":"test/scan.test.ts"}}]}}
+{"type":"user","sessionId":"sess-001","timestamp":"2026-04-22T10:02:00.000Z","message":{"role":"user","content":"looks good, thanks"}}
+{"type":"assistant","sessionId":"sess-001","timestamp":"2026-04-22T10:03:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Committing the test."},{"type":"tool_use","name":"Bash","input":{"command":"git add test/scan.test.ts && git commit -m 'test: scan failing first'"}}]}}
+{"type":"user","sessionId":"sess-001","timestamp":"2026-04-22T10:04:00.000Z","message":{"role":"user","content":"don't forget to include the synthetic fixture in the test dir"}}
+{"type":"assistant","sessionId":"sess-001","timestamp":"2026-04-22T10:04:30.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Good catch. Adding fixture."},{"type":"tool_use","name":"Write","input":{"file_path":"test/fixtures/sample.jsonl"}}]}}
+{"type":"user","sessionId":"sess-001","timestamp":"2026-04-22T10:05:00.000Z","message":{"role":"user","content":"ok"}}
+{"type":"user","sessionId":"sess-001","timestamp":"2026-04-22T10:06:00.000Z","message":{"role":"user","content":"wrong - the fixture must live under test/fixtures not test/"}}
