@@ -129,3 +129,32 @@ jobs:
         run: test -f LICENSE
       - name: Verify dist builds
         run: npm run build && test -f dist/index.js && test -f dist/index.d.ts
+      - name: PR under CodeRabbit file-review limit
+        # CodeRabbit silently skips review on PRs exceeding 150 changed
+        # files. A skipped review posts no `CodeRabbit` commit status,
+        # which blocks merge via required-checks with no visible failure
+        # until an operator opens the PR and reads the "review skipped"
+        # note. Fail CI at push time so the author splits immediately.
+        # PR #92 (205 files) and #93 (158 files) both hit this wall on
+        # 2026-04-22; this guard prevents silent recurrence.
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -e
+          # actions/checkout@v4 does a shallow fetch by default; the
+          # base SHA may not be reachable. Fetch it explicitly.
+          git fetch origin "$BASE_SHA" --depth=1 || git fetch origin
+          N=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" | wc -l)
+          LIMIT=150
+          echo "changed files: $N (CodeRabbit limit: $LIMIT)"
+          if [ "$N" -gt "$LIMIT" ]; then
+            echo "::error::PR has $N changed files, exceeds CodeRabbit's $LIMIT-file review limit."
+            echo "CodeRabbit will skip this review entirely, blocking merge via the required"
+            echo "\"CodeRabbit\" status check. Split this PR into smaller incremental changes"
+            echo "(one logical concern per PR, ideally <100 files)."
+            exit 1
+          fi
+          echo "OK: under limit"
