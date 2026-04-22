@@ -96,7 +96,20 @@ const RAW_GIT_PUSH_PATTERN = /(^|[\s;&|`(])(?:\.\/|\.\\)?git(?:\.exe)?\s+(?:-[^\
 // because they don't change state and carry no attribution risk.
 // Escape hatch: `# allow-raw-http-gh`.
 const RAW_HTTP_CLIENT_PATTERN = /(^|[\s;&|`(])(?:\.\/|\.\\)?(?:curl|wget)(?:\.exe)?(?:\s|$)/;
-const HTTP_MUTATING_METHOD_PATTERN = /(?:-X\s*|--request\s+)(?:POST|PUT|PATCH|DELETE)\b/i;
+
+// Explicit HTTP method: curl -X / --request, and wget --method=.
+// (Note: wget's -X flag is --exclude-directories, NOT the method;
+// the previous pattern was semantically wrong per CR 2026-04-21.)
+const HTTP_MUTATING_METHOD_PATTERN = /(?:-X\s*|--request\s+|--method[=\s]+)(?:POST|PUT|PATCH|DELETE)\b/i;
+
+// Body-supplying flags that IMPLY a write even without an explicit
+// -X. curl defaults to POST when given -d / --data* / -F / --form,
+// and to PUT when given -T / --upload-file. wget has --post-data /
+// --post-file (POST) and --body-data / --body-file (pairs with
+// --method=). CR review 2026-04-21 (PR #91) flagged that a
+// method-only check missed `curl -d '{...}' api.github.com`.
+const HTTP_BODY_IMPLIES_WRITE_PATTERN = /(?:^|[\s;&|`(])(?:-d|--data(?:-raw|-binary|-urlencode|-ascii)?|-F|--form|--form-string|-T|--upload-file|--post-data|--post-file|--body-data|--body-file)(?:[\s=]|$)/;
+
 const GITHUB_HOST_PATTERN = /\b(?:api\.)?github\.com\b/;
 const ALLOWED_HTTP_GH_PATTERNS = [/#\s*allow-raw-http-gh\b/];
 
@@ -182,14 +195,87 @@ async function main() {
  * would run to produce a token) is stripped on some iteration.
  */
 function stripSubshells(s) {
-  let prev = '';
-  let cur = s;
-  while (prev !== cur) {
-    prev = cur;
-    cur = cur.replace(/\$\([^()]*\)/g, '');
-    cur = cur.replace(/`[^`]*`/g, '');
+  const n = s.length;
+  let out = '';
+  let i = 0;
+  while (i < n) {
+    const c = s[i];
+
+    // Single-quoted string: bash treats the body as literal; no
+    // metachars active, no backslash escape. Copy the whole span
+    // verbatim so the inner content stays visible to the check.
+    if (c === "'") {
+      out += c;
+      i++;
+      while (i < n && s[i] !== "'") {
+        out += s[i];
+        i++;
+      }
+      if (i < n) {
+        out += s[i];
+        i++;
+      }
+      continue;
+    }
+
+    // $( ... ) - balanced-paren scan, quote-aware. Skipped entirely
+    // (not appended to `out`) so the check sees as if the subshell
+    // never existed. CR review 2026-04-21 flagged that the previous
+    // regex `\$\([^()]*\)` failed on `$(printf ")" ; node ...)` because
+    // the `)` inside the string literal closed the match early, leaving
+    // `node scripts/gh-as.mjs` visible in the "stripped" text and
+    // re-enabling the wrapper whitelist.
+    if (c === '$' && s[i + 1] === '(') {
+      i += 2;
+      let depth = 1;
+      while (i < n && depth > 0) {
+        const ch = s[i];
+        if (ch === "'") {
+          // Quoted literal inside the subshell: any `)` here is part
+          // of the string, not a paren.
+          i++;
+          while (i < n && s[i] !== "'") i++;
+          if (i < n) i++;
+          continue;
+        }
+        if (ch === '"') {
+          // Double-quoted: find matching unescaped `"` and continue.
+          i++;
+          while (i < n && s[i] !== '"') {
+            if (s[i] === '\\' && i + 1 < n) i++;
+            i++;
+          }
+          if (i < n) i++;
+          continue;
+        }
+        if (ch === '\\' && i + 1 < n) {
+          // Escaped char: advance past so an escaped `)` does not
+          // close the subshell prematurely.
+          i += 2;
+          continue;
+        }
+        if (ch === '(') { depth++; i++; continue; }
+        if (ch === ')') { depth--; i++; continue; }
+        i++;
+      }
+      continue;
+    }
+
+    // Backtick substitution.
+    if (c === '`') {
+      i++;
+      while (i < n && s[i] !== '`') {
+        if (s[i] === '\\' && i + 1 < n) i++;
+        i++;
+      }
+      if (i < n) i++;
+      continue;
+    }
+
+    out += c;
+    i++;
   }
-  return cur;
+  return out;
 }
 
 function inspectBash(payload) {
@@ -252,7 +338,7 @@ function inspectBash(payload) {
   // wrapper. Read-only calls (no -X or explicit -X GET) are allowed.
   const offendingHttp = clauses.find(
     (c) => RAW_HTTP_CLIENT_PATTERN.test(c)
-      && HTTP_MUTATING_METHOD_PATTERN.test(c)
+      && (HTTP_MUTATING_METHOD_PATTERN.test(c) || HTTP_BODY_IMPLIES_WRITE_PATTERN.test(c))
       && GITHUB_HOST_PATTERN.test(c)
       && !ALLOWED_HTTP_GH_PATTERNS.some((p) => p.test(c)),
   );
