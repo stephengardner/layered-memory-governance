@@ -129,3 +129,43 @@ jobs:
         run: test -f LICENSE
       - name: Verify dist builds
         run: npm run build && test -f dist/index.js && test -f dist/index.d.ts
+      - name: PR under CodeRabbit file-review limit
+        # CodeRabbit silently skips review on PRs exceeding 150 changed
+        # files. A skipped review posts no `CodeRabbit` commit status,
+        # which blocks merge via required-checks with no visible failure
+        # until an operator opens the PR and reads the "review skipped"
+        # note. Fail CI at push time so the author splits immediately.
+        # PR #92 (205 files) and #93 (158 files) both hit this wall on
+        # 2026-04-22; this guard prevents silent recurrence.
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -e
+          # actions/checkout@v4 on a pull_request event checks out the
+          # synthetic refs/pull/N/merge commit. That commit's tree IS
+          # the would-be-merged result, so `git diff $BASE_SHA HEAD`
+          # gives exactly the changed-files set CodeRabbit would review.
+          # The head-branch commit itself is NOT in the local repo on
+          # the default checkout, so don't reference it by SHA.
+          #
+          # The base SHA is also missing by default (shallow fetch);
+          # grab just that commit. If the checkout was already deep
+          # enough, the fetch is a cheap no-op.
+          git fetch origin "$BASE_SHA" --depth=1 || git fetch --unshallow origin
+          # Two-dot (BASE HEAD, not BASE...HEAD) is a direct tree-vs-
+          # tree compare. Three-dot would need both endpoints reachable
+          # to compute the merge-base, which shallow clones can't
+          # guarantee.
+          N=$(git diff --name-only "$BASE_SHA" HEAD | wc -l)
+          LIMIT=150
+          echo "changed files: $N (CodeRabbit limit: $LIMIT)"
+          if [ "$N" -gt "$LIMIT" ]; then
+            echo "::error::PR has $N changed files, exceeds CodeRabbit's $LIMIT-file review limit."
+            echo "CodeRabbit will skip this review entirely, blocking merge via the required"
+            echo "\"CodeRabbit\" status check. Split this PR into smaller incremental changes"
+            echo "(one logical concern per PR, ideally <100 files)."
+            exit 1
+          fi
+          echo "OK: under limit"

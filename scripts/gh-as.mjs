@@ -24,6 +24,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { execa } from 'execa';
+import { decideCrFileLimit, CR_FILE_LIMIT_ENV } from './lib/cr-file-limit.mjs';
 import {
   createCredentialsStore,
 } from '../dist/actors/provisioning/index.js';
@@ -76,6 +77,29 @@ function redactSecretLikeArgs(args) {
   return out;
 }
 
+function checkPrFileLimitOrExit(ghArgs) {
+  const verdict = decideCrFileLimit(ghArgs);
+  switch (verdict.action) {
+    case 'skip':
+      if (verdict.reason === 'env-bypass') {
+        console.error(`[gh-as] WARNING: ${CR_FILE_LIMIT_ENV}=1 set; skipping CR file-limit precheck (CI gate still enforces).`);
+      }
+      return;
+    case 'warn':
+      console.error(`[gh-as] CR file-limit precheck skipped (${verdict.reason}); CI gate will enforce authoritatively.`);
+      return;
+    case 'allow':
+      console.error(`[gh-as] CR file-limit precheck: ${verdict.count} files vs ${verdict.ref} (under limit).`);
+      return;
+    case 'block':
+      console.error(`[gh-as] REFUSING: PR would have ${verdict.count} changed files vs ${verdict.ref} (CodeRabbit limit: ${verdict.limit}).`);
+      console.error(`[gh-as] CodeRabbit silently skips review on PRs over ${verdict.limit} files; with required-checks, that blocks merge.`);
+      console.error(`[gh-as] Split into smaller PRs (one logical concern each, ideally <100 files).`);
+      console.error(`[gh-as] Emergency bypass: ${CR_FILE_LIMIT_ENV}=1 (the CI gate will still enforce).`);
+      process.exit(3);
+  }
+}
+
 async function main() {
   const role = process.argv[2];
   const ghArgs = process.argv.slice(3);
@@ -84,6 +108,11 @@ async function main() {
     console.error('Example: node scripts/gh-as.mjs lag-cto pr create --title T --body B');
     process.exit(2);
   }
+
+  // Fail-fast before minting a token / writing an operator-action atom.
+  // A PR that would exceed CodeRabbit's review limit is a wasted cycle;
+  // block it at the boundary so the author splits before push.
+  checkPrFileLimitOrExit(ghArgs);
 
   const store = createCredentialsStore(STATE_DIR);
   const loaded = await store.load(role);
