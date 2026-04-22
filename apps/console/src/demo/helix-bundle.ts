@@ -185,6 +185,71 @@ const principals = [
     goals: ['Fuzz-test pass proposals against adversarial inputs'],
     constraints: ['COMPROMISED 2026-04-17: rook detected cached-verdict tampering; write authority revoked by orin-ceres-revoke'],
   },
+  {
+    id: 'nova-integrator',
+    name: 'Nova',
+    role: 'CI + integration pipeline',
+    active: true,
+    signed_by: 'selene-planner',
+    compromised_at: null,
+    created_at: BOOT,
+    permitted_scopes: { read: ['proposals', 'benchmark-verdicts'], write: ['integration-runs'] },
+    permitted_layers: { read: ['L1', 'L2'], write: ['L1'] },
+    goals: ['Gate every pass-merge on a reproducible integration run before lagrange signs'],
+    constraints: ['Runs sequentially (no parallel merges) to preserve proof-artifact ordering'],
+  },
+  {
+    id: 'kepler-lexer',
+    name: 'Kepler',
+    role: 'pass-proposal parser',
+    active: true,
+    signed_by: 'gauss-optimizer',
+    compromised_at: null,
+    created_at: BOOT,
+    permitted_scopes: { read: ['proposals'], write: ['parsed-proposals'] },
+    permitted_layers: { read: ['L0', 'L1'], write: ['L1'] },
+    goals: ['Normalize incoming pass proposals into the canonical AST + invariants shape'],
+    constraints: ['Reject proposals whose declared invariants do not parse'],
+  },
+  {
+    id: 'euler-curator',
+    name: 'Euler',
+    role: 'benchmark-corpus curator',
+    active: true,
+    signed_by: 'petra-benchmarker',
+    compromised_at: null,
+    created_at: BOOT,
+    permitted_scopes: { read: ['corpora'], write: ['corpus-snapshots'] },
+    permitted_layers: { read: ['L1', 'L2'], write: ['L1'] },
+    goals: ['Keep Chess1200 / Raytrace / FFT-Bench snapshots reproducible at commit-level granularity'],
+    constraints: ['Every snapshot carries corpus-SHA + generator-SHA for replayability'],
+  },
+  {
+    id: 'hermes-messenger',
+    name: 'Hermes',
+    role: 'actor-message bus + escalation',
+    active: true,
+    signed_by: 'helix-root',
+    compromised_at: null,
+    created_at: BOOT,
+    permitted_scopes: { read: ['*'], write: ['inbox-messages', 'escalations'] },
+    permitted_layers: { read: ['L0', 'L1', 'L2', 'L3'], write: ['L0'] },
+    goals: ['Route actor-to-actor messages; escalate to human on SLA miss'],
+    constraints: ['Cannot write decisions; only carries them between principals'],
+  },
+  {
+    id: 'sibyl-oracle',
+    name: 'Sibyl',
+    role: 'HIL question gate',
+    active: true,
+    signed_by: 'helix-root',
+    compromised_at: null,
+    created_at: BOOT,
+    permitted_scopes: { read: ['*'], write: ['questions'] },
+    permitted_layers: { read: ['L0', 'L1', 'L2', 'L3'], write: ['L1'] },
+    goals: ['Materialize HIL questions when arbitration cannot resolve autonomously'],
+    constraints: ['All bound answers carry derived_from back to the question atom'],
+  },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -322,6 +387,90 @@ const canon = [
     1.0,
     '2026-04-02T10:00:00.000Z',
   ),
+  canonAtom(
+    'dev-integration-gate-sequential',
+    'directive',
+    'Pass-merge integration runs are strictly sequential. Parallel runs would serialize proof artifacts in non-deterministic order and make the chain-of-custody untraceable. Nova enforces the queue; lagrange signs only after nova-OK on the tip commit.',
+    'selene-planner',
+    0.98,
+    '2026-04-05T09:00:00.000Z',
+    { provenance: { kind: 'operator-seeded', source: { agent_id: 'selene-planner', session_id: 'helix-bootstrap' }, derived_from: ['dev-proof-artifact-immutable', 'dev-dual-principal-proof-core'] } },
+  ),
+  canonAtom(
+    'dev-proposal-must-parse',
+    'directive',
+    'Every pass proposal must parse through kepler before entering the proposal queue. Unparseable invariants indicate either a malformed proposal or a probe of the parser itself; either way the proposal is rejected, not quarantined.',
+    'gauss-optimizer',
+    0.95,
+    '2026-04-06T11:30:00.000Z',
+  ),
+  canonAtom(
+    'dev-corpus-snapshot-reproducible',
+    'directive',
+    'Benchmark corpus snapshots carry (corpus-SHA, generator-SHA, created_at) so any verdict is replayable from first principles. Euler is the sole curator; petra verdicts cite a snapshot triple or are advisory only.',
+    'euler-curator',
+    1.0,
+    '2026-04-07T14:15:00.000Z',
+    { provenance: { kind: 'operator-seeded', source: { agent_id: 'euler-curator', session_id: 'helix-bootstrap' }, derived_from: ['dev-benchmark-provenance-reproducible'] } },
+  ),
+  canonAtom(
+    'dec-sunset-thirty-day-cooldown',
+    'decision',
+    'Passes flagged for sunset stay live for a 30-day cooldown during which petra runs parity verdicts between the sunsetting pass and its replacement. If parity diverges >0.5% on any corpus the sunset is halted and the replacement is re-evaluated. Institutional memory loss is worse than one extra month of dead code.',
+    'vega-archivist',
+    0.97,
+    '2026-04-08T10:45:00.000Z',
+    { provenance: { kind: 'operator-seeded', source: { agent_id: 'vega-archivist', session_id: 'helix-bootstrap' }, derived_from: ['dev-alternatives-chain-preserved'] } },
+  ),
+  canonAtom(
+    'pref-escalation-sla-six-hours',
+    'preference',
+    'Sibyl-mediated HIL questions SLA at 6 hours. Past 6h with no answer, hermes fans out a second notification and the arbitration path falls back to orin-blocks-pending-review. Tunable per-tenant via DEFAULT_THRESHOLDS.',
+    'sibyl-oracle',
+    0.9,
+    '2026-04-09T16:20:00.000Z',
+  ),
+  canonAtom(
+    'dec-operator-initial-autonomy-dial',
+    'decision',
+    'New operators onboard at autonomyDial=0.5 (soft tier) for their first 30 days regardless of org posture. Graduation to 1.0 requires two clean weekly reviews by orin + selene. Rationale: misconfigured budget fences are the #1 cause of demo-day blowups in prior deployments.',
+    'helix-root',
+    0.94,
+    '2026-04-10T08:00:00.000Z',
+  ),
+  canonAtom(
+    'dev-escalation-has-context-atom',
+    'directive',
+    'Every escalation hermes raises to the operator carries a context atom id with the full decision trail that led to the escalation (arbitration branch, candidate options considered, blocking principal). No operator ping without a drillable atom reference.',
+    'hermes-messenger',
+    0.96,
+    '2026-04-11T12:00:00.000Z',
+  ),
+  canonAtom(
+    'dev-no-silent-kill-switch-deactivation',
+    'directive',
+    'Every kill-switch state transition (off → soft → medium → hard and back) writes a kill-switch-tripped atom with transitioned_by + reason + since. A silent deactivation is a provenance break and is rejected at the atom store.',
+    'orin-sentinel',
+    1.0,
+    '2026-04-12T15:30:00.000Z',
+    { provenance: { kind: 'operator-seeded', source: { agent_id: 'orin-sentinel', session_id: 'helix-bootstrap' }, derived_from: ['dev-kill-switch-adjacency-24h'] } },
+  ),
+  canonAtom(
+    'ref-cuttlefish-arch-doc',
+    'reference',
+    'The Cuttlefish self-modification loop is documented under cuttlefish-design/loop.md: lex → proof-plan → pass-diff → corpus-verify → merge. Read before touching the proof-search core.',
+    'helix-root',
+    1.0,
+    '2026-04-13T09:15:00.000Z',
+  ),
+  canonAtom(
+    'pref-rook-audit-window-72h',
+    'preference',
+    'Rook re-audits every atom touched in the trailing 72h when the compromised-principal cascade trips. The window is a tradeoff: 24h misses slow-burn compromise; 168h reconstructs too much history and loads the auditor. Tunable, but moving outside [48h, 96h] is a decision that needs dual-principal sign-off.',
+    'rook-auditor',
+    0.92,
+    '2026-04-14T11:00:00.000Z',
+  ),
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -375,6 +524,16 @@ const plans = [
   plan('plan-proof-core-upgrade', 'Upgrade proof-search core to version 0.8 (dual-principal)', 'Requires dev-dual-principal-proof-core approval. Lagrange authors; orin + selene countersign.', 'lagrange-verifier', 'proposed', '2026-04-18T11:00:00.000Z'),
   plan('plan-petra-hw-fingerprint', 'Petra: record CPU-topology fingerprint in every verdict', 'Implements dev-benchmark-provenance-reproducible. Retro-fill last 6 months of verdicts where possible.', 'petra-benchmarker', 'executing', '2026-04-16T10:00:00.000Z'),
   plan('plan-root-ratification-q2', 'Quarterly root-ratification of dev-* directives', 'Root reviews each L3 directive; rewrites any whose load-bearingness has shifted. Scheduled 2026-Q2-end.', 'helix-root', 'proposed', '2026-04-14T09:00:00.000Z'),
+  plan('plan-kepler-pass-parser-v2', 'Kepler: parse-proposal v2 with richer invariant language', 'Current kepler rejects ~12% of proposals for parse reasons that, on rook audit, are legal invariants in a slightly different shape. V2 adds support for compound-invariant expressions.', 'kepler-lexer', 'proposed', '2026-04-12T10:30:00.000Z'),
+  plan('plan-nova-pipeline-hardening', 'Nova: queue-drain backoff + cancellation API', 'Nova queue currently has no cancellation path; a proposal abandoned mid-verdict still runs to completion and wastes corpus minutes. Add cancellation + exponential backoff on transient failures.', 'nova-integrator', 'executing', '2026-04-13T14:00:00.000Z'),
+  plan('plan-euler-corpus-signing', 'Euler: sign corpus snapshots with ed25519', 'Benchmark-verdict tampering would be detectable if corpus snapshots carried a signature. Euler generates a key pair, stores public key as canon reference, signs each snapshot.', 'euler-curator', 'proposed', '2026-04-14T16:45:00.000Z'),
+  plan('plan-hermes-escalation-context', 'Hermes: attach context atom id to every escalation', 'Implements dev-escalation-has-context-atom. Non-trivial because hermes today composes escalations from arbitration events; need to materialize the decision trail as an atom first.', 'hermes-messenger', 'executing', '2026-04-15T11:20:00.000Z'),
+  plan('plan-sibyl-question-backpressure', 'Sibyl: backpressure on question queue depth', 'Sibyl queue grew to 47 pending questions during the ceres incident. Add backpressure: if queue > 20, arbitration path falls back to orin-blocks until the queue drains below 10.', 'sibyl-oracle', 'proposed', '2026-04-16T09:30:00.000Z'),
+  plan('plan-petra-hardware-pool-expand', 'Petra: expand runner pool to 8 hosts (from 3)', 'Current 3-host pool bottlenecks verdicts at ~18 per hour. 8 hosts unblocks the parallel-proposal queue; CPU-topology fingerprinting ensures per-host verdicts remain comparable.', 'petra-benchmarker', 'proposed', '2026-04-17T10:00:00.000Z'),
+  plan('plan-rook-audit-automation', 'Rook: automate cached-verdict cross-check', 'After the ceres incident, cached-verdict tampering detection remains manual (human auditor diffs runs). Automate the diff; rook surfaces anomalies > 0.3% divergence within the audit window.', 'rook-auditor', 'succeeded', '2026-04-17T15:00:00.000Z'),
+  plan('plan-vega-alternatives-chain-vis', 'Vega: visualize alternatives_rejected chains', 'Vega has the chain data but no UI to see it. Add a sidebar on the Console Canon view that shows the full alternatives chain for any atom on click.', 'vega-archivist', 'proposed', '2026-04-18T13:15:00.000Z'),
+  plan('plan-dash-uptime-alert-deduplication', 'Dash: deduplicate uptime-drop alerts within 15 min windows', 'Dash currently writes a new L0 observation per uptime-drop sample; a flapping worker creates hundreds of atoms in minutes. Dedupe within rolling 15-min windows; write one aggregate observation.', 'dash-observer', 'executing', '2026-04-19T08:30:00.000Z'),
+  plan('plan-kepler-hermes-integration', 'Kepler-hermes: parser failures flow via hermes escalation, not silent drop', 'Currently kepler silently drops unparseable proposals. Route them through hermes as a low-priority escalation so gauss sees the failure and can resubmit with a corrected shape.', 'hermes-messenger', 'proposed', '2026-04-20T11:45:00.000Z'),
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -481,6 +640,38 @@ const observations = [
 
   // Supersession examples
   obs('superseded-example', 'pass-proposed', 'Early gauss proposal for LICM-depth-16. Superseded by simd8 variant after lagrange flagged register-pressure. Preserved for institutional memory.', 'gauss-optimizer', '2026-04-10T10:00:00.000Z', [], { layer: 'L1', metadata: { superseded_reason: 'register-pressure bound exceeded' } }),
+
+  // Nova / kepler / euler activity (the newer principals)
+  obs('nova-run-2031-gauss-42', 'integration-run', 'Nova integration run 2031 for gauss-42: sequential merge-queue depth=3, wall-clock 14m. Clean.', 'nova-integrator', '2026-04-19T11:30:00.000Z', [], { layer: 'L1' }),
+  obs('nova-run-2044-licm-simd8', 'integration-run', 'Nova integration run 2044 for plan-simd8-licm: queued behind 2-host petra bottleneck; 32m wall-clock. Clean.', 'nova-integrator', '2026-04-20T15:45:00.000Z', [], { layer: 'L1' }),
+  obs('nova-run-2048-proof-chain-restore', 'integration-run', 'Nova integration run 2048: re-ran pass-7 under lagrange-restored proof chain. Verdicts match the pre-gap snapshot within 0.02%.', 'nova-integrator', '2026-04-21T10:15:00.000Z', [], { layer: 'L1' }),
+  obs('kepler-parse-reject-047', 'parse-failure', 'Kepler rejected proposal pass-9018: invariant expression uses a compound-and across incompatible lattices. Gauss-pipeline notified; resubmission pending.', 'kepler-lexer', '2026-04-18T09:15:00.000Z'),
+  obs('kepler-parse-stats-w17', 'parse-stats', 'Kepler weekly parse stats (2026-W17): 184 proposals in, 21 rejects (11.4%), 163 forward to lagrange. Reject rate within 10-13% band.', 'kepler-lexer', '2026-04-20T08:00:00.000Z'),
+  obs('euler-snapshot-chess1200-2026q2', 'corpus-snapshot', 'Euler Chess1200 snapshot 2026-Q2-a: 450 positions, generator-SHA 7a44b33e. Differs from Q1 by 12 positions (added high-elo endgames).', 'euler-curator', '2026-04-15T12:30:00.000Z', [], { layer: 'L1' }),
+  obs('euler-snapshot-raytrace-2026q2', 'corpus-snapshot', 'Euler Raytrace snapshot 2026-Q2: 36 scenes (up from 28 in Q1). Added non-axis-aligned primitives to stress LICM.', 'euler-curator', '2026-04-16T09:00:00.000Z', [], { layer: 'L1' }),
+
+  // Hermes / sibyl (inbox + HIL)
+  obs('hermes-escalation-034', 'escalation', 'Hermes escalated gauss-42 benchmark divergence to operator: petra Chess1200 -0.9%, Raytrace +2.1%, FFT +0.3%. Context atom: gauss-42-divergence. SLA 6h.', 'hermes-messenger', '2026-04-20T19:00:00.000Z'),
+  obs('hermes-escalation-035', 'escalation', 'Hermes escalated ceres incident to operator: cached-verdict tampering detected. Context atom: ceres-incident-context. SLA bypassed (severity=critical).', 'hermes-messenger', '2026-04-17T14:30:00.000Z'),
+  obs('sibyl-q-047', 'question', 'Sibyl: Should gauss-42 ship with Raytrace regression of 2.1% given Chess1200 improvement of 0.9%? Options: merge / defer / abandon. Answered by selene: defer pending simd8 consolidation.', 'sibyl-oracle', '2026-04-20T19:42:00.000Z', [], { layer: 'L1', metadata: { question_state: 'answered', bound_answer: 'defer' } }),
+  obs('sibyl-q-048', 'question', 'Sibyl: Approve promotion of plan-orin-drill-w17 outcome to L3 as new drill template? Options: yes / no. Pending operator.', 'sibyl-oracle', '2026-04-21T12:00:00.000Z', [], { layer: 'L1', metadata: { question_state: 'pending' } }),
+
+  // Dash uptime + infra signals (richer timeline)
+  obs('dash-uptime-w16-summary', 'uptime-weekly', 'Dash weekly uptime (2026-W16): 99.82% across all regions; no merge-freeze triggered.', 'dash-observer', '2026-04-12T23:59:00.000Z'),
+  obs('dash-uptime-w17-summary', 'uptime-weekly', 'Dash weekly uptime (2026-W17): 99.69% across all regions; one 42-min dip during us-east failover, auto-resolved.', 'dash-observer', '2026-04-19T23:59:00.000Z'),
+  obs('dash-deploy-pass-8991', 'deploy-event', 'Dash: pass-8991 rolled out to prod workers; rollback SHA cached. No anomalies in first hour.', 'dash-observer', '2026-04-14T02:30:00.000Z'),
+  obs('dash-deploy-pass-9001', 'deploy-event', 'Dash: pass-9001 rolled out to prod workers; rollback SHA cached. Uptime flat.', 'dash-observer', '2026-04-18T01:15:00.000Z'),
+
+  // Rook audit runs
+  obs('rook-audit-w17-1', 'audit-run', 'Rook audit run W17-1: 187 atoms from gauss, 94 from lagrange. No tampering flags. Cross-check hashes match pre-Q2 baseline.', 'rook-auditor', '2026-04-15T22:00:00.000Z'),
+  obs('rook-audit-w17-2', 'audit-run', 'Rook audit run W17-2: post-ceres-revocation sweep. 312 atoms re-audited in trailing 72h window; 0 additional anomalies surfaced.', 'rook-auditor', '2026-04-18T22:00:00.000Z'),
+
+  // Vega archivist activity
+  obs('vega-chain-update-sunset-dse', 'archive-update', 'Vega: alternatives_rejected chain for plan-sunset-dse-2023 now carries 4 entries (proposal, rook flag, cooldown verdict, vega sign-off).', 'vega-archivist', '2026-04-18T10:00:00.000Z'),
+
+  // Plan outcome atoms (showing the derived_from contract)
+  obs('outcome-plan-orin-drill-w17', 'plan-outcome', 'Plan plan-orin-drill-w17 succeeded. Simulated compromise of gauss-optimizer; rollback of 3 pass merges completed in 78s (budget: 90s). Drill artifacts archived.', 'orin-sentinel', '2026-04-21T09:22:00.000Z', ['plan-orin-drill-w17'], { layer: 'L1' }),
+  obs('outcome-plan-raytrace-refresh', 'plan-outcome', 'Plan plan-raytrace-corpus-refresh succeeded. Raytrace-Q2 library deployed; petra verdicts now cite Q2 corpus for all new runs.', 'petra-benchmarker', '2026-04-12T15:00:00.000Z', ['plan-raytrace-corpus-refresh'], { layer: 'L1' }),
 ] as const;
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,29 @@
   flex-wrap: wrap;
 }
 
+/*
+ * DEMO pill: shows up on every compromise banner when the build is
+ * served from the hosted demo (VITE_LAG_TRANSPORT=demo). Visual is
+ * deliberately distinct from the red-alert palette so operators
+ * parsing a real compromise never mistake the demo framing for
+ * incident-response information.
+ */
+.demoPill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-base));
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  flex-shrink: 0;
+}
+
 .banner svg {
   color: var(--status-danger);
   flex-shrink: 0;

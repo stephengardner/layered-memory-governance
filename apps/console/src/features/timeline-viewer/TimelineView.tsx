@@ -186,7 +186,18 @@ export function TimelineView() {
             const atoms = atomsByPrincipal.get(principal.id) ?? [];
             return (
               <div key={principal.id} className={styles.row} data-testid="timeline-row" data-principal-id={principal.id}>
-                <div className={styles.rowLabel} style={{ paddingLeft: `${depth * 16}px` }}>
+                {/*
+                 * Depth indent rides on a CSS variable instead of an
+                 * inline padding-left override. The base horizontal
+                 * gutter (space-4 on desktop, space-3 on mobile) is
+                 * applied in CSS and the variable layers on top via
+                 * calc, so depth-0 rows keep the same left gutter as
+                 * the corner cell above them. See the rowLabel rule.
+                 */}
+                <div
+                  className={styles.rowLabel}
+                  style={{ '--depth-indent': depth } as React.CSSProperties}
+                >
                   {depth > 0 && <span className={styles.rowIndent} aria-hidden="true">└</span>}
                   <span className={styles.rowName}>{principal.name ?? principal.id}</span>
                   <span className={styles.rowMeta}>{atoms.length}</span>

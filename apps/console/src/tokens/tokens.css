@@ -82,6 +82,15 @@
     --sidebar-width: 16rem;
     --header-height: 3.5rem;
     --content-max-width: 72rem;
+
+    /*
+     * Timeline / tree depth indent step. Layered onto the base row
+     * padding via calc(... + var(--depth-indent) * var(--depth-step))
+     * so components never hardcode px. Compact variant is used inside
+     * tight breakpoints where the base gutter is already smaller.
+     */
+    --depth-step: 0.875rem;         /* 14px */
+    --depth-step-compact: 0.625rem; /* 10px */
   }
 
   /* ===== DARK THEME (default) ===== */

@@ -24,9 +24,18 @@ export function CompromiseBanner() {
 
   const names = compromised.map((p) => p.name ?? p.id).join(', ');
 
+  /*
+   * Demo-mode label. The hosted gh-pages build sets
+   * VITE_LAG_TRANSPORT=demo so the same red-banner surface a real
+   * deployment uses to flag an actual compromise is never mistaken
+   * for incident-response information in the demo.
+   */
+  const isDemo = import.meta.env.VITE_LAG_TRANSPORT === 'demo';
+
   return (
     <div className={styles.banner} role="alert" data-testid="compromise-banner">
       <AlertOctagon size={16} strokeWidth={2.25} />
+      {isDemo && <span className={styles.demoPill} data-testid="demo-pill">DEMO</span>}
       <span className={styles.text}>
         <strong>Compromise detected:</strong> {names} — taint cascades from {compromised.length === 1 ? 'this principal' : 'these principals'} are now suspect.
       </span>

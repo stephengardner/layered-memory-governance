@@ -113,8 +113,11 @@ function emptyFallbackFor<T>(method: string): T {
  * handles per-call filtering.
  *
  * Supported keys:
- *   limit: number   - truncate the front of an array
- *   offset: number  - skip N from the front of an array
+ *   types:  string[] - restrict to items whose `.type` matches
+ *   search: string   - case-insensitive substring match on
+ *                      `.content` or `.id`
+ *   limit:  number   - truncate the front of an array
+ *   offset: number   - skip N from the front of an array
  * Anything else passes through untouched. The backend server has
  * richer filter semantics; add them here when a consumer actually
  * needs them for the demo.
@@ -123,6 +126,35 @@ function applyParams<T>(value: T, params: Record<string, unknown> | undefined): 
   if (!params) return value;
   if (!Array.isArray(value)) return value;
   let out: unknown[] = value.slice();
+
+  /*
+   * Type filter (e.g. Canon viewer's "Directives" pill sends
+   * types: ['directive']). Silently dropped if the array isn't
+   * well-formed (mixed types, empty, not a list of strings).
+   */
+  const typesRaw = params['types'];
+  if (Array.isArray(typesRaw) && typesRaw.length > 0 && typesRaw.every((t) => typeof t === 'string')) {
+    const allowed = new Set(typesRaw as ReadonlyArray<string>);
+    out = out.filter((item) => {
+      const t = (item as { type?: unknown }).type;
+      return typeof t === 'string' && allowed.has(t);
+    });
+  }
+
+  /*
+   * Substring search on content or id. Matches the backend's
+   * `handleCanonList` contract in apps/console/server/index.ts.
+   */
+  const searchRaw = params['search'];
+  if (typeof searchRaw === 'string' && searchRaw.trim().length > 0) {
+    const needle = searchRaw.toLowerCase().trim();
+    out = out.filter((item) => {
+      const rec = item as { content?: unknown; id?: unknown };
+      const content = typeof rec.content === 'string' ? rec.content.toLowerCase() : '';
+      const id = typeof rec.id === 'string' ? rec.id.toLowerCase() : '';
+      return content.includes(needle) || id.includes(needle);
+    });
+  }
   /*
    * Robust pagination parsing. Reject NaN / Infinity / negative
    * values silently by falling back to the no-op (offset=0, no
