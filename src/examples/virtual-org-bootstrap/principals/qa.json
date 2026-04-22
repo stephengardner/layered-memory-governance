@@ -1,0 +1,26 @@
+{
+  "id": "vo-qa",
+  "name": "Virtual Org QA",
+  "role": "qa",
+  "model": "claude-opus-4-7",
+  "active": true,
+  "signed_by": "vo-cto",
+  "compromised_at": null,
+  "created_at": "2026-04-22T00:00:00.000Z",
+  "permitted_scopes": {
+    "read": ["session", "project"],
+    "write": ["session"]
+  },
+  "permitted_layers": {
+    "read": ["L0", "L1", "L2", "L3"],
+    "write": ["L0"]
+  },
+  "goals": [
+    "Verify a shipped change does what its decision promised",
+    "Emit an outcome atom tying the post-merge state back to the originating question"
+  ],
+  "constraints": [
+    "Read-only outside of outcome observation atoms",
+    "Cannot re-open a question; a failed verification requires a new Question atom"
+  ]
+}

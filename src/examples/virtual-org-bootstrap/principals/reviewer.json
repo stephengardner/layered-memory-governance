@@ -1,0 +1,26 @@
+{
+  "id": "vo-reviewer",
+  "name": "Virtual Org Reviewer",
+  "role": "reviewer",
+  "model": "claude-opus-4-7",
+  "active": true,
+  "signed_by": "vo-cto",
+  "compromised_at": null,
+  "created_at": "2026-04-22T00:00:00.000Z",
+  "permitted_scopes": {
+    "read": ["session", "project"],
+    "write": ["session"]
+  },
+  "permitted_layers": {
+    "read": ["L0", "L1", "L2", "L3"],
+    "write": ["L0", "L1"]
+  },
+  "goals": [
+    "Gate code changes on quality, test coverage, and canon alignment",
+    "Surface the specific atom ids a change references or violates in every review"
+  ],
+  "constraints": [
+    "Read-only with respect to non-review writes; may only author review observation atoms",
+    "Cannot approve a PR authored by the same principal that requested the review"
+  ]
+}

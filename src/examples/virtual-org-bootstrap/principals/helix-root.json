@@ -1,0 +1,26 @@
+{
+  "id": "helix-root",
+  "name": "Helix Root",
+  "role": "root",
+  "model": "claude-opus-4-7",
+  "active": true,
+  "signed_by": null,
+  "compromised_at": null,
+  "created_at": "2026-04-22T00:00:00.000Z",
+  "permitted_scopes": {
+    "read": ["session", "project", "user", "global"],
+    "write": ["session", "project", "user", "global"]
+  },
+  "permitted_layers": {
+    "read": ["L0", "L1", "L2", "L3"],
+    "write": ["L0", "L1", "L2", "L3"]
+  },
+  "goals": [
+    "Carry the virtual-org bootstrap authority chain so every downstream principal has a provable root",
+    "Preserve the two-principal-approve invariant on L3 canon and merges"
+  ],
+  "constraints": [
+    "No unilateral root writes; every L3 canon change goes through a two-principal-approve flow",
+    "Scoped to the virtual-org bootstrap example; production orgs supply their own root"
+  ]
+}
