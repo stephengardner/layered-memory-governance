@@ -2,7 +2,7 @@
 //
 // The hook blocks ad-hoc PR state reads and redirects them to the
 // composite observer (scripts/pr-status.mjs). Earlier version only
-// caught bare `gh pr view` — `gh-as.mjs lag-ceo pr view <N>` slipped
+// caught bare `gh pr view` - `gh-as.mjs lag-ceo pr view <N>` slipped
 // through (2026-04-22 incident: I made merge decisions on partial
 // CR state multiple times because my wrapper calls weren't caught).
 //
