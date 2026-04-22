@@ -791,12 +791,25 @@ async function readKillSwitchState(): Promise<{
       tier: parsed.tier ?? 'off',
       since: parsed.since ?? null,
       reason: parsed.reason ?? null,
-      autonomyDial: typeof parsed.autonomyDial === 'number' ? parsed.autonomyDial : 1,
+      // Strict bounds: autonomyDial is documented as [0..1]; clamp
+      // silently so a malformed state file (NaN, Infinity, negative,
+      // >1) can't escalate the runtime posture beyond what the tier
+      // allows. Non-number / invalid values fall back to 1 (same as
+      // an absent state file: "fully autonomous, no tier active").
+      autonomyDial: parseAutonomyDial(parsed.autonomyDial),
     };
   } catch {
     // Absent state file = fully autonomous, no tier active.
     return { tier: 'off', since: null, reason: null, autonomyDial: 1 };
   }
+}
+
+export function parseAutonomyDial(value: unknown): number {
+  if (typeof value !== 'number') return 1;
+  if (!Number.isFinite(value)) return 1;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
 }
 
 async function handleDaemonStatus(): Promise<{
