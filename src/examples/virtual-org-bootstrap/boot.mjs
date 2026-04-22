@@ -12,10 +12,10 @@
  *     Replaceable with createFileHost when persistence is wanted; the
  *     downstream code is Host-shape-agnostic.
  *   - Kill-switch watching `.lag/STOP` in the current working directory.
- *   - Real Anthropic SDK client. ANTHROPIC_API_KEY must be set or the
- *     SDK throws at first request; the script deliberately does not
- *     validate the key up-front so operators using a Bedrock or Vertex
- *     setup through the SDK's alternate auth surfaces are not blocked.
+ *   - Default LLM backend: Claude Code CLI subprocess (no API key). Set
+ *     LAG_LLM_BACKEND=sdk + ANTHROPIC_API_KEY to opt into the direct
+ *     Anthropic SDK; the SDK path is the only one that surfaces
+ *     plaintext extended-thinking blocks.
  *
  * All substrate imports resolve to `../../../dist/` (the compiled
  * output). Run `npm run build` before `node boot.mjs`.
@@ -25,14 +25,13 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
-import { Anthropic } from '@anthropic-ai/sdk';
-
 import { createMemoryHost } from '../../../dist/adapters/memory/index.js';
 import { createKillSwitch } from '../../../dist/kill-switch/index.js';
 import {
   createCanonRenderer,
   createDeliberationSink,
   createReasoningSink,
+  defaultLlmClient,
   loadCanonFixtures,
   loadSeedPrincipals,
   runDeliberation,
@@ -77,7 +76,19 @@ async function main() {
     created_at: new Date().toISOString(),
   };
 
-  const anthropic = new Anthropic();
+  // Default: CLI client (no API key). When LAG_LLM_BACKEND=sdk is set,
+  // dynamic-import @anthropic-ai/sdk to avoid pulling it in on the
+  // CLI-only path. If ANTHROPIC_API_KEY is also unset the SDK throws
+  // at first request; we surface that error loudly rather than
+  // silently falling back.
+  let sdkFactory;
+  if (process.env.LAG_LLM_BACKEND === 'sdk') {
+    const { Anthropic } = await import('@anthropic-ai/sdk');
+    sdkFactory = () => new Anthropic();
+  }
+  const anthropic = defaultLlmClient(
+    sdkFactory !== undefined ? { sdkFactory } : {},
+  );
 
   const participating = seeds.filter(
     (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',

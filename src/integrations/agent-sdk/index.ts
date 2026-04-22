@@ -9,4 +9,5 @@
 
 export * from './agent-process.js';
 export * from './checkpoint.js';
+export * from './cli-client.js';
 export * from './coordinator.js';

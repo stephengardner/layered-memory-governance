@@ -44,10 +44,12 @@ import type {
 import { renderForPrincipal } from '../../substrate/canon-md/index.js';
 
 import {
+  createCliClient,
   deliberate,
   startAgent,
   type AgentHandle,
   type CanonRendererForPrincipal,
+  type CreateCliClientOptions,
   type DeliberationEvent,
   type DeliberationSink,
   type MessagesClient,
@@ -401,6 +403,44 @@ export async function runDeliberation(
     decidingPrincipal: opts.decidingPrincipal,
     principalDepths: depths,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Default LLM backend selection
+// ---------------------------------------------------------------------------
+
+/**
+ * Pick the default MessagesClient. The CLI client is the default so
+ * the bootstrap runs without ANTHROPIC_API_KEY; the operator's existing
+ * Claude Code OAuth install authenticates the subprocess.
+ *
+ * Override via LAG_LLM_BACKEND=sdk (plus ANTHROPIC_API_KEY) when the
+ * caller wants plaintext reasoning blocks; CLI thinking is
+ * signature-only per docs/claude-code-session-persistence.md.
+ *
+ * `sdkFactory` is an injection seam so callers can avoid a hard import
+ * of `@anthropic-ai/sdk` inside a library. The boot.mjs entry point
+ * passes a lazy factory; tests do not call this helper (they mock the
+ * MessagesClient directly).
+ */
+export interface DefaultLlmClientOptions {
+  readonly cliOptions?: CreateCliClientOptions;
+  readonly sdkFactory?: () => MessagesClient;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+}
+
+export function defaultLlmClient(opts: DefaultLlmClientOptions = {}): MessagesClient {
+  const env = opts.env ?? process.env;
+  const backend = (env['LAG_LLM_BACKEND'] ?? 'cli').toLowerCase();
+  if (backend === 'sdk') {
+    if (!opts.sdkFactory) {
+      throw new Error(
+        '[boot-lib] LAG_LLM_BACKEND=sdk requires a sdkFactory in DefaultLlmClientOptions',
+      );
+    }
+    return opts.sdkFactory();
+  }
+  return createCliClient(opts.cliOptions ?? {});
 }
 
 async function computePrincipalDepths(
