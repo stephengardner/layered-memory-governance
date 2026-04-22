@@ -121,6 +121,7 @@
     "clean": "rimraf dist coverage .vitest-cache *.tsbuildinfo .lag"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
     "@huggingface/transformers": "^4.1.0",
     "execa": "^9.5.1",
     "node-pty": "^1.1.0",
