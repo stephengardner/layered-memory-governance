@@ -81,7 +81,7 @@ Parallel agent work in a single checkout collides. Observed pain at time of writ
 
 ### 3. `scripts/wt.mjs` — the CLI
 
-One file, Node (matches existing `scripts/*.mjs` convention), thin over `git worktree`, `gh`, and `git-spice`.
+One file, Node (matches existing `scripts/*.mjs` convention), thin over `git worktree`, `gh`, and `git-spice`. References to `wt <cmd>` below describe the CLI surface; the discovery mechanism (npm script vs `bin`/PATH) is Open Question #3 and resolves at plan time — it does not change the surface.
 
 | Command | Behavior |
 |---|---|
@@ -94,7 +94,9 @@ One file, Node (matches existing `scripts/*.mjs` convention), thin over `git wor
 
 **Parallel-agent collision detection** (added to the design during this conversation after observing the live substrate agent):
 
-`wt new` and `wt list` must scan every existing worktree for: (a) uncommitted changes, (b) HEAD moved within the last N minutes, (c) lockfiles in the worktree's `.git/`. If any worktree shows activity, warn before creating a new one on the same branch or at the same slug. This is the mechanical version of the discipline the operator had to enforce by hand when we discovered the substrate agent mid-rename.
+`wt new` and `wt list` must scan every existing worktree for: (a) uncommitted changes, (b) HEAD moved or index touched within the last 10 minutes (default; configurable via `--activity-window`), (c) lockfiles in the worktree's `.git/`. If any worktree shows activity, warn before creating a new one on the same branch or at the same slug. This is the mechanical version of the discipline the operator had to enforce by hand when we discovered the substrate agent mid-rename.
+
+**Stale-candidate thresholds** (used by `wt list` and `wt clean`): no commits for ≥14 days, NOTES.md untouched for ≥14 days, branch merged to main, or PR closed. Thresholds are defaults; both are configurable via the CLI and via env (`WT_STALE_DAYS`, `WT_ACTIVITY_MIN`).
 
 ### 4. Cleanup = operator-invoked only
 
@@ -107,7 +109,7 @@ One file, Node (matches existing `scripts/*.mjs` convention), thin over `git wor
 **Codified test** (lives in the skill):
 > Does the child branch's first commit compile and pass its own tests without the parent merged? If **yes** → branch off main. If **no** → first ask whether extracting an interface into the parent makes the answer yes; if still no → stack.
 
-**Tool:** `git-spice` (`gs`). Open-source, Go-built, no SaaS dependency. Install docs linked from the skill.
+**Tool:** `git-spice` (`gs`). Open-source, Go-built, no SaaS dependency. Install docs linked from the skill. **If `gs` is not installed, `wt stack` exits with a recognizable `[wt-stack]` error naming the install instructions; it never falls back to raw `git rebase --onto` silently.** The operator installs `gs` or accepts the error — no hidden path.
 
 **Layout:** still one worktree per branch in a stack. `.worktrees/parent/` and `.worktrees/child/` are peers on disk; the dependency is in git topology, handled by `gs restack`. Stacking and worktree-isolation compose; neither replaces the other.
 
