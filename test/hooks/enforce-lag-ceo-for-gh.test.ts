@@ -404,3 +404,358 @@ describe('enforce-lag-ceo-for-gh hook (git push attribution)', () => {
     expect(result.decision).toBe('allow');
   });
 });
+
+/*
+ * Subshell token-injection bypass tests.
+ *
+ * Incident (2026-04-21): the agent ran a command of the shape
+ *   `GH_TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token) gh pr comment ...`
+ * The pre-fix hook matched the wrapper pattern anywhere in the
+ * command string and allowed the call, but the OUTER `gh pr comment`
+ * ran with whatever GH_TOKEN was produced by the subshell - and on a
+ * machine where `gh auth login` has cached an operator-scoped token,
+ * the effective auth for the outer `gh` could still be operator-
+ * attributed for certain operations.
+ *
+ * The correct rule: the wrapper must be the PRIMARY INVOCATION, not
+ * merely a subshell producing a value. These tests pin that contract.
+ */
+describe('enforce-lag-ceo-for-gh hook (subshell token-injection bypass)', () => {
+  it('blocks GH_TOKEN=$(...gh-as.mjs...) gh pr comment (the 2026-04-21 incident)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token) gh pr comment 90 --body "hello"',
+      },
+    });
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/gh/);
+  });
+
+  it('blocks GH_TOKEN=$(...gh-as.mjs...) gh pr merge variant', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'GH_TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token 2>/dev/null | tail -1) gh pr merge 90 --squash --admin',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks backtick subshell variant: GH_TOKEN=`...gh-as.mjs...` gh pr create', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=`node scripts/gh-as.mjs lag-ceo auth token` gh pr create --title "x" --body "y"',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks nested subshell: GH_TOKEN=$(echo $(node ...gh-as.mjs...)) gh ...', async () => {
+    /*
+     * The strip-subshells pass iterates to a fixed point, so the
+     * innermost $(...) (where the wrapper lives) is removed. Outer
+     * $(echo ...) becomes $(echo) which is also stripped. Bare gh
+     * remains and blocks.
+     */
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=$(echo $(node scripts/gh-as.mjs lag-ceo auth token)) gh pr comment 1 --body "x"',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks TOKEN=... variable then gh in a single clause', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token | tail -1) && GH_TOKEN=$TOKEN gh pr comment 90 --body "x"',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks a git push variant with token subshell', async () => {
+    /*
+     * `TOKEN=$(...gh-as.mjs...) && git push https://x-access-token:$TOKEN@github.com/... HEAD:branch`
+     * The first clause is fine (it's not a gh / git push on its own).
+     * The second clause contains raw git push without the git-as.mjs
+     * wrapper - block.
+     */
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token | tail -1) && git push "https://x-access-token:${TOKEN}@github.com/foo/bar.git" HEAD:main',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('still allows a legitimate top-level gh-as.mjs invocation (regression guard)', async () => {
+    // The fix must not break the legitimate path: the wrapper AS the
+    // primary process.
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'node scripts/gh-as.mjs lag-ceo pr comment 90 --body "hello"',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('still allows commands without any gh / git push (regression guard)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'TOKEN=$(node scripts/gh-as.mjs lag-ceo auth token) && echo "got token"',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('blocks the "quoted paren" subshell bypass (CR 2026-04-21 on PR #91)', async () => {
+    /*
+     * CR review flagged: `$(printf ")" ; node scripts/gh-as.mjs ... auth token) gh ...`
+     * The `)` inside the double-quoted printf argument fooled the
+     * original non-nested regex `\$\([^()]*\)` into stopping at the
+     * wrong paren, leaving `node scripts/gh-as.mjs` visible in the
+     * "stripped" text and re-enabling the wrapper whitelist. Fix: the
+     * stripSubshells state machine now tracks single/double quotes
+     * and balances nested parens, so a quoted `)` no longer closes the
+     * subshell prematurely.
+     */
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=$(printf ")" ; node scripts/gh-as.mjs lag-ceo auth token) gh pr comment 1 --body x',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks the "quoted paren" bypass with single-quoted paren variant', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: "GH_TOKEN=$(echo ')' ; node scripts/gh-as.mjs lag-ceo auth token) gh pr merge 1 --squash --admin",
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks an escaped-paren subshell bypass', async () => {
+    /*
+     * Escaped `)` inside the subshell should NOT close the subshell.
+     */
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=$(echo \\) ; node scripts/gh-as.mjs lag-ceo auth token) gh pr view 1',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks arbitrarily nested subshells (stripSubshells balances to depth)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'GH_TOKEN=$(echo $(echo $(node scripts/gh-as.mjs lag-ceo auth token))) gh pr list --json number',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+});
+
+/*
+ * Raw HTTP (curl / wget) to GitHub's API is the third bypass vector.
+ * After the hook blocks `gh` (2026-04-21 incident) and `git push`, a
+ * determined caller could still issue a mutating HTTP request straight
+ * at api.github.com with whatever bearer/Basic auth is in scope, and
+ * the call would attribute to whoever owns that token - defeating the
+ * rule that the gh / git-push checks enforce.
+ *
+ * Read-side curl (no -X or explicit -X GET) is NOT blocked because it
+ * doesn't change state and carries no attribution risk.
+ */
+describe('enforce-lag-ceo-for-gh hook (raw HTTP client bypass)', () => {
+  it('blocks curl -X POST against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'curl -X POST -H "Authorization: token $TOKEN" https://api.github.com/repos/x/y/issues -d \'{"title":"t"}\'',
+      },
+    });
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/HTTP|gh-as.mjs/);
+  });
+
+  it('blocks curl --request DELETE against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'curl --request DELETE -H "Authorization: Bearer $PAT" https://api.github.com/repos/x/y/issues/comments/1',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks curl -XPATCH (no space after -X) against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -XPATCH https://api.github.com/repos/x/y -H "Authorization: token $T" -d \'{"name":"z"}\'',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks wget --method=PUT against api.github.com', async () => {
+    /*
+     * CR review 2026-04-21 (PR #91) flagged that the previous
+     * `wget -X POST` test was semantically wrong: wget's -X flag is
+     * --exclude-directories, not the HTTP method. Correct wget method
+     * flag is --method=<M> with --body-data/--body-file for the body.
+     */
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'wget --method=PUT --body-data=\'{"name":"x"}\' https://api.github.com/repos/x/y',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks wget --post-data against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'wget --post-data=\'{"title":"t"}\' https://api.github.com/repos/x/y/issues',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks curl -d (implies POST without -X) against api.github.com', async () => {
+    /*
+     * CR review 2026-04-21 (PR #91): curl -d / --data implies POST
+     * without needing -X. The previous method-only check missed this.
+     */
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -d \'{"title":"t"}\' -H "Authorization: token $T" https://api.github.com/repos/x/y/issues',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks curl --data (long form) against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl --data \'{"body":"x"}\' https://api.github.com/repos/x/y/issues/1/comments',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks curl --data-raw / --data-binary / --data-urlencode variants', async () => {
+    for (const flag of ['--data-raw', '--data-binary', '--data-urlencode']) {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: {
+          command: `curl ${flag} '{"x":"y"}' https://api.github.com/repos/a/b/issues`,
+        },
+      });
+      expect(result.decision, `flag=${flag}`).toBe('block');
+    }
+  });
+
+  it('blocks curl -F (form, implies POST) against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -F "file=@asset.zip" https://api.github.com/repos/a/b/releases/1/assets',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks curl -T (upload-file, implies PUT) against api.github.com', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -T asset.zip https://api.github.com/repos/a/b/contents/a.txt',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('blocks curl -X POST against github.com (non-api subdomain)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -X POST https://github.com/login/oauth/access_token -d "..."',
+      },
+    });
+    expect(result.decision).toBe('block');
+  });
+
+  it('allows curl with no mutating method against api.github.com (read)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -H "Authorization: token $TOKEN" https://api.github.com/user',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows curl -X GET against api.github.com (explicit read)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -X GET https://api.github.com/repos/x/y',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows curl -X POST against a non-github host (out of scope)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -X POST https://api.example.com/hook -d "{...}"',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows curl -X POST to github with # allow-raw-http-gh escape hatch', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'curl -X POST https://api.github.com/repos/x/y/issues -d "{...}" # allow-raw-http-gh',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+
+  it('allows gh-as wrapper for the API mutation (the suggested rewrite)', async () => {
+    const result = await runHook({
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'node scripts/gh-as.mjs lag-ceo api -X POST /repos/x/y/issues --input issue.json',
+      },
+    });
+    expect(result.decision).toBe('allow');
+  });
+});
