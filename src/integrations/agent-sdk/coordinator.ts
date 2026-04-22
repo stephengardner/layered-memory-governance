@@ -102,6 +102,26 @@ export async function deliberate(
     );
   }
 
+  // Round-loop shape:
+  //   Round 0: collect one Position from each participant. Positions are
+  //            posted once per deliberation, not per round. counterOnce
+  //            is not invoked yet (participants haven't seen each other
+  //            because respondTo runs concurrently).
+  //   Round 1..roundBudget-1: collect Counter atoms only. Each round
+  //            gives every participant a fresh chance to counter
+  //            positions posted by others.
+  //   After each round: shouldConclude(positions, counters). If true,
+  //            break and invoke decide(). Otherwise continue until
+  //            roundBudget is exhausted.
+  //
+  // Why this shape instead of re-polling positions per round:
+  //   The original loop re-collected positions in every round, which
+  //   with two agreeing agents and roundBudget=2 inflated the position
+  //   count to 4 and produced an automatic source-rank tie (same layer
+  //   / provenance / depth / confidence) -> escalation. Positions are
+  //   a stated stance; a participant only posts once. Subsequent
+  //   rounds are for objection + rebuttal, which is what Counter
+  //   already models.
   for (let round = 0; round < question.roundBudget; round += 1) {
     if (Number.isFinite(timeoutMs) && Date.now() > timeoutMs) {
       return emitAndReturnEscalation(
@@ -113,34 +133,32 @@ export async function deliberate(
       );
     }
 
-    // Positions from participants who haven't posted yet this round.
-    const entriesThisRound = Object.entries(participants).filter(
-      ([pid]) => !positions.some(
-        (p) => p.authorPrincipal === pid && p.id.endsWith(`-r${round}`),
-      ),
-    );
-    const gatheredPositions = await Promise.all(
-      entriesThisRound.map(async ([, handle]) => {
-        const p = await handle.respondTo(question);
-        const tagged: Position = { ...p, id: `${p.id}-r${round}` };
-        await sink(tagged);
-        return tagged;
-      }),
-    );
-    positions.push(...gatheredPositions);
-
-    // Counters: every participant gets a chance this round.
-    const gatheredCounters = await Promise.all(
-      Object.values(participants).map(async (handle) => {
-        const c = await handle.counterOnce(positions);
-        if (c === null) return null;
-        const tagged: Counter = { ...c, id: `${c.id}-r${round}` };
-        await sink(tagged);
-        return tagged;
-      }),
-    );
-    for (const c of gatheredCounters) {
-      if (c !== null) counters.push(c);
+    if (round === 0) {
+      // First round: collect one Position per participant.
+      const gatheredPositions = await Promise.all(
+        Object.values(participants).map(async (handle) => {
+          const p = await handle.respondTo(question);
+          const tagged: Position = { ...p, id: `${p.id}-r0` };
+          await sink(tagged);
+          return tagged;
+        }),
+      );
+      positions.push(...gatheredPositions);
+    } else {
+      // Subsequent rounds: counters only. Each participant gets a
+      // fresh chance to object to any Position posted so far.
+      const gatheredCounters = await Promise.all(
+        Object.values(participants).map(async (handle) => {
+          const c = await handle.counterOnce(positions);
+          if (c === null) return null;
+          const tagged: Counter = { ...c, id: `${c.id}-r${round}` };
+          await sink(tagged);
+          return tagged;
+        }),
+      );
+      for (const c of gatheredCounters) {
+        if (c !== null) counters.push(c);
+      }
     }
 
     if (shouldConclude(positions, counters)) break;

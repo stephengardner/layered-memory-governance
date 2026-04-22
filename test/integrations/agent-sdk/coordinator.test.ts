@@ -173,6 +173,9 @@ describe('deliberate atom chain', () => {
   });
 
   it('persists Counter atoms when a participant emits one', async () => {
+    // roundBudget >= 2: round 0 collects positions, round 1 collects
+    // counters. code-author's counter targets cto's tagged position id
+    // (pos-q-test-cto-r0).
     const { sink, byType } = capturingSink();
     const agents: Record<string, AgentHandle> = {
       cto: buildFakeAgent({
@@ -183,12 +186,12 @@ describe('deliberate atom chain', () => {
       'code-author': buildFakeAgent({
         principalId: 'code-author',
         positions: [{ answer: 'B', rationale: 'r' }],
-        // code-author counters cto's position p-<qid>-cto
-        counters: [{ targetPositionId: 'pos-q-test-cto', objection: 'breaks X' }],
+        // code-author counters cto's tagged position p-<qid>-cto-r0
+        counters: [{ targetPositionId: 'pos-q-test-cto-r0', objection: 'breaks X' }],
       }),
     };
     await deliberate({
-      question: makeQuestion({ roundBudget: 1 }),
+      question: makeQuestion({ roundBudget: 2 }),
       participants: agents,
       sink,
       decidingPrincipal: 'cto',
@@ -196,7 +199,7 @@ describe('deliberate atom chain', () => {
     const counters = byType<Counter>('counter');
     expect(counters).toHaveLength(1);
     expect(() => validateCounter(counters[0]!)).not.toThrow();
-    expect(counters[0]!.inResponseTo).toBe('pos-q-test-cto');
+    expect(counters[0]!.inResponseTo).toBe('pos-q-test-cto-r0');
     expect(counters[0]!.authorPrincipal).toBe('code-author');
   });
 });
@@ -246,22 +249,26 @@ describe('deliberate conclusion', () => {
   });
 
   it('emits an Escalation when arbitration is indeterminate (top-tie)', async () => {
+    // roundBudget >= 2 so counters can be collected after round 0
+    // positions. Both positions get rebutted -> both candidates fall
+    // back to the "all rebutted" branch -> source-rank ties at equal
+    // depth -> decide returns null -> escalation.
     const { sink, byType } = capturingSink();
     const agents: Record<string, AgentHandle> = {
       cto: buildFakeAgent({
         principalId: 'cto',
         positions: [{ answer: 'A', rationale: 'r' }],
-        // Rebut the other position so both positions end up rebutted.
-        counters: [{ targetPositionId: 'pos-q-test-code-author', objection: 'no' }],
+        // Round-1 counter targets the r0-tagged position id.
+        counters: [{ targetPositionId: 'pos-q-test-code-author-r0', objection: 'no' }],
       }),
       'code-author': buildFakeAgent({
         principalId: 'code-author',
         positions: [{ answer: 'B', rationale: 'r' }],
-        counters: [{ targetPositionId: 'pos-q-test-cto', objection: 'no' }],
+        counters: [{ targetPositionId: 'pos-q-test-cto-r0', objection: 'no' }],
       }),
     };
     const outcome = await deliberate({
-      question: makeQuestion({ roundBudget: 1 }),
+      question: makeQuestion({ roundBudget: 2 }),
       participants: agents,
       sink,
       decidingPrincipal: 'cto',
@@ -344,5 +351,123 @@ describe('deliberate sink ordering', () => {
     });
     expect(seen[0]!.type).toBe('question');
     expect(seen[seen.length - 1]!.type).toBe('decision');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-loop shape: positions once, counters per round
+// ---------------------------------------------------------------------------
+
+describe('deliberate round-loop shape', () => {
+  it('collects Positions only in round 0, counters in subsequent rounds', async () => {
+    // Two participants. With a roundBudget of 3, respondTo must be
+    // called exactly once per participant (round 0). counterOnce is
+    // called in each round (up to 3 times per participant) until
+    // shouldConclude / roundBudget ends the loop.
+    const { sink, byType } = capturingSink();
+    const cto = buildFakeAgent({
+      principalId: 'cto',
+      positions: [{ answer: 'Same answer', rationale: 'r-cto' }],
+      counters: [null, null, null],
+    });
+    const ca = buildFakeAgent({
+      principalId: 'code-author',
+      positions: [{ answer: 'Same answer', rationale: 'r-ca' }],
+      counters: [null, null, null],
+    });
+    const agents: Record<string, AgentHandle> = { cto, 'code-author': ca };
+    await deliberate({
+      question: makeQuestion({ roundBudget: 3 }),
+      participants: agents,
+      sink,
+      decidingPrincipal: 'cto',
+    });
+    // Positions are posted once, not per-round.
+    expect(cto.respondTo).toHaveBeenCalledTimes(1);
+    expect(ca.respondTo).toHaveBeenCalledTimes(1);
+    const positions = byType<Position>('position');
+    expect(positions).toHaveLength(2);
+  });
+
+  it('two participants with agreeing answers + roundBudget=3 produce a Decision, not an Escalation', async () => {
+    // The exact shape that triggered the 2026-04-20 workaround. With
+    // the old loop, each round re-polled positions, inflating the
+    // position count to 4 and producing a source-rank tie -> escalation.
+    // The fixed loop posts positions once and either shouldConclude
+    // fires (unrebutted == 1) or source-rank picks a winner cleanly.
+    //
+    // Here both participants propose the same answer; no one counters.
+    // Conclusion: a Decision atom is written and returned.
+    const { sink, byType } = capturingSink();
+    const agents: Record<string, AgentHandle> = {
+      cto: buildFakeAgent({
+        principalId: 'cto',
+        positions: [{ answer: 'Bump patch', rationale: 'safe scope' }],
+        counters: [null, null, null],
+      }),
+      'code-author': buildFakeAgent({
+        principalId: 'code-author',
+        positions: [{ answer: 'Bump patch', rationale: 'agree with CTO' }],
+        counters: [null, null, null],
+      }),
+    };
+    const outcome = await deliberate({
+      question: makeQuestion({ roundBudget: 3 }),
+      participants: agents,
+      sink,
+      decidingPrincipal: 'cto',
+      principalDepths: { cto: 1, 'code-author': 3 },
+    });
+    expect(outcome.type).toBe('decision');
+    expect(() => validateDecision(outcome as Decision)).not.toThrow();
+    const decisions = byType<Decision>('decision');
+    expect(decisions).toHaveLength(1);
+    // Exactly 2 positions persisted total (not 2 x roundBudget).
+    const positions = byType<Position>('position');
+    expect(positions).toHaveLength(2);
+    // No escalation emitted.
+    const escalations = byType<Escalation>('escalation');
+    expect(escalations).toHaveLength(0);
+  });
+
+  it('counters posted in later rounds feed arbitration (rebutting produces a clean Decision)', async () => {
+    // Round 0: both post positions. Round 1: cto counters code-author.
+    // shouldConclude fires at end of round 1 (unrebutted == 1) ->
+    // Decision for CTO's surviving position.
+    const { sink, byType } = capturingSink();
+    const agents: Record<string, AgentHandle> = {
+      cto: buildFakeAgent({
+        principalId: 'cto',
+        positions: [{ answer: 'A', rationale: 'r-cto' }],
+        // Round 0 counter: can't target code-author's position because
+        // cto's respondTo runs concurrently with code-author's in round
+        // 0; safer to target in round 1.
+        counters: [
+          null,
+          { targetPositionId: 'pos-q-test-code-author-r0', objection: 'rebut' },
+          null,
+        ],
+      }),
+      'code-author': buildFakeAgent({
+        principalId: 'code-author',
+        positions: [{ answer: 'B', rationale: 'r-ca' }],
+        counters: [null, null, null],
+      }),
+    };
+    const outcome = await deliberate({
+      question: makeQuestion({ roundBudget: 3 }),
+      participants: agents,
+      sink,
+      decidingPrincipal: 'cto',
+      principalDepths: { cto: 1, 'code-author': 1 },
+    });
+    expect(outcome.type).toBe('decision');
+    const positions = byType<Position>('position');
+    expect(positions).toHaveLength(2);
+    const counters = byType<Counter>('counter');
+    // Exactly one counter (CTO's in round 1).
+    expect(counters).toHaveLength(1);
+    // CTO's position wins (code-author's was rebutted).
+    expect((outcome as Decision).answer).toBe('A');
   });
 });

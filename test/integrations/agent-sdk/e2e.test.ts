@@ -136,7 +136,10 @@ function buildQuestion(overrides: Partial<Question> = {}): Question {
     scope: ['bootstrap'],
     authorPrincipal: 'vo-cto',
     participants: ['vo-cto', 'vo-code-author'],
-    roundBudget: 1,
+    // Default >= 2 so round 0 collects positions and round 1 collects
+    // counters. The old tests used roundBudget=1 as a workaround for
+    // the now-fixed per-round position re-polling bug.
+    roundBudget: 2,
     timeoutAt: new Date(Date.now() + 60_000).toISOString(),
     created_at: new Date().toISOString(),
     ...overrides,
