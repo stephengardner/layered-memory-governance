@@ -1,0 +1,74 @@
+name: Console Demo Deploy (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/console/**'
+      - '.github/workflows/console-demo-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: console-demo-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build hosted demo bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/console
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/console/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build demo bundle
+        env:
+          # VITE_LAG_TRANSPORT=demo selects the StaticBundleTransport
+          # (see src/services/transport/index.ts). main.tsx installs
+          # the Helix bundle on window before React mounts.
+          VITE_LAG_TRANSPORT: demo
+          # VITE_LAG_BASE lets vite emit asset URLs prefixed with the
+          # repo name so paths resolve under
+          # github.io/<user>/<repo>/...
+          VITE_LAG_BASE: /layered-autonomous-governance/
+        run: npm run build
+
+      # GitHub Pages serves a SPA from a flat directory. For
+      # hash-based routing (which the Console uses, see
+      # src/state/router.store.ts) this is enough: every path
+      # resolves to index.html and the router picks up the hash
+      # client-side. No 404.html redirect needed.
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/console/dist
+
+  deploy:
+    name: deploy to github pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

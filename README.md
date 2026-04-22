@@ -10,6 +10,8 @@ A framework for multi-agent systems where memory has to stay true over time, aut
 
 > **If RAG brings knowledge into an agent, LAG governs knowledge across agents.** Retrieval makes one agent smarter; governance keeps a hundred agents coherent.
 
+**Live demo:** [stephengardner.github.io/layered-autonomous-governance](https://stephengardner.github.io/layered-autonomous-governance/) - the LAG Console rendered against a fictional autonomous AI research collective ("Helix Collective" building "Cuttlefish", a self-modifying compiler whose agents rewrite their own optimization passes under a formal-proof + kill-switch-adjacency fence). The demo atoms/principals/plans are synthetic so the substrate can be explored without any real-org context leaking in.
+
 Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, an Actor primitive for governed outward-acting agents, an inbox V1 for actor-to-actor messaging with sub-actor delegation, per-role GitHub App bot identities (operator-proxy + decision-bearing + CR-handling), and an operator-escalation channel so silent halts ping the operator instead of dying in a CI log. **796+ unit tests + 30 gated integration tests** (count grows as open PRs land), GitHub Actions CI on Ubuntu + Windows.
 
 ---

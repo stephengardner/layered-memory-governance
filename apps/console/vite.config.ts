@@ -18,6 +18,16 @@ export default defineConfig({
       '@': resolve(here, 'src'),
     },
   },
+  // `base` is driven at build time from env so the gh-pages artifact
+  // (served from `/<repo-name>/...`) and the standalone bundle (served
+  // from `/`) share one config. Defaults to `/` for local dev.
+  base: process.env['VITE_LAG_BASE'] ?? '/',
+  build: {
+    // ES2022 target unlocks top-level await, which main.tsx uses to
+    // install the demo bundle before React mounts. Also matches
+    // tsconfig.app.json's target so tsc and vite agree.
+    target: 'es2022',
+  },
   server: {
     port: DASHBOARD_PORT,
     strictPort: true, // fail fast if port taken instead of hopping
