@@ -1,11 +1,5 @@
-export { decayedConfidence, shouldUpdateConfidence } from './decay.js';
-export { ttlExpirePatch, type TtlExpireOptions } from './ttl.js';
-export { LoopRunner } from './runner.js';
-export {
-  DEFAULT_HALF_LIVES,
-  type CanonTarget,
-  type HalfLifeConfig,
-  type LoopOptions,
-  type LoopStats,
-  type LoopTickReport,
-} from './types.js';
+// Compatibility shim: moved to src/runtime/loop/index.ts as
+// part of the substrate/runtime/adapters/integrations layer split. Re-exports
+// from the new location so existing consumer imports compile unchanged. The
+// shim will be removed after consumer imports migrate in a follow-up PR.
+export * from '../runtime/loop/index.js';
