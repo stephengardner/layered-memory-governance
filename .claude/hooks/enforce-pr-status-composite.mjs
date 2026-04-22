@@ -57,36 +57,56 @@ const ESCAPE_MARKER = '# allow-partial-pr-read';
 
 // Patterns that MATCH a state-read. Each regex runs per-clause.
 // The order is broadest-to-narrowest; first match wins.
+//
+// IMPORTANT: patterns must match state-reads regardless of INVOKER.
+// Earlier versions anchored on `\bgh\s+` which only caught bare `gh`,
+// letting wrapper invocations like `node scripts/gh-as.mjs lag-ceo
+// pr view <N>` slip through (the `-as.mjs` between `gh` and `pr`
+// defeats `\s+`). The agent's convention in this repo is to route
+// every gh call through gh-as.mjs for bot-identity attribution, so
+// EVERY real-world state read flowed past the hook until 2026-04-22.
+// Patterns now match on the action shape itself (e.g. `pr view <N>`,
+// `/pulls/<N>`, `/commits/<sha>/status`) with wrapper-agnostic
+// prefixes: bare `gh`, `gh-as.mjs`, or any other wrapper that ends
+// up passing those arguments to `gh`.
+//
+// The wrapper-agnostic prefix is `(?:^|[\s;&|`(])` - start of line
+// or a shell token boundary that is NOT an alphanumeric / hyphen
+// (so "git-show" doesn't match "gh"). Each pattern then asserts its
+// own shape. Bare `gh` is still included via the same set; we no
+// longer need a separate `\bgh\s+` anchor.
 const STATE_READ_PATTERNS = [
   {
-    name: 'gh pr view',
-    regex: /\bgh\s+pr\s+view\b/,
-    rewrite: (c) => c.replace(/\bgh\s+pr\s+view\b/, 'node scripts/pr-status.mjs'),
+    // `pr view <N>` - matches `gh pr view 52`, `gh-as.mjs lag-ceo
+    // pr view 52`, any wrapper form that passes those args to gh.
+    // The preceding token must look like a gh-invocation (bare
+    // `gh` or something ending in `gh`/`gh-as.mjs`/`gh.exe`/etc).
+    name: 'pr view',
+    regex: /(?:^|[\s;&|`(])(?:gh|[\w.\-\/\\]*?gh(?:-as)?\.?m?js?|[\w.\-\/\\]*?gh(?:\.exe)?)(?=\s)[^\n;|&]*?\s+pr\s+view\b/,
+    rewrite: (c) => c.replace(/\s+pr\s+view\b/, ' pr-status.mjs <n> # was `pr view`'),
   },
   {
-    name: 'gh pr checks',
-    regex: /\bgh\s+pr\s+checks\b/,
-    rewrite: (c) => c.replace(/\bgh\s+pr\s+checks\b/, 'node scripts/pr-status.mjs'),
+    name: 'pr checks',
+    regex: /(?:^|[\s;&|`(])(?:gh|[\w.\-\/\\]*?gh(?:-as)?\.?m?js?|[\w.\-\/\\]*?gh(?:\.exe)?)(?=\s)[^\n;|&]*?\s+pr\s+checks\b/,
+    rewrite: (c) => c.replace(/\s+pr\s+checks\b/, ' pr-status.mjs <n> # was `pr checks`'),
   },
   {
-    name: 'gh api .../pulls/<N>',
-    // Match /pulls/123 with optional trailing path segments. The PR
-    // comment-post path /pulls/123/comments IS a write, not a state
-    // read; but the PR-LEVEL GET /pulls/123 IS. Distinguishing by
-    // method is unreliable (gh api defaults to GET). Accept the
-    // false-positive on /pulls/<N>/comments-LIST by letting the
-    // escape hatch cover the rare legit case.
-    regex: /\bgh\s+api\s+.*\/pulls\/\d+\b(?!\/(?:comments|replies|reviews\/\d+))/,
+    // `api .../pulls/<N>` - state-level read of a PR. Excludes sub-
+    // paths that are action surfaces (/comments POST, /reviews POST,
+    // /merge PUT). The write-side hook (enforce-lag-ceo-for-gh) gates
+    // those separately.
+    name: 'api .../pulls/<N>',
+    regex: /(?:^|[\s;&|`(])(?:gh|[\w.\-\/\\]*?gh(?:-as)?\.?m?js?|[\w.\-\/\\]*?gh(?:\.exe)?)(?=\s)[^\n;|&]*?\s+api\s+[^\s;|&]*\/pulls\/\d+\b(?!\/(?:comments|replies|reviews|merge))/,
     rewrite: () => 'node scripts/pr-status.mjs <pr-number>',
   },
   {
-    name: 'gh api .../commits/.../status',
-    regex: /\bgh\s+api\s+.*\/commits\/.*\/status\b/,
+    name: 'api .../commits/<sha>/status',
+    regex: /(?:^|[\s;&|`(])(?:gh|[\w.\-\/\\]*?gh(?:-as)?\.?m?js?|[\w.\-\/\\]*?gh(?:\.exe)?)(?=\s)[^\n;|&]*?\s+api\s+[^\s;|&]*\/commits\/[^\s;|&]+\/status\b/,
     rewrite: () => 'node scripts/pr-status.mjs <pr-number>',
   },
   {
-    name: 'gh api .../commits/.../check-runs',
-    regex: /\bgh\s+api\s+.*\/commits\/.*\/check-runs\b/,
+    name: 'api .../commits/<sha>/check-runs',
+    regex: /(?:^|[\s;&|`(])(?:gh|[\w.\-\/\\]*?gh(?:-as)?\.?m?js?|[\w.\-\/\\]*?gh(?:\.exe)?)(?=\s)[^\n;|&]*?\s+api\s+[^\s;|&]*\/commits\/[^\s;|&]+\/check-runs\b/,
     rewrite: () => 'node scripts/pr-status.mjs <pr-number>',
   },
 ];
