@@ -506,6 +506,31 @@ for (const a of canon) {
 // Bundle
 // ---------------------------------------------------------------------------
 
+/*
+ * Response shapes below must match what the client services expect
+ * (see src/services/{canon,daemon,kill-switch,...}.service.ts).
+ * If a shape drifts, the consuming component crashes at render time
+ * with a "Cannot read properties of undefined" because it tries to
+ * read a field the bundle didn't provide.
+ */
+
+// Compute derived daemon.status fields from the atom set so the
+// Console's "time since last atom" / "atoms last hour" tiles render
+// coherently against the Helix timeline.
+const newestAtom = activities[0];
+const newestAt = newestAtom ? String(newestAtom['created_at']) : NOW;
+const newestMs = Date.parse(newestAt);
+const nowMs = Date.parse(NOW);
+const secondsSinceLastAtom = Math.max(0, Math.round((nowMs - newestMs) / 1000));
+const atomsInLastHour = activities.filter((a) => {
+  const t = Date.parse(String(a['created_at']));
+  return Number.isFinite(t) && nowMs - t <= 3_600_000;
+}).length;
+const atomsInLastDay = activities.filter((a) => {
+  const t = Date.parse(String(a['created_at']));
+  return Number.isFinite(t) && nowMs - t <= 86_400_000;
+}).length;
+
 export const HELIX_BUNDLE: DemoBundle = Object.freeze({
   'session.current': { actor_id: 'helix-root' },
   'canon.list': canon,
@@ -513,16 +538,31 @@ export const HELIX_BUNDLE: DemoBundle = Object.freeze({
   'principals.list': principals,
   'activities.list': activities,
   'plans.list': plans,
+  // DaemonStatus per src/services/daemon.service.ts.
   'daemon.status': {
-    running: false,
-    reason: 'demo-mode: no live daemon; this is a frozen snapshot of Helix Collective at 2026-04-21T17:00Z.',
-    last_heartbeat: NOW,
+    atomCount: allAtoms.length,
+    lastAtomId: newestAtom ? String(newestAtom['id']) : null,
+    lastAtomCreatedAt: newestAt,
+    secondsSinceLastAtom,
+    atomsInLastHour,
+    atomsInLastDay,
+    lagDir: '/demo/helix-collective',
   },
+  // KillSwitchState per src/services/kill-switch.service.ts.
+  // Helix is in 'soft' tier after the 2026-04-15 pass-diff-9012
+  // shape deviation; autonomyDial sits at 0.5 (soft-tier default).
   'kill-switch.state': {
     tier: 'soft',
-    last_transition_at: '2026-04-15T03:22:00.000Z',
-    last_tripped_by: 'orin-sentinel',
-    reason: 'pass-diff-9012 shape deviation (demo)',
+    since: '2026-04-15T03:22:00.000Z',
+    reason: 'pass-diff-9012 shape deviation flagged by orin-sentinel (demo)',
+    autonomyDial: 0.5,
   },
-  'canon.drift': { drift_count: 0, atoms: [] },
+  // CanonDrift per src/services/canon.service.ts: three arrays of
+  // drifting canon atoms. All empty for the demo snapshot since the
+  // fictional org is in a healthy state.
+  'canon.drift': {
+    stale: [],
+    expiring: [],
+    lowConfidence: [],
+  },
 });

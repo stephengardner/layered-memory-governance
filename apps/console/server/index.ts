@@ -27,6 +27,7 @@ import {
   isAllowedOrigin as isAllowedOriginPure,
   makeAllowedOriginSet,
 } from './security';
+import { parseAutonomyDial } from './kill-switch-state';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -787,11 +788,23 @@ async function readKillSwitchState(): Promise<{
       reason?: string | null;
       autonomyDial?: number;
     };
+    /*
+     * Three-way fallback for autonomyDial, per the kill-switch safety
+     * contract:
+     *   - valid number in [0..1] → pass through (clamped by helper).
+     *   - malformed payload (NaN, Infinity, non-number) from a
+     *     present state file → fail CLOSED to 0 (fully gated).
+     *     A torn state file must not silently escalate runtime
+     *     posture to "fully autonomous".
+     *   - absent state file → caught by the outer try/catch below,
+     *     falls back to 1 (no tier active).
+     */
+    const sanitized = parseAutonomyDial(parsed.autonomyDial);
     return {
       tier: parsed.tier ?? 'off',
       since: parsed.since ?? null,
       reason: parsed.reason ?? null,
-      autonomyDial: typeof parsed.autonomyDial === 'number' ? parsed.autonomyDial : 1,
+      autonomyDial: sanitized === null ? 0 : sanitized,
     };
   } catch {
     // Absent state file = fully autonomous, no tier active.
