@@ -80,43 +80,91 @@ export async function propagateCompromiseTaint(
   }
   const compromisedAt = principal.compromised_at;
 
-  const taintedIds = new Set<AtomId>();
+  // Split the set semantics so reruns are idempotent:
+  // - reachableTaintedIds: every tainted atom the scan sees (including
+  //   already-tainted ones from prior partial runs). Used to drive
+  //   transitive propagation so a clean descendant of a partially-
+  //   tainted ancestor is still caught on rerun.
+  // - newlyTaintedIds: atoms this invocation transitioned clean ->
+  //   tainted. This is what we report in the TaintReport so the
+  //   "idempotent: rerun produces zero new transitions" contract holds.
+  const reachableTaintedIds = new Set<AtomId>();
+  const newlyTaintedIds = new Set<AtomId>();
   let atomsScanned = 0;
   let iterations = 0;
 
   // --- Iteration 0: direct taints from the compromised principal ----------
+  // Paginate through EVERY atom authored by the compromised principal.
+  // AtomStore.query is cursor-paginated, so only reading the first page
+  // would leave atoms past pageSize silently clean - a false negative
+  // with taint-leak consequences. Also add an explicit in-code
+  // principal_id check because AtomFilter enforcement varies across
+  // adapters (some ignore filters); belt + suspenders.
   iterations += 1;
-  const direct = await host.atoms.query(
-    { principal_id: [principalId], superseded: true },
-    pageSize,
-  );
-  atomsScanned += direct.atoms.length;
-  for (const atom of direct.atoms) {
-    if (atom.created_at < compromisedAt) continue; // written before compromise
-    if (atom.taint !== 'clean') continue; // already tainted/quarantined
-    await applyTaint(host, atom, principalId, responderId, 'direct');
-    taintedIds.add(atom.id);
+  {
+    let cursor: string | undefined = undefined;
+    for (;;) {
+      const page = await host.atoms.query(
+        { principal_id: [principalId], superseded: true },
+        pageSize,
+        cursor,
+      );
+      atomsScanned += page.atoms.length;
+      for (const atom of page.atoms) {
+        if (atom.principal_id !== principalId) continue; // filter-defence guard
+        if (atom.created_at < compromisedAt) continue; // written before compromise
+        if (atom.taint !== 'clean') {
+          // Already tainted/quarantined from a prior partial run - still
+          // seed it so transitive propagation continues from here. A clean
+          // descendant authored by a different principal after a partial
+          // run would otherwise be missed on rerun. Do NOT add to
+          // newlyTaintedIds - no new transition happened.
+          reachableTaintedIds.add(atom.id);
+          continue;
+        }
+        await applyTaint(host, atom, principalId, responderId, 'direct');
+        reachableTaintedIds.add(atom.id);
+        newlyTaintedIds.add(atom.id);
+      }
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
   }
 
   // --- Iterate transitive propagation to fixpoint -------------------------
   while (iterations < maxIterations) {
     iterations += 1;
     let newlyTainted = 0;
-    // Scan all atoms (bounded by pageSize). For the V0 scale this is fine;
-    // if the palace grows, this is the place to add a derived_from -> atom_id
-    // index on the AtomStore.
-    const page = await host.atoms.query({ superseded: true }, pageSize);
-    atomsScanned += page.atoms.length;
-    for (const atom of page.atoms) {
-      if (atom.taint !== 'clean') continue;
-      if (atom.provenance.derived_from.length === 0) continue;
-      const sourcesTainted = atom.provenance.derived_from.some(id =>
-        taintedIds.has(id),
-      );
-      if (!sourcesTainted) continue;
-      await applyTaint(host, atom, principalId, responderId, 'transitive');
-      taintedIds.add(atom.id);
-      newlyTainted += 1;
+    // Scan all atoms, paginating through EVERY page. For the V0 scale
+    // this is fine; if the palace grows, this is the place to add a
+    // derived_from -> atom_id index on the AtomStore.
+    let cursor: string | undefined = undefined;
+    for (;;) {
+      const page = await host.atoms.query({ superseded: true }, pageSize, cursor);
+      atomsScanned += page.atoms.length;
+      for (const atom of page.atoms) {
+        if (atom.provenance.derived_from.length === 0) continue;
+        const sourcesTainted = atom.provenance.derived_from.some(id =>
+          reachableTaintedIds.has(id),
+        );
+        if (!sourcesTainted) continue;
+        if (atom.taint !== 'clean') {
+          // Already tainted; still track the id so a further descendant
+          // off this atom continues to propagate in the next iteration.
+          // Do NOT add to newlyTaintedIds - no transition happened.
+          if (!reachableTaintedIds.has(atom.id)) {
+            reachableTaintedIds.add(atom.id);
+            newlyTainted += 1; // new source-of-propagation this iteration
+          }
+          continue;
+        }
+        await applyTaint(host, atom, principalId, responderId, 'transitive');
+        reachableTaintedIds.add(atom.id);
+        newlyTaintedIds.add(atom.id);
+        newlyTainted += 1;
+      }
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
     }
     if (newlyTainted === 0) break;
   }
@@ -124,10 +172,13 @@ export async function propagateCompromiseTaint(
   return {
     principalId,
     compromisedAt,
-    atomsTainted: taintedIds.size,
+    // "atomsTainted" reports transitions this run, not the total reachable
+    // tainted set. Idempotency contract: a rerun with nothing new to
+    // transition returns 0 here.
+    atomsTainted: newlyTaintedIds.size,
     atomsScanned,
     iterations,
-    taintedAtomIds: Object.freeze([...taintedIds]),
+    taintedAtomIds: Object.freeze([...newlyTaintedIds]),
   };
 }
 

@@ -80,11 +80,15 @@ export async function writeSection(
   newContent: string,
 ): Promise<CanonSectionWriteResult> {
   const before = await readFileOrEmpty(filePath);
-  const existingSection = extractSection(before);
   const trimmedNew = newContent.trim();
-  const changed = existingSection !== trimmedNew;
   const after = replaceSection(before, trimmedNew);
-  if (after !== before) {
+  // `changed` must reflect the ACTUAL write, not a section-only compare.
+  // A missing file or missing section with empty rendered content would
+  // otherwise return changed=false while the block/marker gets created.
+  // Consumers (audit, reinforcement, reflection hooks) rely on this flag
+  // to know whether a canon write happened.
+  const changed = after !== before;
+  if (changed) {
     await ensureDir(dirname(filePath));
     await writeFile(filePath, after, 'utf8');
   }

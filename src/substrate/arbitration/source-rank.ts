@@ -61,11 +61,17 @@ export interface SourceRankContext {
  */
 export function sourceRank(atom: Atom, principalDepth: number = 0): number {
   const depth = Math.max(0, Math.min(principalDepth, MAX_PRINCIPAL_DEPTH));
+  // Confidence is in [0, 1] so Math.floor(c * 10) returns 0..10 (c=1
+  // hits the upper bound). Clamp to 10 and use a depth multiplier of
+  // 11 so a one-level hierarchy advantage always outranks any
+  // confidence delta, preserving the documented precedence
+  // Layer >> Provenance >> PrincipalDepth >> Confidence.
+  const confidenceBucket = Math.max(0, Math.min(10, Math.floor(atom.confidence * 10)));
   return (
     LAYER_RANK[atom.layer] * 10_000 +
     PROVENANCE_RANK[atom.provenance.kind] * 100 +
-    (MAX_PRINCIPAL_DEPTH - depth) * 10 +
-    Math.floor(atom.confidence * 10)
+    (MAX_PRINCIPAL_DEPTH - depth) * 11 +
+    confidenceBucket
   );
 }
 
