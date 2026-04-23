@@ -97,7 +97,15 @@ async function main() {
   );
 
   try {
-    const result = await runDeliberation({
+    // Default posture: deliberate-only. The executor path is
+    // destructive (draft branch + push + open PR via the real
+    // CodeAuthor), so a stray invocation without `--execute` must
+    // NOT attempt it. Operators opt into execution explicitly with
+    // the flag, which also pulls in the `vo-code-author` executor
+    // principal and the full Host thread-through. See
+    // docs/dogfooding/2026-04-22-task-d-132-retro.md for the
+    // surfacing incident.
+    const runArgs = {
       question,
       participants: participating,
       atomStore: host.atoms,
@@ -106,19 +114,22 @@ async function main() {
       canonAtoms,
       decidingPrincipal: 'vo-cto',
       signal: killSwitch.signal,
-      execute: !args.deliberateOnly,
-      executorPrincipalId: 'vo-code-author',
+    };
+    if (args.execute) {
+      runArgs.execute = true;
+      runArgs.executorPrincipalId = 'vo-code-author';
       // Full Host thread-through for the executor path: runCodeAuthor
       // reaches beyond atoms/principals into notifier/scheduler/auditor/
       // canon/clock/llm, so the deliberate-only path is the only one
       // that can skip this field.
-      host,
-    });
+      runArgs.host = host;
+    }
+    const result = await runDeliberation(runArgs);
     console.log(JSON.stringify(result, null, 2));
     const typeCounts = await summarizeAtomCounts(host.atoms);
     console.error(`[boot] atoms written by type: ${JSON.stringify(typeCounts)}`);
-    if (args.deliberateOnly) {
-      console.error('[boot] --deliberate-only: skipped execution path');
+    if (!args.execute) {
+      console.error('[boot] deliberate-only (default): pass --execute to opt into the executor path');
     } else if (result.execution) {
       console.error(`[boot] execution: ${result.execution.kind}`);
     } else {
@@ -130,16 +141,16 @@ async function main() {
 }
 
 function parseArgs(argv) {
-  let deliberateOnly = false;
+  let execute = false;
   const positional = [];
   for (const a of argv) {
-    if (a === '--deliberate-only') {
-      deliberateOnly = true;
+    if (a === '--execute') {
+      execute = true;
     } else {
       positional.push(a);
     }
   }
-  return { deliberateOnly, prompt: positional[0] };
+  return { execute, prompt: positional[0] };
 }
 
 async function readPrompt(fromArgs) {
