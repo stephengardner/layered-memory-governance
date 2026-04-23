@@ -8,3 +8,4 @@ Pattern:
 - `YYYY-MM-DD-<task-name>-retro.md` - what happened, what worked, intervention count
 - `YYYY-MM-DD-<observation>.md` - followups/gap analyses spun off from a run
 <!-- virtual-org phase-2.5 APPEND smoke-test: 2026-04-23T09:40:00Z -->
+<!-- question-prompt-seam smoke: 2026-04-23T12:30:00Z -->
