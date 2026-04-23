@@ -188,4 +188,26 @@ describe('seedFenceAtoms drift guard', () => {
       expect(msg).toMatch(/content/);
     }
   });
+
+  it('throws when existing atom is superseded (non-empty superseded_by)', async () => {
+    const canonical = await canonicalAtom('pol-code-author-signed-pr-only' as AtomId);
+    const drifted: Atom = {
+      ...canonical,
+      superseded_by: ['some-replacement-atom-id' as AtomId],
+    };
+    const { store, puts } = await driftStubFor(drifted);
+    await expect(seedFenceAtoms(store, OPERATOR)).rejects.toThrow(/drift/i);
+    expect(puts).toHaveLength(0);
+  });
+
+  it('throws when existing atom has unexpected supersedes entries', async () => {
+    const canonical = await canonicalAtom('pol-code-author-ci-gate' as AtomId);
+    const drifted: Atom = {
+      ...canonical,
+      supersedes: ['unexpected-prior-atom-id' as AtomId],
+    };
+    const { store, puts } = await driftStubFor(drifted);
+    await expect(seedFenceAtoms(store, OPERATOR)).rejects.toThrow(/drift/i);
+    expect(puts).toHaveLength(0);
+  });
 });

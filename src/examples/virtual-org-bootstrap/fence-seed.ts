@@ -226,6 +226,12 @@ function diffFenceAtom(existing: Atom, expected: Atom): ReadonlyArray<string> {
   if (stableJson(existingPolicy) !== stableJson(expectedPolicy)) {
     drifted.push('metadata.policy');
   }
+  if (stableJson(existing.superseded_by) !== stableJson(expected.superseded_by)) {
+    drifted.push('superseded_by');
+  }
+  if (stableJson(existing.supersedes) !== stableJson(expected.supersedes)) {
+    drifted.push('supersedes');
+  }
   return drifted;
 }
 
