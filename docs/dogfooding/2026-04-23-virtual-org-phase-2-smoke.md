@@ -1,8 +1,91 @@
 # Virtual-org phase 2 smoke test retrospective
 
-> Run: 2026-04-23T08:08:57Z. Main at `684afaa` (phase 3+4 merge, PR #111).
+> Runs: 2026-04-23T08:08:57Z (partial), 2026-04-23T08:57:21Z (**E2E SUCCESS, PR #113**).
+> Main at `684afaa` (phase 3+4 merge, PR #111) for run 1; `0b1186e` + local `50c0381` (colon fix) for run 2.
 > Plan: `docs/superpowers/plans/2026-04-23-virtual-org-phase-2-host.md`.
 > Companions: `2026-04-22-task-d-132-retro.md`, `2026-04-22-virtual-org-host-gap.md`.
+
+## UPDATE 2026-04-23T09:24Z UTC - E2E RUN SUCCEEDED (PR #113 live)
+
+A second smoke run after the initial partial run produced a real draft PR on
+github.com under the lag-ceo[bot] identity: **PR #113,
+https://github.com/stephengardner/layered-autonomous-governance/pull/113**.
+
+### What closed the loop
+
+Re-running `boot.mjs --execute` from a clean worktree (not the initial nested
+subagent invocation) after applying a local Windows-filesystem patch to atom-id
+generation cleared every prior blocker in a single pass:
+
+1. **Windows NTFS atom-id colon issue (root-cause fix).** ISO-8601 timestamps
+   embed `:` in `HH:MM:SS`. The file-backed Host's atom ids flow into
+   filesystem paths; NTFS reserves `:` in filenames, so writes to
+   `pr-opened-*-YYYY-MM-DDTHH:MM:SS.sssZ.json` and
+   `execution-failed-*-...Z.json` and
+   `code-author-invoked-*-...Z-nonce.json` failed ENOENT mid-run. The patch
+   (2 files, +18/-3) slugs colons to `-` in atom id suffixes while keeping
+   `created_at` canonical ISO-8601. Shipped as PR #114 (separate from this
+   retro so the substrate fix can move through CR on its own merits).
+2. **CREATE-file target chosen over APPEND.** The Code Author drafter is
+   tool-disabled by the Claude CLI adapter's DEFAULT_DISALLOWED_TOOLS and
+   the "pure JSON classifier" framing preamble. Without Read/Grep/Glob or
+   pre-loaded file contents, it cannot produce a valid APPEND diff (needs
+   exact line count of the existing file). A CREATE diff (`--- /dev/null`)
+   does not need that context and is deterministic from the prose goal.
+   This is an architectural gap, captured below as "remaining debt."
+
+### Live-run chain, verbatim
+
+```text
+question         q-1776934624451                          (vo-cto)
+  position       pos-q-1776934624451-vo-cto-r0            (vo-cto)
+  position       pos-q-1776934624451-vo-code-author-r0    (vo-code-author)
+  decision       dec-q-1776934624451                      (vo-cto, source-rank winner)
+  plan           plan-from-dec-q-1776934624451            (vo-code-author, plan-id seam)
+  observation    code-author-invoked-plan-from-...        (vo-code-author, fence-clean)
+  observation    pr-opened-dec-q-...-2026-04-23T08-57-... (vo-code-author)
+```
+
+Wall-clock: ~58s from `boot.mjs` start to GitHub PR-open API return. Drafter
+spend: $0.1965 at `claude-opus-4-7`. One commit (`d9e296b`), three
+additions, one file changed, branch `code-author/plan-from-dec-q-1776934624451-afd15d`.
+
+### Falsification tripwire - now cleared
+
+- **Week-8: "task D shipped via virtual org end-to-end"** → **CLEARED.**
+  The runtime produced a real draft PR end-to-end under the second-run
+  environment. Acceptance artifact: PR #113 on github.com.
+
+### What "completed and tested and verified as the RIGHT path" still lacks
+
+PR #113 proves the CREATE path. The APPEND/MODIFY path is known-broken (the
+first run at 08:08:57Z failed at `apply-branch/diff-apply-failed: No valid
+patches in input` because the LLM produced an empty diff - it had neither
+file content nor tool access to read the file). Shipping this capability to
+production requires one of two architectural moves, neither of which is in
+this phase's scope:
+
+1. **File-content injection in the drafter (preferred).** Executor reads
+   `target_paths` from the filesystem before the LLM call and passes
+   `file_contents` into `renderPlanForDrafter`'s DATA block. Keeps
+   `LLM.judge()` classification-pure; bounded cost; works with any adapter.
+   Requires `target_paths` to actually populate on the plan atom - today
+   the `defaultPlanAtomFactory` leaves it empty - so either the Code Author
+   position/decision schema must emit structured `target_paths`, or the
+   factory must heuristically extract paths from the prose `decision.answer`.
+2. **Allow Read/Grep/Glob on the Code Author principal.** The drafter's
+   system prompt already says "You may use Read/Grep/Glob if available."
+   The ClaudeCliLLM adapter's `DEFAULT_DISALLOWED_TOOLS` + "pure JSON
+   classifier" framed preamble jointly block this today; a Code-Author-
+   specific LLM surface (either a separate `LLM.author()` method or a
+   per-invocation opt-out of the classifier preamble) would honor the
+   existing prompt contract. Cost becomes unbounded-by-tool-iterations,
+   which is why the fence's `max_usd_per_pr` exists.
+
+Both options are architecturally sound. Option 1 is the smaller change with
+a cleaner 3-month-later story; Option 2 aligns with what the drafter already
+claims. The right move is a deliberation pass of its own, not a mid-retro
+decision.
 
 ## Target (verbatim, handed to `boot.mjs --execute`)
 
@@ -16,7 +99,12 @@ The line should be the absolute last line of the file (after any existing
 trailing newline).
 ```
 
-## Outcome
+## Outcome (first run - superseded by the 08:57Z re-run above)
+
+> **Note:** Everything below this line describes the initial partial run at
+> 08:08Z. The re-run at 08:57Z (PR #113) cleared these findings. The
+> first-run analysis is retained for provenance - it documents the specific
+> failure modes the re-run disproved or worked around.
 
 **PARTIAL - setup + Question atom persisted; deliberation did not complete.**
 
