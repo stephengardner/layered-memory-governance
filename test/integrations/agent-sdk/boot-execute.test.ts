@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { MemoryAtomStore } from '../../../src/adapters/memory/atom-store.js';
 import { MemoryPrincipalStore } from '../../../src/adapters/memory/principal-store.js';
 import { MemoryClock } from '../../../src/adapters/memory/clock.js';
+import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import {
   loadCanonFixtures,
   loadSeedPrincipals,
@@ -156,6 +157,7 @@ describe('runDeliberation execute wiring', () => {
       decidingPrincipal: 'vo-cto',
       execute: true,
       executorPrincipalId: 'vo-code-author',
+      host: createMemoryHost(),
       codeAuthorFn,
     });
 
@@ -184,7 +186,6 @@ describe('runDeliberation execute wiring', () => {
       canonAtoms,
       decidingPrincipal: 'vo-cto',
       execute: false,
-      executorPrincipalId: 'vo-code-author',
       codeAuthorFn,
     });
 
@@ -249,6 +250,7 @@ describe('runDeliberation execute wiring', () => {
       decidingPrincipal: 'vo-cto',
       execute: true,
       executorPrincipalId: 'vo-code-author',
+      host: createMemoryHost(),
       codeAuthorFn,
       principalDepths: { 'vo-cto': 0, 'vo-code-author': 0 },
     });
@@ -281,6 +283,7 @@ describe('runDeliberation execute wiring', () => {
       decidingPrincipal: 'vo-cto',
       execute: true,
       executorPrincipalId: 'vo-code-author',
+      host: createMemoryHost(),
       codeAuthorFn,
     });
 
@@ -292,5 +295,205 @@ describe('runDeliberation execute wiring', () => {
     expect(prOpened[0]!.principal_id).toBe('vo-code-author');
     const parents = prOpened[0]!.provenance.derived_from;
     expect(parents).toContain('q-exec-001');
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression tests for CR #106 findings:
+  //   - Finding 1 (PRRT_kwDOSGhm98589guF): JSDoc promised
+  //     `executorPrincipalId` is required when `execute` is not false,
+  //     but the implementation silently defaulted to 'vo-code-author'.
+  //     A caller in a non-virtual-org deployment who forgot the field
+  //     would attribute PRs to a principal that doesn't exist in their
+  //     PrincipalStore. Fix: fail fast with a clear error.
+  //   - Finding 2 (PRRT_kwDOSGhm98589guJ): `as unknown as Host`
+  //     fabricated a partial Host with only `atoms` + `principals`. The
+  //     default `runCodeAuthor` path touches notifier/scheduler/clock/
+  //     auditor/llm/canon and would NPE on the partial. Fix: require
+  //     the caller to pass a real Host; drop the cast.
+  // -------------------------------------------------------------------------
+  it('regression CR#106 finding 1: throws when execute !== false and executorPrincipalId is omitted', async () => {
+    const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
+    const client = bothAgree();
+
+    const codeAuthorFn = vi.fn(async () => ({
+      kind: 'dispatched' as const,
+      summary: 'should-not-be-called',
+    }));
+
+    const participating = seeds.filter(
+      (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
+    );
+
+    await expect(
+      runDeliberation({
+        question: buildQuestion(),
+        participants: participating,
+        atomStore,
+        principalStore,
+        anthropic: client,
+        canonAtoms,
+        decidingPrincipal: 'vo-cto',
+        execute: true,
+        // executorPrincipalId intentionally omitted.
+        host: createMemoryHost(),
+        codeAuthorFn,
+      }),
+    ).rejects.toThrow(/executorPrincipalId/);
+    expect(codeAuthorFn).not.toHaveBeenCalled();
+  });
+
+  it('regression CR#106 finding 1: also throws when execute is undefined (defaults to true)', async () => {
+    const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
+    const client = bothAgree();
+
+    const participating = seeds.filter(
+      (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
+    );
+
+    await expect(
+      runDeliberation({
+        question: buildQuestion(),
+        participants: participating,
+        atomStore,
+        principalStore,
+        anthropic: client,
+        canonAtoms,
+        decidingPrincipal: 'vo-cto',
+        // execute + executorPrincipalId both omitted; execute defaults to true.
+        host: createMemoryHost(),
+      }),
+    ).rejects.toThrow(/executorPrincipalId/);
+  });
+
+  it('regression CR#106 finding 1: does NOT throw when execute is false and executorPrincipalId is omitted', async () => {
+    // executorPrincipalId is only required when execution is on;
+    // deliberate-only callers should still be able to omit it.
+    const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
+    const client = bothAgree();
+
+    const participating = seeds.filter(
+      (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
+    );
+
+    const result = await runDeliberation({
+      question: buildQuestion(),
+      participants: participating,
+      atomStore,
+      principalStore,
+      anthropic: client,
+      canonAtoms,
+      decidingPrincipal: 'vo-cto',
+      execute: false,
+    });
+
+    expect(result.outcome.type).toBe('decision');
+    expect(result.execution).toBeUndefined();
+  });
+
+  it('regression CR#106 finding 2: throws when execute !== false and host is omitted', async () => {
+    const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
+    const client = bothAgree();
+
+    const codeAuthorFn = vi.fn(async () => ({
+      kind: 'dispatched' as const,
+      summary: 'should-not-be-called',
+    }));
+
+    const participating = seeds.filter(
+      (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
+    );
+
+    await expect(
+      runDeliberation({
+        question: buildQuestion(),
+        participants: participating,
+        atomStore,
+        principalStore,
+        anthropic: client,
+        canonAtoms,
+        decidingPrincipal: 'vo-cto',
+        execute: true,
+        executorPrincipalId: 'vo-code-author',
+        // host intentionally omitted.
+        codeAuthorFn,
+      }),
+    ).rejects.toThrow(/host/);
+    expect(codeAuthorFn).not.toHaveBeenCalled();
+  });
+
+  it('regression CR#106 finding 2: does NOT throw when execute is false and host is omitted', async () => {
+    // When the caller opted out of execution there is no Host touch-path,
+    // so host should remain optional; only execute=true should gate on it.
+    const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
+    const client = bothAgree();
+
+    const participating = seeds.filter(
+      (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
+    );
+
+    const result = await runDeliberation({
+      question: buildQuestion(),
+      participants: participating,
+      atomStore,
+      principalStore,
+      anthropic: client,
+      canonAtoms,
+      decidingPrincipal: 'vo-cto',
+      execute: false,
+    });
+
+    expect(result.outcome.type).toBe('decision');
+    expect(result.execution).toBeUndefined();
+  });
+
+  it('regression CR#106 finding 2: passes the caller-supplied Host through to executeDecision (no partial-Host cast)', async () => {
+    // Pin the integration contract: the Host the caller supplies is the
+    // same object executeDecision receives. Guards against any future
+    // regression that fabricates a partial Host from (atomStore,
+    // principalStore) instead of threading opts.host through verbatim.
+    const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
+    const client = bothAgree();
+    const operatorHost = createMemoryHost();
+
+    let receivedHost: unknown = null;
+    const codeAuthorFn = vi.fn(async (host: unknown) => {
+      receivedHost = host;
+      return {
+        kind: 'dispatched' as const,
+        summary: 'code-author dispatched plan X as PR #1 (aaaa111)',
+      };
+    });
+
+    const participating = seeds.filter(
+      (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
+    );
+
+    await runDeliberation({
+      question: buildQuestion(),
+      participants: participating,
+      atomStore,
+      principalStore,
+      anthropic: client,
+      canonAtoms,
+      decidingPrincipal: 'vo-cto',
+      execute: true,
+      executorPrincipalId: 'vo-code-author',
+      host: operatorHost,
+      codeAuthorFn,
+    });
+
+    expect(receivedHost).toBe(operatorHost);
+    // Sanity: the threaded Host exposes all 8 sub-interfaces, not a
+    // partial-Host cast. A regression to the cast would leave these
+    // undefined.
+    const host = receivedHost as Record<string, unknown>;
+    expect(host['atoms']).toBeDefined();
+    expect(host['canon']).toBeDefined();
+    expect(host['llm']).toBeDefined();
+    expect(host['notifier']).toBeDefined();
+    expect(host['scheduler']).toBeDefined();
+    expect(host['auditor']).toBeDefined();
+    expect(host['principals']).toBeDefined();
+    expect(host['clock']).toBeDefined();
   });
 });

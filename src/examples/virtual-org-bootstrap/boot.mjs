@@ -108,6 +108,11 @@ async function main() {
       signal: killSwitch.signal,
       execute: !args.deliberateOnly,
       executorPrincipalId: 'vo-code-author',
+      // Full Host thread-through for the executor path: runCodeAuthor
+      // reaches beyond atoms/principals into notifier/scheduler/auditor/
+      // canon/clock/llm, so the deliberate-only path is the only one
+      // that can skip this field.
+      host,
     });
     console.log(JSON.stringify(result, null, 2));
     const typeCounts = await summarizeAtomCounts(host.atoms);
