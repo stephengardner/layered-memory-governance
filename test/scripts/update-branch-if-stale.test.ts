@@ -11,14 +11,14 @@ import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// Static import of a sibling .mjs. Static imports avoid the
-// Windows-specific parser issue where vitest's transformer emitted
-// `await` inside `beforeAll(async () => ...)` in a way Windows Node
-// rejected as "Invalid or unexpected token" (two separate pushes
-// reproduced it). Vitest's resolver handles .mjs siblings fine; the
-// script's direct-invocation guard means importing it has no
-// side-effects on the test process.
-import { decideAction } from '../../scripts/update-branch-if-stale.mjs';
+// Static import from the pure-logic sibling. The CLI wrapper
+// (scripts/update-branch-if-stale.mjs) carries a `#!/usr/bin/env
+// node` shebang, which vitest's Windows transformer appears to
+// reject as "Invalid or unexpected token" when imported (three CI
+// failures reproduced the issue across local-Windows-green runs).
+// Importing the shebang-free library avoids that transformer path
+// entirely. See scripts/lib/update-branch-decider.mjs.
+import { decideAction } from '../../scripts/lib/update-branch-decider.mjs';
 
 const SCRIPT = resolve(
   dirname(fileURLToPath(import.meta.url)),

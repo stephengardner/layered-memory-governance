@@ -51,47 +51,18 @@
 import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { decideAction } from './lib/update-branch-decider.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GH_AS = resolve(REPO_ROOT, 'scripts', 'gh-as.mjs');
 
-/**
- * Pure classifier: given a PR's mergeable-state snapshot, decide what
- * this script should do. Pulled out of `main` so the decision table
- * is a direct table-test without touching gh/network.
- *
- * The GitHub mergeStateStatus enum values this script recognizes:
- *   - BEHIND: head is behind base; merge main into head
- *   - BLOCKED: required checks not satisfied; not our problem here
- *   - CLEAN: ready to merge; no-op
- *   - DIRTY: merge conflicts; human fix required, not our problem
- *   - DRAFT: draft PR; not our problem
- *   - HAS_HOOKS: ready but has post-merge hooks; no-op
- *   - UNKNOWN: GitHub computing; caller should retry
- *   - UNSTABLE: checks failing but mergeable; not our problem
- *
- * Any other value is `unknown` (exit 2) so we never silently
- * assume a stale copy of the enum covers a new state.
- */
-export function decideAction(state) {
-  const s = state?.mergeStateStatus;
-  if (s === 'BEHIND') {
-    return { kind: 'update', reason: 'head is BEHIND base; update-branch required' };
-  }
-  if (s === 'CLEAN' || s === 'HAS_HOOKS') {
-    return { kind: 'noop', reason: `state=${s}; already up to date with base` };
-  }
-  if (s === 'BLOCKED' || s === 'DIRTY' || s === 'DRAFT' || s === 'UNSTABLE') {
-    return { kind: 'noop', reason: `state=${s}; not a base-staleness issue` };
-  }
-  if (s === 'UNKNOWN') {
-    return {
-      kind: 'noop',
-      reason: 'state=UNKNOWN; GitHub still computing mergeability, retry later',
-    };
-  }
-  return { kind: 'unknown', reason: `unrecognized mergeStateStatus=${JSON.stringify(s)}` };
-}
+// `decideAction` is re-exported so operators invoking the script
+// programmatically can still import { decideAction } from this
+// path; the canonical definition lives in ./lib/update-branch-decider.mjs
+// (separated so tests can import it without the CLI shebang, which
+// vitest's transformer stumbles on when importing a `#!`-headed
+// .mjs on Windows CI).
+export { decideAction };
 
 function fetchPrState(prNumber) {
   const r = spawnSync(
