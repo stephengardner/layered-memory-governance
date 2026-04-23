@@ -72,7 +72,15 @@ export function mkKillSwitchTrippedAtomId(
   trippedAt: Time,
   nonce: string = randomBytes(3).toString('hex'),
 ): AtomId {
-  return `kill-switch-tripped-${actor}-${String(principalId)}-${trippedAt}-${nonce}` as AtomId;
+  // Slug colons in the ISO-8601 timestamp: atom ids flow into
+  // filesystem paths on file-backed Hosts and NTFS reserves `:` in
+  // filenames, so a raw `HH:MM:SS` produces ENOENT on Windows. Parity
+  // with `mkCodeAuthorInvokedAtomId` + `pr-opened-*` / `execution-failed-*`
+  // id construction in integrations/agent-sdk/executor.ts. Canonical
+  // `trippedAt` on the atom itself stays full ISO-8601; only the id
+  // suffix is slugged.
+  const trippedSlug = String(trippedAt).replace(/:/g, '-');
+  return `kill-switch-tripped-${actor}-${String(principalId)}-${trippedSlug}-${nonce}` as AtomId;
 }
 
 export function mkKillSwitchTrippedAtom(
