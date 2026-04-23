@@ -7,21 +7,26 @@
  * of the logic.
  */
 
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SCRIPT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..', '..', 'scripts', 'update-branch-if-stale.mjs',
 );
 
-// `decideAction` is exported; import via the same mjs path as
-// consumers. Using dynamic import keeps the test agnostic of our
-// build pipeline (the script is mjs, not ts).
-const mod = await import(`file://${SCRIPT.replace(/\\/g, '/')}`);
-const { decideAction } = mod;
+// Dynamic import via pathToFileURL handles Windows drive-letter
+// paths correctly (`file:///D:/...` three-slash form), which a
+// hand-rolled `file://` + backslash-replace does not. Using
+// beforeAll instead of top-level await keeps the test compatible
+// with the TS module target vitest sees on Windows CI.
+let decideAction: (state: unknown) => { kind: string; reason: string };
+beforeAll(async () => {
+  const mod = await import(pathToFileURL(SCRIPT).href);
+  decideAction = mod.decideAction;
+});
 
 describe('update-branch-if-stale decideAction', () => {
   it('BEHIND -> update', () => {
