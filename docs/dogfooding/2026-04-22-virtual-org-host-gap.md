@@ -44,12 +44,20 @@ Decision -> `executeDecision(args)` -> `runCodeAuthor(host, payload, correlation
    - `pol-code-author-write-revocation-on-stop`
    These are seeded from `src/examples/virtual-org-bootstrap/canon/`
    which currently contains only `pol-two-principal-approve-for-l3-merges.json`.
-2. A Plan atom in `host.atoms` under the id `executeDecision` passes as
-   `plan_id`. The adapter currently passes `decision.id` directly as
-   `plan_id`; the store holds the Decision under that id but with
-   `type: 'decision'`, not `type: 'plan'`. `runCodeAuthor` demands
-   `plan.type === 'plan'` AND `plan.plan_state === 'executing'` - so
-   type mismatch is a second wall.
+2. A separate Plan atom in `host.atoms` under a **fresh, distinct id**
+   from the authorizing Decision. The current adapter at
+   `src/integrations/agent-sdk/executor.ts:183-197` maps
+   `decision.id -> plan_id`; the AtomStore already holds the Decision
+   under that id with `type: 'decision'`, so reusing the same id for
+   the Plan would either collide on write or overwrite the Decision and
+   destroy the authorizing artifact. `runCodeAuthor` also demands
+   `plan.type === 'plan'` AND `plan.plan_state === 'executing'`, so a
+   type mismatch is a second wall even if the id collision resolved
+   cleanly. The fix is an explicit plan-id seam: materialize the Plan
+   under a derived id such as `plan-from-<decision.id>` (convention;
+   caller can override) so the Decision atom stays intact as the
+   signed authorization and the Plan is a fresh atom the executor can
+   mutate through `plan_state` transitions.
 3. A constructed `CodeAuthorExecutor` passed as `options.executor`.
    Without it, `runCodeAuthor` runs the observation-only branch (writes
    one atom, does not invoke drafter/git-ops/pr-creation). Boot.mjs
@@ -79,9 +87,21 @@ A composite host that swaps four memory pieces for real-or-seeded ones:
    fence atoms into canon fixtures OR mutate `host.atoms` after
    construction, before `executeDecision`. `createFileHost` exists and
    would make this durable.
-2. **Plan-atom materializer** - between Decision and `executeDecision`
-   call, synthesize a `type: 'plan'`, `plan_state: 'executing'` atom
-   under the id the adapter will pass as `plan_id`. 30 LOC wrapper.
+2. **Plan-atom materializer + explicit plan-id seam** - between the
+   Decision and the `executeDecision` call, synthesize a separate
+   `type: 'plan'`, `plan_state: 'executing'` atom under a **derived id**
+   (proposed convention: `plan-from-<decision.id>`; seam should let the
+   caller override). Do NOT reuse `decision.id`; the Decision is the
+   signed authorizing artifact and must remain intact. Two implementation
+   shapes for phase-2 implementers to pick from: (a) `executeDecision`
+   accepts an optional `planAtomFactory` callback that takes the
+   Decision and returns the fresh Plan atom; (b) `executeDecision`
+   derives `plan-from-<decision.id>` by convention and exposes an
+   override hook. (b) is simpler and solves the collision
+   deterministically; the current adapter at
+   `src/integrations/agent-sdk/executor.ts:183-197` is the patch site.
+   ~30 LOC wrapper plus an integration test pinning the distinct-id
+   invariant.
 3. **Real LLM binding for `host.llm`** - swap `MemoryLLM` for a real
    adapter. Candidates:
    - Anthropic SDK adapter (`@anthropic-ai/sdk`) - exists in
