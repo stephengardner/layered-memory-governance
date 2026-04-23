@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateSlug, parseGitWorktreeList, detectActivity, detectStale, detectPackageManager } from '../../scripts/lib/wt.mjs';
+import { validateSlug, parseGitWorktreeList, detectActivity, detectStale, detectPackageManager, renderNotesSkeleton } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
   it('accepts kebab-case slugs', () => {
@@ -169,5 +169,21 @@ describe('detectPackageManager', () => {
   });
   it('returns null for none', () => {
     expect(detectPackageManager(['README.md'])).toBeNull();
+  });
+});
+
+describe('renderNotesSkeleton', () => {
+  it('renders a complete skeleton with slug and base', () => {
+    const out = renderNotesSkeleton({
+      slug: 'foo-bar',
+      baseLabel: 'main',
+      baseSha: '5ef8fea',
+    });
+    expect(out).toContain('# foo-bar');
+    expect(out).toContain('**Intent**');
+    expect(out).toContain('main @ 5ef8fea');
+    expect(out).toContain('## Open threads');
+    expect(out).toContain('## Decisions this worktree');
+    expect(out).toContain('## Next pick-up');
   });
 });

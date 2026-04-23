@@ -111,3 +111,25 @@ export function detectPackageManager(rootFiles) {
   }
   return null;
 }
+
+/**
+ * Render the NOTES.md skeleton for a new worktree.
+ * Returns a markdown template with placeholders filled in.
+ */
+export function renderNotesSkeleton({ slug, baseLabel, baseSha }) {
+  return `# ${slug}
+
+**Intent** (1 line: what this worktree exists to do)
+**Branched off:** ${baseLabel} @ ${baseSha}
+**PR:** (pending)
+
+## Open threads
+- [ ] (what's in flight)
+
+## Decisions this worktree
+- (record non-obvious choices as you make them)
+
+## Next pick-up
+If a fresh agent opens this worktree: (first action)
+`;
+}
