@@ -26,11 +26,32 @@ node scripts/update-branch-if-stale.mjs 122
 node scripts/update-branch-if-stale.mjs 122 --actor=lag-pr-landing
 ```
 
-Stdout is a JSON report with the PR number, URL, `mergeStateStatus`,
-`headRefOid`, `baseRefName`, the chosen action (`noop`, `update`,
-`unknown`), and the reason. The payload is intentionally
-machine-readable so shell pipelines or other scripts can chain
-without reparsing log prose.
+Stdout is a JSON report. The payload is intentionally machine-readable
+so shell pipelines or other scripts can chain without reparsing log
+prose.
+
+**Always present:**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `pr` | number | PR number passed on argv |
+| `url` | string | GitHub URL from `gh pr view` |
+| `actor` | string | The role whose App will (or would) perform the update; defaults to `lag-ceo` |
+| `mergeStateStatus` | string | Raw value from `gh pr view --json mergeStateStatus` |
+| `headRefOid` | string | Current head commit SHA |
+| `baseRefName` | string | Base branch name |
+| `action` | string | `noop`, `update`, or `unknown` |
+| `reason` | string | Human-readable rationale for the action |
+
+**Update path extras (only present when `action === "update"`):**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `requestAccepted` | boolean (`true`) | Emitted when the update-branch POST returned success |
+| `error` | string | Emitted when the update-branch POST failed; carries the first ~400 chars of the error output |
+
+Exactly one of `requestAccepted` or `error` appears on an `update`
+run. `noop` and `unknown` runs never carry either.
 
 ## Exit codes
 

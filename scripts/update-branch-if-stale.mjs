@@ -22,8 +22,8 @@
  *    operators can pass `--actor=<role>` to attribute the merge to a
  *    different App.
  * 4. Emit a machine-readable JSON report on stdout so callers can
- *    chain without reparsing log prose. Exit codes: 0 no-op / update
- *    queued, 1 update failed, 2 unknown state.
+ *    chain without reparsing log prose. See the detailed "Exit
+ *    codes" block below for the full failure-mode mapping.
  *
  * Bot-identity by construction
  * ----------------------------
@@ -40,8 +40,12 @@
  * Exit codes
  * ----------
  *   0: the PR is already fresh OR the update request was accepted
- *   1: the PR is BEHIND and the update request failed (read stderr)
- *   2: the PR is in an unrecognized state (stdout JSON has details)
+ *   1: the `gh pr view` read failed OR the update-branch POST failed
+ *      (read stderr for the call that failed)
+ *   2: invalid arguments (missing / non-numeric PR, unrecognized
+ *      flag, invalid --actor role shape) OR the PR reported an
+ *      `mergeStateStatus` value this script does not recognize
+ *      (stdout JSON has the unrecognized value for audit)
  */
 
 import { spawnSync } from 'node:child_process';
