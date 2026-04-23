@@ -27,3 +27,21 @@ export function validateSlug(input) {
   }
   return { ok: true, slug: normalized };
 }
+
+/**
+ * Parse `git worktree list --porcelain` output.
+ * Returns array of { path, head, branch, detached } records.
+ */
+export function parseGitWorktreeList(output) {
+  const blocks = output.split(/\r?\n\r?\n/).map(b => b.trim()).filter(Boolean);
+  return blocks.map((block) => {
+    const rec = { path: null, head: null, branch: null, detached: false };
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('worktree ')) rec.path = line.slice('worktree '.length);
+      else if (line.startsWith('HEAD ')) rec.head = line.slice('HEAD '.length);
+      else if (line.startsWith('branch ')) rec.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+      else if (line === 'detached') rec.detached = true;
+    }
+    return rec;
+  });
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateSlug } from '../../scripts/lib/wt.mjs';
+import { validateSlug, parseGitWorktreeList } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
   it('accepts kebab-case slugs', () => {
@@ -28,5 +28,33 @@ describe('validateSlug', () => {
   });
   it('normalizes uppercase to lowercase', () => {
     expect(validateSlug('Foo-Bar')).toEqual({ ok: true, slug: 'foo-bar' });
+  });
+});
+
+describe('parseGitWorktreeList', () => {
+  it('parses porcelain output with three worktrees', () => {
+    const input = [
+      'worktree C:/Users/opens/memory-governance',
+      'HEAD 5ef8fea6d2e8f3f4a1b2c3d4e5f6a7b8c9d0e1f2',
+      'branch refs/heads/main',
+      '',
+      'worktree C:/Users/opens/memory-governance/.worktrees/foo',
+      'HEAD abc123...',
+      'branch refs/heads/feat/foo',
+      '',
+      'worktree C:/Users/opens/memory-governance/.worktrees/bar',
+      'HEAD def456...',
+      'detached',
+      '',
+    ].join('\n');
+    const r = parseGitWorktreeList(input);
+    expect(r).toHaveLength(3);
+    expect(r[0].branch).toBe('main');
+    expect(r[1].branch).toBe('feat/foo');
+    expect(r[2].branch).toBeNull();
+    expect(r[2].detached).toBe(true);
+  });
+  it('handles empty input', () => {
+    expect(parseGitWorktreeList('')).toEqual([]);
   });
 });
