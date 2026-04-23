@@ -27,29 +27,62 @@
  *
  * Mechanism
  * ---------
- * 1. Mint a short-lived installation token for <role> via the same
- *    credentials store gh-as.mjs uses (dist/actors/provisioning +
- *    dist/external/github-app).
- * 2. Pass the token to git via `-c http.extraHeader=Authorization:
- *    Bearer <token>`. GitHub accepts App installation tokens in the
- *    Bearer form on HTTPS clone/push URLs, so we don't need to
- *    rewrite remote URLs.
- * 3. Neutralize any existing credential helper (-c credential.helper=)
- *    so the operator's cached PAT doesn't race with the bearer header.
- * 4. Set GIT_TERMINAL_PROMPT=0 so git fails fast rather than opening
- *    a credential prompt if auth somehow fails.
+ * Two auth paths, selected by git subcommand:
  *
- * The token is scoped to this subprocess only; the outer shell's git
- * config, credential cache, and environment remain unchanged.
+ *   - READ-ONLY (fetch, pull, clone, ls-remote, ...): pass the
+ *     installation token to git via `http.extraHeader: Authorization:
+ *     Bearer <token>`. Bearer works on the API-style smart-HTTP
+ *     endpoints git uses for negotiation + fetch.
+ *
+ *   - PUSH (git-receive-pack): GitHub's receive-pack endpoint rejects
+ *     Bearer with `HTTP/2 401, www-authenticate: Basic realm="GitHub"`
+ *     and the documented installation-token path for git push is
+ *     Basic auth with username `x-access-token` and the token as the
+ *     password. We resolve the remote's URL, construct a transient
+ *     `https://x-access-token:<token>@github.com/<owner>/<repo>.git`,
+ *     and spawn `git push <transient-url> <refspec>` against that
+ *     URL directly so the persistent remote config is never touched.
+ *
+ * Both paths neutralize the ambient credential helper (credential.
+ * helper='') so the operator's cached PAT doesn't race the bot token,
+ * and set GIT_TERMINAL_PROMPT=0 so an auth misconfiguration fails
+ * fast instead of hanging on the askpass helper. The latter is
+ * load-bearing: on Cursor-managed Windows hosts the shim askpass
+ * stalls the push ~30s with no TTY signalling.
+ *
+ * Token exposure trade-off
+ * ------------------------
+ * The READ-ONLY path keeps the token in env (GIT_CONFIG_VALUE_0);
+ * argv never carries it. The PUSH path, per the x-access-token
+ * contract, embeds the token in a URL that IS passed on argv to the
+ * git child - visible in `ps` for same-user processes during the
+ * seconds the push runs. The exposure is scoped narrowly: only the
+ * push spawn sees it, the outer shell's argv still does not, the
+ * transient URL is never written to disk or to the persistent remote
+ * config. Alternatives considered and rejected:
+ *
+ *   - Persistently rewrite the origin URL, push, then restore: widens
+ *     the on-disk exposure window and breaks `git remote -v`
+ *     cleanliness during the push.
+ *   - credential.<url>.helper= with an inline script returning
+ *     username=x-access-token: adds an order of magnitude more
+ *     subprocess machinery for the same argv-free outcome git's
+ *     helper protocol gives us.
+ *
+ * The argv-visibility trade is the narrowest shape that matches
+ * GitHub's documented installation-token flow.
  *
  * Scope
  * -----
- * Tuned for `git push`. Reading operations (fetch, clone, ls-remote)
- * work with the same override but usually don't need bot attribution.
- * Commands that don't talk to the remote (add, commit, rebase, diff)
- * also work but the wrapper is pointless for them - git-as mints a
- * token and does no local-only optimization. Prefer raw git for
- * local-only work.
+ * Tuned for `git push` and read-only ops. Non-github.com HTTPS
+ * remotes fall through to the Bearer extraHeader path (the URL
+ * rewrite is a no-op for enterprise hosts). SSH remotes
+ * (`git@github.com:...`) also fall through; git-as does not install
+ * SSH identities, so the wrapper's value there is limited to local-
+ * config neutralization. Bare `git push` (no positional remote) also
+ * falls through to the Bearer path, which works for fetch/pull but
+ * will hit the receive-pack 401 on Cursor-managed hosts - operators
+ * in that environment should pass an explicit remote.
  *
  * Fail-closed
  * -----------
@@ -69,9 +102,32 @@ import {
 import {
   fetchInstallationToken,
 } from '../dist/external/github-app/index.js';
+import {
+  buildPushEnv,
+  buildPushSpawnArgs,
+  buildReadOnlyEnv,
+  findRemoteArg,
+  isPushCommand,
+} from './lib/git-as-push-auth.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
+
+/**
+ * Resolve a remote's URL by shelling out to `git remote get-url`.
+ * Returns the trimmed URL or null if git reports no such remote.
+ * This is a local read from .git/config; no network.
+ */
+async function resolveRemoteUrl(remoteName) {
+  try {
+    const r = await execa('git', ['remote', 'get-url', remoteName], { reject: false });
+    if (r.exitCode !== 0) return null;
+    const out = (r.stdout ?? '').trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
 
 async function main() {
   const role = process.argv[2];
@@ -112,45 +168,41 @@ async function main() {
     process.exit(1);
   }
 
-  // Breadcrumb on stderr (stdout stays clean for tooling that reads
-  // git's output - `git push` isn't usually piped but keep the
-  // convention consistent with gh-as.mjs).
   console.error(`[git-as] using installation token for role '${role}' (expires ~1h)`);
 
-  // Pass the config overrides via GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n>
-  // / GIT_CONFIG_VALUE_<n> env vars instead of argv `-c key=value`.
-  // Motivation: the bearer token is sensitive; putting it in argv
-  // makes it visible in `ps` / `/proc/<pid>/cmdline` for any local
-  // process that can read the process list. On shared CI runners or
-  // dev hosts that is a broader audience than the operator's own
-  // credential store - and the whole point of the wrapper is to keep
-  // the token scoped to this one subprocess. The env-var form lands
-  // the same git config without exposing the token on argv.
-  //
-  // Index 0 carries the Authorization header that authenticates the
-  // push as the bot App installation. Index 1 clears the system
-  // credential helper so a cached operator PAT does not sneak in
-  // alongside the bearer header.
+  // Branch by git subcommand. Push routes through URL-auth when the
+  // remote is a GitHub HTTPS URL (the documented installation-token
+  // flow for git smart-HTTP receive-pack); everything else uses the
+  // Bearer extraHeader path.
+  let spawnArgs = gitArgs;
+  let spawnEnv;
+  if (isPushCommand(gitArgs)) {
+    const remoteInfo = findRemoteArg(gitArgs);
+    const remoteName = remoteInfo?.remote ?? 'origin';
+    const remoteUrl = await resolveRemoteUrl(remoteName);
+    const rewritten = buildPushSpawnArgs(gitArgs, remoteUrl, token.token);
+    if (rewritten !== null) {
+      spawnArgs = rewritten;
+      spawnEnv = buildPushEnv();
+    } else {
+      // Non-GitHub-HTTPS remote or bare `git push`. The Bearer path
+      // is kept so enterprise hosts / SSH aliases / bare-push invocations
+      // still get credential-helper neutralization. Bare `git push`
+      // on Cursor-managed hosts will still hit the receive-pack 401
+      // hang; operators should pass an explicit remote.
+      spawnEnv = buildReadOnlyEnv(token.token);
+    }
+  } else {
+    spawnEnv = buildReadOnlyEnv(token.token);
+  }
+
   let exitCode = 0;
   try {
-    const result = await execa('git', gitArgs, {
-      env: {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: '0',
-        GIT_CONFIG_COUNT: '2',
-        GIT_CONFIG_KEY_0: 'http.extraHeader',
-        GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token.token}`,
-        GIT_CONFIG_KEY_1: 'credential.helper',
-        GIT_CONFIG_VALUE_1: '',
-      },
+    const result = await execa('git', spawnArgs, {
+      env: { ...process.env, ...spawnEnv },
       stdio: 'inherit',
       reject: false,
     });
-    // Signal detection: `result.signal` is always defined when the
-    // child was killed by a signal; `signalDescription` is the human
-    // label but execa leaves it undefined for uncommon signals. Gate
-    // the fail-closed branch on `signal` (reliable) and only use
-    // `signalDescription` for the operator-facing error message.
     if (result.signal !== undefined && result.signal !== null) {
       const label = result.signalDescription ?? result.signal;
       console.error(`[git-as] git child terminated by signal ${label}`);
