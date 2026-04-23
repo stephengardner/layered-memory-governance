@@ -437,7 +437,90 @@ async function cmdClean(args) {
     }
   }
 }
-async function cmdStack(args) { throw new Error('not implemented'); }
+async function cmdStack(args) {
+  const positional = args.filter(a => !a.startsWith('-'));
+  const parentRaw = positional[0];
+  const childRaw = positional[1];
+
+  if (!parentRaw || !childRaw) {
+    console.error('[wt stack] usage: wt stack <parent> <child>');
+    process.exit(2);
+  }
+
+  const vp = validateSlug(parentRaw);
+  if (!vp.ok) { console.error(`[wt stack] invalid parent slug: ${vp.reason}`); process.exit(2); }
+  const vc = validateSlug(childRaw);
+  if (!vc.ok) { console.error(`[wt stack] invalid child slug: ${vc.reason}`); process.exit(2); }
+  const parent = vp.slug;
+  const child = vc.slug;
+
+  // gs is required - never fall back to raw rebase.
+  try {
+    await execa('gs', ['--version']);
+  } catch {
+    process.stderr.write('[wt-stack] git-spice not found. Install: https://github.com/abhinav/git-spice/releases\n');
+    process.exit(3);
+  }
+
+  const repoRoot = await resolveMainRoot();
+  const parentPath = join(repoRoot, '.worktrees', parent);
+  const childPath = join(repoRoot, '.worktrees', child);
+
+  if (!existsSync(parentPath)) {
+    console.error(`[wt stack] parent worktree .worktrees/${parent}/ not found; run: wt new ${parent}`);
+    process.exit(2);
+  }
+  if (existsSync(childPath)) {
+    console.error(`[wt stack] .worktrees/${child}/ already exists`);
+    process.exit(2);
+  }
+
+  const parentBranch = `feat/${parent}`;
+  const childBranch = `feat/${child}`;
+
+  // Create the child worktree off the parent branch.
+  await execa('git', ['worktree', 'add', childPath, '-b', childBranch, parentBranch], { stdio: 'inherit' });
+
+  // Register the stack with git-spice.
+  // TODO: verify exact gs subcommand against `gs --help` at gs-install time.
+  // `gs branch track --base <parent>` is the idiomatic way to declare a base in git-spice
+  // (see https://abhinav.github.io/git-spice/cli/branch/track/). An alternative is
+  // `gs branch create` which creates AND tracks. Since the branch already exists via
+  // git worktree add, `gs branch track --base <parentBranch>` is the correct call.
+  // Leaving the TODO marker so the first operator with gs installed can confirm.
+  await execa('gs', ['-C', childPath, 'branch', 'track', '--base', parentBranch], { stdio: 'inherit' });
+
+  // Resolve parent HEAD for NOTES.
+  const parentSha = (await execa('git', ['-C', parentPath, 'rev-parse', '--short', 'HEAD'])).stdout.trim();
+
+  // Write NOTES.md.
+  const notes = renderNotesSkeleton({ slug: child, baseLabel: parent, baseSha: parentSha });
+  await writeFile(join(childPath, 'NOTES.md'), notes, 'utf8');
+
+  // Verify NOTES is gitignored inside the new worktree.
+  try {
+    await execa('git', ['-C', childPath, 'check-ignore', '-q', 'NOTES.md']);
+  } catch {
+    console.error(`[wt stack] WARNING: NOTES.md is NOT gitignored in ${childPath}. Add /NOTES.md to .gitignore.`);
+  }
+
+  // Auto-detect + run package-manager setup.
+  const rootEntries = await readdir(childPath);
+  const pm = detectPackageManager(rootEntries);
+  if (pm) {
+    console.log(`[wt stack] running ${pm.install} in ${childPath}`);
+    try {
+      const [cmd0, ...rest] = pm.install.split(' ');
+      await execa(cmd0, rest, { cwd: childPath, stdio: 'inherit' });
+    } catch (err) {
+      console.warn(`[wt stack] ${pm.install} failed: ${err.message}. Proceeding; run it manually.`);
+    }
+  }
+
+  console.log(`\nStack worktree ready at ${childPath}`);
+  console.log(`Branch: ${childBranch} (stacked on ${parentBranch} @ ${parentSha})`);
+  console.log(`Next: edit NOTES.md, then cd ${childPath} and start work.`);
+}
 /** Resolve the main (primary) worktree root regardless of which worktree is cwd. */
 async function resolveMainRoot() {
   // git worktree list --porcelain always lists the primary first.
