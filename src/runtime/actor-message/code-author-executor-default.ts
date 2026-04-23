@@ -17,7 +17,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { join, isAbsolute } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import type { execa } from 'execa';
 import type { Atom } from '../../types.js';
 import type { Host } from '../../interface.js';
@@ -287,8 +287,22 @@ function extractTargetPathsFromProse(prose: string): string[] {
   // to touch. Deliberately excludes extensions that show up in prose
   // for other reasons (e.g., `.com`, `.org`, `.net`, version strings).
   const extAllowlist = 'md|ts|tsx|js|jsx|mjs|cjs|json|yml|yaml|toml|css|scss|html|sh|py|go|rs|java|kt|rb|ex|exs';
+  // The leading lookbehind `(?<![A-Za-z0-9_\\/.])` blocks matches
+  // that begin adjacent to a word char, `/`, or `.` -- i.e., the
+  // match must start fresh at a true prose boundary (whitespace,
+  // punctuation other than `/.`, start-of-string). This is what
+  // keeps a traversal-attempt like `../../etc/passwd.md` from
+  // matching any of its inner fragments (`etc/...`, `tc/...`,
+  // `passwd.md`'s leaf, etc.) -- every starting position inside
+  // the escape token is preceded by a blocked char.
+  // First segment cannot start with a `.` (excludes `./foo.md`).
+  // Subsequent segments allow `.` so filenames with dots
+  // (`my.config.yml`) keep working. Together with the per-segment
+  // `..` / `.` guard below and the reader sandbox check, this is
+  // three independent lines of defense against a plan whose prose
+  // tries to exfiltrate or write outside repoDir.
   const pathRe = new RegExp(
-    `\\b([A-Za-z0-9_.-]+(?:\\/[A-Za-z0-9_.-]+)+\\.(?:${extAllowlist}))\\b`,
+    `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_-]*(?:\\/[A-Za-z0-9_.-]+)+\\.(?:${extAllowlist}))\\b`,
     'g',
   );
   const seen = new Set<string>();
@@ -296,12 +310,20 @@ function extractTargetPathsFromProse(prose: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = pathRe.exec(prose)) !== null) {
     const p = m[1]!;
+    if (hasTraversalSegment(p)) continue;
     if (!seen.has(p)) {
       seen.add(p);
       out.push(p);
     }
   }
   return out;
+}
+
+function hasTraversalSegment(p: string): boolean {
+  for (const seg of p.split('/')) {
+    if (seg === '..' || seg === '.') return true;
+  }
+  return false;
 }
 
 /**
@@ -322,16 +344,38 @@ async function readTargetContents(
   readFn: (absolutePath: string) => Promise<string>,
 ): Promise<Array<{ path: string; content: string }>> {
   const out: Array<{ path: string; content: string }> = [];
+  const repoAbs = resolve(repoDir);
+  // Normalize the boundary marker so substring matching does not
+  // accept a sibling directory whose name extends repoDir (e.g.,
+  // `/repo` vs `/repo-escape`). Appending the platform separator
+  // ensures only paths INSIDE repoDir are accepted; the exact
+  // repoDir root itself is rejected (we always read files, never
+  // the directory as a file).
+  const repoAbsWithSep = repoAbs.endsWith(sep) ? repoAbs : `${repoAbs}${sep}`;
   for (const p of paths) {
-    // Tolerate both relative (typical) and absolute (rare/misuse)
-    // entries in target_paths. join() would silently drop repoDir
-    // when given an absolute second arg on POSIX, which would let
-    // a malicious or sloppy plan escape the repoDir sandbox; the
-    // explicit isAbsolute check + resolve-via-join for relative
-    // paths keeps the read rooted at repoDir.
-    const abs = isAbsolute(p) ? p : join(repoDir, p);
+    // Defense in depth: even if target_paths was pre-filtered, the
+    // reader re-verifies the resolved absolute path stays strictly
+    // inside repoDir. This catches:
+    //   - absolute paths (`/etc/passwd.md`) supplied via metadata
+    //     that bypass the heuristic's `..` check
+    //   - relative paths whose `..` segments resolve out of repo
+    //     (`../escape.md` -> parent-of-repoDir)
+    //   - Windows drive-letter absolutes (`C:\\Windows\\...`) on
+    //     a POSIX-rooted repo
+    // Any path that does not resolve inside repoDir is SKIPPED:
+    // the drafter then sees no file_contents entry for it, so the
+    // LLM will treat it as a CREATE. If it was a legitimate create
+    // the diff still lands; if it was an escape attempt the LLM's
+    // diff would target the declared path (inside scope), and the
+    // executor's downstream path-scope check + git apply would
+    // reject any attempt to stage paths outside the repo tree.
+    const candidateAbs = isAbsolute(p) ? p : join(repoDir, p);
+    const resolvedAbs = resolve(candidateAbs);
+    if (!resolvedAbs.startsWith(repoAbsWithSep)) {
+      continue; // sandbox escape -> silently skip (treated as CREATE)
+    }
     try {
-      const content = await readFn(abs);
+      const content = await readFn(resolvedAbs);
       out.push({ path: p, content });
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;

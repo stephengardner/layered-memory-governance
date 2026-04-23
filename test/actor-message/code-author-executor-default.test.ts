@@ -424,10 +424,14 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
     const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
     expect(result.kind).toBe('dispatched');
-    // path.join normalizes to the platform separator; match either
-    // POSIX (/) or Windows (\\) style so the test runs on both.
+    // path.resolve normalizes to the platform absolute form;
+    // on POSIX this is /repo/README.md, on Windows it is
+    // C:\repo\README.md (resolve prefixes a drive letter).
+    // Assert on the tail (platform-agnostic) so the test runs on
+    // both.
     expect(readCalls).toHaveLength(1);
-    expect(readCalls[0]).toMatch(/^[\\/]repo[\\/]README\.md$/);
+    const normalized = readCalls[0]!.replace(/\\/g, '/');
+    expect(normalized.endsWith('/repo/README.md')).toBe(true);
   });
 
   it('fileContents: missing files (ENOENT) are skipped, not thrown (CREATE path)', async () => {
@@ -571,5 +575,139 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const msg = commitCall!.args[msgFlagIdx + 1];
     expect(msg).toContain('code-author: Release prep');
     expect(msg).toContain('The specific change: bumped version.');
+  });
+
+  it('security: target_paths heuristic rejects `..` segments (sandbox escape)', async () => {
+    // CR flagged path traversal on PR #117: a plan whose prose
+    // contains `"append to ../../etc/passwd.md"` would let the
+    // heuristic extractor emit that path, and `join(repoDir, p)`
+    // would resolve it OUTSIDE repoDir -- the drafter would then
+    // see the contents of an arbitrary file on disk, and worse
+    // the executor would try to apply a diff against it. The
+    // heuristic must reject any match containing a `..` segment,
+    // and the reader must re-verify the resolved absolute path
+    // stays inside repoDir.
+    const plan = mkPlan(
+      'plan-escape',
+      'Append a line to ../../etc/passwd.md and also docs/ok.md as noted.',
+      {}, // no target_paths in metadata -> heuristic runs
+    );
+    // readFileFn tracks calls so we can assert NO read happened
+    // against the escape path. Record all paths touched.
+    const reads: string[] = [];
+    const readFileFn = async (abs: string): Promise<string> => {
+      reads.push(abs);
+      // Return an innocuous content for docs/ok.md; ENOENT for anything else.
+      // resolve() prefixes a drive letter on Windows (`C:\repo\docs\ok.md`)
+      // while POSIX gives `/repo/docs/ok.md`; normalize before matching.
+      const normalized = abs.replace(/\\/g, '/');
+      if (normalized.endsWith('/repo/docs/ok.md')) return 'ok-body\n';
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+    // The drafter registers a response keyed on the sanitized set
+    // of target_paths. Since `..` path is rejected by the
+    // extractor, only `docs/ok.md` reaches the drafter.
+    const data = {
+      plan_id: 'plan-escape',
+      plan_title: 'Bump README',
+      plan_content: plan.content,
+      target_paths: ['docs/ok.md'],
+      success_criteria: '',
+      file_contents: [{ path: 'docs/ok.md', content: 'ok-body\n' }],
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, data, {
+      diff: [
+        '--- a/docs/ok.md',
+        '+++ b/docs/ok.md',
+        '@@ -1,1 +1,2 @@',
+        ' ok-body',
+        '+appended',
+        '',
+      ].join('\n'),
+      notes: 'ok',
+      confidence: 0.9,
+    });
+
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 42, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/repo',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+      readFileFn,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    if (result.kind !== 'dispatched') {
+      throw new Error(`expected dispatched, got ${result.kind}; stage=${(result as { stage?: string }).stage ?? '-'} reason=${(result as { reason?: string }).reason ?? '-'}; reads=${JSON.stringify(reads)}`);
+    }
+    expect(result.kind).toBe('dispatched');
+    // No read attempt must resolve outside repoDir. The extractor
+    // rejects `../../etc/passwd.md`, so reads only hit the safe
+    // docs/ok.md path (possibly with a drive-letter prefix on
+    // Windows after path.resolve).
+    for (const r of reads) {
+      const normalized = r.replace(/\\/g, '/');
+      expect(normalized).toContain('/repo/');
+      expect(normalized).not.toContain('/etc/passwd');
+      // `path.resolve` collapses `..`, so a resolved path never
+      // contains a literal `..` segment. Assert on the concrete
+      // leaf: the only touched file is docs/ok.md.
+      expect(normalized.endsWith('/repo/docs/ok.md')).toBe(true);
+    }
+  });
+
+  it('security: target_paths from metadata with `..` is rejected by reader sandbox', async () => {
+    // Defense in depth: even if target_paths comes from structured
+    // metadata (bypasses the heuristic's `..` check), the executor's
+    // reader must re-verify the resolved absolute path stays inside
+    // repoDir. A plan that managed to get `../escape.md` into its
+    // metadata must not exfiltrate that file or be able to write
+    // to it via the downstream diff.
+    const plan = mkPlan('plan-meta-escape', 'metadata escape', {
+      target_paths: ['../escape.md'],
+      title: 'Meta escape attempt',
+    });
+    const reads: string[] = [];
+    const readFileFn = async (abs: string): Promise<string> => {
+      reads.push(abs);
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+    // Register a response where target_paths is declared as supplied
+    // but file_contents is empty (reader rejected the escape path).
+    registerDrafterResponse(host, plan, ['../escape.md'], {
+      diff: '',
+      notes: 'could not resolve safely',
+      confidence: 0.2,
+    });
+
+    const { impl: execImpl } = stubGitExeca([
+      { exitCode: 0 },                                        // status
+      { exitCode: 0 },                                        // fetch
+      { exitCode: 0 },                                        // checkout
+    ]);
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 43, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/repo',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+      readFileFn,
+    });
+    await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    // No fs read should have been attempted against the escape path.
+    expect(reads).toHaveLength(0);
   });
 });
