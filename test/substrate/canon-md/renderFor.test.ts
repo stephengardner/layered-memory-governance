@@ -58,16 +58,19 @@ describe('renderForPrincipal (pure)', () => {
     expect(out).toContain('No canon atoms yet');
   });
 
-  it('excludes atoms whose layer is not in permitted_layers.read', () => {
+  it('excludes atoms whose layer is not in permitted_layers.read (except L3)', () => {
+    // Non-L3 atoms are filtered by permitted_layers.read. L3 is the
+    // constitutional layer and bypasses this filter - see the
+    // dedicated "L3 render even when permitted_layers omits L3" test.
     const principal = samplePrincipal({
       role: 'qa',
       permitted_layers: { read: ['L0'], write: [] },
     });
     const l0 = sampleAtom({ layer: 'L0', content: 'l0-visible' });
-    const l3 = sampleAtom({ layer: 'L3', content: 'l3-hidden' });
-    const out = renderForPrincipal({ principal, atoms: [l0, l3] });
+    const l2 = sampleAtom({ layer: 'L2', content: 'l2-hidden' });
+    const out = renderForPrincipal({ principal, atoms: [l0, l2] });
     expect(out).toContain('l0-visible');
-    expect(out).not.toContain('l3-hidden');
+    expect(out).not.toContain('l2-hidden');
   });
 
   it('L3 atoms always render even without a role-tag match', () => {
@@ -83,6 +86,29 @@ describe('renderForPrincipal (pure)', () => {
       roleTagFilter: { cto: ['security', 'architecture', 'reliability'] },
     });
     expect(out).toContain('always-render-l3');
+  });
+
+  it('L3 atoms render even when permitted_layers.read omits L3 (CR #105)', () => {
+    // CR finding PRRT_kwDOSGhm98588lGl: the filter checked
+    // permittedLayers.has(a.layer) BEFORE the L3 bypass, so an L3
+    // atom was silently dropped whenever a principal's permitted_layers
+    // omitted L3. The doc comment on top of the file claims "L3 is the
+    // governance-substrate constitution - every principal needs to see
+    // it", but the code did not enforce that. Reorder so the L3 bypass
+    // fires first.
+    const principal = samplePrincipal({
+      role: 'restricted',
+      permitted_layers: {
+        read: ['L0', 'L1'], // L3 intentionally omitted
+        write: [],
+      },
+    });
+    const l3 = sampleAtom({
+      layer: 'L3',
+      content: 'constitutional-atom',
+    });
+    const out = renderForPrincipal({ principal, atoms: [l3] });
+    expect(out).toContain('constitutional-atom');
   });
 
   it('role-tag filter excludes non-L3 atoms without a matching tag', () => {

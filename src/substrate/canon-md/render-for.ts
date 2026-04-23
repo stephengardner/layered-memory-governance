@@ -40,8 +40,14 @@ export function renderForPrincipal(args: RenderForArgs): string {
   const roleTags = roleTagFilter?.[principal.role];
 
   const filtered = atoms.filter((a) => {
-    if (!permittedLayers.has(a.layer)) return false;
+    // L3 is the constitutional layer and bypasses both the
+    // permitted_layers and the role-tag filter - see the file-level
+    // doc comment. The bypass MUST happen before the permitted_layers
+    // check; the previous ordering silently dropped L3 atoms whenever
+    // a principal's permitted_layers.read omitted L3, contradicting
+    // the "every principal needs to see it" contract above.
     if (a.layer === 'L3') return true;
+    if (!permittedLayers.has(a.layer)) return false;
     if (!roleTags || roleTags.length === 0) return true;
     const tags = Array.isArray(a.metadata?.['tags'])
       ? (a.metadata['tags'] as readonly unknown[]).filter(
