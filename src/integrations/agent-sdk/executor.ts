@@ -53,7 +53,7 @@
  */
 
 import type { Host } from '../../substrate/interface.js';
-import type { PrincipalId } from '../../substrate/types.js';
+import type { Atom, AtomId, PrincipalId } from '../../substrate/types.js';
 import type {
   Decision,
   Question,
@@ -125,6 +125,26 @@ export interface ExecuteDecisionArgs {
   readonly correlationId?: string;
   /** Clock injection for deterministic atom ids. */
   readonly now?: () => number;
+  /**
+   * Caller-supplied factory that produces the Plan atom to be
+   * materialized before `codeAuthorFn` runs. The returned atom's id
+   * is what the invoker sees as `payload.plan_id`.
+   *
+   * Default: `defaultPlanAtomFactory`, which produces an Atom with
+   * `id: plan-from-<decision.id>`, `type: 'plan'`, `plan_state:
+   * 'executing'`, `content: decision.answer`,
+   * `provenance.derived_from: [decision.id]`, and
+   * `principal_id: executorPrincipalId`. Swap in a custom factory
+   * when the caller wants a different id convention or richer
+   * metadata (e.g. a LangGraph node embedding workflow state).
+   *
+   * Per host-gap doc §2: the Decision atom is the signed
+   * authorizing artifact; reusing `decision.id` for the Plan atom
+   * would either collide on write or overwrite the Decision,
+   * breaking the audit chain. The Plan is a separate, mutable L1
+   * atom the executor transitions through `plan_state`.
+   */
+  readonly planAtomFactory?: (decision: Decision) => Atom;
 }
 
 /**
@@ -178,23 +198,34 @@ export async function executeDecision(
     onPrOpened,
     correlationId = `execute-decision-${decision.id}`,
     now = () => Date.now(),
+    planAtomFactory,
   } = args;
 
   const derivedFrom: ReadonlyArray<string> = [decision.id, question.id];
   const createdAt = new Date(now()).toISOString();
 
-  // The real `runCodeAuthor` takes a plan_id. For the virtual-org
-  // adapter layer we treat the Decision as the authorizing artifact;
-  // the injected fn is responsible for any plan-atom synthesis. This
-  // keeps the adapter decoupled from the runtime's approved-plan
-  // state machine: an alternative consumer (e.g. a LangGraph node
-  // that operates directly on Decisions) doesn't need a plan seam.
+  // Materialize a fresh Plan atom BEFORE invoking `runCodeAuthor`.
   //
-  // The payload field name `plan_id` is fixed by `CodeAuthorPayload`;
-  // we pass the Decision's id there. A real-world wiring that needs
-  // a genuine Plan atom would materialize one before calling this
-  // function and pass its id; the adapter stays shape-neutral.
-  const payload: CodeAuthorPayload = { plan_id: decision.id };
+  // Per host-gap doc §2: the Decision atom is the signed authorizing
+  // artifact and carries `type: 'decision'` + `authorPrincipal:
+  // vo-cto`; those fields are load-bearing for audit. The invoker
+  // re-resolves `payload.plan_id` via `host.atoms.get()` and asserts
+  // `plan.type === 'plan'` + `plan.plan_state === 'executing'`, so
+  // passing `decision.id` here would (a) collide on write if a plan
+  // already exists at that id, or (b) cause the invoker to reject
+  // the atom with type=decision. A separate, mutable Plan atom the
+  // executor can transition through `plan_state` is the correct
+  // shape.
+  //
+  // Id convention `plan-from-<decision.id>` is the host-gap doc
+  // recommendation (b); a caller with a different convention passes
+  // `planAtomFactory`.
+  const planAtom: Atom = planAtomFactory !== undefined
+    ? planAtomFactory(decision)
+    : defaultPlanAtomFactory(decision, executorPrincipalId, createdAt);
+  await host.atoms.put(planAtom);
+
+  const payload: CodeAuthorPayload = { plan_id: planAtom.id };
 
   let invokeResult: InvokeResult;
   try {
@@ -316,4 +347,70 @@ function renderPrUrl(prNumber: number): string {
   // shape; a production caller with github remote context would
   // inject an explicit url via prResolver.
   return `pr://unresolved/#${prNumber}`;
+}
+
+/**
+ * Default Plan-atom factory: produces a minimal `type: 'plan'`,
+ * `plan_state: 'executing'` atom derived from a Decision.
+ *
+ * Id convention: `plan-from-<decision.id>`. Per host-gap doc §2 the
+ * Decision's own id is reserved for the signed authorizing atom; the
+ * Plan lives at a derived id so the two never collide and the
+ * invoker's `plan_state === 'executing'` guard resolves to this
+ * atom.
+ *
+ * `provenance.derived_from: [decision.id]` anchors the provenance
+ * chain one hop back to the Decision; a downstream audit walker
+ * reaches the Question via the Decision's own derived_from. The
+ * plan is authored by `executorPrincipalId` (typically
+ * `vo-code-author`), NOT the deliberation author, so the act of
+ * execution is attributed correctly.
+ *
+ * Layer: L1 (observed/in-flight). A plan is mutable until it
+ * terminates (`succeeded` / `failed` / `abandoned`); treating it as
+ * L1 matches the life-cycle axis in substrate/types.ts which keeps
+ * the trust axis (layer) orthogonal to the state-machine axis
+ * (plan_state).
+ */
+function defaultPlanAtomFactory(
+  decision: Decision,
+  executorPrincipalId: string,
+  createdAt: string,
+): Atom {
+  const id = `plan-from-${decision.id}` as AtomId;
+  return {
+    schema_version: 1,
+    id,
+    content: decision.answer,
+    type: 'plan',
+    layer: 'L1',
+    provenance: {
+      kind: 'agent-observed',
+      source: {
+        agent_id: executorPrincipalId,
+        tool: 'executeDecision',
+      },
+      derived_from: [decision.id as AtomId],
+    },
+    confidence: 1.0,
+    created_at: createdAt,
+    last_reinforced_at: createdAt,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: executorPrincipalId as PrincipalId,
+    taint: 'clean',
+    metadata: {
+      kind: 'plan-from-decision',
+      decision_id: decision.id,
+    },
+    plan_state: 'executing',
+  };
 }
