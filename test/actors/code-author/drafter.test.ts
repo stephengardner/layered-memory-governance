@@ -531,6 +531,94 @@ describe('draftCodeChange', () => {
     });
     expect(result.totalCostUsd).toBe(0);
   });
+
+  it('fileContents: when provided non-empty, included in DATA block under `file_contents`', async () => {
+    // Closes the APPEND/MODIFY gap: the drafter has no repo access of
+    // its own, so an accurate MODIFY diff needs the current file
+    // content in-prompt. Callers pre-read the target files and pass
+    // `fileContents`; the drafter forwards them verbatim into the
+    // schema DATA block so the LLM can compute correct line numbers.
+    const plan = mkPlan('Append a line to README.md');
+    const fence = mkFence();
+    const readmeContent = '# LAG\n\nGovernance substrate.\n';
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      fileContents: [{ path: 'README.md', content: readmeContent }],
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      file_contents: [{ path: 'README.md', content: readmeContent }],
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'Appended per plan using supplied content.',
+      confidence: 0.9,
+    });
+    const result = await draftCodeChange(host, inputs);
+    expect(result.diff).toBe(SAMPLE_DIFF);
+    expect(result.notes).toBe('Appended per plan using supplied content.');
+  });
+
+  it('fileContents: absent when undefined or empty (backward compat with call sites that pre-date the field)', async () => {
+    // Pre-existing tests register DATA blocks without `file_contents`.
+    // Adding the key unconditionally would break every one of them by
+    // shifting the stableStringify hash. The semantic is "omit the
+    // key when there is nothing to report" so the DATA block stays
+    // lean and the older registered-response shape keeps matching.
+    const plan = mkPlan('No file context needed');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['docs/new-file.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: [
+        '--- /dev/null',
+        '+++ b/docs/new-file.md',
+        '@@ -0,0 +1,1 @@',
+        '+hello',
+        '',
+      ].join('\n'),
+      notes: 'new file, no source content needed',
+      confidence: 0.9,
+    });
+    // Case A: fileContents omitted entirely.
+    const resA = await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['docs/new-file.md'],
+      model: 'claude-opus-4-7',
+    });
+    expect(resA.touchedPaths).toEqual(['docs/new-file.md']);
+    // Case B: fileContents explicitly empty array -> same DATA block,
+    // so the same registered response matches.
+    const resB = await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['docs/new-file.md'],
+      fileContents: [],
+      model: 'claude-opus-4-7',
+    });
+    expect(resB.touchedPaths).toEqual(['docs/new-file.md']);
+  });
 });
 
 describe('looksLikeUnifiedDiff', () => {

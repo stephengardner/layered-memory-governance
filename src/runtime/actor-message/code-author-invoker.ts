@@ -145,8 +145,14 @@ export interface CodeAuthorExecutor {
  * Stable atom-id shape for the code-author-invoked observation.
  * Includes a nonce so repeated invocations of the same plan
  * (manual retry, test fixture seeding the same plan twice) produce
- * distinct atoms. Matches the kill-switch-tripped-atom discipline
- * shipped in #72.
+ * distinct atoms. The `at` component is slugged (`:` -> `-`) so the
+ * id stays safe as a filename on file-backed Hosts -- NTFS reserves
+ * `:` in filenames. Shares this discipline with
+ * `mkKillSwitchTrippedAtomId` + the `pr-opened-*` / `execution-failed-*`
+ * id construction in integrations/agent-sdk/executor.ts; all three
+ * emit filesystem-safe ids while keeping the canonical timestamp on
+ * the atom body. Canonical `created_at` on the emitted atom stays
+ * full ISO-8601.
  */
 export function mkCodeAuthorInvokedAtomId(
   planId: string,

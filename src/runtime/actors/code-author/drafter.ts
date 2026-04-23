@@ -80,6 +80,36 @@ export interface DraftCodeChangeInputs {
   readonly maxUsdPerPrOverride?: number;
   /** Forwarded to LlmOptions.disallowedTools (per-principal canon policy). */
   readonly disallowedTools?: ReadonlyArray<string>;
+  /**
+   * Verbatim contents of each target file at drafting time. Included
+   * in the DATA block so the LLM has accurate ground truth for line
+   * numbers + context lines -- critical for APPEND/MODIFY diffs,
+   * which git apply --check rejects if the hunk header or context
+   * lines disagree with the tree. Callers that can read the repo
+   * filesystem populate this before calling; the default executor
+   * chain does so from `repoDir` in buildDefaultCodeAuthorExecutor.
+   *
+   * Shape discipline:
+   *   - `path` is the repo-relative path the LLM sees in the diff's
+   *     `+++ b/<path>` header. Must match an entry in `targetPaths`
+   *     when that array is non-empty; otherwise the scope check
+   *     rejects the path the LLM echoes back.
+   *   - `content` is the exact current file body including line
+   *     endings. The LLM expects UTF-8 text; binary files are not
+   *     supported in this revision and should be excluded by the
+   *     caller before reaching the drafter.
+   *   - When a path in `targetPaths` has no corresponding
+   *     `fileContents` entry, the LLM treats that path as a
+   *     not-yet-existing file (CREATE) and emits `--- /dev/null`
+   *     on the old side.
+   *   - Empty array or undefined -> key omitted from DATA block so
+   *     older registered responses keep matching (MemoryLLM hashes
+   *     the full data object).
+   */
+  readonly fileContents?: ReadonlyArray<{
+    readonly path: string;
+    readonly content: string;
+  }>;
   /** Abort signal; forwarded to LlmOptions.signal so STOP trips propagate. */
   readonly signal?: AbortSignal;
 }
@@ -162,8 +192,19 @@ export const DRAFT_SYSTEM_PROMPT = [
   '4. If the plan as described is impossible without modifying a path outside scope,',
   '   explain in `notes`, set `confidence` below 0.5, and emit an empty `diff`.',
   '',
-  'You may use Read/Grep/Glob if available to orient in the codebase. Do not Write, Edit,',
-  'Bash, or use any tool outside the read set. Writes route through the PR the caller',
+  'File context:',
+  '5. The DATA block MAY include a `file_contents` array: `[{ path, content }, ...]`.',
+  '   When present, each `content` is the EXACT current body of that file at drafting',
+  '   time. Treat it as authoritative ground truth: compute hunk headers (`@@ -N,M +N,M\'+M\'`)',
+  '   against those byte-exact contents, and preserve context lines verbatim. A mismatch',
+  '   between your hunk context and the supplied `content` causes `git apply --check` to',
+  '   reject the diff.',
+  '6. When `file_contents` does NOT include a path that is in `target_paths`, treat that',
+  '   path as a not-yet-existing file (CREATE). Emit `--- /dev/null` on the old side and',
+  '   `+++ b/<path>` on the new side with a `@@ -0,0 +N,M @@` hunk header.',
+  '',
+  'You may use Read/Grep/Glob if available to orient further in the codebase. Do not Write,',
+  'Edit, Bash, or use any tool outside the read set. Writes route through the PR the caller',
   'creates from your diff; trying to write directly bypasses the fence and is refused.',
 ].join('\n');
 
@@ -298,7 +339,7 @@ export async function draftCodeChange(
 }
 
 function renderPlanForDrafter(inputs: DraftCodeChangeInputs): Record<string, unknown> {
-  return {
+  const data: Record<string, unknown> = {
     plan_id: String(inputs.plan.id),
     plan_title:
       typeof inputs.plan.metadata['title'] === 'string'
@@ -312,6 +353,19 @@ function renderPlanForDrafter(inputs: DraftCodeChangeInputs): Record<string, unk
       required_checks: inputs.fence.ciGate.required_checks.slice(),
     },
   };
+  // Only include `file_contents` when the caller actually supplied
+  // content to attach. Adding the key unconditionally (even as an
+  // empty array) would shift the data-hash MemoryLLM uses to look up
+  // registered responses, breaking every call site that pre-dates
+  // this field. "No content to report" -> key absent; that is the
+  // same shape older test fixtures hash against.
+  if (inputs.fileContents !== undefined && inputs.fileContents.length > 0) {
+    data['file_contents'] = inputs.fileContents.map((fc) => ({
+      path: fc.path,
+      content: fc.content,
+    }));
+  }
+  return data;
 }
 
 function validateDraftOutput(raw: unknown, costSoFar: number): JudgeDraftOutput {
