@@ -263,7 +263,88 @@ async function cmdList(args) {
   console.log(widths.map(w => '-'.repeat(w)).join('  '));
   for (const row of data) console.log(fmt(row));
 }
-async function cmdRm(args) { throw new Error('not implemented'); }
+async function cmdRm(args) {
+  const positional = [];
+  let force = false;
+  let deleteBranch = false;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--force' || args[i] === '-f') force = true;
+    else if (args[i] === '--delete-branch') deleteBranch = true;
+    else positional.push(args[i]);
+  }
+
+  const rawSlug = positional[0];
+  const v = validateSlug(rawSlug);
+  if (!v.ok) {
+    console.error(`[wt rm] invalid slug: ${v.reason}`);
+    process.exit(2);
+  }
+  const slug = v.slug;
+
+  const repoRoot = (await execa('git', ['rev-parse', '--show-toplevel'])).stdout.trim();
+  const wtPath = join(repoRoot, '.worktrees', slug);
+
+  if (!existsSync(wtPath)) {
+    console.error(`[wt rm] .worktrees/${slug}/ not found`);
+    process.exit(2);
+  }
+
+  // Check dirty.
+  let dirty = false;
+  try {
+    const st = await execa('git', ['-C', wtPath, 'status', '--porcelain']);
+    dirty = st.stdout.trim().length > 0;
+  } catch {}
+
+  // Check ahead of main.
+  let aheadCount = 0;
+  try {
+    aheadCount = Number((await execa('git', ['-C', wtPath, 'rev-list', '--count', 'origin/main..HEAD'])).stdout.trim()) || 0;
+  } catch {}
+
+  // Check unmerged (local branch merged into origin/main?).
+  const branch = `feat/${slug}`;
+  let branchMerged = false;
+  try {
+    const m = await execa('git', ['branch', '--merged', 'origin/main', '--list', branch]);
+    branchMerged = m.stdout.trim().length > 0;
+  } catch {}
+  const hasUnmerged = aheadCount > 0 && !branchMerged;
+
+  const concerns = [];
+  if (dirty) concerns.push(`dirty working tree`);
+  if (hasUnmerged) concerns.push(`${aheadCount} commit(s) ahead of origin/main and not merged`);
+
+  if (concerns.length > 0 && !force) {
+    const isTTY = process.stdin.isTTY;
+    if (!isTTY) {
+      console.error(`[wt rm] ${slug} has concerns (${concerns.join('; ')}). Pass --force to remove non-interactively.`);
+      process.exit(2);
+    }
+    console.warn(`[wt rm] ${slug} has concerns:`);
+    for (const c of concerns) console.warn(`  - ${c}`);
+    const { createInterface } = await import('readline/promises');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await rl.question('Remove anyway? [y/N] ');
+    rl.close();
+    if (answer.trim().toLowerCase() !== 'y') {
+      console.log('[wt rm] aborted.');
+      process.exit(0);
+    }
+  }
+
+  await execa('git', ['worktree', 'remove', wtPath, '--force'], { stdio: 'inherit' });
+  console.log(`[wt rm] removed .worktrees/${slug}/`);
+
+  if (deleteBranch) {
+    try {
+      await execa('git', ['branch', '-D', branch]);
+      console.log(`[wt rm] deleted branch ${branch}`);
+    } catch (err) {
+      console.warn(`[wt rm] could not delete branch ${branch}: ${err.message}`);
+    }
+  }
+}
 async function cmdClean(args) { throw new Error('not implemented'); }
 async function cmdStack(args) { throw new Error('not implemented'); }
 async function cmdNote(args) { throw new Error('not implemented'); }
