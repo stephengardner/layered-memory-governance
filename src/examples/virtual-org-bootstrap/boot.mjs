@@ -48,6 +48,8 @@ const STATE_DIR = resolve(CWD, '.lag');
 async function main() {
   mkdirSync(STATE_DIR, { recursive: true });
 
+  const args = parseArgs(process.argv.slice(2));
+
   const principalsDir = join(HERE, 'principals');
   const canonDir = join(HERE, 'canon');
   const seeds = loadSeedPrincipals({ dir: principalsDir });
@@ -63,7 +65,7 @@ async function main() {
 
   const killSwitch = createKillSwitch({ stateDir: STATE_DIR });
 
-  const prompt = await readPrompt();
+  const prompt = await readPrompt(args.prompt);
   const question = {
     id: `q-${Date.now()}`,
     type: 'question',
@@ -95,7 +97,7 @@ async function main() {
   );
 
   try {
-    const outcome = await runDeliberation({
+    const result = await runDeliberation({
       question,
       participants: participating,
       atomStore: host.atoms,
@@ -104,17 +106,44 @@ async function main() {
       canonAtoms,
       decidingPrincipal: 'vo-cto',
       signal: killSwitch.signal,
+      execute: !args.deliberateOnly,
+      executorPrincipalId: 'vo-code-author',
+      // Full Host thread-through for the executor path: runCodeAuthor
+      // reaches beyond atoms/principals into notifier/scheduler/auditor/
+      // canon/clock/llm, so the deliberate-only path is the only one
+      // that can skip this field.
+      host,
     });
-    console.log(JSON.stringify(outcome, null, 2));
+    console.log(JSON.stringify(result, null, 2));
     const typeCounts = await summarizeAtomCounts(host.atoms);
     console.error(`[boot] atoms written by type: ${JSON.stringify(typeCounts)}`);
+    if (args.deliberateOnly) {
+      console.error('[boot] --deliberate-only: skipped execution path');
+    } else if (result.execution) {
+      console.error(`[boot] execution: ${result.execution.kind}`);
+    } else {
+      console.error('[boot] execution: not triggered (escalation outcome)');
+    }
   } finally {
     killSwitch.dispose();
   }
 }
 
-async function readPrompt() {
-  if (process.argv[2]) return process.argv[2];
+function parseArgs(argv) {
+  let deliberateOnly = false;
+  const positional = [];
+  for (const a of argv) {
+    if (a === '--deliberate-only') {
+      deliberateOnly = true;
+    } else {
+      positional.push(a);
+    }
+  }
+  return { deliberateOnly, prompt: positional[0] };
+}
+
+async function readPrompt(fromArgs) {
+  if (fromArgs) return fromArgs;
   if (!process.stdin.isTTY) {
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);

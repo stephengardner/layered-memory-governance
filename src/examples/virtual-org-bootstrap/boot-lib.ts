@@ -27,7 +27,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { AtomStore, PrincipalStore } from '../../substrate/interface.js';
+import type { AtomStore, Host, PrincipalStore } from '../../substrate/interface.js';
 import type {
   Atom,
   AtomId,
@@ -46,13 +46,18 @@ import { renderForPrincipal } from '../../substrate/canon-md/index.js';
 import {
   createCliClient,
   deliberate,
+  executeDecision,
   startAgent,
   type AgentHandle,
   type CanonRendererForPrincipal,
+  type CodeAuthorFn,
   type CreateCliClientOptions,
   type DeliberationEvent,
   type DeliberationSink,
+  type ExecuteDecisionResult,
+  type ExecutionFailedAtom,
   type MessagesClient,
+  type PrOpenedAtom,
   type ReasoningEvent,
   type ReasoningSink,
 } from '../../integrations/agent-sdk/index.js';
@@ -367,11 +372,92 @@ export interface RunDeliberationOptions {
    * `principalStore`.
    */
   readonly principalDepths?: Readonly<Record<string, number>>;
+  /**
+   * When true (default), a Decision outcome is passed through
+   * `executeDecision` and the resulting PrOpenedAtom (or
+   * ExecutionFailedAtom) is persisted to the AtomStore and
+   * returned on `result.execution`. An Escalation outcome never
+   * triggers execution regardless of this flag.
+   *
+   * Set false to preserve the deliberate-only behaviour (tests
+   * that don't want to mock a code-author call; operator dry-run
+   * inspecting the Decision before committing to a PR).
+   */
+  readonly execute?: boolean;
+  /**
+   * Principal id for the emitted PrOpenedAtom / ExecutionFailedAtom.
+   * Required when execution is enabled (i.e. `execute !== false`).
+   * Typically `vo-code-author`. Throws synchronously if omitted
+   * while execution is enabled; we refuse to default this because
+   * a non-virtual-org deployment that forgot the field would
+   * silently attribute PRs to a principal that does not exist in
+   * its PrincipalStore.
+   */
+  readonly executorPrincipalId?: string;
+  /**
+   * Real Host passed through to `executeDecision`. Required when
+   * execution is enabled (i.e. `execute !== false`). The default
+   * `runCodeAuthor` path reaches beyond `atoms` / `principals`
+   * into notifier, scheduler, auditor, canon, clock, and llm, so
+   * a partial Host fabricated from (atomStore, principalStore)
+   * would NPE at the first sub-interface touch. Callers running
+   * the memory-backed bootstrap can pass `createMemoryHost()`;
+   * callers wiring a production adapter pass their real Host.
+   * Throws synchronously if omitted while execution is enabled.
+   */
+  readonly host?: Host;
+  /**
+   * Injectable code-author fn; defaults to the real `runCodeAuthor`
+   * from the actor-message primitive. Tests inject a mock so no
+   * GitHub / git call happens under test.
+   */
+  readonly codeAuthorFn?: CodeAuthorFn;
+}
+
+export interface RunDeliberationResult {
+  readonly outcome: Decision | Escalation;
+  /**
+   * Populated when the outcome is a Decision and `execute` was not
+   * set to false. Undefined when the outcome is an Escalation or
+   * execute was explicitly disabled.
+   */
+  readonly execution?: ExecuteDecisionResult;
 }
 
 export async function runDeliberation(
   opts: RunDeliberationOptions,
-): Promise<Decision | Escalation> {
+): Promise<RunDeliberationResult> {
+  // Fail-fast validation for the execution path. We deliberately refuse
+  // to default either field: a silent default for `executorPrincipalId`
+  // would attribute PRs to a principal that may not exist in a caller's
+  // PrincipalStore, and a fabricated partial Host for `host` would NPE
+  // the moment the default `runCodeAuthor` reaches beyond atoms /
+  // principals (notifier, scheduler, auditor, canon, clock, llm). Both
+  // failures would surface only after an LLM round-trip; up-front
+  // throws save the operator the latency and leave the error site
+  // close to the misconfiguration. See CR #106 findings
+  // PRRT_kwDOSGhm98589guF and PRRT_kwDOSGhm98589guJ.
+  const executionRequested = opts.execute !== false;
+  if (executionRequested) {
+    if (opts.executorPrincipalId === undefined) {
+      throw new Error(
+        '[runDeliberation] executorPrincipalId is required when execute !== false. ' +
+          'Pass the principal id that should author the PrOpenedAtom / ExecutionFailedAtom ' +
+          '(typically "vo-code-author" for the virtual-org bootstrap), or pass execute: false ' +
+          'to run in deliberate-only mode.',
+      );
+    }
+    if (opts.host === undefined) {
+      throw new Error(
+        '[runDeliberation] host is required when execute !== false. ' +
+          'The default runCodeAuthor path reaches beyond atoms/principals into ' +
+          'notifier/scheduler/auditor/canon/clock/llm; a partial Host will NPE. ' +
+          'Pass createMemoryHost() for the memory-backed bootstrap, your real production ' +
+          'Host, or pass execute: false to run in deliberate-only mode.',
+      );
+    }
+  }
+
   const canonRenderer = createCanonRenderer(opts.canonAtoms);
   const sink = createDeliberationSink(opts.atomStore);
   const reasoningSink = createReasoningSink(opts.atomStore);
@@ -396,13 +482,96 @@ export async function runDeliberation(
     opts.participants.map((s) => String(s.principal.id)),
   ));
 
-  return deliberate({
+  const outcome = await deliberate({
     question: opts.question,
     participants: handles,
     sink,
     decidingPrincipal: opts.decidingPrincipal,
     principalDepths: depths,
   });
+
+  // Escalation outcomes never trigger execution; the soft-tier
+  // human gate is the point. Decision outcomes flow through
+  // executeDecision unless the caller opted out with execute: false.
+  const shouldExecute = outcome.type === 'decision' && opts.execute !== false;
+  if (!shouldExecute) {
+    return { outcome };
+  }
+
+  // Both fields validated at the top of runDeliberation; by the time
+  // we land here executionRequested === true, so non-null assertions
+  // are safe. The upstream checks throw synchronously before any
+  // LLM round-trip, so a misconfigured caller sees the error at
+  // their call site rather than after deliberation.
+  const executorPrincipalId = opts.executorPrincipalId!;
+  const host = opts.host!;
+  const executeArgs: Parameters<typeof executeDecision>[0] = {
+    decision: outcome,
+    question: opts.question,
+    executorPrincipalId,
+    host,
+    ...(opts.codeAuthorFn !== undefined ? { codeAuthorFn: opts.codeAuthorFn } : {}),
+  };
+
+  const execution = await executeDecision(executeArgs);
+
+  // Persist the execution atom via the existing AtomStore path so
+  // downstream audit walkers find it alongside Question / Position
+  // / Counter / Decision atoms. The pattern -> core-atom shape
+  // mirrors `deliberationEventToAtom` so every emitter lands through
+  // the same sink discipline.
+  await opts.atomStore.put(executionAtomToCoreAtom(execution, opts.question.id));
+
+  return { outcome, execution };
+}
+
+function executionAtomToCoreAtom(
+  exec: ExecuteDecisionResult,
+  questionId: string,
+): Atom {
+  const base = {
+    schema_version: 1 as const,
+    id: exec.id as AtomId,
+    content: exec.content,
+    type: 'observation' as const,
+    layer: 'L1' as const,
+    provenance: {
+      kind: 'agent-observed' as const,
+      source: { agent_id: exec.principal_id },
+      derived_from: exec.derivedFrom.map((id) => id as AtomId),
+    },
+    confidence: 1,
+    created_at: exec.created_at,
+    last_reinforced_at: exec.created_at,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project' as const,
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked' as const,
+      last_validated_at: null,
+    },
+    principal_id: exec.principal_id as PrincipalId,
+    taint: 'clean' as const,
+  };
+  if (exec.kind === 'pr-opened') {
+    return {
+      ...base,
+      metadata: {
+        kind: 'pr-opened' as const,
+        questionId,
+      },
+    };
+  }
+  return {
+    ...base,
+    metadata: {
+      kind: 'execution-failed' as const,
+      questionId,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

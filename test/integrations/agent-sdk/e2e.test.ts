@@ -191,7 +191,7 @@ describe('e2e: two-principal deliberation (mocked SDK)', () => {
       (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
     );
 
-    const outcome = await runDeliberation({
+    const { outcome } = await runDeliberation({
       question: buildQuestion(),
       participants: participating,
       atomStore,
@@ -199,6 +199,7 @@ describe('e2e: two-principal deliberation (mocked SDK)', () => {
       anthropic: client,
       canonAtoms,
       decidingPrincipal: 'vo-cto',
+      execute: false,
     });
 
     expect(outcome.type).toBe('decision');
@@ -278,7 +279,7 @@ describe('e2e: two-principal deliberation (mocked SDK)', () => {
       (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
     );
 
-    const outcome = await runDeliberation({
+    const { outcome } = await runDeliberation({
       question: buildQuestion(),
       participants: participating,
       atomStore,
@@ -286,6 +287,7 @@ describe('e2e: two-principal deliberation (mocked SDK)', () => {
       anthropic: client,
       canonAtoms,
       decidingPrincipal: 'vo-cto',
+      execute: false,
     });
 
     const atoms = await queryAll(atomStore);
@@ -340,6 +342,7 @@ describe('e2e: two-principal deliberation (mocked SDK)', () => {
       anthropic: client,
       canonAtoms,
       decidingPrincipal: 'vo-cto',
+      execute: false,
     });
 
     const atoms = await queryAll(atomStore);
@@ -415,7 +418,7 @@ describe('e2e: two-principal deliberation (mocked SDK)', () => {
     );
 
     // Force equal depths so source-rank ties and escalation fires.
-    const outcome = await runDeliberation({
+    const { outcome } = await runDeliberation({
       question: buildQuestion(),
       participants: participating,
       atomStore,
@@ -423,6 +426,7 @@ describe('e2e: two-principal deliberation (mocked SDK)', () => {
       anthropic: client,
       canonAtoms,
       decidingPrincipal: 'vo-cto',
+      execute: false,
       principalDepths: { 'vo-cto': 0, 'vo-code-author': 0 },
     });
 
@@ -477,6 +481,7 @@ describe('e2e: two-principal deliberation (mocked SDK)', () => {
       anthropic: client,
       canonAtoms,
       decidingPrincipal: 'vo-cto',
+      execute: false,
     });
 
     const atoms = await queryAll(atomStore);
