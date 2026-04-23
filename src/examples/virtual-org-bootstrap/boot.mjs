@@ -166,11 +166,11 @@ async function main() {
       for (const atom of canonAtoms) await host.atoms.put(atom);
 
       // Credentials + bot identity share the resolved state root so a
-      // caller-supplied --state-dir applies uniformly. Splitting the
-      // two would allow the file-backed Host to read from
-      // `<custom>/virtual-org-state/` while the GhClient keeps
-      // loading credentials from `<cwd>/.lag/apps/*`; that asymmetry
-      // was the CR finding on the first iteration of this wiring.
+      // caller-supplied --state-dir applies uniformly. Splitting them
+      // would let the file-backed Host read from `<custom>/.lag/` while
+      // the GhClient kept loading credentials from `<cwd>/.lag/apps/*`;
+      // single-root keeps both sides of the executor looking at the
+      // same on-disk config.
       const ghClient = createVirtualOrgGhClient({
         role: execCfg.role,
         stateDir: stateDirAbs,
