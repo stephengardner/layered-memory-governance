@@ -16,10 +16,13 @@ import type { PrincipalId, Time } from '../../src/types.js';
 const PRINCIPAL = 'code-author' as PrincipalId;
 
 describe('mkKillSwitchTrippedAtomId', () => {
-  it('embeds actor, principal, ISO timestamp, and nonce so every trip is distinct', () => {
+  it('embeds actor, principal, slugged-ISO timestamp, and nonce so every trip is distinct', () => {
     // Supply an explicit nonce to pin the exact id in the assertion.
+    // Colons in the ISO timestamp are slugged to `-` so the id is
+    // safe as a filename on file-backed Hosts (NTFS rejects `:`).
     const id = mkKillSwitchTrippedAtomId('pr-landing', PRINCIPAL, '2026-04-21T10:00:00.000Z' as Time, 'abc123');
-    expect(id).toBe('kill-switch-tripped-pr-landing-code-author-2026-04-21T10:00:00.000Z-abc123');
+    expect(id).toBe('kill-switch-tripped-pr-landing-code-author-2026-04-21T10-00-00.000Z-abc123');
+    expect(id).not.toContain(':');
   });
 
   it('distinct timestamps produce distinct ids', () => {
