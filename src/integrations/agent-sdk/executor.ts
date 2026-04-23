@@ -1,40 +1,34 @@
 /**
  * Decision -> runCodeAuthor executor handoff.
  *
- * `executeDecision` is the thin adapter that closes the virtual-org
- * governance loop: a `deliberate()` call produces a Decision atom,
- * and `executeDecision` turns that Decision into an invocation of
- * the `runCodeAuthor` sub-actor primitive. Successful invocations
- * return a `PrOpenedAtom`; any failure path returns an
- * `ExecutionFailedAtom` so the governance layer keeps provenance
- * chained through failed executions too.
+ * `executeDecision` is a thin adapter that turns a Decision atom
+ * into an invocation of the `runCodeAuthor` sub-actor primitive.
+ * Successful invocations return a `PrOpenedAtom`; any failure path
+ * returns an `ExecutionFailedAtom` so provenance stays chained
+ * through failed executions too.
  *
  * Why atoms on both paths (and no throws):
- *   The Decision -> PR edge is the first place where a deliberation
- *   outcome reaches out to an external system (GitHub). A thrown
- *   exception severs the provenance chain and leaves the caller
- *   guessing. An `ExecutionFailedAtom` carries the failure reason +
- *   stage + derived_from back to the Decision + Question, so a
- *   post-mortem auditor can reconstruct what the deliberation
- *   decided, what was attempted, and where it stopped.
+ *   This edge is where a deliberation outcome reaches out to an
+ *   external system. A thrown exception severs the provenance chain
+ *   and leaves the caller guessing. An `ExecutionFailedAtom` carries
+ *   reason + stage + derived_from back to the Decision + Question,
+ *   so a post-mortem auditor can reconstruct what was decided,
+ *   what was attempted, and where it stopped.
  *
  * Boundary discipline:
- *   - `codeAuthorFn` is injectable. The default is `runCodeAuthor`
- *     from the actor-message primitive. Tests inject a mock so no
- *     real plan-atom synthesis, fence load, or GitHub call happens
- *     under test. A non-default consumer (LangGraph-driven, external
- *     workflow engine) can inject its own fn.
+ *   - `codeAuthorFn` is injectable; the default is `runCodeAuthor`
+ *     from the actor-message primitive. Tests inject a mock to
+ *     avoid real plan-atom synthesis, fence load, or external
+ *     system calls. External orchestration layers can inject their
+ *     own fn.
  *   - `prResolver` is optional: when the injected `codeAuthorFn`
  *     returns a `dispatched` summary without the PR fields embedded,
- *     `prResolver` supplies them. The real `runCodeAuthor` records
- *     the PR handle on its observation atom, but the summary only
- *     carries a text representation; tests use the resolver to
- *     pin the atom content deterministically. For a production
- *     caller wiring the full chain, `prResolver` would read the
- *     observation atom written by `runCodeAuthor`.
- *   - The module does not write to the AtomStore. It returns a
- *     pattern-layer atom shape the boot script persists via its
- *     existing `atomStore.put(atom)` path. Separating shape from
+ *     `prResolver` supplies them. Callers wiring the full chain
+ *     typically read the PR handle from the observation atom
+ *     written by the code-author primitive.
+ *   - The module does not write to the AtomStore for the returned
+ *     atom shape. It returns a pattern-layer atom the caller
+ *     persists via its existing sink. Separating shape from
  *     persistence mirrors the deliberation coordinator's sink
  *     pattern.
  *
@@ -46,14 +40,13 @@
  *
  * principal_id discipline: the emitted atom is authored by
  *   `executorPrincipalId`, NOT by the Decision's author. The
- *   deliberation author (typically `vo-cto` for virtual-org) made
- *   the call; the executor principal (typically `vo-code-author`)
- *   carried it out. Mixing the two would mis-attribute the PR to
- *   the deliberation author and break the audit chain.
+ *   deliberation author made the call; the execution principal
+ *   carried it out. Mixing the two would mis-attribute the
+ *   execution and break the audit chain.
  */
 
 import type { Host } from '../../substrate/interface.js';
-import type { PrincipalId } from '../../substrate/types.js';
+import type { Atom, AtomId, PrincipalId } from '../../substrate/types.js';
 import type {
   Decision,
   Question,
@@ -103,7 +96,7 @@ export interface PrHandle {
 export interface ExecuteDecisionArgs {
   readonly decision: Decision;
   readonly question: Question;
-  /** Principal id authoring the emitted atom (typically 'vo-code-author'). */
+  /** Principal id authoring the emitted atom (the execution principal). */
   readonly executorPrincipalId: string;
   readonly host: Host;
   /** Injectable for tests; defaults to the real runCodeAuthor. */
@@ -125,6 +118,26 @@ export interface ExecuteDecisionArgs {
   readonly correlationId?: string;
   /** Clock injection for deterministic atom ids. */
   readonly now?: () => number;
+  /**
+   * Caller-supplied factory that produces the Plan atom to be
+   * materialized before `codeAuthorFn` runs. The returned atom's id
+   * is what the invoker sees as `payload.plan_id`.
+   *
+   * Default: `defaultPlanAtomFactory`, which produces an Atom with
+   * `id: plan-from-<decision.id>`, `type: 'plan'`, `plan_state:
+   * 'executing'`, `content: decision.answer`,
+   * `provenance.derived_from: [decision.id]`, and
+   * `principal_id: executorPrincipalId`. Swap in a custom factory
+   * when the caller wants a different id convention or richer
+   * metadata for an external orchestration layer.
+   *
+   * The Decision atom is the signed authorizing artifact; reusing
+   * `decision.id` for the Plan atom would either collide on write
+   * or overwrite the Decision, breaking the audit chain. The Plan
+   * is a separate, mutable L1 atom the executor transitions through
+   * `plan_state`.
+   */
+  readonly planAtomFactory?: (decision: Decision) => Atom;
 }
 
 /**
@@ -178,23 +191,52 @@ export async function executeDecision(
     onPrOpened,
     correlationId = `execute-decision-${decision.id}`,
     now = () => Date.now(),
+    planAtomFactory,
   } = args;
 
   const derivedFrom: ReadonlyArray<string> = [decision.id, question.id];
   const createdAt = new Date(now()).toISOString();
 
-  // The real `runCodeAuthor` takes a plan_id. For the virtual-org
-  // adapter layer we treat the Decision as the authorizing artifact;
-  // the injected fn is responsible for any plan-atom synthesis. This
-  // keeps the adapter decoupled from the runtime's approved-plan
-  // state machine: an alternative consumer (e.g. a LangGraph node
-  // that operates directly on Decisions) doesn't need a plan seam.
+  // Materialize a fresh Plan atom BEFORE invoking `codeAuthorFn`.
   //
-  // The payload field name `plan_id` is fixed by `CodeAuthorPayload`;
-  // we pass the Decision's id there. A real-world wiring that needs
-  // a genuine Plan atom would materialize one before calling this
-  // function and pass its id; the adapter stays shape-neutral.
-  const payload: CodeAuthorPayload = { plan_id: decision.id };
+  // The Decision atom is the signed authorizing artifact and carries
+  // decision-specific identity fields that are load-bearing for
+  // audit. The invoker re-resolves `payload.plan_id` via
+  // `host.atoms.get()` and asserts `plan.type === 'plan'` +
+  // `plan.plan_state === 'executing'`, so passing `decision.id` here
+  // would (a) collide on write if a plan already exists at that id,
+  // or (b) cause the invoker to reject the atom with type=decision.
+  // A separate, mutable Plan atom the executor can transition
+  // through `plan_state` is the correct shape.
+  //
+  // Id convention `plan-from-<decision.id>` is the default; a
+  // caller with a different convention passes `planAtomFactory`.
+  //
+  // Failure containment: both `planAtomFactory` (caller-supplied)
+  // and `host.atoms.put` (adapter) can throw. The executor's
+  // contract is that failures become atoms rather than thrown
+  // exceptions, so the governance layer keeps provenance through
+  // the failed execution. Wrap the materialization in the same
+  // failure-to-atom shape used by the codeAuthorFn path.
+  let planAtom: Atom;
+  try {
+    planAtom = planAtomFactory !== undefined
+      ? planAtomFactory(decision)
+      : defaultPlanAtomFactory(decision, executorPrincipalId, createdAt);
+    await host.atoms.put(planAtom);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return buildFailedAtom({
+      decision,
+      executorPrincipalId,
+      derivedFrom,
+      createdAt,
+      reason,
+      stage: 'plan-atom-materialization',
+    });
+  }
+
+  const payload: CodeAuthorPayload = { plan_id: planAtom.id };
 
   let invokeResult: InvokeResult;
   try {
@@ -316,4 +358,68 @@ function renderPrUrl(prNumber: number): string {
   // shape; a production caller with github remote context would
   // inject an explicit url via prResolver.
   return `pr://unresolved/#${prNumber}`;
+}
+
+/**
+ * Default Plan-atom factory: produces a minimal `type: 'plan'`,
+ * `plan_state: 'executing'` atom derived from a Decision.
+ *
+ * Id convention: `plan-from-<decision.id>`. The Decision's own id
+ * is reserved for the signed authorizing atom; the Plan lives at a
+ * derived id so the two never collide and the invoker's
+ * `plan_state === 'executing'` guard resolves to this atom.
+ *
+ * `provenance.derived_from: [decision.id]` anchors the provenance
+ * chain one hop back to the Decision; a downstream audit walker
+ * reaches the Question via the Decision's own derived_from. The
+ * plan is authored by `executorPrincipalId`, NOT the deliberation
+ * author, so the act of execution is attributed correctly.
+ *
+ * Layer: L1 (observed/in-flight). A plan is mutable until it
+ * terminates (`succeeded` / `failed` / `abandoned`); treating it as
+ * L1 matches the life-cycle axis in substrate/types.ts which keeps
+ * the trust axis (layer) orthogonal to the state-machine axis
+ * (plan_state).
+ */
+function defaultPlanAtomFactory(
+  decision: Decision,
+  executorPrincipalId: string,
+  createdAt: string,
+): Atom {
+  const id = `plan-from-${decision.id}` as AtomId;
+  return {
+    schema_version: 1,
+    id,
+    content: decision.answer,
+    type: 'plan',
+    layer: 'L1',
+    provenance: {
+      kind: 'agent-observed',
+      source: {
+        agent_id: executorPrincipalId,
+        tool: 'executeDecision',
+      },
+      derived_from: [decision.id as AtomId],
+    },
+    confidence: 1.0,
+    created_at: createdAt,
+    last_reinforced_at: createdAt,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: executorPrincipalId as PrincipalId,
+    taint: 'clean',
+    metadata: {
+      kind: 'plan-from-decision',
+      decision_id: decision.id,
+    },
+    plan_state: 'executing',
+  };
 }
