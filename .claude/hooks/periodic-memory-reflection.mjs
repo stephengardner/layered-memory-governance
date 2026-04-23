@@ -138,6 +138,17 @@ const LOCK_WAIT_MS = 15_000;
 const LOCK_POLL_MS_BASE = 20;
 const LOCK_STALE_MS = 10_000;
 
+// Codes that mean "retry, the filesystem is busy but not broken":
+//   EEXIST   - the lock file already exists (another hook holds the lock)
+//   EACCES   - Windows AV or another process has the file momentarily
+//              handle-blocked; transient, clears within ms
+//   EPERM    - Windows permission denied during AV rescan on a just-closed
+//              file; transient, same class as EACCES
+//   EBUSY    - Windows "file is in use" during rapid create/unlink cycles;
+//              transient, same class
+// Anything else (EISDIR, ENOSPC, etc.) is a real error and should bubble.
+const RETRYABLE_LOCK_CODES = new Set(['EEXIST', 'EACCES', 'EPERM', 'EBUSY']);
+
 async function acquireLock(lockPath) {
   const deadline = Date.now() + LOCK_WAIT_MS;
   while (Date.now() < deadline) {
@@ -146,15 +157,25 @@ async function acquireLock(lockPath) {
       closeSync(fd);
       return true;
     } catch (err) {
-      if (err?.code !== 'EEXIST') throw err;
-      try {
-        const st = statSync(lockPath);
-        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-          unlinkSync(lockPath);
+      // Prior bug: this branch only retried on EEXIST and threw on any
+      // other code. On Windows, AV processes scanning the just-created
+      // lock file surface EACCES/EPERM/EBUSY for a few ms at a time. The
+      // throw exited acquireLock early, leaving the retry budget unused
+      // and dropping the increment. The "raise LOCK_WAIT_MS" bumps that
+      // previously targeted this flake were masking this root cause;
+      // they never helped because the retry loop didn't run at all.
+      // Treat the known-transient Windows codes as equivalent to EEXIST.
+      if (!RETRYABLE_LOCK_CODES.has(err?.code)) throw err;
+      if (err?.code === 'EEXIST') {
+        try {
+          const st = statSync(lockPath);
+          if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+            unlinkSync(lockPath);
+            continue;
+          }
+        } catch {
           continue;
         }
-      } catch {
-        continue;
       }
       // Async sleep yields to the event loop so contending processes
       // on the same core make progress. A synchronous busy-wait here
@@ -175,7 +196,20 @@ async function acquireLock(lockPath) {
 }
 
 function releaseLock(lockPath) {
-  try { unlinkSync(lockPath); } catch { /* already gone */ }
+  // Best-effort unlink with one retry. Windows AV can hold the lock
+  // file for a few ms right after close, surfacing EACCES/EPERM on the
+  // first unlink. If that happens and we give up, the lock file
+  // lingers until LOCK_STALE_MS; any contender during that window
+  // waits longer than necessary. One quick retry covers the common
+  // case without introducing a second async dependency.
+  try {
+    unlinkSync(lockPath);
+    return;
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    if (!RETRYABLE_LOCK_CODES.has(err?.code)) return;
+  }
+  try { unlinkSync(lockPath); } catch { /* best effort, stale reclaim handles it */ }
 }
 
 async function bumpCounter(sessionId) {
