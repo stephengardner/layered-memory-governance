@@ -309,16 +309,13 @@ function extractTargetPathsFromProse(prose: string): string[] {
   const out: string[] = [];
   let m: RegExpExecArray | null;
   while ((m = pathRe.exec(prose)) !== null) {
-    // Normalize unified-diff path prefixes. When the plan content
-    // itself embeds a diff (e.g., the Decision answer echoes a
-    // `--- a/foo.md` / `+++ b/foo.md` block it inherited from an
-    // agent position), the heuristic would otherwise emit `a/foo.md`
-    // AND `b/foo.md` as distinct targets. The drafter LLM then
-    // produces a diff touching `foo.md`, and the downstream path-
-    // scope check fails because `foo.md` is not in the inflated
-    // target set. Strip the `a/` / `b/` diff prefix so the declared
-    // scope matches the shape the drafter emits. Surfaced by live
-    // E2E #3b where the Decision content WAS a valid diff.
+    // Normalize unified-diff path prefixes. When plan content itself
+    // embeds a diff, the heuristic would otherwise emit `a/foo.md`
+    // AND `b/foo.md` as distinct targets; the drafter then produces
+    // a diff touching the bare `foo.md`, and the downstream path-
+    // scope check fails because the bare path is not in the
+    // inflated target set. Folding `a/` and `b/` to the bare path
+    // mirrors git semantics.
     const p = stripDiffPathPrefix(m[1]!);
     if (hasTraversalSegment(p)) continue;
     if (!seen.has(p)) {
@@ -330,8 +327,15 @@ function extractTargetPathsFromProse(prose: string): string[] {
 }
 
 function stripDiffPathPrefix(p: string): string {
-  if (p.startsWith('a/') || p.startsWith('b/')) return p.slice(2);
-  return p;
+  // Only fold when stripping the `a/` or `b/` prefix still leaves a
+  // `<dir>/<file>` shape. This keeps a legitimate top-level directory
+  // named `a` or `b` (e.g., `a/index.md`) from being collapsed to a
+  // leaf-only path that the drafter would then reject under a
+  // different invariant.
+  const isDiffPrefix = p.startsWith('a/') || p.startsWith('b/');
+  if (!isDiffPrefix) return p;
+  const stripped = p.slice(2);
+  return stripped.includes('/') ? stripped : p;
 }
 
 function hasTraversalSegment(p: string): boolean {
