@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateSlug, parseGitWorktreeList } from '../../scripts/lib/wt.mjs';
+import { validateSlug, parseGitWorktreeList, detectActivity } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
   it('accepts kebab-case slugs', () => {
@@ -56,5 +56,57 @@ describe('parseGitWorktreeList', () => {
   });
   it('handles empty input', () => {
     expect(parseGitWorktreeList('')).toEqual([]);
+  });
+});
+
+describe('detectActivity', () => {
+  const now = new Date('2026-04-21T22:00:00Z').getTime();
+  it('flags recent HEAD move within activity window', () => {
+    const r = detectActivity({
+      headMtimeMs: now - 5 * 60 * 1000, // 5 minutes ago
+      indexMtimeMs: now - 60 * 60 * 1000,
+      hasLockfile: false,
+      dirty: false,
+      now,
+      windowMs: 10 * 60 * 1000,
+    });
+    expect(r.active).toBe(true);
+    expect(r.reasons).toContain('HEAD moved within activity window');
+  });
+  it('flags lockfile presence', () => {
+    const r = detectActivity({
+      headMtimeMs: now - 60 * 60 * 1000,
+      indexMtimeMs: now - 60 * 60 * 1000,
+      hasLockfile: true,
+      dirty: false,
+      now,
+      windowMs: 10 * 60 * 1000,
+    });
+    expect(r.active).toBe(true);
+    expect(r.reasons).toContain('git lockfile present');
+  });
+  it('flags dirty tree', () => {
+    const r = detectActivity({
+      headMtimeMs: now - 60 * 60 * 1000,
+      indexMtimeMs: now - 60 * 60 * 1000,
+      hasLockfile: false,
+      dirty: true,
+      now,
+      windowMs: 10 * 60 * 1000,
+    });
+    expect(r.active).toBe(true);
+    expect(r.reasons).toContain('uncommitted changes');
+  });
+  it('returns inactive when all signals are quiet', () => {
+    const r = detectActivity({
+      headMtimeMs: now - 24 * 60 * 60 * 1000,
+      indexMtimeMs: now - 24 * 60 * 60 * 1000,
+      hasLockfile: false,
+      dirty: false,
+      now,
+      windowMs: 10 * 60 * 1000,
+    });
+    expect(r.active).toBe(false);
+    expect(r.reasons).toEqual([]);
   });
 });

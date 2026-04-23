@@ -45,3 +45,27 @@ export function parseGitWorktreeList(output) {
     return rec;
   });
 }
+
+/**
+ * Decide whether a worktree is "active" based on injected signals.
+ * Pure function: caller does the filesystem reads.
+ *
+ * Used by `wt new` and `wt list` to warn before creating a new worktree
+ * on the same branch / slug, or before proposing to remove a worktree
+ * someone else is mid-work in.
+ */
+export function detectActivity({
+  headMtimeMs,
+  indexMtimeMs,
+  hasLockfile,
+  dirty,
+  now,
+  windowMs,
+}) {
+  const reasons = [];
+  if (now - headMtimeMs < windowMs) reasons.push('HEAD moved within activity window');
+  if (now - indexMtimeMs < windowMs) reasons.push('index touched within activity window');
+  if (hasLockfile) reasons.push('git lockfile present');
+  if (dirty) reasons.push('uncommitted changes');
+  return { active: reasons.length > 0, reasons };
+}
