@@ -311,7 +311,7 @@ describe('runDeliberation execute wiring', () => {
   //     auditor/llm/canon and would NPE on the partial. Fix: require
   //     the caller to pass a real Host; drop the cast.
   // -------------------------------------------------------------------------
-  it('regression CR#106 finding 1: throws when execute !== false and executorPrincipalId is omitted', async () => {
+  it('regression CR#106 finding 1: throws when execute: true and executorPrincipalId is omitted', async () => {
     const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
     const client = bothAgree();
 
@@ -342,27 +342,36 @@ describe('runDeliberation execute wiring', () => {
     expect(codeAuthorFn).not.toHaveBeenCalled();
   });
 
-  it('regression CR#106 finding 1: also throws when execute is undefined (defaults to true)', async () => {
+  it('regression: omitting execute defaults to deliberate-only (safe by default)', async () => {
+    // The default was flipped from `execute: true` to `execute: false`
+    // after the task-D run surfaced the destructive default. A caller
+    // that invokes `runDeliberation` without explicit `execute` should
+    // get a deliberate-only pipeline: no Host required, no executor
+    // invoked, no PrOpenedAtom emitted. Execution is now opt-in.
     const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
     const client = bothAgree();
+
+    const codeAuthorFn = vi.fn();
 
     const participating = seeds.filter(
       (s) => s.principal.id === 'vo-cto' || s.principal.id === 'vo-code-author',
     );
 
-    await expect(
-      runDeliberation({
-        question: buildQuestion(),
-        participants: participating,
-        atomStore,
-        principalStore,
-        anthropic: client,
-        canonAtoms,
-        decidingPrincipal: 'vo-cto',
-        // execute + executorPrincipalId both omitted; execute defaults to true.
-        host: createMemoryHost(),
-      }),
-    ).rejects.toThrow(/executorPrincipalId/);
+    const result = await runDeliberation({
+      question: buildQuestion(),
+      participants: participating,
+      atomStore,
+      principalStore,
+      anthropic: client,
+      canonAtoms,
+      decidingPrincipal: 'vo-cto',
+      // execute, executorPrincipalId, host all omitted. Must NOT throw.
+      codeAuthorFn,
+    });
+
+    expect(result.outcome.type).toBe('decision');
+    expect(result.execution).toBeUndefined();
+    expect(codeAuthorFn).not.toHaveBeenCalled();
   });
 
   it('regression CR#106 finding 1: does NOT throw when execute is false and executorPrincipalId is omitted', async () => {
@@ -390,7 +399,7 @@ describe('runDeliberation execute wiring', () => {
     expect(result.execution).toBeUndefined();
   });
 
-  it('regression CR#106 finding 2: throws when execute !== false and host is omitted', async () => {
+  it('regression CR#106 finding 2: throws when execute: true and host is omitted', async () => {
     const { atomStore, principalStore, canonAtoms, seeds } = await setupHost();
     const client = bothAgree();
 
