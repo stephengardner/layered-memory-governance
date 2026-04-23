@@ -64,7 +64,106 @@ async function main() {
   }
 }
 
-async function cmdNew(args) { throw new Error('not implemented'); }
+async function cmdNew(args) {
+  // Parse args: first positional = slug, optional --from <base>.
+  const positional = [];
+  let from = 'main';
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--from') { from = args[++i]; }
+    else positional.push(args[i]);
+  }
+  const rawSlug = positional[0];
+  const v = validateSlug(rawSlug);
+  if (!v.ok) {
+    console.error(`[wt new] invalid slug: ${v.reason}`);
+    process.exit(2);
+  }
+  const slug = v.slug;
+  const branch = `feat/${slug}`;
+
+  const repoRoot = (await execa('git', ['rev-parse', '--show-toplevel'])).stdout.trim();
+  const wtPath = join(repoRoot, '.worktrees', slug);
+
+  if (existsSync(wtPath)) {
+    console.error(`[wt new] .worktrees/${slug}/ already exists; pick another slug or run: wt rm ${slug}`);
+    process.exit(2);
+  }
+  const { stdout: branches } = await execa('git', ['branch', '--list', branch]);
+  if (branches.trim().length > 0) {
+    console.error(`[wt new] branch ${branch} already exists; pick another slug or delete the branch first`);
+    process.exit(2);
+  }
+
+  // Try to fetch; warn on failure (e.g. offline).
+  try { await execa('git', ['fetch', 'origin', from], { stdio: 'inherit' }); }
+  catch { console.warn(`[wt new] fetch origin ${from} failed; proceeding with local ref`); }
+
+  // Parallel-agent collision scan.
+  const activityWindowMs = (Number(process.env.WT_ACTIVITY_MIN ?? 10)) * 60 * 1000;
+  const now = Date.now();
+  const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
+  const records = parseGitWorktreeList(wtList.stdout);
+  const warnings = [];
+  for (const rec of records) {
+    if (!rec.path) continue;
+    const gitAdminDir = rec.path === repoRoot
+      ? join(repoRoot, '.git')
+      : join(repoRoot, '.git', 'worktrees', rec.path.split(/[\\/]/).pop() ?? '');
+    let headMtimeMs = 0, indexMtimeMs = 0, hasLockfile = false;
+    try { headMtimeMs = (await stat(join(gitAdminDir, 'HEAD'))).mtimeMs; } catch {}
+    try { indexMtimeMs = (await stat(join(gitAdminDir, 'index'))).mtimeMs; } catch {}
+    try { hasLockfile = existsSync(join(gitAdminDir, 'index.lock')); } catch {}
+    let dirty = false;
+    try {
+      const st = await execa('git', ['-C', rec.path, 'status', '--porcelain']);
+      dirty = st.stdout.trim().length > 0;
+    } catch {}
+    const a = detectActivity({ headMtimeMs, indexMtimeMs, hasLockfile, dirty, now, windowMs: activityWindowMs });
+    if (a.active) warnings.push(`  ${rec.path} (${rec.branch ?? 'detached'}): ${a.reasons.join(', ')}`);
+  }
+  if (warnings.length > 0) {
+    console.warn(`[wt new] other worktrees show activity:\n${warnings.join('\n')}`);
+    console.warn(`[wt new] proceed? (set WT_SKIP_ACTIVITY_WARN=1 to bypass; otherwise Ctrl-C to abort)`);
+    if (process.env.WT_SKIP_ACTIVITY_WARN !== '1') {
+      // Pause briefly so the operator can Ctrl-C.
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  // Create the worktree.
+  await execa('git', ['worktree', 'add', wtPath, '-b', branch, from], { stdio: 'inherit' });
+
+  // Resolve the base sha for NOTES.
+  const baseSha = (await execa('git', ['rev-parse', '--short', from])).stdout.trim();
+
+  // Write NOTES.md.
+  const notes = renderNotesSkeleton({ slug, baseLabel: from, baseSha });
+  await writeFile(join(wtPath, 'NOTES.md'), notes, 'utf8');
+
+  // Verify NOTES is gitignored inside the new worktree.
+  try {
+    await execa('git', ['-C', wtPath, 'check-ignore', '-q', 'NOTES.md']);
+  } catch {
+    console.error(`[wt new] WARNING: NOTES.md is NOT gitignored in ${wtPath}. Add /NOTES.md to .gitignore before committing.`);
+  }
+
+  // Auto-detect + run package-manager setup.
+  const rootEntries = await readdir(wtPath);
+  const pm = detectPackageManager(rootEntries);
+  if (pm) {
+    console.log(`[wt new] running ${pm.install} in ${wtPath}`);
+    try {
+      const [cmd0, ...rest] = pm.install.split(' ');
+      await execa(cmd0, rest, { cwd: wtPath, stdio: 'inherit' });
+    } catch (err) {
+      console.warn(`[wt new] ${pm.install} failed: ${err.message}. Proceeding; run it manually.`);
+    }
+  }
+
+  console.log(`\nWorktree ready at ${wtPath}`);
+  console.log(`Branch: ${branch} (from ${from} @ ${baseSha})`);
+  console.log(`Next: edit NOTES.md, then cd ${wtPath} and start work.`);
+}
 async function cmdList(args) { throw new Error('not implemented'); }
 async function cmdRm(args) { throw new Error('not implemented'); }
 async function cmdClean(args) { throw new Error('not implemented'); }
