@@ -5,7 +5,7 @@
 > Plan: `docs/superpowers/plans/2026-04-23-virtual-org-phase-2-host.md`.
 > Companions: `2026-04-22-task-d-132-retro.md`, `2026-04-22-virtual-org-host-gap.md`.
 
-## UPDATE 2026-04-23T09:24Z UTC — E2E RUN SUCCEEDED (PR #113 live)
+## UPDATE 2026-04-23T09:24Z UTC - E2E RUN SUCCEEDED (PR #113 live)
 
 A second smoke run after the initial partial run produced a real draft PR on
 github.com under the lag-ceo[bot] identity: **PR #113,
@@ -50,7 +50,7 @@ Wall-clock: ~58s from `boot.mjs` start to GitHub PR-open API return. Drafter
 spend: $0.1965 at `claude-opus-4-7`. One commit (`d9e296b`), three
 additions, one file changed, branch `code-author/plan-from-dec-q-1776934624451-afd15d`.
 
-### Falsification tripwire — now cleared
+### Falsification tripwire - now cleared
 
 - **Week-8: "task D shipped via virtual org end-to-end"** → **CLEARED.**
   The runtime produced a real draft PR end-to-end under the second-run
@@ -60,7 +60,7 @@ additions, one file changed, branch `code-author/plan-from-dec-q-1776934624451-a
 
 PR #113 proves the CREATE path. The APPEND/MODIFY path is known-broken (the
 first run at 08:08:57Z failed at `apply-branch/diff-apply-failed: No valid
-patches in input` because the LLM produced an empty diff — it had neither
+patches in input` because the LLM produced an empty diff - it had neither
 file content nor tool access to read the file). Shipping this capability to
 production requires one of two architectural moves, neither of which is in
 this phase's scope:
@@ -69,8 +69,8 @@ this phase's scope:
    `target_paths` from the filesystem before the LLM call and passes
    `file_contents` into `renderPlanForDrafter`'s DATA block. Keeps
    `LLM.judge()` classification-pure; bounded cost; works with any adapter.
-   Requires `target_paths` to actually populate on the plan atom — today
-   the `defaultPlanAtomFactory` leaves it empty — so either the Code Author
+   Requires `target_paths` to actually populate on the plan atom - today
+   the `defaultPlanAtomFactory` leaves it empty - so either the Code Author
    position/decision schema must emit structured `target_paths`, or the
    factory must heuristically extract paths from the prose `decision.answer`.
 2. **Allow Read/Grep/Glob on the Code Author principal.** The drafter's
@@ -99,11 +99,11 @@ The line should be the absolute last line of the file (after any existing
 trailing newline).
 ```
 
-## Outcome (first run — superseded by the 08:57Z re-run above)
+## Outcome (first run - superseded by the 08:57Z re-run above)
 
 > **Note:** Everything below this line describes the initial partial run at
 > 08:08Z. The re-run at 08:57Z (PR #113) cleared these findings. The
-> first-run analysis is retained for provenance — it documents the specific
+> first-run analysis is retained for provenance - it documents the specific
 > failure modes the re-run disproved or worked around.
 
 **PARTIAL - setup + Question atom persisted; deliberation did not complete.**
