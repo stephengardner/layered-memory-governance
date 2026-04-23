@@ -236,11 +236,22 @@ export async function executeDecision(
     // without the Question's verbatim body the drafter has no literal to
     // implement. Merge rather than overwrite so a custom planAtomFactory
     // that already set these keys wins (an explicit caller intent).
+    // Omit empty strings from the merged keys: an empty question prompt
+    // would otherwise change the metadata shape for callers whose
+    // Question carries no body, and the drafter already folds an empty
+    // `question_prompt` out of its DATA block. Parity here keeps the
+    // "omit when empty" contract consistent across the seam.
+    const questionMetadata: Record<string, unknown> = {};
+    if (String(question.id).length > 0) {
+      questionMetadata['question_id'] = question.id;
+    }
+    if (typeof question.prompt === 'string' && question.prompt.length > 0) {
+      questionMetadata['question_prompt'] = question.prompt;
+    }
     planAtom = {
       ...baseAtom,
       metadata: {
-        question_id: question.id,
-        question_prompt: question.prompt,
+        ...questionMetadata,
         ...baseAtom.metadata,
       },
     };
