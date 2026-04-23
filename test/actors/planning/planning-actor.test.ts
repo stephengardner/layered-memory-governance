@@ -285,6 +285,58 @@ describe('PlanningActor', () => {
     expect('question_prompt' in plan.metadata).toBe(false);
   });
 
+  it('originatingQuestion: only id populated -> question_id present, question_prompt absent', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'asymmetric edge: id known, prompt missing',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan Id-Only' })],
+      ),
+      originatingQuestion: {
+        id: 'q-only-id-2026-04-23' as AtomId,
+        prompt: '',
+      },
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const plan = (await host.atoms.query({ type: ['plan'] }, 10)).atoms[0]!;
+    expect(plan.metadata.question_id).toBe('q-only-id-2026-04-23');
+    expect('question_prompt' in plan.metadata).toBe(false);
+  });
+
+  it('originatingQuestion: only prompt populated -> question_prompt present, question_id absent', async () => {
+    const host = await seedHost();
+    const actor = new PlanningActor({
+      request: 'asymmetric edge: prompt known, id missing',
+      judgment: stubJudgment(
+        { kind: 'greenfield', rationale: 'x', applicableDirectives: [DIR_ATOM] },
+        [planOne({ title: 'Plan Prompt-Only' })],
+      ),
+      originatingQuestion: {
+        id: '' as AtomId,
+        prompt: 'Do the thing described in this verbatim prompt.',
+      },
+    });
+    await runActor(actor, {
+      host,
+      principal: samplePrincipal({ id: 'cto-actor' as PrincipalId }),
+      adapters: {},
+      budget: { maxIterations: 2 },
+      origin: 'operator',
+    });
+    const plan = (await host.atoms.query({ type: ['plan'] }, 10)).atoms[0]!;
+    expect(plan.metadata.question_prompt).toBe(
+      'Do the thing described in this verbatim prompt.',
+    );
+    expect('question_id' in plan.metadata).toBe(false);
+  });
+
   it('renders principles + alternatives + what-breaks into the plan body', async () => {
     const host = await seedHost();
     const actor = new PlanningActor({
