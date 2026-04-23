@@ -5,7 +5,7 @@
  * is permitted to read (via `permitted_layers.read`) and, optionally,
  * biases the remainder by role-scoped tags. L3 atoms always render
  * regardless of the tag filter because L3 is the governance-substrate
- * constitution — every principal needs to see it.
+ * constitution - every principal needs to see it.
  *
  * The output is a markdown string with:
  *   - A principal header (id, role, signed_by, goals, constraints).

@@ -49,7 +49,7 @@ export interface DecideOptions {
  * True when the round loop should stop: either a single position was
  * posted, or all but one position has been rebutted by a counter.
  * False on zero positions (nothing to decide yet) or when every
- * position has been rebutted (indeterminate — let caller escalate or
+ * position has been rebutted (indeterminate - let caller escalate or
  * run another round).
  */
 export function shouldConclude(

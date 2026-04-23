@@ -1,5 +1,5 @@
 /**
- * CanonMdManager.renderFor — principal-scoped canon rendering.
+ * CanonMdManager.renderFor - principal-scoped canon rendering.
  *
  * The existing `applyCanon` renders a global canon section. The virtual
  * org gives each principal its own CLAUDE.md; `renderFor` filters the

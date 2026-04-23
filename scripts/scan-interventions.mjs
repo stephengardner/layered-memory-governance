@@ -1,11 +1,10 @@
-#!/usr/bin/env node
 /**
  * Intervention scanner.
  *
  * Sweeps a JSONL session log (or a directory of them) for operator
  * course-correction prompts. The heuristic is deliberately conservative:
  * only user turns that FOLLOW an assistant turn containing a `tool_use`
- * content block are considered — initial task prompts and mid-turn
+ * content block are considered - initial task prompts and mid-turn
  * clarifications without a prior tool call are skipped.
  *
  * A course-correction is flagged when the user prompt contains one of

@@ -9,7 +9,7 @@
  *      Decision/Escalation events into core Atoms
  *   -> MemoryAtomStore.put(atom)
  *
- * The Anthropic client is entirely mocked — no real API call, no
+ * The Anthropic client is entirely mocked - no real API call, no
  * network, no API key required. The mock returns canned JSON so the
  * coordinator sees valid Position / Counter shapes.
  *

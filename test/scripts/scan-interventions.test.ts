@@ -2,7 +2,7 @@
  * Intervention scanner tests.
  *
  * Scans a Claude Code JSONL session log for operator course-corrections
- * — user turns following a tool_use that contain rejection/correction
+ * - user turns following a tool_use that contain rejection/correction
  * keywords. Becomes the raw input for the Friday canon-proposal ritual.
  *
  * Tests:
