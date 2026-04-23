@@ -7,26 +7,23 @@
  * of the logic.
  */
 
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+// Static import of a sibling .mjs. Static imports avoid the
+// Windows-specific parser issue where vitest's transformer emitted
+// `await` inside `beforeAll(async () => ...)` in a way Windows Node
+// rejected as "Invalid or unexpected token" (two separate pushes
+// reproduced it). Vitest's resolver handles .mjs siblings fine; the
+// script's direct-invocation guard means importing it has no
+// side-effects on the test process.
+import { decideAction } from '../../scripts/update-branch-if-stale.mjs';
 
 const SCRIPT = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '..', '..', 'scripts', 'update-branch-if-stale.mjs',
 );
-
-// Dynamic import via pathToFileURL handles Windows drive-letter
-// paths correctly (`file:///D:/...` three-slash form), which a
-// hand-rolled `file://` + backslash-replace does not. Using
-// beforeAll instead of top-level await keeps the test compatible
-// with the TS module target vitest sees on Windows CI.
-let decideAction: (state: unknown) => { kind: string; reason: string };
-beforeAll(async () => {
-  const mod = await import(pathToFileURL(SCRIPT).href);
-  decideAction = mod.decideAction;
-});
 
 describe('update-branch-if-stale decideAction', () => {
   it('BEHIND -> update', () => {
