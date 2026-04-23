@@ -252,6 +252,74 @@ describe('respondTo', () => {
     expect((calls[0]!.thinking?.budget_tokens ?? 0)).toBeGreaterThanOrEqual(1024);
   });
 
+  it('sends thinking.budget_tokens STRICTLY LESS than max_tokens (CR #105)', async () => {
+    // CR finding PRRT_kwDOSGhm98588lGc: the Anthropic Messages API
+    // rejects requests where thinking.budget_tokens >= max_tokens with
+    // a 400. Our previous defaults (max=4096, budget=8192) violated
+    // this invariant on every call; the SDK backend was broken on
+    // day one for anyone setting LAG_LLM_BACKEND=sdk.
+    const { anthropic, calls } = mockAnthropic([
+      {
+        content: [
+          { type: 'text', text: JSON.stringify({ answer: 'a', rationale: 'r' }) },
+        ],
+      },
+      {
+        content: [
+          { type: 'text', text: JSON.stringify({ counter: null }) },
+        ],
+      },
+    ]);
+    const agent = startAgent({
+      principal: fakePrincipal(),
+      canonRenderer: fakeCanonRenderer(''),
+      anthropic: anthropic as never,
+    });
+    // Default path (no maxTokens / thinkingBudgetTokens overrides).
+    await agent.respondTo(fakeQuestion());
+    await agent.counterOnce([{
+      id: 'p-other',
+      type: 'position',
+      inResponseTo: 'q1',
+      answer: 'other',
+      rationale: 'other',
+      derivedFrom: [],
+      authorPrincipal: 'code-author-principal',
+      created_at: '2026-04-22T00:00:00.000Z',
+    }]);
+    // Both respondTo and counterOnce must satisfy budget < max.
+    for (const c of calls) {
+      const budget = c.thinking?.budget_tokens ?? 0;
+      expect(budget, `budget ${budget} must be < max ${c['max_tokens']}`)
+        .toBeLessThan((c as unknown as { max_tokens: number }).max_tokens);
+    }
+  });
+
+  it('rejects synchronously when options set thinkingBudget >= maxTokens (CR #105)', () => {
+    // Callers passing explicit overrides must get a clear error at
+    // construction time, not a 400 from Anthropic half-way through
+    // a deliberation. Fail loudly up-front.
+    const { anthropic } = mockAnthropic([]);
+    expect(() =>
+      startAgent({
+        principal: fakePrincipal(),
+        canonRenderer: fakeCanonRenderer(''),
+        anthropic: anthropic as never,
+        maxTokens: 4096,
+        thinkingBudgetTokens: 4096, // equal to max: invalid
+      }),
+    ).toThrow(/thinking.*(budget|max)/i);
+    expect(() =>
+      startAgent({
+        principal: fakePrincipal(),
+        canonRenderer: fakeCanonRenderer(''),
+        anthropic: anthropic as never,
+        maxTokens: 4096,
+        thinkingBudgetTokens: 8192, // greater than max: invalid
+      }),
+    ).toThrow(/thinking.*(budget|max)/i);
+  });
+
   it('delivers thinking blocks to the reasoningSink', async () => {
     const sink = vi.fn();
     const { anthropic } = mockAnthropic([

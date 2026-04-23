@@ -128,15 +128,18 @@ export interface StartAgentOptions {
    */
   readonly model?: string;
   /**
-   * Max output tokens per request. Default 4096 for respondTo, 2048
-   * for counterOnce (counters are short). Override if your models or
-   * prompts require more.
+   * Max output tokens per request. Default 16384 for respondTo, half
+   * that for counterOnce (counters are short). Override if your models
+   * or prompts require more. Per the Anthropic Messages API contract,
+   * max_tokens must be strictly greater than thinking.budget_tokens;
+   * startAgent validates this and throws up-front on violation.
    */
   readonly maxTokens?: number;
   /**
    * Extended-thinking budget for respondTo. Default 8192. Must be
    * >= 1024 per the Anthropic API contract and < maxTokens. The
-   * counterOnce path uses half this budget.
+   * counterOnce path halves this budget (floored to 1024) and halves
+   * max_tokens, then re-validates the strict inequality.
    */
   readonly thinkingBudgetTokens?: number;
   /**
@@ -156,14 +159,40 @@ export interface StartAgentOptions {
 
 /** Default model; overridden per-principal by the caller. */
 const DEFAULT_MODEL = 'claude-opus-4-7';
-const DEFAULT_MAX_TOKENS = 4096;
+// Anthropic's Messages API requires `thinking.budget_tokens < max_tokens`
+// for manual extended thinking, returning 400 otherwise. The previous
+// defaults (max=4096, budget=8192) violated this on every call. Raising
+// max well above the thinking budget keeps both respondTo (max) and
+// counterOnce (floor(max/2)) strictly above their respective budgets
+// (floor(budget/2), with a 1024 floor). Callers overriding either knob
+// still get the runtime guard below.
+const DEFAULT_MAX_TOKENS = 16_384;
 const DEFAULT_THINKING_BUDGET = 8192;
+const MIN_THINKING_BUDGET = 1024;
 
 export function startAgent(opts: StartAgentOptions): AgentHandle {
   const systemPrompt = opts.canonRenderer.renderFor({ principal: opts.principal });
   const model = opts.model ?? DEFAULT_MODEL;
   const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
   const thinkingBudget = opts.thinkingBudgetTokens ?? DEFAULT_THINKING_BUDGET;
+  // Fail loudly up-front. The SDK path otherwise hits a 400 mid-round,
+  // surfacing a cryptic API error the operator has to trace. Validate
+  // against the Anthropic contract: budget must be < max_tokens, and
+  // the counterOnce branch halves both - ensure the halved budget
+  // (floored to MIN_THINKING_BUDGET) is also strictly less than the
+  // halved max_tokens.
+  if (thinkingBudget >= maxTokens) {
+    throw new Error(
+      `[agent-sdk] thinkingBudgetTokens (${thinkingBudget}) must be strictly less than maxTokens (${maxTokens}) per Anthropic API contract`,
+    );
+  }
+  const counterMaxTokens = Math.max(1, Math.floor(maxTokens / 2));
+  const counterBudget = Math.max(MIN_THINKING_BUDGET, Math.floor(thinkingBudget / 2));
+  if (counterBudget >= counterMaxTokens) {
+    throw new Error(
+      `[agent-sdk] counter-branch thinking budget (${counterBudget}) must be < max_tokens (${counterMaxTokens}); increase maxTokens or decrease thinkingBudgetTokens`,
+    );
+  }
   const principalId = String(opts.principal.id);
 
   let state: AgentStatus = 'running';
@@ -248,10 +277,10 @@ export function startAgent(opts: StartAgentOptions): AgentHandle {
     const response = await opts.anthropic.messages.create({
       model,
       system: systemPrompt,
-      max_tokens: Math.max(1, Math.floor(maxTokens / 2)),
+      max_tokens: counterMaxTokens,
       thinking: {
         type: 'enabled',
-        budget_tokens: Math.max(1024, Math.floor(thinkingBudget / 2)),
+        budget_tokens: counterBudget,
       },
       messages: [
         {
