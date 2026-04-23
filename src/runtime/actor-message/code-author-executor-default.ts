@@ -118,6 +118,16 @@ export function buildDefaultCodeAuthorExecutor(
       const successCriteria = typeof meta['success_criteria'] === 'string'
         ? meta['success_criteria']
         : undefined;
+      // The originating Question's prompt, if the plan-atom factory
+      // embedded it under `question_prompt` in metadata. The plan
+      // content is the Decision answer -- which is governance-layer
+      // prose, sometimes abstract. The question prompt is the
+      // concrete payload the operator/agent asked for. Forwarded to
+      // the drafter so the LLM has the literal content to diff
+      // against, not just the abstract plan reference.
+      const questionPrompt = typeof meta['question_prompt'] === 'string'
+        ? meta['question_prompt']
+        : undefined;
 
       // Pre-read each target file so the drafter sees byte-exact
       // content + line counts. A missing file (ENOENT) is treated
@@ -139,6 +149,9 @@ export function buildDefaultCodeAuthorExecutor(
           ...(config.disallowedTools !== undefined ? { disallowedTools: config.disallowedTools } : {}),
           ...(signal !== undefined ? { signal } : {}),
           ...(fileContents.length > 0 ? { fileContents } : {}),
+          ...(questionPrompt !== undefined && questionPrompt.length > 0
+            ? { questionPrompt }
+            : {}),
         });
       } catch (err) {
         if (err instanceof DrafterError) {

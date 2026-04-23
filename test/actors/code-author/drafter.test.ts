@@ -619,6 +619,89 @@ describe('draftCodeChange', () => {
     });
     expect(resB.touchedPaths).toEqual(['docs/new-file.md']);
   });
+
+  it('questionPrompt: when provided non-empty, included in DATA block under `question_prompt`', async () => {
+    // Closes the deliberation-paraphrase gap: the Decision answer
+    // may reduce a concrete instruction ("append line X") to an
+    // abstract reference ("the specified line") through
+    // arbitration. Without the originating Question body in the
+    // DATA block, the LLM has no literal to diff against and emits
+    // an empty diff. Threading the Question prompt through as
+    // `question_prompt` gives the LLM the verbatim payload; the
+    // system prompt tells it to prefer this for diff content while
+    // respecting plan_content as the governance contract.
+    const plan = mkPlan('APPROVE appending the specified line to README.md');
+    const fence = mkFence();
+    const inputs = {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      questionPrompt: 'Append exactly this line to the end of README.md: - entry',
+      model: 'claude-opus-4-7',
+    };
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      question_prompt: 'Append exactly this line to the end of README.md: - entry',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'Appended per verbatim Question prompt.',
+      confidence: 0.9,
+    });
+    const result = await draftCodeChange(host, inputs);
+    expect(result.diff).toBe(SAMPLE_DIFF);
+    expect(result.notes).toBe('Appended per verbatim Question prompt.');
+  });
+
+  it('questionPrompt: omitted from DATA when undefined or empty string (backward compat)', async () => {
+    // Call sites that pre-date this field must not see their
+    // registered MemoryLLM response evicted by a new key. Absent
+    // or empty-string `questionPrompt` -> key does not land in the
+    // DATA block, preserving the data-hash shape older tests expect.
+    const plan = mkPlan('No question prompt supplied');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    });
+    // Case A: `questionPrompt` omitted entirely.
+    const resA = await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    });
+    expect(resA.touchedPaths).toEqual(['README.md']);
+    // Case B: `questionPrompt` explicitly empty string -> same shape.
+    const resB = await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      questionPrompt: '',
+      model: 'claude-opus-4-7',
+    });
+    expect(resB.touchedPaths).toEqual(['README.md']);
+  });
 });
 
 describe('looksLikeUnifiedDiff', () => {

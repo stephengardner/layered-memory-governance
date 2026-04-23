@@ -827,4 +827,62 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     // No fs read should have been attempted against the escape path.
     expect(reads).toHaveLength(0);
   });
+
+  it('question_prompt metadata is forwarded from plan to drafter DATA block', async () => {
+    // Closes the deliberation-paraphrase gap: when the Decision
+    // answer has reduced the Question's concrete payload to an
+    // abstract reference, the drafter reads the verbatim payload
+    // from `plan.metadata.question_prompt` (embedded by
+    // `executeDecision`) and emits a diff against the literal
+    // content, not the paraphrase.
+    const plan = mkPlan(
+      'plan-qprompt',
+      'APPROVE appending the specified line to README.md',
+      {
+        target_paths: ['README.md'],
+        title: 'Append line',
+        question_prompt: 'Append exactly this line to the end of README.md: - entry',
+      },
+    );
+    // Registering with `question_prompt` in the DATA block: this is
+    // how we assert the executor forwarded the field. Miss -> MemoryLLM
+    // throws "no registered response", which is exactly the gap this
+    // seam closes.
+    const data = {
+      plan_id: 'plan-qprompt',
+      plan_title: 'Append line',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      question_prompt: 'Append exactly this line to the end of README.md: - entry',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, data, {
+      diff: VALID_DIFF,
+      notes: 'Used verbatim Question prompt.',
+      confidence: 0.92,
+    });
+
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const readFileFn = async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 200, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/repo',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+      readFileFn,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    expect(result.kind).toBe('dispatched');
+  });
 });

@@ -226,9 +226,24 @@ export async function executeDecision(
   // failure-to-atom shape used by the codeAuthorFn path.
   let planAtom: Atom;
   try {
-    planAtom = planAtomFactory !== undefined
+    const baseAtom = planAtomFactory !== undefined
       ? planAtomFactory(decision)
       : defaultPlanAtomFactory(decision, executorPrincipalId, createdAt);
+    // Enrich plan metadata with the originating Question's id + prompt
+    // so the downstream drafter has the literal payload alongside the
+    // Decision's governance-layer prose. The Decision answer may reduce
+    // a concrete instruction to an abstract reference during arbitration;
+    // without the Question's verbatim body the drafter has no literal to
+    // implement. Merge rather than overwrite so a custom planAtomFactory
+    // that already set these keys wins (an explicit caller intent).
+    planAtom = {
+      ...baseAtom,
+      metadata: {
+        question_id: question.id,
+        question_prompt: question.prompt,
+        ...baseAtom.metadata,
+      },
+    };
     await host.atoms.put(planAtom);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

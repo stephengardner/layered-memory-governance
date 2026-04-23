@@ -110,6 +110,22 @@ export interface DraftCodeChangeInputs {
     readonly path: string;
     readonly content: string;
   }>;
+  /**
+   * Verbatim prompt of the originating Question atom that the Plan
+   * resolves, when available. A Plan's `content` is the Decision's
+   * prose answer -- which, through arbitration, can reduce a
+   * concrete instruction ("append line X") to a pronoun reference
+   * ("the specified line"). Without the original Question body, the
+   * LLM cannot reconstruct the literal payload and will emit an
+   * empty diff. The drafter includes this field in the DATA block
+   * under `question_prompt`; the system prompt tells the LLM to
+   * treat it as the source-of-truth payload and to treat the Plan
+   * prose as the governance-layer contract around that payload.
+   *
+   * Empty string or undefined omits the key from DATA so the
+   * MemoryLLM data-hash stays compatible with older fixtures.
+   */
+  readonly questionPrompt?: string;
   /** Abort signal; forwarded to LlmOptions.signal so STOP trips propagate. */
   readonly signal?: AbortSignal;
 }
@@ -202,6 +218,14 @@ export const DRAFT_SYSTEM_PROMPT = [
   '6. When `file_contents` does NOT include a path that is in `target_paths`, treat that',
   '   path as a not-yet-existing file (CREATE). Emit `--- /dev/null` on the old side and',
   '   `+++ b/<path>` on the new side with a `@@ -0,0 +N,M @@` hunk header.',
+  '',
+  'Payload resolution:',
+  '7. The DATA block MAY include a `question_prompt` string: the verbatim originating',
+  '   request that the Plan resolves. `plan_content` (the Decision answer) is the',
+  '   governance-layer contract and may use abstract references like "the specified',
+  '   line"; `question_prompt` is the concrete payload to implement. When both are',
+  '   present and conflict, prefer the literal content from `question_prompt` for the',
+  '   diff body, and treat `plan_content` as the scope/constraint spec around it.',
   '',
   'You may use Read/Grep/Glob if available to orient further in the codebase. Do not Write,',
   'Edit, Bash, or use any tool outside the read set. Writes route through the PR the caller',
@@ -364,6 +388,13 @@ function renderPlanForDrafter(inputs: DraftCodeChangeInputs): Record<string, unk
       path: fc.path,
       content: fc.content,
     }));
+  }
+  // Only include `question_prompt` when the caller supplied one.
+  // Omitting the key when empty preserves the MemoryLLM data-hash
+  // for every fixture that pre-dates this field, same shape
+  // discipline as `file_contents` above.
+  if (typeof inputs.questionPrompt === 'string' && inputs.questionPrompt.length > 0) {
+    data['question_prompt'] = inputs.questionPrompt;
   }
   return data;
 }
