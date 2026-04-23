@@ -24,6 +24,8 @@
  * semantics.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type { AtomStore } from '../../substrate/interface.js';
 import type {
   Atom,
@@ -36,10 +38,14 @@ const CHECKPOINT_KIND = 'agent-checkpoint';
 /**
  * Persist the messages array as an observation atom and return its id.
  *
- * The id is derived from the agent id + the current wall clock so
- * repeated calls produce distinct atoms. Callers that require a
- * deterministic id (e.g. content-hash idempotency) should wrap this
- * function with their own id policy.
+ * The id is derived from the agent id + current wall clock + a random
+ * UUID so repeated or concurrent calls produce distinct atoms even when
+ * they land in the same millisecond. Date.now() alone was insufficient
+ * because ms-granular collisions happened on rapid or parallel saves
+ * and AtomStore.put() threw ConflictError, silently losing the
+ * checkpoint. Callers that require a deterministic id (e.g.
+ * content-hash idempotency) should wrap this function with their own
+ * id policy.
  */
 export async function saveCheckpoint(
   atomStore: AtomStore,
@@ -47,7 +53,7 @@ export async function saveCheckpoint(
   messages: unknown[],
 ): Promise<AtomId> {
   const now = new Date().toISOString();
-  const id = buildCheckpointId(agentId, Date.now());
+  const id = buildCheckpointId(agentId, Date.now(), randomUUID());
   const atom: Atom = {
     schema_version: 1,
     id: id as AtomId,
@@ -83,9 +89,13 @@ export async function saveCheckpoint(
 
 /**
  * Load a checkpoint by id and return the messages array stored at save
- * time. Throws with a descriptive message when the atom is absent; the
- * coordinator surfaces that to the operator rather than silently
- * starting a fresh session.
+ * time. Throws with a descriptive message when the atom is absent or
+ * does not actually represent an agent checkpoint; the coordinator
+ * surfaces that to the operator rather than silently starting a fresh
+ * session. Validating the shape (type='observation', layer='L0',
+ * metadata.kind=CHECKPOINT_KIND) closes a seam where an unrelated
+ * observation whose content happened to be a JSON array could be
+ * loaded and fed back to an agent as its resume context.
  */
 export async function loadCheckpoint(
   atomStore: AtomStore,
@@ -94,6 +104,15 @@ export async function loadCheckpoint(
   const atom = await atomStore.get(checkpointId);
   if (atom === null) {
     throw new Error(`[agent-sdk] Checkpoint not found: ${String(checkpointId)}`);
+  }
+  if (
+    atom.type !== 'observation'
+    || atom.layer !== 'L0'
+    || atom.metadata['kind'] !== CHECKPOINT_KIND
+  ) {
+    throw new Error(
+      `[agent-sdk] Atom ${String(checkpointId)} is not an agent checkpoint`,
+    );
   }
   const parsed: unknown = JSON.parse(atom.content);
   if (!Array.isArray(parsed)) {
@@ -108,6 +127,10 @@ export async function loadCheckpoint(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function buildCheckpointId(agentId: PrincipalId, epochMs: number): string {
-  return `checkpoint-${String(agentId)}-${epochMs}`;
+function buildCheckpointId(
+  agentId: PrincipalId,
+  epochMs: number,
+  nonce: string,
+): string {
+  return `checkpoint-${String(agentId)}-${epochMs}-${nonce}`;
 }
