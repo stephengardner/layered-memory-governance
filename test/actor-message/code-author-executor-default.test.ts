@@ -665,6 +665,123 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     }
   });
 
+  it('heuristic: strips unified-diff `a/` and `b/` prefixes when Decision echoes a diff block', async () => {
+    // Surfaced by live E2E #3b: the virtual org's Decision was
+    // itself a valid unified diff. The heuristic matched both
+    // `a/docs/foo.md` and `b/docs/foo.md` and emitted them as
+    // distinct targets; the LLM then produced a diff touching the
+    // bare `docs/foo.md`, and the drafter path-scope check rejected
+    // it because `docs/foo.md` was NOT in the inflated target set.
+    // After normalization, both prefixed fragments fold to the same
+    // bare path and the scope check aligns with the drafter output.
+    const plan = mkPlan(
+      'plan-embedded-diff',
+      '--- /dev/null\n+++ b/docs/sample.md\n@@ -0,0 +1,1 @@\n+hello\n',
+      {},
+    );
+    const data = {
+      plan_id: 'plan-embedded-diff',
+      plan_title: 'Bump README',
+      plan_content: plan.content,
+      target_paths: ['docs/sample.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, data, {
+      diff: [
+        '--- /dev/null',
+        '+++ b/docs/sample.md',
+        '@@ -0,0 +1,1 @@',
+        '+hello',
+        '',
+      ].join('\n'),
+      notes: 'create file',
+      confidence: 0.95,
+    });
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const readFileFn = async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 99, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/repo',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+      readFileFn,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') throw new Error('unreachable');
+    expect(result.touchedPaths).toEqual(['docs/sample.md']);
+  });
+
+  it('heuristic: preserves top-level `a/` or `b/` directories that are NOT diff prefixes', async () => {
+    // Guard against over-eager stripping. A legitimate repo layout
+    // like `a/index.md` (top-level dir literally named `a`) must
+    // survive the heuristic intact; stripping would collapse it to
+    // the leaf `index.md` and the drafter would then reject the
+    // drafter-produced diff targeting `a/index.md` because
+    // `index.md` is not in the inflated scope. The fold only runs
+    // when the stripped path still has at least one `/`.
+    const plan = mkPlan(
+      'plan-toplevel-a',
+      'touch file a/index.md to bump version',
+      {},
+    );
+    const data = {
+      plan_id: 'plan-toplevel-a',
+      plan_title: 'Bump README',
+      plan_content: plan.content,
+      target_paths: ['a/index.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, data, {
+      diff: [
+        '--- a/a/index.md',
+        '+++ b/a/index.md',
+        '@@ -1,1 +1,1 @@',
+        '-hello',
+        '+world',
+        '',
+      ].join('\n'),
+      notes: 'update top-level a/',
+      confidence: 0.9,
+    });
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const readFileFn = async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+    const executor = buildDefaultCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 100, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/repo',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc',
+      execImpl,
+      readFileFn,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') throw new Error('unreachable');
+    // Top-level `a/` must be PRESERVED, not stripped to `index.md`.
+    expect(result.touchedPaths).toEqual(['a/index.md']);
+  });
+
   it('security: target_paths from metadata with `..` is rejected by reader sandbox', async () => {
     // Defense in depth: even if target_paths comes from structured
     // metadata (bypasses the heuristic's `..` check), the executor's

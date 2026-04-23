@@ -309,7 +309,14 @@ function extractTargetPathsFromProse(prose: string): string[] {
   const out: string[] = [];
   let m: RegExpExecArray | null;
   while ((m = pathRe.exec(prose)) !== null) {
-    const p = m[1]!;
+    // Normalize unified-diff path prefixes. When plan content itself
+    // embeds a diff, the heuristic would otherwise emit `a/foo.md`
+    // AND `b/foo.md` as distinct targets; the drafter then produces
+    // a diff touching the bare `foo.md`, and the downstream path-
+    // scope check fails because the bare path is not in the
+    // inflated target set. Folding `a/` and `b/` to the bare path
+    // mirrors git semantics.
+    const p = stripDiffPathPrefix(m[1]!);
     if (hasTraversalSegment(p)) continue;
     if (!seen.has(p)) {
       seen.add(p);
@@ -317,6 +324,18 @@ function extractTargetPathsFromProse(prose: string): string[] {
     }
   }
   return out;
+}
+
+function stripDiffPathPrefix(p: string): string {
+  // Only fold when stripping the `a/` or `b/` prefix still leaves a
+  // `<dir>/<file>` shape. This keeps a legitimate top-level directory
+  // named `a` or `b` (e.g., `a/index.md`) from being collapsed to a
+  // leaf-only path that the drafter would then reject under a
+  // different invariant.
+  const isDiffPrefix = p.startsWith('a/') || p.startsWith('b/');
+  if (!isDiffPrefix) return p;
+  const stripped = p.slice(2);
+  return stripped.includes('/') ? stripped : p;
 }
 
 function hasTraversalSegment(p: string): boolean {
