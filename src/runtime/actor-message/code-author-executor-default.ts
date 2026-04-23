@@ -16,6 +16,8 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join, isAbsolute } from 'node:path';
 import type { execa } from 'execa';
 import type { Atom } from '../../types.js';
 import type { Host } from '../../interface.js';
@@ -65,6 +67,17 @@ export interface DefaultExecutorConfig {
    * stub so no git subprocess runs.
    */
   readonly execImpl?: typeof execa;
+  /**
+   * Inject a filesystem reader for the target-path pre-read step.
+   * Given an absolute path, returns the file contents as UTF-8 text
+   * or throws (the executor catches ENOENT-family errors and treats
+   * the path as a CREATE; any other error is surfaced).
+   *
+   * Default: `fs.readFile(path, 'utf8')`. Tests inject a stub so the
+   * executor's own fs access stays hermetic; production leaves it
+   * undefined so real file content flows through.
+   */
+  readonly readFileFn?: (absolutePath: string) => Promise<string>;
 }
 
 export function buildDefaultCodeAuthorExecutor(
@@ -90,10 +103,30 @@ export function buildDefaultCodeAuthorExecutor(
       const safeIdForRef = sanitizeGitRefComponent(planId);
       const branchName = `${branchPrefix}${safeIdForRef}-${nonce()}`;
       const meta = plan.metadata as Record<string, unknown>;
-      const targetPaths = extractStringArray(meta, 'target_paths');
+      // Resolution order for target paths:
+      //   1. plan.metadata.target_paths (structured path, authoritative)
+      //   2. heuristic parse of plan.content for <dir>/<file>.<ext>
+      //      shapes with known text/code extensions (fallback for
+      //      prose-only plans where no structured schema emitted
+      //      target_paths). The heuristic is permissive: the caller
+      //      can still pass a structured target_paths on the plan
+      //      metadata and bypass regex entirely.
+      const declared = extractStringArray(meta, 'target_paths');
+      const targetPaths = declared.length > 0
+        ? declared
+        : extractTargetPathsFromProse(String(plan.content));
       const successCriteria = typeof meta['success_criteria'] === 'string'
         ? meta['success_criteria']
         : undefined;
+
+      // Pre-read each target file so the drafter sees byte-exact
+      // content + line counts. A missing file (ENOENT) is treated
+      // as a CREATE: we skip the entry, the drafter does not get
+      // a file_contents row for that path, and the LLM is expected
+      // to emit `--- /dev/null` on the old side per the system
+      // prompt's rule 6. Any other fs error propagates.
+      const readFn = config.readFileFn ?? ((p: string) => readFile(p, 'utf8'));
+      const fileContents = await readTargetContents(targetPaths, config.repoDir, readFn);
 
       let draftResult;
       try {
@@ -105,6 +138,7 @@ export function buildDefaultCodeAuthorExecutor(
           ...(successCriteria !== undefined ? { successCriteria } : {}),
           ...(config.disallowedTools !== undefined ? { disallowedTools: config.disallowedTools } : {}),
           ...(signal !== undefined ? { signal } : {}),
+          ...(fileContents.length > 0 ? { fileContents } : {}),
         });
       } catch (err) {
         if (err instanceof DrafterError) {
@@ -234,6 +268,78 @@ function buildCommitMessage(plan: Atom, draftNotes: string): string {
   const title = buildPrTitle(plan);
   const body = draftNotes.trim();
   return body.length > 0 ? `${title}\n\n${body}` : title;
+}
+
+/**
+ * Heuristic path extractor over prose plan content. Looks for
+ * `<dir>/<file>.<ext>` shapes where `<ext>` is a known text or code
+ * extension. Intended as a FALLBACK when plan.metadata.target_paths
+ * is unset -- a structured field is always preferred. The extension
+ * allowlist is deliberately narrow so prose like `example.com` or
+ * `1.2.3` does not get misread as a file path.
+ *
+ * The returned list is de-duplicated and order-stable to the first
+ * occurrence in the prose (for deterministic DATA-hash behavior in
+ * tests that depend on the drafter call fingerprint).
+ */
+function extractTargetPathsFromProse(prose: string): string[] {
+  // Extension allowlist -- text/code files we expect the Code Author
+  // to touch. Deliberately excludes extensions that show up in prose
+  // for other reasons (e.g., `.com`, `.org`, `.net`, version strings).
+  const extAllowlist = 'md|ts|tsx|js|jsx|mjs|cjs|json|yml|yaml|toml|css|scss|html|sh|py|go|rs|java|kt|rb|ex|exs';
+  const pathRe = new RegExp(
+    `\\b([A-Za-z0-9_.-]+(?:\\/[A-Za-z0-9_.-]+)+\\.(?:${extAllowlist}))\\b`,
+    'g',
+  );
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = pathRe.exec(prose)) !== null) {
+    const p = m[1]!;
+    if (!seen.has(p)) {
+      seen.add(p);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/**
+ * Pre-read target files from the repo into `{ path, content }`
+ * tuples. An ENOENT (or ENOTDIR) is the expected CREATE case:
+ * the path will exist after the diff is applied but does not yet.
+ * Silently skip those entries; the drafter's system prompt tells
+ * the LLM to emit `--- /dev/null` for any path that appears in
+ * `target_paths` but not in `file_contents`.
+ *
+ * Any other fs error (EACCES, EISDIR, etc.) propagates so the
+ * executor surfaces it at the drafter stage rather than pretending
+ * the path was fine.
+ */
+async function readTargetContents(
+  paths: ReadonlyArray<string>,
+  repoDir: string,
+  readFn: (absolutePath: string) => Promise<string>,
+): Promise<Array<{ path: string; content: string }>> {
+  const out: Array<{ path: string; content: string }> = [];
+  for (const p of paths) {
+    // Tolerate both relative (typical) and absolute (rare/misuse)
+    // entries in target_paths. join() would silently drop repoDir
+    // when given an absolute second arg on POSIX, which would let
+    // a malicious or sloppy plan escape the repoDir sandbox; the
+    // explicit isAbsolute check + resolve-via-join for relative
+    // paths keeps the read rooted at repoDir.
+    const abs = isAbsolute(p) ? p : join(repoDir, p);
+    try {
+      const content = await readFn(abs);
+      out.push({ path: p, content });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+      throw err;
+    }
+  }
+  return out;
 }
 
 function sanitizeGitRefComponent(s: string): string {
