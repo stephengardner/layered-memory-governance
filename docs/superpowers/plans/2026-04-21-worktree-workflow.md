@@ -1,10 +1,10 @@
-# Worktree-first parallel workflow — implementation plan
+# Worktree-first parallel workflow  -  implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the `.worktrees/<slug>/` + `NOTES.md` + `wt` CLI + skill so parallel agents stop colliding on a shared checkout, and codify the rule as L3 canon.
 
-**Architecture:** A thin Node CLI (`scripts/wt.mjs`) dispatches over pure helper functions in `scripts/lib/wt.mjs`. The helpers are unit-testable with vitest and have zero imports from `src/`, `dist/`, or `.lag/` — enforced by a static portability test. The CLI wraps `git worktree`, `gh` (graceful fallback), and `git-spice` (`gs`). A `.claude/skills/worktree-workflow/SKILL.md` documents the workflow; one L3 canon atom encodes the rule; a memory update revises the prior "never stack" note to reflect the nuance.
+**Architecture:** A thin Node CLI (`scripts/wt.mjs`) dispatches over pure helper functions in `scripts/lib/wt.mjs`. The helpers are unit-testable with vitest and have zero imports from `src/`, `dist/`, or `.lag/`  -  enforced by a static portability test. The CLI wraps `git worktree`, `gh` (graceful fallback), and `git-spice` (`gs`). A `.claude/skills/worktree-workflow/SKILL.md` documents the workflow; one L3 canon atom encodes the rule; a memory update revises the prior "never stack" note to reflect the nuance.
 
 **Tech stack:** Node >=22 (ES modules), vitest, execa (existing dep), plain `git` + optional `gh` + optional `gs`. No new runtime deps.
 
@@ -12,7 +12,7 @@
 
 **Out of scope (explicit):**
 - **No migration** of existing sibling worktrees (`../memory-governance-apps`, `../memory-governance-substrate`) in this PR. Migration ships as a separate small PR after the agents currently using those worktrees hand off.
-- **No edit to `apps/console/CLAUDE.md:43`** in this PR — that file still documents the sibling convention and must stay consistent with reality until migration.
+- **No edit to `apps/console/CLAUDE.md:43`** in this PR  -  that file still documents the sibling convention and must stay consistent with reality until migration.
 - **No Stop-hook** for NOTES.md staleness; deferred to phase 2 if cadence proves insufficient.
 - **No scheduled cleanup job.**
 
@@ -21,25 +21,25 @@
 ## File structure
 
 **Create:**
-- `scripts/lib/wt.mjs` — pure helpers (slug validation, worktree-list parser, activity/stale detectors, package-manager detect, NOTES skeleton). ~200 lines max.
-- `scripts/wt.mjs` — CLI entry dispatching `new|list|rm|clean|stack|note`. ~250 lines max.
-- `test/scripts/wt.test.ts` — unit tests against `scripts/lib/wt.mjs`.
-- `test/scripts/wt.portability.test.ts` — static test: `scripts/wt.mjs` and `scripts/lib/wt.mjs` import nothing from `src/`, `dist/`, or `.lag/`.
-- `test/scripts/wt.integration.test.ts` — round-trip: `new foo → list → rm foo` against a throwaway git repo under `os.tmpdir()`. Gated behind `LAG_WT_INTEGRATION=1` so default CI doesn't need a writable tmp.
-- `.claude/skills/worktree-workflow/SKILL.md` — skill file.
-- `scripts/bootstrap-workflow-canon.mjs` — canon atom bootstrap for the new L3 directive.
+- `scripts/lib/wt.mjs`  -  pure helpers (slug validation, worktree-list parser, activity/stale detectors, package-manager detect, NOTES skeleton). ~200 lines max.
+- `scripts/wt.mjs`  -  CLI entry dispatching `new|list|rm|clean|stack|note`. ~250 lines max.
+- `test/scripts/wt.test.ts`  -  unit tests against `scripts/lib/wt.mjs`.
+- `test/scripts/wt.portability.test.ts`  -  static test: `scripts/wt.mjs` and `scripts/lib/wt.mjs` import nothing from `src/`, `dist/`, or `.lag/`.
+- `test/scripts/wt.integration.test.ts`  -  round-trip: `new foo → list → rm foo` against a throwaway git repo under `os.tmpdir()`. Gated behind `LAG_WT_INTEGRATION=1` so default CI doesn't need a writable tmp.
+- `.claude/skills/worktree-workflow/SKILL.md`  -  skill file.
+- `scripts/bootstrap-workflow-canon.mjs`  -  canon atom bootstrap for the new L3 directive.
 
 **Modify:**
-- `CLAUDE.md` (repo root) — add one-paragraph pointer to the new skill under an existing section (do NOT edit the auto-managed canon block).
-- `package.json` — add `"wt": "node scripts/wt.mjs"` npm script; add bootstrap target if needed.
-- `scripts/bootstrap-all-canon.mjs` — call the new bootstrap in its pipeline (if the pattern applies; verify at task time).
-- `C:\Users\opens\.claude\projects\C--Users-opens-memory-governance\memory\feedback_branch_off_main_not_stacks.md` — revise to reflect the nuance.
+- `CLAUDE.md` (repo root)  -  add one-paragraph pointer to the new skill under an existing section (do NOT edit the auto-managed canon block).
+- `package.json`  -  add `"wt": "node scripts/wt.mjs"` npm script; add bootstrap target if needed.
+- `scripts/bootstrap-all-canon.mjs`  -  call the new bootstrap in its pipeline (if the pattern applies; verify at task time).
+- `C:\Users\opens\.claude\projects\C--Users-opens-memory-governance\memory\feedback_branch_off_main_not_stacks.md`  -  revise to reflect the nuance.
 
 **Do NOT modify:**
 - `apps/console/CLAUDE.md` (sibling-convention reference stays until migration PR).
 - `../memory-governance-apps` or `../memory-governance-substrate` (live agents).
 - Any file under `src/` or `dist/`.
-- The main checkout's working tree — all changes happen in this worktree and land via PR.
+- The main checkout's working tree  -  all changes happen in this worktree and land via PR.
 
 ---
 
@@ -55,17 +55,17 @@ Read `C:/Users/opens/.claude/plugins/cache/claude-plugins-official/superpowers/5
 - [ ] **Step 2: Write the skill file**
 
 Content sections (in order):
-1. Frontmatter (`name: worktree-workflow`, `description: Use when starting any parallel unit of work in this repo — isolates a branch into `.worktrees/<slug>/`, writes a NOTES.md handoff doc, and leaves the main checkout untouched`).
-2. **Overview** — what the skill does, when to use it.
+1. Frontmatter (`name: worktree-workflow`, `description: Use when starting any parallel unit of work in this repo  -  isolates a branch into `.worktrees/<slug>/`, writes a NOTES.md handoff doc, and leaves the main checkout untouched`).
+2. **Overview**  -  what the skill does, when to use it.
 3. **Announce at start** (matches superpowers skill convention).
-4. **Creating a worktree** — `wt new <slug>`, what it does step-by-step.
-5. **NOTES.md schema** — the full template from spec §2.
-6. **Listing and staleness** — `wt list` output + default thresholds (10-min activity, 14-day stale), overridable via env.
-7. **Removing a worktree** — `wt rm <slug>` confirmations.
-8. **Cleanup** — `wt clean`, operator-invoked, default-skip prompts.
-9. **Stacking** — the codified test ("does child compile without parent?"), `wt stack`, `git-spice` install link, loud failure if `gs` missing.
-10. **Common mistakes** — editing outside your worktree, creating one when another agent is mid-work, committing NOTES.md by accident.
-11. **Integration** — when this skill is called by other skills (paired with `using-git-worktrees`, called before any implementation plan execution).
+4. **Creating a worktree**  -  `wt new <slug>`, what it does step-by-step.
+5. **NOTES.md schema**  -  the full template from spec §2.
+6. **Listing and staleness**  -  `wt list` output + default thresholds (10-min activity, 14-day stale), overridable via env.
+7. **Removing a worktree**  -  `wt rm <slug>` confirmations.
+8. **Cleanup**  -  `wt clean`, operator-invoked, default-skip prompts.
+9. **Stacking**  -  the codified test ("does child compile without parent?"), `wt stack`, `git-spice` install link, loud failure if `gs` missing.
+10. **Common mistakes**  -  editing outside your worktree, creating one when another agent is mid-work, committing NOTES.md by accident.
+11. **Integration**  -  when this skill is called by other skills (paired with `using-git-worktrees`, called before any implementation plan execution).
 
 - [ ] **Step 3: Commit**
 
@@ -132,7 +132,7 @@ Expected: FAIL with module not found.
 - [ ] **Step 3: Implement `validateSlug` in `scripts/lib/wt.mjs`**
 
 ```javascript
-// scripts/lib/wt.mjs — pure helpers for scripts/wt.mjs.
+// scripts/lib/wt.mjs  -  pure helpers for scripts/wt.mjs.
 // Zero imports from src/, dist/, or .lag/ (enforced by wt.portability.test.ts).
 
 /**
@@ -572,7 +572,7 @@ describe('renderNotesSkeleton', () => {
 export function renderNotesSkeleton({ slug, baseLabel, baseSha }) {
   return `# ${slug}
 
-**Intent:** (1 line — what this worktree exists to do)
+**Intent:** (1 line  -  what this worktree exists to do)
 **Branched off:** ${baseLabel} @ ${baseSha}
 **PR:** (pending)
 
@@ -610,7 +610,7 @@ If a fresh agent opens this worktree: (first action)
  *
  * Commands: new, list, rm, clean, stack, note.
  *
- * Zero imports from src/, dist/, or .lag/ — enforced by
+ * Zero imports from src/, dist/, or .lag/  -  enforced by
  * test/scripts/wt.portability.test.ts.
  */
 
@@ -925,7 +925,7 @@ Create two throwaway worktrees, merge one, run `wt clean --dry-run` and verify t
 1. Validate `<parent>` and `<child>` slugs.
 2. Verify `gs --version` succeeds; on failure, exit with `[wt-stack] git-spice not found. Install: https://github.com/abhinav/git-spice/releases` (exit 3, distinct code).
 3. `git worktree add .worktrees/<child> -b feat/<child> feat/<parent>`.
-4. `cd .worktrees/<child> && gs branch create --at feat/<parent>` (or the equivalent — verify against `gs --help` at implementation time).
+4. `cd .worktrees/<child> && gs branch create --at feat/<parent>` (or the equivalent  -  verify against `gs --help` at implementation time).
 5. Write NOTES with `baseLabel = <parent>`, `baseSha = <parent-head>`.
 6. Run setup + verify NOTES ignored.
 
@@ -1089,7 +1089,7 @@ const ATOMS = [
     what_breaks_if_revisit:
       'Sound at 3 months: the rule scales with actor count (every new actor wants its own '
       + 'isolated workspace) and with repo-count (if a second repo joins, the pattern '
-      + 'generalizes — one .worktrees/ per repo). Revisit would be prompted only by a '
+      + 'generalizes  -  one .worktrees/ per repo). Revisit would be prompted only by a '
       + 'shift to a filesystem-transparent orchestration layer (e.g., per-actor containers) '
       + 'where the worktree abstraction moves below the line; the rule still applies, '
       + 'the mechanism changes.',
@@ -1122,7 +1122,7 @@ cd .worktrees/worktree-workflow && npm run build --silent && node scripts/bootst
 
 Expected: atom written on first run, idempotent-skip message on subsequent runs.
 
-**If `LAG_OPERATOR_ID` is not set:** skip this step. Do NOT auto-resolve a placeholder principal — writing an L3 atom under a wrong principal corrupts the provenance chain. Mark the task "verify at merge time" and let the PR reviewer confirm the atom lands correctly when the operator-id environment is available (typically in CI via the existing bootstrap pipeline).
+**If `LAG_OPERATOR_ID` is not set:** skip this step. Do NOT auto-resolve a placeholder principal  -  writing an L3 atom under a wrong principal corrupts the provenance chain. Mark the task "verify at merge time" and let the PR reviewer confirm the atom lands correctly when the operator-id environment is available (typically in CI via the existing bootstrap pipeline).
 
 - [ ] **Step 5: Commit**
 
@@ -1150,7 +1150,7 @@ Rewrite to: "Default branch-off-main; stack deliberately when work is genuinely 
 
 - [ ] **Step 3: No commit**
 
-Memory file lives outside the repo — no git action. (MEMORY.md's one-line pointer stays the same title; only the body of the file changes.)
+Memory file lives outside the repo  -  no git action. (MEMORY.md's one-line pointer stays the same title; only the body of the file changes.)
 
 ---
 
@@ -1159,7 +1159,7 @@ Memory file lives outside the repo — no git action. (MEMORY.md's one-line poin
 **Files:**
 - Modify: `README.md` (only if a Development/Scripts/Tooling section exists; otherwise skip)
 
-**Context:** Main `CLAUDE.md` is entirely auto-managed by LAG (the whole file is the rendered canon projection — there is no hand-edited region). Editing content outside the `<!-- lag:canon-start --> / <!-- lag:canon-end -->` markers would be overwritten on next canon application, and the new canon atom from Task 17 already surfaces the rule via the auto-rendered Directives section. So we don't need a pointer in `CLAUDE.md` — the canon atom itself IS the pointer.
+**Context:** Main `CLAUDE.md` is entirely auto-managed by LAG (the whole file is the rendered canon projection  -  there is no hand-edited region). Editing content outside the `<!-- lag:canon-start --> / <!-- lag:canon-end -->` markers would be overwritten on next canon application, and the new canon atom from Task 17 already surfaces the rule via the auto-rendered Directives section. So we don't need a pointer in `CLAUDE.md`  -  the canon atom itself IS the pointer.
 
 - [ ] **Step 1: Check README.md for an appropriate section**
 
@@ -1172,7 +1172,7 @@ grep -nE "^##+ (Development|Scripts|Tooling|Getting started|Contributing)" READM
 One-line addition under the matched section:
 
 ```markdown
-- `npm run wt -- --help` — worktree CLI for parallel-agent isolation (see `.claude/skills/worktree-workflow/SKILL.md`).
+- `npm run wt -- --help`  -  worktree CLI for parallel-agent isolation (see `.claude/skills/worktree-workflow/SKILL.md`).
 ```
 
 - [ ] **Step 3: If no section found, skip this task**
@@ -1212,7 +1212,7 @@ Expected: usage text.
 
 - [ ] **Step 3: README pointer (conditional)**
 
-If `README.md` has a "Development" or "Scripts" section, add one line: `npm run wt -- --help` — worktree CLI. Otherwise skip.
+If `README.md` has a "Development" or "Scripts" section, add one line: `npm run wt -- --help`  -  worktree CLI. Otherwise skip.
 
 - [ ] **Step 4: Commit**
 
@@ -1301,6 +1301,6 @@ Watch for CodeRabbit verdict. Address CR feedback per the `feedback_detailed_cod
 
 ## Post-merge follow-ups (not in this plan)
 
-1. **Migration PR** — `git worktree move` the sibling worktrees into `.worktrees/`, update `apps/console/CLAUDE.md:43`, run one pass of `wt list --stale` + `wt clean` on the 30+ stale branches. Ships as its own plan.
-2. **Tier-3 upstream contribution** — PR `worktree-workflow` skill + CLI as an enhancement to `superpowers:using-git-worktrees`. Optional, owner-decision.
-3. **Phase-2 NOTES.md freshness warning** — if operators report NOTES drift, add an opt-in Stop-hook that warns (never acts) when NOTES is >2h stale.
+1. **Migration PR**  -  `git worktree move` the sibling worktrees into `.worktrees/`, update `apps/console/CLAUDE.md:43`, run one pass of `wt list --stale` + `wt clean` on the 30+ stale branches. Ships as its own plan.
+2. **Tier-3 upstream contribution**  -  PR `worktree-workflow` skill + CLI as an enhancement to `superpowers:using-git-worktrees`. Optional, owner-decision.
+3. **Phase-2 NOTES.md freshness warning**  -  if operators report NOTES drift, add an opt-in Stop-hook that warns (never acts) when NOTES is >2h stale.

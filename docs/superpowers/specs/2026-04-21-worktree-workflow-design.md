@@ -1,4 +1,4 @@
-# Worktree-first parallel workflow — design spec
+# Worktree-first parallel workflow  -  design spec
 
 **Status:** draft, pre-review
 **Date:** 2026-04-21
@@ -11,7 +11,7 @@ Parallel agent work in a single checkout collides. Observed pain at time of writ
 
 - 30+ live feature branches, many with overlapping variants (`kill-switch-*` × 5, `code-author-*` × 5, a `code-author-drafter` → `code-author-drafter-v2` rename suggesting a collision).
 - Sibling worktrees at `../memory-governance-apps` and `../memory-governance-substrate` already in use as an ad-hoc isolation pattern, but without a standard layout, NOTES, or cleanup verb.
-- Documented convention at `apps/console/CLAUDE.md:43` that says "never start a second instance from a different worktree" — confirming the pain is real and known.
+- Documented convention at `apps/console/CLAUDE.md:43` that says "never start a second instance from a different worktree"  -  confirming the pain is real and known.
 - Mid-conversation evidence of two agents in the repo (this session in main + another live on `substrate/1a-core-with-shims` mid-rename). The act of writing this spec required worktree isolation to avoid stepping on the other agent.
 
 ## Goals
@@ -21,7 +21,7 @@ Parallel agent work in a single checkout collides. Observed pain at time of writ
 3. A thin CLI (`scripts/wt.mjs`) that creates, lists, and cleans worktrees with safe defaults.
 4. A governance rule (L3 canon) that makes this the org-wide default, not just a local convention.
 5. Portable by construction: the CLI + skill should be extractable into a standalone package without rewrites.
-6. Stacking permitted for genuinely-dependent work — orthogonal to worktrees, not a replacement for branch-off-main.
+6. Stacking permitted for genuinely-dependent work  -  orthogonal to worktrees, not a replacement for branch-off-main.
 
 ## Non-goals (explicit)
 
@@ -52,7 +52,7 @@ Parallel agent work in a single checkout collides. Observed pain at time of writ
 - **`.worktrees/`** is gitignored at repo root (added in `feat/worktree-workflow`, the first worktree this convention creates).
 - **`/NOTES.md`** is gitignored so a repo-root or worktree-root NOTES file never lands in a commit on any branch. (Per-worktree `.git/worktrees/<name>/info/exclude` was considered and rejected: git resolves `info/exclude` to the common dir, not the per-worktree admin dir.)
 
-### 2. NOTES.md — the handoff doc
+### 2. NOTES.md  -  the handoff doc
 
 **Agent-written.** Updated at natural handoff moments: end of a work block, after a commit, when switching threads, when blocked. Not every turn (noise). Not only at session end (late). Operator can request an update explicitly at any time.
 
@@ -74,14 +74,14 @@ Parallel agent work in a single checkout collides. Observed pain at time of writ
 - Chose X over Y because Z
 
 ## Next pick-up
-1–2 sentences: if a fresh agent opens this worktree tomorrow, what do they do first?
+1-2 sentences: if a fresh agent opens this worktree tomorrow, what do they do first?
 ```
 
 **Lifecycle:** dies with the worktree. NOTES.md is the handoff doc for *this* parallel unit of work; permanent record goes in PR bodies, canon atoms, or `docs/`. If the operator wants to preserve something from NOTES.md, atomize it before `wt clean`.
 
-### 3. `scripts/wt.mjs` — the CLI
+### 3. `scripts/wt.mjs`  -  the CLI
 
-One file, Node (matches existing `scripts/*.mjs` convention), thin over `git worktree`, `gh`, and `git-spice`. References to `wt <cmd>` below describe the CLI surface; the discovery mechanism (npm script vs `bin`/PATH) is Open Question #3 and resolves at plan time — it does not change the surface.
+One file, Node (matches existing `scripts/*.mjs` convention), thin over `git worktree`, `gh`, and `git-spice`. References to `wt <cmd>` below describe the CLI surface; the discovery mechanism (npm script vs `bin`/PATH) is Open Question #3 and resolves at plan time  -  it does not change the surface.
 
 | Command | Behavior |
 |---|---|
@@ -109,7 +109,7 @@ One file, Node (matches existing `scripts/*.mjs` convention), thin over `git wor
 **Codified test** (lives in the skill):
 > Does the child branch's first commit compile and pass its own tests without the parent merged? If **yes** → branch off main. If **no** → first ask whether extracting an interface into the parent makes the answer yes; if still no → stack.
 
-**Tool:** `git-spice` (`gs`). Open-source, Go-built, no SaaS dependency. Install docs linked from the skill. **If `gs` is not installed, `wt stack` exits with a recognizable `[wt-stack]` error naming the install instructions; it never falls back to raw `git rebase --onto` silently.** The operator installs `gs` or accepts the error — no hidden path.
+**Tool:** `git-spice` (`gs`). Open-source, Go-built, no SaaS dependency. Install docs linked from the skill. **If `gs` is not installed, `wt stack` exits with a recognizable `[wt-stack]` error naming the install instructions; it never falls back to raw `git rebase --onto` silently.** The operator installs `gs` or accepts the error  -  no hidden path.
 
 **Layout:** still one worktree per branch in a stack. `.worktrees/parent/` and `.worktrees/child/` are peers on disk; the dependency is in git topology, handled by `gs restack`. Stacking and worktree-isolation compose; neither replaces the other.
 
@@ -118,9 +118,9 @@ One file, Node (matches existing `scripts/*.mjs` convention), thin over `git wor
 - **New L3 canon atom** (one line):
   > *Parallel workstreams use isolated `.worktrees/<slug>/` branched off main; one worktree per branch. Stacking is permitted for genuinely-dependent work (see worktree-workflow skill); never share a checkout across parallel work.*
 - **Revise memory** `feedback_branch_off_main_not_stacks.md` to reflect nuance: default branch-off-main, stack deliberately per the codified test.
-- **New skill** at `.claude/skills/worktree-workflow/SKILL.md` — describes CLI, NOTES schema, stacking test, cleanup policy. Any agent entering this repo inherits it.
-- **Update** `apps/console/CLAUDE.md:43` — drop the sibling-dir instruction once the sibling worktrees are migrated. Until then leave a transitional note.
-- **Update** main `CLAUDE.md` — drop any sibling-dir convention; point at the new skill.
+- **New skill** at `.claude/skills/worktree-workflow/SKILL.md`  -  describes CLI, NOTES schema, stacking test, cleanup policy. Any agent entering this repo inherits it.
+- **Update** `apps/console/CLAUDE.md:43`  -  drop the sibling-dir instruction once the sibling worktrees are migrated. Until then leave a transitional note.
+- **Update** main `CLAUDE.md`  -  drop any sibling-dir convention; point at the new skill.
 
 ### 7. Portability (Tier 2)
 
@@ -136,7 +136,7 @@ Tier 3 (contribute upstream to the `superpowers` plugin as a richer `using-git-w
 ### 8. Migration plan (deferred)
 
 - **Existing siblings** (`../memory-governance-apps`, `../memory-governance-substrate`) → `git worktree move` into `.worktrees/apps/` and `.worktrees/substrate/`. Ships as a **separate, one-page PR** after both agents currently using those worktrees hand off. Ports, configs, and branch identity are preserved by the move.
-- **30+ stale branches** → one pass with `wt list --stale` + `wt clean` once the CLI exists. Expect to delete 15–20 (merged, abandoned, or superseded variants).
+- **30+ stale branches** → one pass with `wt list --stale` + `wt clean` once the CLI exists. Expect to delete 15-20 (merged, abandoned, or superseded variants).
 - **`backup/*` branches** → CLI leaves `backup/` alone by default; operator prunes manually.
 
 ### 9. Testing
@@ -155,6 +155,6 @@ Tier 3 (contribute upstream to the `superpowers` plugin as a richer `using-git-w
 ## Prior art / references
 
 - Official `superpowers:using-git-worktrees` skill (`.worktrees/<branch>/`, no NOTES).
-- Another repo the operator cited (`sessions/<name>/` with worktrees + NOTES.md) — community convention.
+- Another repo the operator cited (`sessions/<name>/` with worktrees + NOTES.md)  -  community convention.
 - Graphite / git-spice for stacked-PR tooling; Anthropic's internal practice (stacks + worktrees + review discipline) publicly discussed.
 - LAG canon: `branch-off-main-not-stacks`, `governance-before-autonomy`, `kill-switch-before-dial`, `canon-strategic-not-tactical`, `indie-floor-and-org-ceiling`.
