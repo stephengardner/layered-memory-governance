@@ -119,13 +119,23 @@ async function readStdin() {
  * Wait is bounded; on timeout we return null (hook fails open - no
  * prompt injected, but the tool call proceeds).
  */
-// 5s chosen to cover Windows cloud-runner FS latency under contention
-// (initial 2s surfaced partial-success flakes in PR #64's windows-CI
-// re-run — 10 parallel lock-attempts, only 6-8 would win within 2s,
-// the rest timed out silently and dropped increments). 5s is still
-// well under any reasonable tool-call latency budget.
-const LOCK_WAIT_MS = 5000;
-const LOCK_POLL_MS = 25;
+// LOCK_WAIT_MS scaled up from 5s to 15s after Windows CI flaked a
+// second time on the counter-serialization test despite previous
+// bumps. Root cause: thundering-herd on the poll loop. 10 contenders
+// polling every 25ms retry in near-lockstep; one winner per 25ms
+// slice means the 10th contender can spin 9 slices minimum, plus
+// scheduler jitter. A 2-core Windows runner with antivirus scanning
+// the lock file can extend each openSync(wx) by tens of ms, and the
+// cumulative wait exceeded 5s in the PR #117 + #122 re-runs. 15s is
+// 3x the observed max under contention, still well under the hook's
+// own runtime budget.
+//
+// The polling strategy itself also adds jitter now: after an EEXIST
+// miss, the next wait is LOCK_POLL_MS_BASE + random(0, LOCK_POLL_MS_BASE).
+// This breaks lockstep retries so contenders spread their next-try
+// time across a window instead of all hitting the same poll tick.
+const LOCK_WAIT_MS = 15_000;
+const LOCK_POLL_MS_BASE = 20;
 const LOCK_STALE_MS = 10_000;
 
 async function acquireLock(lockPath) {
@@ -153,7 +163,12 @@ async function acquireLock(lockPath) {
       // could complete their write inside LOCK_WAIT_MS, dropping all
       // increments. setTimeout/await releases the core so the lock
       // holder finishes quickly.
-      await sleep(LOCK_POLL_MS);
+      //
+      // Jitter: LOCK_POLL_MS_BASE * (1 + random()) sleeps somewhere
+      // between base and 2*base ms, breaking the lockstep retry
+      // pattern that caused the thundering-herd flake on Windows CI.
+      const jitter = Math.floor(Math.random() * LOCK_POLL_MS_BASE);
+      await sleep(LOCK_POLL_MS_BASE + jitter);
     }
   }
   return false;

@@ -5,7 +5,7 @@
 > Plan: `docs/superpowers/plans/2026-04-23-virtual-org-phase-2-host.md`.
 > Companions: `2026-04-22-task-d-132-retro.md`, `2026-04-22-virtual-org-host-gap.md`.
 
-## UPDATE 2026-04-23T09:24Z UTC - E2E RUN SUCCEEDED (PR #113 live)
+## UPDATE 2026-04-23T09:24Z - E2E RUN SUCCEEDED (PR #113 live)
 
 A second smoke run after the initial partial run produced a real draft PR on
 github.com under the lag-ceo[bot] identity: **PR #113,
