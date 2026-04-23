@@ -196,6 +196,12 @@ export async function executeDecision(
 
   const derivedFrom: ReadonlyArray<string> = [decision.id, question.id];
   const createdAt = new Date(now()).toISOString();
+  // Atom ids flow through filesystem paths on the file-backed Host;
+  // Windows reserves `:` (and a handful of others) in filenames. The
+  // ISO-8601 timestamp embeds `:` in `HH:MM:SS`, so derive a filename-
+  // safe form for id suffixes while keeping the `created_at` field in
+  // canonical ISO-8601 for audit.
+  const createdAtSlug = createdAt.replace(/:/g, '-');
 
   // Materialize a fresh Plan atom BEFORE invoking `codeAuthorFn`.
   //
@@ -231,6 +237,7 @@ export async function executeDecision(
       executorPrincipalId,
       derivedFrom,
       createdAt,
+      createdAtSlug,
       reason,
       stage: 'plan-atom-materialization',
     });
@@ -250,6 +257,7 @@ export async function executeDecision(
       executorPrincipalId,
       derivedFrom,
       createdAt,
+      createdAtSlug,
       reason,
       stage: 'code-author-fn-threw',
     });
@@ -261,6 +269,7 @@ export async function executeDecision(
       executorPrincipalId,
       derivedFrom,
       createdAt,
+      createdAtSlug,
       reason: invokeResult.message,
       stage: 'code-author-returned-error',
     });
@@ -279,7 +288,7 @@ export async function executeDecision(
   }
 
   const atom: PrOpenedAtom = {
-    id: `pr-opened-${decision.id}-${createdAt}`,
+    id: `pr-opened-${decision.id}-${createdAtSlug}`,
     type: 'observation',
     kind: 'pr-opened',
     content: JSON.stringify({
@@ -308,11 +317,12 @@ function buildFailedAtom(opts: {
   readonly executorPrincipalId: string;
   readonly derivedFrom: ReadonlyArray<string>;
   readonly createdAt: string;
+  readonly createdAtSlug: string;
   readonly reason: string;
   readonly stage: string;
 }): ExecutionFailedAtom {
   return {
-    id: `execution-failed-${opts.decision.id}-${opts.createdAt}`,
+    id: `execution-failed-${opts.decision.id}-${opts.createdAtSlug}`,
     type: 'observation',
     kind: 'execution-failed',
     content: JSON.stringify({

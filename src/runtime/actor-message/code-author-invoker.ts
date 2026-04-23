@@ -153,7 +153,12 @@ export function mkCodeAuthorInvokedAtomId(
   at: Time,
   nonce: string = randomBytes(3).toString('hex'),
 ): AtomId {
-  return `code-author-invoked-${planId}-${at}-${nonce}` as AtomId;
+  // `at` is an ISO-8601 string which embeds `:` in `HH:MM:SS`. Atom ids
+  // flow through filesystem paths on file-backed Hosts; Windows NTFS
+  // reserves `:` in filenames, so slug colons to `-` while keeping the
+  // `created_at` field canonical ISO-8601 elsewhere.
+  const atSlug = String(at).replace(/:/g, '-');
+  return `code-author-invoked-${planId}-${atSlug}-${nonce}` as AtomId;
 }
 
 /**
