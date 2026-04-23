@@ -21,13 +21,20 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Keywords that, after a tool_use, typically mark a course-correction.
 // Tuned on the synthetic fixture + operator's accumulated feedback
-// patterns ("no,", "actually", "don't", "wrong", "fix", etc.).
+// patterns ("no", "actually", "don't", "wrong", "fix", etc.).
 // Precision tuning continues in Phase 4 via the real-data label pass.
+//
+// The "no" branch is factored out of the main alternation because the
+// word-boundary `\b` does not recognise a word->comma transition, so
+// `\b(no,|...)\b` silently misses "no, write the failing test first"
+// (the exact shape operators type when correcting course). Allow the
+// bare word "no" with an optional trailing comma instead.
 const COURSE_CORRECT_PATTERN =
-  /\b(no,|actually|include|don'?t|stop|fix|wrong|not\s+this|rework|reject|should\s+have)\b/i;
+  /(?:\bno\b,?|\b(?:actually|include|don'?t|stop|fix|wrong|not\s+this|rework|reject|should\s+have)\b)/i;
 
 /**
  * @typedef {Object} InterventionResult
@@ -153,8 +160,14 @@ function renderProposals(results) {
 }
 
 // Execute only when invoked as CLI, not when imported as a module.
-// url.fileURLToPath is the robust cross-platform comparison; plain
-// string compare breaks on Windows slash normalization.
-if (import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/') ?? '')) {
+// Using fileURLToPath + path.resolve for a cross-platform robust
+// comparison. The earlier `import.meta.url.endsWith(... ?? '')` shape
+// was buggy: when `process.argv[1]` was undefined, the fallback `''`
+// made `endsWith('')` always true, so main() ran during any import -
+// writing files into .lag/pending-canon-proposals/ as a side effect.
+// The fix fails closed: require argv[1] to resolve to this exact
+// script file before invoking main().
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
+if (invokedPath && invokedPath === fileURLToPath(import.meta.url)) {
   await main();
 }

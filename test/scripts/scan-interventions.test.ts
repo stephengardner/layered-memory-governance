@@ -58,6 +58,40 @@ describe('scanJsonl', () => {
     ).toBe(true);
   });
 
+  it('detects bare "no," correction (regex word-boundary regression, CR #105)', async () => {
+    // CR finding PRRT_kwDOSGhm98588lGW: the previous `\b(no,|...)\b` form
+    // fails because `\b` does not recognise a word->comma transition, so
+    // a prompt starting with "no, write the test first" was silently
+    // missed. Write a one-shot fixture exercising that exact shape.
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = await mkdtemp(join(tmpdir(), 'lag-scan-no-'));
+    const fixture = join(dir, 'no-fixture.jsonl');
+    const lines = [
+      {
+        type: 'assistant',
+        sessionId: 'sess-no',
+        timestamp: '2026-04-21T00:00:00Z',
+        message: { content: [{ type: 'tool_use', name: 'Edit', input: {} }] },
+      },
+      {
+        type: 'user',
+        sessionId: 'sess-no',
+        timestamp: '2026-04-21T00:00:01Z',
+        message: { content: 'no, write the failing test first' },
+      },
+    ];
+    await writeFile(fixture, lines.map((l) => JSON.stringify(l)).join('\n'));
+    try {
+      const results = await scanJsonl(fixture);
+      expect(results.length).toBe(1);
+      expect(results[0]!.prompt).toMatch(/^no,/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('ignores "looks good, thanks" and "ok" acknowledgments', async () => {
     const results = await scanJsonl(FIXTURE);
     expect(results.every((r) => !/looks good, thanks/.test(r.prompt))).toBe(true);
@@ -72,6 +106,53 @@ describe('scanJsonl', () => {
         (r) => r.prompt !== 'add a scan-interventions script that finds course-corrections',
       ),
     ).toBe(true);
+  });
+
+  it('does NOT invoke main() when process.argv[1] is undefined (CR #105)', async () => {
+    // CR finding PRRT_kwDOSGhm98588lGY: the guard at EOF used
+    //   import.meta.url.endsWith(process.argv[1]?.replace(/\\/g, '/') ?? '')
+    // which evaluates to true whenever argv[1] is undefined, because
+    // every string .endsWith(''). That causes main() to run on import.
+    // This is the exact shape `node -e "await import(...)"` produces -
+    // argv[1] is '-e' actually, but consumers who invoke via
+    // `node --experimental-vm-modules -e` or spawn node inside harnesses
+    // without a script path hit the same failure mode.
+    //
+    // The cross-platform guarded behaviour is: run main only when argv[1]
+    // resolves to the scan-interventions.mjs file itself.
+    //
+    // We drive the failing shape by spawning node with `-e` that imports
+    // the module. Under the buggy guard, main() runs and process exits 2
+    // ("Usage: ..."). Under the fixed guard, the import returns cleanly.
+    const { execSync } = await import('node:child_process');
+    const { mkdtempSync, existsSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const workDir = mkdtempSync(join(tmpdir(), 'lag-import-guard-'));
+    const scriptPath = new URL('../../scripts/scan-interventions.mjs', import.meta.url).href;
+    try {
+      const pendingDir = join(workDir, '.lag', 'pending-canon-proposals');
+      let exited = 0;
+      let stderr = '';
+      try {
+        // -e path keeps argv[1] pointed at "-e" or nothing the guard
+        // recognises; the bug surfaces because the fallback ?? '' matches.
+        execSync(`node -e "import('${scriptPath}').catch((e) => { process.exit(99); })"`, {
+          cwd: workDir,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        const e = err as { status?: number; stderr?: Buffer };
+        exited = Number(e.status ?? 1);
+        stderr = e.stderr ? e.stderr.toString('utf8') : '';
+      }
+      // The buggy guard exits 2 via process.exit(2) in main() or runs
+      // main -> statSync -> throws. The fixed guard exits 0.
+      expect(exited, `stderr: ${stderr}`).toBe(0);
+      expect(existsSync(pendingDir)).toBe(false);
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
   });
 
   it('returns [] on an empty file', async () => {
