@@ -91,3 +91,23 @@ export function detectStale({
   if (prClosed) reasons.push('PR closed');
   return { stale: reasons.length > 0, reasons };
 }
+
+const PACKAGE_MANAGERS = [
+  { file: 'package.json', tool: 'npm', install: 'npm install' },
+  { file: 'Cargo.toml', tool: 'cargo', install: 'cargo build' },
+  { file: 'pyproject.toml', tool: 'poetry', install: 'poetry install' },
+  { file: 'go.mod', tool: 'go', install: 'go mod download' },
+];
+
+/**
+ * Auto-detect package manager from root directory files.
+ * Returns { tool, install } on match, null if none found.
+ * Prefers first match in precedence order: npm > cargo > poetry > go.
+ */
+export function detectPackageManager(rootFiles) {
+  const set = new Set(rootFiles);
+  for (const pm of PACKAGE_MANAGERS) {
+    if (set.has(pm.file)) return { tool: pm.tool, install: pm.install };
+  }
+  return null;
+}

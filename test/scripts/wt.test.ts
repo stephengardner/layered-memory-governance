@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateSlug, parseGitWorktreeList, detectActivity, detectStale } from '../../scripts/lib/wt.mjs';
+import { validateSlug, parseGitWorktreeList, detectActivity, detectStale, detectPackageManager } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
   it('accepts kebab-case slugs', () => {
@@ -148,5 +148,26 @@ describe('detectStale', () => {
       thresholdMs: 14 * DAY,
     });
     expect(r.stale).toBe(false);
+  });
+});
+
+describe('detectPackageManager', () => {
+  it('picks npm for package.json', () => {
+    expect(detectPackageManager(['package.json'])).toEqual({ tool: 'npm', install: 'npm install' });
+  });
+  it('picks cargo for Cargo.toml', () => {
+    expect(detectPackageManager(['Cargo.toml'])).toEqual({ tool: 'cargo', install: 'cargo build' });
+  });
+  it('picks poetry for pyproject.toml', () => {
+    expect(detectPackageManager(['pyproject.toml'])).toEqual({ tool: 'poetry', install: 'poetry install' });
+  });
+  it('picks go for go.mod', () => {
+    expect(detectPackageManager(['go.mod'])).toEqual({ tool: 'go', install: 'go mod download' });
+  });
+  it('prefers first matched when multiple manifests present', () => {
+    expect(detectPackageManager(['package.json', 'go.mod']).tool).toBe('npm');
+  });
+  it('returns null for none', () => {
+    expect(detectPackageManager(['README.md'])).toBeNull();
   });
 });
