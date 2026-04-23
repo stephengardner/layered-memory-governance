@@ -1,8 +1,23 @@
 # Autonomous-org walkthrough: Question → Plan → PR
 
-This is a concrete walk-through of what happens when you hand LAG a question and let the virtual org deliberate. It reflects the state of main at commit 63c6c40 (2026-04-23). The walkthrough is grounded in a real run: the `scripts/git-as.mjs` push-auth fix shipped as PR #124, planned by the CTO at confidence 0.88.
+This is a concrete walkthrough of what happens when you hand LAG a question and let the virtual org deliberate. It reflects the state of main at commit 63c6c40 (2026-04-23). The walkthrough is grounded in a real run: the `scripts/git-as.mjs` push-auth fix shipped as PR #124. The **CTO deliberation half** of that run was autonomous (CTO produced a Plan atom at confidence 0.88 with 11 canon citations); the **CodeAuthor drafting half was operator-executed**, because the standalone `CodeAuthorActor` that `scripts/run-code-author.mjs` invokes is currently a skeleton. See "Implementation status" below.
 
-The goal of this doc is not to argue the architecture; `docs/framework.md` and `design/target-architecture.md` cover that. It is to show the seams a new reader needs to locate before running their first autonomous deliberation. For the operational retro that motivated this walkthrough, see [`docs/dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md`](dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md).
+The goal of this doc is not to argue the architecture; `docs/framework.md` and `design/target-architecture.md` cover that. It is to show the seams a new reader needs to locate before running their first autonomous deliberation. For the operational retro that motivated this walkthrough (including why CodeAuthor did not produce a diff on the real run), see [`docs/dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md`](dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md).
+
+## Implementation status
+
+Not every arrow in the diagram below is fully wired. Reading the walkthrough without this context will make more of the loop sound automated than it is today. Concretely at commit 63c6c40:
+
+| Surface | Status |
+|---|---|
+| `PlanningActor` under `cto-actor` | **Wired.** Runs LLM judgment (Opus), produces Plan atoms with canon citations + `metadata.question_prompt`. Exercised by `scripts/run-cto-actor.mjs`. |
+| `askQuestion` + Question atom provenance | **Wired.** `run-cto-actor.mjs --request` seeds the Question atom before planning (PR #125). |
+| `draftCodeChange` diff primitive | **Wired** as a library function (`src/runtime/actors/code-author/drafter.ts`). Produces unified diffs against APPEND/MODIFY/CREATE plans, with `question_prompt` as a ground-truth override. |
+| `CodeAuthorActor` (standalone loop) | **Skeleton.** `src/runtime/actors/code-author/code-author.ts` line 17: `propose() returns no actions (no plan pickup yet)`. `scripts/run-code-author.mjs` validates the fence and halts; it does not pick plans off an inbox, call the drafter, or open PRs. |
+| `createAppBackedGhClient` + per-role App identity | **Wired.** Used by the agent-sdk executor and pr-landing; the primitive is ready even though CodeAuthorActor does not yet invoke it itself. |
+| `PrLandingActor` | **Wired.** Observes PR state, merges when checks + CodeRabbit approval + required status all land. |
+| Delegation envelope + auto-approve + dispatch | **Manual.** `run-cto-actor.mjs` drops the Plan at `proposed` with no `metadata.delegation`. The `runAutoApprovePass` + `runDispatchTick` primitives exist; wiring them behind a single command is a follow-up. |
+| Plan-state writeback on merge | **Not wired.** PrLanding observes merges but nothing updates the originating Plan to `succeeded`. |
 
 ## Actor topology
 
@@ -96,8 +111,18 @@ lag-respond --root-dir .lag
 # 5. Dispatch tick writes the plan to code-author's inbox:
 node -e "/* runDispatchTick(host, subActorRegistry) */"
 
-# 6. CodeAuthor picks up the inbox message, drafts a PR:
-node scripts/run-code-author.mjs --max-iterations 1 --deadline-ms 1800000
+# 6. CodeAuthor picks up the inbox message, drafts a PR.
+#    IMPORTANT: at commit 63c6c40 this step is not fully automated.
+#    `scripts/run-code-author.mjs` currently validates the code-author
+#    fence and halts (see "Implementation status" above). The drafter
+#    primitive (`draftCodeChange` in src/runtime/actors/code-author/
+#    drafter.ts) exists and is exercised by the agent-sdk executor
+#    path, but the standalone CodeAuthorActor loop that this script
+#    drives is a skeleton. Closing that wiring is a tracked follow-up.
+#    For now, the operator executes the plan's concrete steps and
+#    opens the PR via scripts/git-as.mjs + gh-as.mjs; the Plan atom
+#    stays at plan_state='proposed' as provenance.
+node scripts/run-code-author.mjs --max-iterations 1 --deadline-ms 1800000  # fence validation only today
 
 # 7. PrLandingActor observes the PR, merges when checks + CR approve.
 node scripts/run-pr-landing.mjs
@@ -107,19 +132,20 @@ Each step is deterministic. Each atom carries provenance. `.lag/atoms/` lets you
 
 ## What's automated today, what isn't
 
-**Automated today:**
+**Automated today (wired end-to-end):**
 - Question atom seeded automatically by `run-cto-actor.mjs --request` (PR #125).
-- Plan atom produced with `metadata.question_prompt` so the drafter sees the verbatim payload (PR #121 + #125).
-- CodeAuthor drafter produces a signed PR under the `code-author` App identity (PR #111/#113).
-- PR push uses installation-token URL-auth, no hang (PR #124).
+- CTO deliberation: Plan atom produced with canon citations + `metadata.question_prompt` via the `originatingQuestion` seam (PR #121 + #125). Exercised by `scripts/run-cto-actor.mjs` against a live LLM.
+- PR push uses installation-token URL-auth, no hang on Cursor-managed Windows hosts (PR #124).
 - Stale-base recovery: `scripts/update-branch-if-stale.mjs <pr>` keeps queued PRs fresh (PR #123).
 - Pre-push lint mirrors CI, ~1s catch for patterns CR would otherwise flag (PR #122).
 - PrLandingActor merges when checks + CR APPROVED + required status all post.
+- Drafter primitive (`draftCodeChange`) and `createAppBackedGhClient` are ready library surfaces; they just aren't called from the standalone `CodeAuthorActor` loop yet.
 
-**Still manual (by design):**
-- `proposed → approved` for state-mutating sub-actors (code-author). Operator must approve; this is governance, not a bug.
-- Delegation envelope injection. `run-cto-actor` drops the Plan at `proposed` without the envelope; a follow-up PR is tracked to chain envelope + auto-approve + dispatch into one command.
-- Plan state writeback on PR merge. `PrLandingActor` observes the merge but does not update the originating Plan atom's `plan_state` to `succeeded`. This is an instance instrumentation gap worth closing next; the state machine (`src/runtime/plans/state.ts`) and `executePlan()` seam exist but code-author does not currently route through `executePlan()`.
+**Skeleton / manual (instance-level gaps):**
+- **CodeAuthorActor loop.** `scripts/run-code-author.mjs → CodeAuthorActor` is the fence-validation skeleton described in "Implementation status". No plan pickup, no drafter invocation, no PR creation from this path. Operator runs the plan's steps until the loop is wired.
+- **Delegation envelope injection.** `run-cto-actor` drops the Plan at `proposed` with no `metadata.delegation`; a follow-up will chain envelope + auto-approve + dispatch into one command.
+- **`proposed → approved` for state-mutating sub-actors (code-author).** Operator approval via `lag-respond` is required by `pol-plan-auto-approve-low-stakes` ("Never auto-approve a sub-actor that mutates state beyond atom writes"). Governance gate, not a bug.
+- **Plan-state writeback on PR merge.** `PrLandingActor` observes the merge but does not update the originating Plan atom's `plan_state` to `succeeded`. The state machine (`src/runtime/plans/state.ts`) and `executePlan()` seam exist; code-author does not currently route through `executePlan()`.
 
 ## Debugging checklist when a Plan sits stuck
 
