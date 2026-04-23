@@ -19,12 +19,12 @@ wt new <slug> [--from main|<parent-slug>]
 
 Steps performed in order:
 
-1. **Validate slug** — must be kebab-case, 40 characters or fewer. Exits with a `[wt-new]` error if either check fails.
-2. **Fetch origin** — runs `git fetch origin <base>` so ahead/behind counts and SHA references are current.
-3. **Scan active worktrees** — checks each existing `.worktrees/*/` for activity (modified files, lock files, recent commits) within the last `WT_ACTIVITY_MIN` minutes (default 10). Prints a warning and prompts for confirmation before proceeding if any worktree appears live.
-4. **Create the worktree** — `git worktree add .worktrees/<slug> -b feat/<slug> origin/<base>`. The new branch tracks the base.
-5. **Write NOTES.md + verify gitignore** — writes the skeleton described below into `.worktrees/<slug>/NOTES.md`, then runs `git check-ignore -q .worktrees/<slug>/NOTES.md` to confirm it is excluded. If not ignored, exits with a `[wt-new]` error rather than silently risking an accidental commit.
-6. **Setup** — auto-detects the package manager and runs the appropriate install:
+1. **Validate slug** - must be kebab-case, 40 characters or fewer. Exits with a `[wt-new]` error if either check fails.
+2. **Fetch origin** - runs `git fetch origin <base>` so ahead/behind counts and SHA references are current.
+3. **Scan active worktrees** - checks each existing `.worktrees/*/` for activity (modified files, lock files, recent commits) within the last `WT_ACTIVITY_MIN` minutes (default 10). Prints a warning and prompts for confirmation before proceeding if any worktree appears live.
+4. **Create the worktree** - `git worktree add .worktrees/<slug> -b feat/<slug> origin/<base>`. The new branch tracks the base.
+5. **Write NOTES.md + verify gitignore** - writes the skeleton described below into `.worktrees/<slug>/NOTES.md`, then runs `git check-ignore -q .worktrees/<slug>/NOTES.md` to confirm it is excluded. If not ignored, exits with a `[wt-new]` error rather than silently risking an accidental commit.
+6. **Setup** - auto-detects the package manager and runs the appropriate install:
 
 ```bash
 if [ -f package.json ]; then npm install; fi
@@ -33,6 +33,8 @@ if [ -f pyproject.toml ]; then poetry install; fi
 if [ -f go.mod ];       then go mod download; fi
 ```
 
+First match wins; if multiple manifests are present (e.g. package.json + go.mod), npm takes priority.
+
 ## NOTES.md schema
 
 Agent-written. Updated at natural handoff moments: end of a work block, after a commit, when switching threads, when blocked. Not every turn. Not only at the end of a workstream.
@@ -40,7 +42,7 @@ Agent-written. Updated at natural handoff moments: end of a work block, after a 
 ```markdown
 # <slug>
 
-**Intent** (1 line — what this worktree exists to do)
+**Intent** (1 line - what this worktree exists to do)
 **Branched off:** main @ <sha>   |   <parent-slug> @ <sha>
 **PR:** #<num> (once opened)
 
@@ -53,7 +55,7 @@ Agent-written. Updated at natural handoff moments: end of a work block, after a 
 - Chose X over Y because Z
 
 ## Next pick-up
-1–2 sentences: if a fresh agent opens this worktree tomorrow, what do they do first?
+1-2 sentences: if a fresh agent opens this worktree tomorrow, what do they do first?
 ```
 
 ## Listing and staleness
@@ -124,12 +126,12 @@ Install: https://github.com/abhinav/git-spice/releases
 
 - **Editing files in another worktree while its agent is live.** The activity scan on `wt new` and `wt list` exists precisely to surface this. Heed the warning; coordinate or wait.
 - **Creating a worktree on a branch that already exists.** `wt new` will exit rather than clobber. If you need to resume work on an existing branch, use `git worktree add .worktrees/<slug> <existing-branch>` directly and update NOTES.md by hand.
-- **Committing NOTES.md by accident.** The `/NOTES.md` pattern in `.gitignore` prevents this. If you need to transfer NOTES content for handoff, paste it into a PR comment or a canon atom — do not remove the gitignore entry.
+- **Committing NOTES.md by accident.** The `/NOTES.md` pattern in `.gitignore` prevents this. If you need to transfer NOTES content for handoff, paste it into a PR comment or a canon atom - do not remove the gitignore entry.
 
 ## Integration
 
 | Skill | Relationship |
 |-------|-------------|
 | `superpowers:using-git-worktrees` | This skill is the LAG-specific extension. Use this one inside LAG; the upstream skill works for repos without this workflow. |
-| `superpowers:executing-plans` / `superpowers:subagent-driven-development` | REQUIRED — call `wt new` before starting any plan-execution work. |
-| `superpowers:finishing-a-development-branch` | REQUIRED — use `wt rm` or `wt clean` after work is complete. |
+| `superpowers:executing-plans` / `superpowers:subagent-driven-development` | REQUIRED - call `wt new` before starting any plan-execution work. |
+| `superpowers:finishing-a-development-branch` | REQUIRED - use `wt rm` or `wt clean` after work is complete. |
