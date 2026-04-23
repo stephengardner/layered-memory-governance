@@ -35,6 +35,7 @@ import type {
 import {
   executeDecision,
   type PrOpenedAtom,
+  type ExecutionFailedAtom,
 } from '../../../src/integrations/agent-sdk/executor.js';
 
 // ---------------------------------------------------------------------------
@@ -260,7 +261,79 @@ describe('executeDecision: plan-atom seam', () => {
     expect(plan!.id).not.toBe('dec-Z');
     expect(plan!.type).toBe('plan');
   });
+
+  it('returns ExecutionFailedAtom (no throw, no codeAuthorFn call) when planAtomFactory throws', async () => {
+    const host = makeHost();
+    const { fn } = mockCodeAuthorSuccess();
+
+    // A factory that throws -- e.g. a caller-supplied projection that
+    // fails on an unexpected decision shape. Without a guard, this
+    // would bubble up as an unhandled rejection and sever the
+    // provenance chain.
+    const planAtomFactory = (_d: Decision): Atom => {
+      throw new Error('factory rejected decision shape');
+    };
+
+    const result = await executeDecision({
+      decision: makeDecision({ id: 'dec-factory-throws' }),
+      question: makeQuestion(),
+      executorPrincipalId: 'vo-code-author',
+      host,
+      codeAuthorFn: fn,
+      planAtomFactory,
+    });
+
+    expect(result.kind).toBe('execution-failed');
+    expect(result.type).toBe('observation');
+    const parsed = JSON.parse((result as ExecutionFailedAtom).content) as {
+      reason: string;
+      stage: string;
+    };
+    expect(parsed.reason).toContain('factory rejected');
+    expect(parsed.stage).toBe('plan-atom-materialization');
+    // No downstream invocation may happen when materialization fails.
+    expect(fn).not.toHaveBeenCalled();
+    // No plan atom should have been persisted.
+    const plan = await host.atoms.get('plan-from-dec-factory-throws' as AtomId);
+    expect(plan).toBeNull();
+  });
+
+  it('returns ExecutionFailedAtom (no throw, no codeAuthorFn call) when host.atoms.put throws', async () => {
+    const host = makeHost();
+    const { fn } = mockCodeAuthorSuccess();
+
+    // Inject a put failure at the atom-store level so the failure
+    // path runs regardless of which factory produced the atom. This
+    // covers storage-layer faults (disk full, adapter error, etc.).
+    const putError = new Error('atom store refused write');
+    const originalPut = host.atoms.put.bind(host.atoms);
+    host.atoms.put = vi.fn(async (_atom) => {
+      throw putError;
+    }) as typeof host.atoms.put;
+
+    const result = await executeDecision({
+      decision: makeDecision({ id: 'dec-put-throws' }),
+      question: makeQuestion(),
+      executorPrincipalId: 'vo-code-author',
+      host,
+      codeAuthorFn: fn,
+    });
+
+    expect(result.kind).toBe('execution-failed');
+    const parsed = JSON.parse((result as ExecutionFailedAtom).content) as {
+      reason: string;
+      stage: string;
+    };
+    expect(parsed.reason).toContain('atom store refused write');
+    expect(parsed.stage).toBe('plan-atom-materialization');
+    expect(fn).not.toHaveBeenCalled();
+
+    // Restore, then verify the decision atom was never touched (we
+    // never got past the failed put, so no side-effects leaked).
+    host.atoms.put = originalPut;
+  });
 });
 
 // Silence unused-import warnings when the full suite runs.
 void ({} as PrOpenedAtom);
+void ({} as ExecutionFailedAtom);

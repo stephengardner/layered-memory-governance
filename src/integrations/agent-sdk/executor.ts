@@ -211,10 +211,30 @@ export async function executeDecision(
   //
   // Id convention `plan-from-<decision.id>` is the default; a
   // caller with a different convention passes `planAtomFactory`.
-  const planAtom: Atom = planAtomFactory !== undefined
-    ? planAtomFactory(decision)
-    : defaultPlanAtomFactory(decision, executorPrincipalId, createdAt);
-  await host.atoms.put(planAtom);
+  //
+  // Failure containment: both `planAtomFactory` (caller-supplied)
+  // and `host.atoms.put` (adapter) can throw. The executor's
+  // contract is that failures become atoms rather than thrown
+  // exceptions, so the governance layer keeps provenance through
+  // the failed execution. Wrap the materialization in the same
+  // failure-to-atom shape used by the codeAuthorFn path.
+  let planAtom: Atom;
+  try {
+    planAtom = planAtomFactory !== undefined
+      ? planAtomFactory(decision)
+      : defaultPlanAtomFactory(decision, executorPrincipalId, createdAt);
+    await host.atoms.put(planAtom);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return buildFailedAtom({
+      decision,
+      executorPrincipalId,
+      derivedFrom,
+      createdAt,
+      reason,
+      stage: 'plan-atom-materialization',
+    });
+  }
 
   const payload: CodeAuthorPayload = { plan_id: planAtom.id };
 
