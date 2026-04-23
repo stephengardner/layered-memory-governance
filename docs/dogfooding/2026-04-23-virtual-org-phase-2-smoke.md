@@ -1,12 +1,12 @@
 # Virtual-org phase 2 smoke test retrospective
 
-> Run: 2026-04-23 04:08 UTC. Main at `684afaa` (phase 3+4 merge, PR #111).
+> Run: 2026-04-23T08:08:57Z. Main at `684afaa` (phase 3+4 merge, PR #111).
 > Plan: `docs/superpowers/plans/2026-04-23-virtual-org-phase-2-host.md`.
 > Companions: `2026-04-22-task-d-132-retro.md`, `2026-04-22-virtual-org-host-gap.md`.
 
 ## Target (verbatim, handed to `boot.mjs --execute`)
 
-```
+```text
 Add a single-line comment at the end of docs/dogfooding/README.md noting the
 virtual-org phase-2 smoke-test run date in ISO 8601 UTC format. Use the format:
 
@@ -58,11 +58,11 @@ verified units and a live end-to-end run under the specific nesting condition.
 
 | step | time (UTC) | duration |
 |---|---|---|
-| boot.mjs start | 08:08:57 | — |
-| Fence + canon atoms written | 08:08:57 | ~0s |
-| Question atom written | 08:08:57 | ~0s |
+| boot.mjs start | 2026-04-23T08:08:57Z | — |
+| Fence + canon atoms written | 2026-04-23T08:08:57Z | <1s |
+| Question atom written | 2026-04-23T08:08:57Z | <1s |
 | (deliberation silently stops) | — | — |
-| Subagent context exhausted | ~08:15 | ~7 min wall |
+| Subagent context exhausted | 2026-04-23T08:15:23Z (approx) | ~386s wall |
 
 ## Atoms produced vs expected
 
