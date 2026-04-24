@@ -439,17 +439,28 @@ describe('runPlanApprovalTick', () => {
 
   // ----- scan counters -----
 
-  it('scanned counts proposed plans in allowed_sub_actors regardless of approval', async () => {
+  it('scanned tracks pre-filter; eligible tracks post-filter; approved tracks transitioned', async () => {
+    // 3 plans total: 2 eligible (pass delegation + confidence + state),
+    // 1 filtered out (sub-actor not in allowlist). Of the 2 eligible,
+    // 1 has enough votes to approve, 1 does not.
     const host = createMemoryHost();
-    await host.atoms.put(policyAtom({ min_votes: 2 }));
-    await host.atoms.put(planAtom('p-1'));
-    await host.atoms.put(planAtom('p-2'));
+    await host.atoms.put(policyAtom({ min_votes: 2, allowed: ['code-author'] }));
+    await host.atoms.put(planAtom('p-1', { sub_actor: 'code-author' }));
+    await host.atoms.put(planAtom('p-2', { sub_actor: 'code-author' }));
+    await host.atoms.put(planAtom('p-3', { sub_actor: 'some-other-actor' }));
     await host.atoms.put(voteAtom('v1', 'p-1', 'reviewer-1'));
     await host.atoms.put(voteAtom('v2', 'p-1', 'reviewer-2'));
 
     const r = await runPlanApprovalTick(host, { now: () => NOW });
 
-    expect(r.scanned).toBe(2);
+    // scanned: all 3 plans the pass pulled from the atom store before
+    // applying allowlist / confidence / state filters.
+    expect(r.scanned).toBe(3);
+    // eligible: the 2 plans that passed every plan-level guard and
+    // became vote-count candidates. The `some-other-actor` plan is
+    // filtered here.
+    expect(r.eligible).toBe(2);
+    // approved: only p-1 collected enough votes.
     expect(r.approved).toBe(1);
   });
 });

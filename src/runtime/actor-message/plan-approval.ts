@@ -76,8 +76,22 @@ export const FALLBACK_PLAN_APPROVAL: PlanApprovalPolicyConfig = Object.freeze({
 });
 
 export interface PlanApprovalTickResult {
-  /** Proposed plans scanned (before filtering). */
+  /**
+   * Plans inspected by the pass (pre-filter). Useful for tuning
+   * `maxScan`: if this is consistently at the cap, the operator is
+   * scanning more plans than a single tick can fit and should either
+   * raise the cap or widen the `allowed_sub_actors` exclusion.
+   */
   readonly scanned: number;
+  /**
+   * Plans that passed every plan-level guard (taint, superseded,
+   * plan_state='proposed', confidence floor, planning_actor_version,
+   * delegation target in allowlist) and became vote-count candidates.
+   * The delta between `scanned` and `eligible` surfaces how much of
+   * the scan surface is getting dropped by policy filters vs. hitting
+   * real candidates.
+   */
+  readonly eligible: number;
   /** Plans transitioned to 'approved'. */
   readonly approved: number;
   /** Plans transitioned to 'abandoned' via hard reject. */
@@ -109,7 +123,7 @@ export async function runPlanApprovalTick(
   // mirrors the runAutoApprovePass short-circuit and keeps the pass
   // safe by default even if mis-deployed without a canon seed.
   if (policy.allowed_sub_actors.length === 0) {
-    return { scanned: 0, approved: 0, rejected: 0, stale: 0 };
+    return { scanned: 0, eligible: 0, approved: 0, rejected: 0, stale: 0 };
   }
 
   const nowFn = options.now ?? (() => new Date().toISOString());
@@ -226,7 +240,7 @@ export async function runPlanApprovalTick(
     approved += 1;
   }
 
-  return { scanned: candidates.length, approved, rejected, stale };
+  return { scanned: totalSeen, eligible: candidates.length, approved, rejected, stale };
 }
 
 interface VoteEvaluation {
