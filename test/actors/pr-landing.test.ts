@@ -429,4 +429,53 @@ describe('PrLandingActor', () => {
     expect(review.replies.length).toBe(3);
     expect(review.resolvedIds.length).toBe(3);
   });
+
+  it('observe() threads `partial` + `partialSurfaces` + `submittedReviews` from the composite read', async () => {
+    // Direct observe() call so we can inspect the full observation
+    // shape without running the full actor loop. Exercises the
+    // migration from two calls (listUnresolvedComments +
+    // listReviewBodyNits) to one (getPrReviewStatus) and locks in
+    // that the composite surfaces propagate into PrLandingObservation.
+    const host = createMemoryHost();
+    const c1 = mkComment({ id: 'n1', severity: 'nit' });
+    const review = new StubReviewAdapter([[c1]]);
+    // Override getPrReviewStatus to return a partial snapshot with a
+    // submitted review so we can assert the fields are threaded through
+    // by observe().
+    review.getPrReviewStatus = async (pr) => ({
+      pr,
+      mergeable: true,
+      mergeStateStatus: 'CLEAN',
+      lineComments: [c1],
+      bodyNits: [],
+      submittedReviews: [
+        { author: 'reviewer-a', state: 'APPROVED', submittedAt: '2026-04-24T00:00:00.000Z' },
+      ],
+      checkRuns: [],
+      legacyStatuses: [],
+      partial: true,
+      partialSurfaces: ['checkRuns'],
+    });
+
+    const actor = new PrLandingActor({ pr: PR });
+    // Construct a minimal ctx matching the shape observe() consumes.
+    // We do not run the full actor loop here; this is an observe-only
+    // assertion that the composite's fields land on the observation.
+    const obs = await actor.observe({
+      host,
+      principal: samplePrincipal(),
+      adapters: { review },
+      // deadline/budget/origin are unused by observe() but required by
+      // ActorContext shape in some branches; cast through unknown.
+    } as unknown as Parameters<typeof actor.observe>[0]);
+
+    expect(obs.comments).toHaveLength(1);
+    expect(obs.comments[0]!.id).toBe('n1');
+    expect(obs.bodyNits).toEqual([]);
+    expect(obs.partial).toBe(true);
+    expect(obs.partialSurfaces).toEqual(['checkRuns']);
+    expect(obs.submittedReviews).toEqual([
+      { author: 'reviewer-a', state: 'APPROVED', submittedAt: '2026-04-24T00:00:00.000Z' },
+    ]);
+  });
 });

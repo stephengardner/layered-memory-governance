@@ -78,6 +78,41 @@ export interface PrLandingObservation {
    * ensureReviewers is configured AND reviewerEngaged is false.
    */
   readonly selfAlreadyPrompted?: boolean;
+  /**
+   * Surfaced from `getPrReviewStatus`. True when at least one PR
+   * surface (line comments, body-nits, submitted reviews, check-runs,
+   * legacy statuses, mergeable state) failed to fetch and the
+   * observation is incomplete. Callers (classify / propose) can treat
+   * this as a hard "do not decide" signal; pr-landing currently falls
+   * back to best-effort convergence on the line comments + body-nits
+   * we did get, since those are what drive the actor's own
+   * reply/resolve actions. The flag is silent: the actor does not log
+   * it today, so downstream tooling that wants observability on
+   * `partial: true` must read it off the observation itself. Absent
+   * on legacy callers that constructed an observation without going
+   * through the composite.
+   */
+  readonly partial?: boolean;
+  /**
+   * When `partial` is true, the names of the surfaces that failed to
+   * fetch. Empty when partial is false/absent.
+   */
+  readonly partialSurfaces?: ReadonlyArray<string>;
+  /**
+   * Submitted reviews on the PR (author + state + submittedAt). Comes
+   * from the composite read alongside line comments and body-nits.
+   * Not consumed by classify/propose today, but surfaced in the
+   * observation so downstream tooling (operator-escalation summary,
+   * future classifier variants that want "has a human approver
+   * signed off yet") can read it without a second API call. Absent on
+   * legacy callers.
+   */
+  readonly submittedReviews?: ReadonlyArray<{
+    readonly author: string;
+    readonly state: string;
+    readonly submittedAt: string;
+    readonly body?: string;
+  }>;
 }
 
 export type PrLandingActionKind =
@@ -139,16 +174,19 @@ export class PrLandingActor implements Actor<
   constructor(private readonly options: PrLandingOptions) {}
 
   async observe(ctx: ActorContext<PrLandingAdapters>): Promise<PrLandingObservation> {
-    // Fetch line comments and body-scoped nits concurrently. Body-nits
-    // are additive observation data (never the convergence driver), so
-    // failing to fetch them must not block the observe; a 404/500 from
-    // the reviews endpoint surfaces as empty, which simply means "no
-    // body-nits seen this pass" and the normal flow continues.
-    const [comments, bodyNits] = await Promise.all([
-      ctx.adapters.review.listUnresolvedComments(this.options.pr),
-      safeListBodyNits(ctx.adapters.review, this.options.pr),
-    ]);
-    const base = { pr: this.options.pr, comments, bodyNits };
+    // Use the composite read so per-surface fetch failures degrade the
+    // snapshot to `partial: true` (with `partialSurfaces` listing the
+    // missed surfaces) rather than throwing, and so line-comments +
+    // body-nits + submitted reviews all arrive in one call.
+    const status = await ctx.adapters.review.getPrReviewStatus(this.options.pr);
+    const base: PrLandingObservation = {
+      pr: this.options.pr,
+      comments: status.lineComments,
+      bodyNits: status.bodyNits,
+      partial: status.partial,
+      partialSurfaces: status.partialSurfaces,
+      submittedReviews: status.submittedReviews,
+    };
     if (!this.options.ensureReviewers || this.options.ensureReviewers.length === 0) {
       return base;
     }
@@ -361,20 +399,9 @@ function heuristicSeverity(comment: ReviewComment): 'nit' | 'suggestion' | 'arch
   return 'suggestion';
 }
 
-/**
- * Wrap listReviewBodyNits so a failing adapter (network error, or an
- * adapter that predates the method and has been softly-typed around)
- * does not abort observe(). Body-nits are additive observation; an
- * empty list is always a valid answer.
- */
-async function safeListBodyNits(
-  adapter: PrReviewAdapter,
-  pr: PrIdentifier,
-): Promise<ReadonlyArray<ReviewComment>> {
-  if (typeof adapter.listReviewBodyNits !== 'function') return [];
-  try {
-    return await adapter.listReviewBodyNits(pr);
-  } catch {
-    return [];
-  }
-}
+// Body-nit-fetch safety was previously handled by a `safeListBodyNits`
+// helper because observe() called `listReviewBodyNits` directly and
+// needed to degrade gracefully on adapters that predated the method.
+// That is now the composite read's responsibility: `getPrReviewStatus`
+// surfaces per-surface failures as `partial: true` rather than
+// throwing, so the wrapper is no longer needed here.
