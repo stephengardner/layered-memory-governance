@@ -17,8 +17,11 @@
  *      proposed plan.
  *   5. Glue step: wrap the plan with a delegation envelope pointing
  *      at auditor-actor so the dispatch loop has something to invoke.
- *      (The PlanningActor's own draft schema does not carry a
- *      delegation envelope today; that's a follow-up PR.)
+ *      (The PlanningActor seam landed in #148 carries
+ *      `sub_actor_principal_id` via options.delegateTo; the wrap
+ *      step below still attaches the richer payload the seam does
+ *      not handle: reply_to, filter, correlation id. Migrating the
+ *      sub_actor_principal_id piece to the seam is a cleanup PR.)
  *   6. runAutoApprovePass transitions the plan to approved.
  *   7. runDispatchTick invokes runAuditor via the registry.
  *   8. Auditor writes a finding observation + reply actor-message.
@@ -223,11 +226,15 @@ async function findNewestFreshCtoPlan(host, since) {
 }
 
 async function attachDelegationEnvelope(host, planAtom, correlationId) {
-  // Post-process: the PlanningActor's draft schema does not carry a
-  // delegation envelope today, so we wrap the freshly-produced plan
-  // with one here. Production deployments would either extend the
-  // judgment schema or write a wrapper actor that does this per
-  // convention (plans whose body mentions "audit" route to auditor).
+  // Post-process: the PlanningActor.delegateTo seam (#148) handles
+  // `sub_actor_principal_id` but not the richer payload (reply_to,
+  // filter, correlation id) this self-audit needs, so we still wrap
+  // the freshly-produced plan here. Production deployments would
+  // either extend the PlanningJudgment schema to also emit payload,
+  // write a wrapper actor that does this per convention (plans whose
+  // body mentions "audit" route to auditor), or accept the split and
+  // let the seam cover target-principal while the caller fills in
+  // the per-invocation payload.
   console.log(`[self-audit] wrapping plan ${planAtom.id} with delegation envelope -> auditor-actor`);
   const delegation = {
     sub_actor_principal_id: AUDITOR,
