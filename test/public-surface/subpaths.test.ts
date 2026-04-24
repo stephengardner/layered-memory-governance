@@ -9,8 +9,8 @@
  * paths. This smoke guards the public contract.
  *
  * Strategy:
- *   1. Import from the shim path (src/actors/...) — the location that
- *      the `exports` map points at via dist/actors/... — and from the
+ *   1. Import from the shim path (src/actors/...), which is what the
+ *      `exports` map points at via dist/actors/..., and also from the
  *      real runtime path (src/runtime/actors/...). Assert the shim key
  *      set equals the real key set so shim drift fails the test.
  *   2. Pin the exact documented value surface of each barrel. Adding
