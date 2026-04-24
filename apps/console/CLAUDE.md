@@ -2,7 +2,7 @@
 
 Any agent (Claude Code session, subagent, CI job) working inside `apps/console/` inherits the rules below. These are hard constraints; violating them is a review-fail, not a nit.
 
-## The 10 principles (canon-atomized under `dev-web-*`)
+## The 11 principles (canon-atomized under `dev-web-*`)
 
 1. **Stack**: React + shadcn. TypeScript strict.
 2. **No Tailwind utility classes in our own component source.** shadcn source (vendored) uses Tailwind internally — that's fine, we own it. Our hand-written components use semantic classes that resolve to tokens.
