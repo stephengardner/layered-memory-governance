@@ -17,7 +17,8 @@ Not every arrow in the diagram below is fully wired. Reading the walkthrough wit
 | `createAppBackedGhClient` + per-role App identity | **Wired.** Used by the agent-sdk executor and pr-landing; the primitive is ready even though CodeAuthorActor does not yet invoke it itself. |
 | `PrLandingActor` | **Wired.** Observes PR state, merges when checks + CodeRabbit approval + required status all land. |
 | Delegation envelope + auto-approve + dispatch | **Manual.** `run-cto-actor.mjs` drops the Plan at `proposed` with no `metadata.delegation`. The `runAutoApprovePass` + `runDispatchTick` primitives exist; wiring them behind a single command is a follow-up. |
-| Plan-state writeback on merge | **Not wired.** PrLanding observes merges but nothing updates the originating Plan to `succeeded`. |
+| `runPlanApprovalTick` + `scripts/run-approval-cycle.mjs` | **Wired.** Multi-reviewer consensus: N distinct-principal `plan-approval-vote` atoms above the confidence floor transition `proposed` -> `approved`. Policy atom `pol-plan-multi-reviewer-approval` (seeded by `scripts/bootstrap-inbox-canon.mjs`) ships with `code-author` on the allowlist. `scripts/run-approval-cycle.mjs` is the canonical daemon-style runner that ticks `runAutoApprovePass` + `runPlanApprovalTick` + `runPlanStateReconcileTick` + `runDispatchTick` in order. `scripts/run-cto-actor.mjs` also runs `runPlanApprovalTick` at end-of-run so consensus that landed during planning takes effect immediately. |
+| Plan-state writeback on merge | **Wired.** `runPlanStateReconcileTick` (in `src/runtime/plans/pr-merge-reconcile.ts`) scans `pr-observation` atoms with terminal `merge_state_status`, resolves the originating Plan via `metadata.plan_id`, and transitions `executing`/`approved` -> `succeeded` (merged) or `abandoned` (closed). Claimed via a deterministic `plan-merge-settled` marker id for race safety and crash recovery. Invoked by `scripts/run-approval-cycle.mjs`. |
 
 ## Actor topology
 
