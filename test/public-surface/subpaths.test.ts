@@ -295,6 +295,24 @@ const cases: readonly SubpathCase[] = [
   },
 ];
 
+// Pin the total count separately so a silent "case accidentally
+// deleted" regression (would pass per-row assertions because every
+// remaining row still validates) fails here. Counts the subpaths
+// declared in package.json#exports minus the root `.` (not covered
+// by this file yet; tracked separately if we add it).
+const EXPECTED_CASE_COUNT = 15;
+
+describe('public surface: case coverage', () => {
+  it('covers every non-root subpath from package.json exports', () => {
+    expect(cases).toHaveLength(EXPECTED_CASE_COUNT);
+  });
+
+  it('has no duplicate subpath rows', () => {
+    const subpaths = cases.map((c) => c.subpath);
+    expect(new Set(subpaths).size).toBe(subpaths.length);
+  });
+});
+
 describe.each(cases)('public surface: $subpath subpath', ({ shim, real, expected, classes }) => {
   if (real !== undefined) {
     it('shim re-exports exactly the real barrel', () => {
