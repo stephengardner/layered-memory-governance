@@ -37,6 +37,7 @@ import {
 } from '../dist/actors/planning/index.js';
 import { loadLlmToolPolicy } from '../dist/llm-tool-policy.js';
 import { askQuestion } from '../dist/runtime/questions/index.js';
+import { runPlanApprovalTick } from '../dist/actor-message/index.js';
 
 // Instance configuration lives here, NOT in src/. Framework code
 // stays mechanism-focused; vendor model ids are the caller's choice.
@@ -374,6 +375,29 @@ async function main() {
     escalations: report.escalations,
     lastNote: report.lastNote,
   }, null, 2));
+
+  // End-of-run opportunistic approval sweep. If votes were cast
+  // before this run (HIL reviewers casting lag-respond [v] on a
+  // previously-proposed plan), the new plan we just wrote might
+  // share a topic whose consensus is already ready, OR a co-scheduled
+  // plan in 'proposed' might now clear the threshold. Running the
+  // approval tick here catches those immediately instead of waiting
+  // for the next approval-cycle daemon pass.
+  //
+  // Best-effort: a tick failure here MUST NOT alter the CTO run's
+  // exit code. The planning work is the load-bearing outcome; a
+  // consensus-sweep failure is an operational signal for the approval
+  // daemon to surface on its own.
+  try {
+    const approvalResult = await runPlanApprovalTick(host);
+    console.log(
+      '[cto-actor] end-of-run plan-approval tick: '
+      + `scanned=${approvalResult.scanned} eligible=${approvalResult.eligible} `
+      + `approved=${approvalResult.approved} rejected=${approvalResult.rejected} stale=${approvalResult.stale}`,
+    );
+  } catch (err) {
+    console.warn(`[cto-actor] end-of-run plan-approval tick FAILED (non-fatal): ${err?.message ?? err}`);
+  }
 
   if (report.haltReason === 'converged') process.exit(0);
   if (report.haltReason === 'budget-iterations' || report.haltReason === 'budget-deadline') process.exit(2);

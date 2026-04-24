@@ -17,7 +17,8 @@ Not every arrow in the diagram below is fully wired. Reading the walkthrough wit
 | `createAppBackedGhClient` + per-role App identity | **Wired.** Used by the agent-sdk executor and pr-landing; the primitive is ready even though CodeAuthorActor does not yet invoke it itself. |
 | `PrLandingActor` | **Wired.** Observes PR state, merges when checks + CodeRabbit approval + required status all land. |
 | Delegation envelope + auto-approve + dispatch | **Manual.** `run-cto-actor.mjs` drops the Plan at `proposed` with no `metadata.delegation`. The `runAutoApprovePass` + `runDispatchTick` primitives exist; wiring them behind a single command is a follow-up. |
-| Plan-state writeback on merge | **Not wired.** PrLanding observes merges but nothing updates the originating Plan to `succeeded`. |
+| `runPlanApprovalTick` + `scripts/run-approval-cycle.mjs` | **Wired.** Multi-reviewer consensus: N distinct-principal `plan-approval-vote` atoms above the confidence floor transition `proposed` -> `approved`. Policy atom `pol-plan-multi-reviewer-approval` (seeded by `scripts/bootstrap-inbox-canon.mjs`) ships with `code-author` on the allowlist. `scripts/run-approval-cycle.mjs` is the canonical single-pass runner that ticks `runAutoApprovePass` + `runPlanApprovalTick` + `runPlanStateReconcileTick` + `runDispatchTick` in order (daemon-mode loop is a follow-up). `scripts/run-cto-actor.mjs` also runs `runPlanApprovalTick` at end-of-run so consensus that landed during planning takes effect immediately. |
+| Plan-state writeback on merge | **Wired.** `runPlanStateReconcileTick` (in `src/runtime/plans/pr-merge-reconcile.ts`) scans `pr-observation` atoms with terminal `merge_state_status`, resolves the originating Plan via `metadata.plan_id`, and transitions `executing`/`approved` -> `succeeded` (merged) or `abandoned` (closed). Claimed via a deterministic `plan-merge-settled` marker id for race safety and crash recovery. Invoked by `scripts/run-approval-cycle.mjs`. |
 
 ## Actor topology
 
@@ -163,7 +164,6 @@ Each step is deterministic. Each atom carries provenance. `.lag/atoms/` lets you
 - **CodeAuthorActor loop.** `scripts/run-code-author.mjs → CodeAuthorActor` is the fence-validation skeleton described in "Implementation status". No plan pickup, no drafter invocation, no PR creation from this path. Operator runs the plan's steps until the loop is wired.
 - **Delegation envelope injection.** `run-cto-actor` drops the Plan at `proposed` with no `metadata.delegation`; a follow-up will chain envelope + auto-approve + dispatch into one command.
 - **`proposed → approved` for state-mutating sub-actors (code-author).** Operator approval via `lag-respond [v]` (multi-reviewer votes) is the default path per `pol-plan-auto-approve-low-stakes` ("Never auto-approve a sub-actor that mutates state beyond atom writes"). The machinery is wired end-to-end: `lag-respond [v]` writes `plan-approval-vote` atoms, `runPlanApprovalTick` transitions the plan on distinct-principal consensus. Widening single-principal auto-approval via `/decide` is also available for low-stakes actors. Governance gate, not a bug.
-- **Plan-state writeback on PR merge.** `runPlanStateReconcileTick` scans `pr-observation` atoms with terminal merge states and transitions the originating Plan atom to `succeeded` (merged) or `abandoned` (closed), claimed via a deterministic `plan-merge-settled` marker id for race safety and crash recovery. `PrLandingActor` observes PRs; the reconciler closes the write loop.
 
 ## Debugging checklist when a Plan sits stuck
 
@@ -180,7 +180,7 @@ The virtual org is autonomous for **deliberation**, gated for **external state m
 ## Next-step follow-ups (tracked, not shipped)
 
 - **Chain-closure runner**: a script that takes `--request`, runs CTO, injects delegation, runs `runAutoApprovePass` (for actors on the allowlist) OR escalates for operator approval, runs `runDispatchTick`, runs `run-code-author` on the queued message, returns with the draft PR URL.
-- **Plan state writeback on PR merge**: wire `PrLandingActor`'s merge-observation to locate the originating Plan (via the code-author inbox message's `correlation_id`) and `host.atoms.update(planId, { plan_state: 'succeeded' })`.
+- **Daemon loop for `scripts/run-approval-cycle.mjs`**: today the runner is `--once` only. A `--interval-ms` loop with graceful SIGTERM drain is tracked as a follow-up; the tick ordering + safety guarantees are already in place.
 - **Widen autonomy for specific low-risk plans**: canon atoms that narrow the auto-approve scope to particular plan-title patterns (e.g., doc-only changes) so repeated low-blast-radius loops can close without operator touch.
 
 None of these change the substrate. They are instance-level instrumentation over seams that already exist.
