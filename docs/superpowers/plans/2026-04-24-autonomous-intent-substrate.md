@@ -101,23 +101,23 @@ Read `src/substrate/types.ts` to find `Atom` discriminated union and related typ
 
 - [ ] **Step 2: Add `OperatorIntent` to the union**
 
-Find the `Atom` union (or its equivalent  -  may be `AtomType` + generic). Add the new `operator-intent` type tag.
+Find the `AtomType` union definition in `src/substrate/types.ts`. The current union is broader than the illustrative list here; it includes values like `ephemeral`, `actor-message`, `plan-approval-vote`, and others. **APPEND** `'operator-intent'` to the existing union. DO NOT rewrite or shrink the union to match this plan's examples.
 
-If types follow a pattern like:
-
-```ts
-export type AtomType = 'directive' | 'decision' | 'preference' | 'reference' | 'plan' | 'observation' | 'question';
+```bash
+grep -n "AtomType\b" src/substrate/types.ts
 ```
 
-Extend to:
+Then append the new tag:
 
 ```ts
-export type AtomType =
-  | 'directive' | 'decision' | 'preference' | 'reference'
-  | 'plan' | 'observation' | 'question' | 'operator-intent';
-```
+// Existing (do NOT replace; only append):
+// export type AtomType = 'directive' | 'decision' | 'preference' | 'reference'
+//   | 'plan' | 'observation' | 'question' | 'ephemeral' | 'actor-message'
+//   | 'plan-approval-vote' | ... ;
 
-If the union already is broader or uses different patterns, match existing conventions exactly.
+// Add:
+//   | 'operator-intent';
+```
 
 - [ ] **Step 3: Run typecheck**
 
@@ -617,9 +617,15 @@ git commit -m "schemas: add delegation field to planDraftOutput + PLAN_DRAFT pro
 - Modify: `src/runtime/actors/planning/planning-actor.ts`
 - Create or modify: `test/runtime/actors/planning/delegation.test.ts`
 
-- [ ] **Step 1: Locate the atom-construction site**
+**Scope note:** `src/runtime/actors/planning/planning-actor.ts` already exposes a helper `buildDelegationMetadata(delegateTo: PrincipalId)` (~line 167; verify via grep). The minimum change is to extend THAT helper to accept the full delegation draft (`{ sub_actor_principal_id, reason, implied_blast_radius }`) and propagate all three fields into `metadata.delegation`. Do NOT extract a new `buildPlanAtom` unless the existing helper makes the edit awkward; prefer tight incremental edits.
 
-Read `src/runtime/actors/planning/planning-actor.ts` to find where plan atoms are assembled from PLAN_DRAFT output. Note the exact lines that set `metadata` and `provenance.derived_from`.
+- [ ] **Step 1: Locate `buildDelegationMetadata` + atom-construction site**
+
+```bash
+grep -n 'buildDelegationMetadata\|delegation\|provenance' src/runtime/actors/planning/planning-actor.ts | head -20
+```
+
+Read the helper's signature + the plan-atom write site. Capture line numbers.
 
 - [ ] **Step 2: Write a failing test**
 
@@ -1032,14 +1038,43 @@ Read `dist/actor-message/code-author-invoker.js` (built from `src/actor-message/
  *
  * auditor-actor is registered by run-approval-cycle itself (read-only, always safe);
  * this module only adds code-author.
+ *
+ * CRITICAL: the wrapper also applies `autonomous-intent` and `plan-id:<id>`
+ * labels to the PR after code-author opens it. These labels key the pr-landing
+ * workflow's LAG-auditor gate (see .github/workflows/pr-landing.yml). Without
+ * the labels, the auditor never runs, LAG-auditor status never posts, and
+ * once branch protection requires that status (post-migration), every
+ * intent-driven PR hangs indefinitely.
  */
+import { execa } from 'execa';
+
 export default async function register(host, registry) {
   const { runCodeAuthor } = await import('../../dist/actor-message/code-author-invoker.js');
   registry.register('code-author', async (plan, ctx) => {
-    return runCodeAuthor({ host, plan, ...ctx });
+    const result = await runCodeAuthor({ host, plan, ...ctx });
+    const intentId = (plan.provenance?.derived_from ?? []).find((id) => id.startsWith('intent-'));
+    if (result?.pr_number && intentId) {
+      try {
+        const repo = process.env.GH_REPO ?? 'stephengardner/layered-autonomous-governance';
+        await execa('node', [
+          'scripts/gh-as.mjs', 'lag-ceo',
+          'api', `repos/${repo}/issues/${result.pr_number}/labels`,
+          '-X', 'POST',
+          '-f', 'labels[]=autonomous-intent',
+          '-f', `labels[]=plan-id:${plan.id}`,
+        ], { stdio: 'inherit' });
+      } catch (err) {
+        // Fail LOUD, not silent. PR stays open; labels missing; auditor gate
+        // will hang. Operator sees the warning + investigates.
+        console.error(`[autonomous-dispatch] WARNING: failed to label PR #${result.pr_number}: ${err.message}. LAG-auditor gate will not fire.`);
+      }
+    }
+    return result;
   });
 }
 ```
+
+**IMPORTANT:** verify `runCodeAuthor`'s return shape by reading `src/actor-message/code-author-invoker.ts`; if the PR-number field is not `pr_number` (e.g., `prNumber`, `number`), adjust the guard + access above.
 
 - [ ] **Step 3: Verify smoke**
 
@@ -1338,7 +1373,7 @@ Read the workflow. Find the main job; note where pr-landing actor is invoked.
         run: node scripts/run-auditor.mjs --pr ${{ github.event.pull_request.number }} --plan ${{ steps.plan.outputs.plan-id }}
 ```
 
-The job fires only when the PR has the `autonomous-intent` label AND a `plan-id:<id>` label. The auditor script reads both.
+**Both labels required**: the job's `if:` gates on `autonomous-intent` in labels; the step-level `if:` gates on non-empty `plan-id:` output. Both labels MUST be applied by the autonomous-dispatch invoker (Task 12); a PR missing either label SKIPS the job, so `LAG-auditor` status never posts. After Task 16's migration runs, a PR without both labels will hang indefinitely awaiting the required check.
 
 - [ ] **Step 3: Commit**
 
@@ -1365,18 +1400,16 @@ git commit -m "workflows: pr-landing auditor gate step for autonomous-intent lab
  * Usage:
  *   node scripts/migrations/2026-04-24-add-lag-auditor-status-check.mjs
  *
- * Requires: gh CLI with admin: on the repo.
+ * Requires: gh CLI with admin on the repo.
  */
-import { execa } from 'node:child_process';
-import util from 'node:util';
-const exec = util.promisify(execa);
+import { execa } from 'execa';
 
 const REPO = 'stephengardner/layered-autonomous-governance';
 const BRANCH = 'main';
 const CONTEXT = 'LAG-auditor';
 
 async function main() {
-  const cur = await exec(`gh api repos/${REPO}/branches/${BRANCH}/protection`);
+  const cur = await execa('gh', ['api', `repos/${REPO}/branches/${BRANCH}/protection`]);
   const protection = JSON.parse(cur.stdout);
   const contexts = protection.required_status_checks?.contexts ?? [];
   if (contexts.includes(CONTEXT)) {
@@ -1384,14 +1417,18 @@ async function main() {
     return;
   }
   const next = [...contexts, CONTEXT];
-  // Use the "update" endpoint; constraints must be preserved.
-  await exec(`gh api repos/${REPO}/branches/${BRANCH}/protection/required_status_checks -X PATCH -f contexts='${JSON.stringify(next)}'`);
+  const body = JSON.stringify({ contexts: next, strict: protection.required_status_checks?.strict ?? true });
+  await execa('gh', [
+    'api', `repos/${REPO}/branches/${BRANCH}/protection/required_status_checks`,
+    '-X', 'PATCH',
+    '--input', '-',
+  ], { input: body });
   console.log(`[migration] added ${CONTEXT} to required_status_checks. Now: ${next.join(', ')}`);
 }
 main().catch((err) => { console.error(err); process.exit(1); });
 ```
 
-**Note:** the `execa` import shape above uses `node:child_process`-promisified. Prefer using the already-installed `execa` package for consistency; swap the import to `import { execa } from 'execa';` if the codebase uses that (verify by inspecting other scripts).
+Uses the repo's standard `execa` import pattern (see `scripts/git-as.mjs`, `scripts/gh-as.mjs`). Argv-array form (not shell-string) avoids quoting pitfalls. The PATCH body is piped via `--input -` so nested JSON is preserved.
 
 - [ ] **Step 2: Do NOT run the migration in this PR**
 
@@ -1494,21 +1531,20 @@ Expected: all tests pass.
 
 - [ ] **Step 2: Pre-push grep checklist**
 
-Per `feedback_pre_push_grep_checklist` memory:
+Read the canonical pattern from `feedback_pre_push_grep_checklist` memory first. Minimum three checks:
 
 ```bash
+# 1. Emdashes and endashes (U+2014, U+2013) in tracked text files
 grep -rP '[\x{2014}\x{2013}]' --include='*.md' --include='*.ts' --include='*.mjs' --include='*.json' --include='*.yml' . 2>/dev/null | grep -v node_modules | grep -v '\.git/' | head
+
+# 2. AI attribution (Co-Authored-By, Generated-with markers)
+grep -rE '(Co-Authored-By|Generated with Claude|Generated by Claude)' --include='*.md' --include='*.ts' --include='*.mjs' --include='*.json' . 2>/dev/null | grep -v node_modules | head
+
+# 3. src/ JSDoc design-link references (per feedback_src_docs_mechanism_only_no_design_links)
+grep -nE 'design/|DECISIONS|phase-5[0-9]|dev-|inv-|pol-' src/ -r --include='*.ts' 2>&1 | grep -vE '//\s*TODO|//\s*NOTE.*canon' | head
 ```
 
-Expected: no output.
-
-Also check `src/` JSDoc for design/canon/ADR references (per `feedback_src_docs_mechanism_only_no_design_links`):
-
-```bash
-grep -nE 'design/|DECISIONS|phase-5[0-9]|canon-id|dev-|inv-|pol-' src/ -r --include='*.ts' 2>&1 | grep -vE '//\s*TODO|//\s*NOTE.*canon' | head
-```
-
-Flag any hits for review.
+Expected: all three empty. Any hit = fix before push.
 
 - [ ] **Step 3: Rebase onto latest main to avoid BEHIND**
 
