@@ -229,7 +229,7 @@ The full list of subpaths declared in `package.json#exports`, each with one reas
 | Subpath | Reach for it when... |
 | --- | --- |
 | `.` (root) | you need the everyday governance primitives: `LoopRunner`, `PromotionEngine`, `arbitrate`, `CanonMdManager`, embedders, the core types. |
-| `/adapters/memory` | you want a zero-config in-memory `Host` for tests, spikes, and the indie-floor story. |
+| `/adapters/memory` | you want a zero-config in-memory `Host` for tests, spikes, and the indie-floor single-developer story. |
 | `/adapters/file` | you want a `Host` that persists atoms, canon, principals, and audits to `.lag/` on disk. |
 | `/adapters/bridge` | you want to stitch a secondary atom store alongside the primary one (e.g. bridge-into an existing memory palace). |
 | `/adapters/notifier` | you're wiring the Telegram notifier or reading inbound callback payloads. |
@@ -245,7 +245,11 @@ The full list of subpaths declared in `package.json#exports`, each with one reas
 | `/external/github-app` | you need App-scoped GitHub auth (installation-token cache, App JWT, App-backed gh client). |
 | `/lifecycle` | you're starting, stopping, or probing a long-running LAG service via the lifecycle primitive. |
 
-The value surface of every subpath is pinned by `test/public-surface/subpaths.test.ts`. That file is the authoritative answer to "what is actually exported, right now"; adding or removing an export there is the signal that the public contract changed.
+The value surface of every subpath is pinned by `test/public-surface/subpaths.test.ts` (50 assertions across all 16 rows). That file is the authoritative answer to "what is actually exported, right now"; adding or removing an export there is the signal that the public contract changed. To list exports from the built package for one subpath at runtime:
+
+```bash
+node -e "import('./dist/actors/index.js').then(m => console.log(Object.keys(m).sort()))"
+```
 
 ## CLIs and runtime surfaces
 
