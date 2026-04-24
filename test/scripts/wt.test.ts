@@ -9,6 +9,7 @@ import {
   prStateToStaleSignals,
   findWorktreeBySlug,
   parseCleanFlags,
+  classifyBranchRefs,
 } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
@@ -389,5 +390,50 @@ describe('parseCleanFlags', () => {
   });
   it('ignores unrelated flags', () => {
     expect(parseCleanFlags(['--force', 'foo', '--other'])).toEqual({ dryRun: false, yes: false });
+  });
+});
+
+describe('classifyBranchRefs', () => {
+  it('partitions into protected / inWorktree / candidates', () => {
+    const branches = ['main', 'feat/a', 'feat/b', 'fix/c'];
+    const wtRecords = [
+      { path: '/r', branch: 'main' },
+      { path: '/r/.worktrees/a', branch: 'feat/a' },
+    ];
+    const r = classifyBranchRefs(branches, wtRecords, 'main', 'main');
+    expect(r.protected).toContain('main');
+    expect(r.inWorktree).toContain('feat/a');
+    expect(r.candidates).toContain('feat/b');
+    expect(r.candidates).toContain('fix/c');
+    expect(r.candidates).not.toContain('main');
+    expect(r.candidates).not.toContain('feat/a');
+  });
+  it('protects current HEAD branch even when no worktree record matches it', () => {
+    const r = classifyBranchRefs(['feat/x', 'feat/y'], [], 'feat/x', 'main');
+    expect(r.protected).toContain('feat/x');
+    expect(r.candidates).toEqual(['feat/y']);
+  });
+  it('treats a missing currentBranch (null/detached) as not protecting any branch', () => {
+    const r = classifyBranchRefs(['feat/x'], [], null, 'main');
+    expect(r.candidates).toEqual(['feat/x']);
+  });
+  it('ignores null branch entries in worktree records (detached worktrees)', () => {
+    const wt = [{ path: '/r/.worktrees/det', branch: null }];
+    const r = classifyBranchRefs(['feat/a'], wt, null, 'main');
+    expect(r.candidates).toEqual(['feat/a']);
+    expect(r.inWorktree).toEqual([]);
+  });
+  it('honors a non-main trunk (e.g. master)', () => {
+    const r = classifyBranchRefs(['master', 'feat/x'], [], null, 'master');
+    expect(r.protected).toContain('master');
+    expect(r.candidates).toEqual(['feat/x']);
+  });
+  it('skips empty / non-string entries defensively', () => {
+    const r = classifyBranchRefs(['', 'feat/a', null as unknown as string], [], null, 'main');
+    expect(r.candidates).toEqual(['feat/a']);
+  });
+  it('handles empty inputs', () => {
+    const r = classifyBranchRefs([], [], null, 'main');
+    expect(r).toEqual({ protected: [], inWorktree: [], candidates: [] });
   });
 });

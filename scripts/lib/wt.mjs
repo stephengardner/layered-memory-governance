@@ -274,6 +274,59 @@ export function parseCleanFlags(args) {
 }
 
 /**
+ * Classify local branch refs for `wt prune-refs`. Pure helper that
+ * partitions branches into three buckets from static snapshots
+ * (branch list, worktree records, current branch, trunk branch):
+ *
+ *   - `protected`: branches that must never be pruned (current HEAD,
+ *     trunk like `main`/`master`).
+ *   - `inWorktree`: branches claimed by some worktree. Pruning would
+ *     break that worktree's HEAD pointer.
+ *   - `candidates`: branches with no worktree and not protected. The
+ *     caller then does the IO check (PR state via gh) per candidate
+ *     to decide whether to actually delete.
+ *
+ * Why split here: partition logic is a pure data-shape transformation
+ * and deserves a unit test. PR-state checks are IO and live in
+ * cmdPruneRefs where they can be exercised end-to-end.
+ *
+ * @param {readonly string[]} allBranches - local branch names.
+ * @param {readonly {branch?: string | null}[]} worktreeRecords
+ * @param {string | null} currentBranch - HEAD branch of primary
+ *   checkout; never a candidate.
+ * @param {string} trunkBranch - local trunk name (e.g. 'main'),
+ *   stripped of any remote prefix.
+ * @returns {{
+ *   protected: string[],
+ *   inWorktree: string[],
+ *   candidates: string[]
+ * }}
+ */
+export function classifyBranchRefs(allBranches, worktreeRecords, currentBranch, trunkBranch) {
+  const worktreeBranches = new Set(
+    (worktreeRecords ?? [])
+      .map(r => r && typeof r.branch === 'string' ? r.branch : null)
+      .filter(b => b !== null && b.length > 0)
+  );
+  const protectedSet = new Set();
+  if (typeof currentBranch === 'string' && currentBranch.length > 0) {
+    protectedSet.add(currentBranch);
+  }
+  if (typeof trunkBranch === 'string' && trunkBranch.length > 0) {
+    protectedSet.add(trunkBranch);
+  }
+
+  const out = { protected: [], inWorktree: [], candidates: [] };
+  for (const b of allBranches ?? []) {
+    if (typeof b !== 'string' || b.length === 0) continue;
+    if (protectedSet.has(b)) { out.protected.push(b); continue; }
+    if (worktreeBranches.has(b)) { out.inWorktree.push(b); continue; }
+    out.candidates.push(b);
+  }
+  return out;
+}
+
+/**
  * Render the NOTES.md skeleton for a new worktree.
  * Returns a markdown template with placeholders filled in.
  */
