@@ -8,18 +8,30 @@
  * other test in this repo, which exercises modules by their internal
  * paths. This smoke guards the public contract.
  *
- * Strategy:
- *   1. Import from the shim path (src/actors/...), which is what the
- *      `exports` map points at via dist/actors/..., and also from the
- *      real runtime path (src/runtime/actors/...). Assert the shim key
- *      set equals the real key set so shim drift fails the test.
- *   2. Pin the exact documented value surface of each barrel. Adding
- *      or removing an export requires updating this test on purpose;
- *      silent expansion of the public surface is rejected.
- *   3. For each documented value, assert `typeof === 'function'` so a
- *      class → named-export-of-undefined regression cannot pass.
+ * Shape (table-driven on purpose):
+ *   Each row is one subpath barrel. The three invariants per row are
+ *   identical, so adding the remaining subpaths (`/adapters/*`,
+ *   `/actors/{code-author,pr-review,planning,provisioning}`,
+ *   `/actor-message*`, `/external/github*`, `/lifecycle`) in a follow-up
+ *   PR is a one-line row addition, not another copy of a describe block.
+ *   Keeping the scaffold in place from row 1 means the follow-up lands
+ *   as pure data, not refactor.
  *
- * Type exports are intentionally not asserted here: they are erased at
+ * Invariants per subpath:
+ *   1. Shim equivalence: the compat shim at `src/<subpath>` (what the
+ *      package.json `exports` map resolves to via `dist/<subpath>`) must
+ *      export the same key set as the real runtime barrel at
+ *      `src/runtime/<subpath>`. Catches a mis-targeted re-export path
+ *      that TypeScript would not flag at runtime.
+ *   2. Surface pin: `Object.keys` equals the documented allowlist.
+ *      Adding or removing an export requires updating this test on
+ *      purpose; silent expansion of the public surface is rejected.
+ *   3. Callability: every documented value is `typeof === 'function'`
+ *      (classes and functions both). Optional `classes` list also
+ *      asserts `.prototype` is defined, so a class-became-undefined
+ *      regression cannot pass.
+ *
+ * Type exports are intentionally not asserted here: types erase at
  * runtime. They are covered at compile time by `tsc --noEmit`.
  */
 
@@ -29,48 +41,58 @@ import * as actorsReal from '../../src/runtime/actors/index.js';
 import * as prLandingShim from '../../src/actors/pr-landing/index.js';
 import * as prLandingReal from '../../src/runtime/actors/pr-landing/index.js';
 
-describe('public surface: /actors subpath', () => {
-  it('shim re-exports exactly the real actors barrel', () => {
-    expect(Object.keys(actorsShim).sort()).toEqual(
-      Object.keys(actorsReal).sort(),
-    );
-  });
+interface SubpathCase {
+  readonly subpath: string;
+  readonly shim: Record<string, unknown>;
+  readonly real: Record<string, unknown>;
+  readonly expected: readonly string[];
+  readonly classes?: readonly string[];
+}
 
-  it('exports exactly the documented value surface', () => {
-    expect(Object.keys(actorsShim).sort()).toEqual(['runActor']);
-  });
-
-  it('runActor is a callable function', () => {
-    expect(typeof actorsShim.runActor).toBe('function');
-  });
-});
-
-describe('public surface: /actors/pr-landing subpath', () => {
-  it('shim re-exports exactly the real pr-landing barrel', () => {
-    expect(Object.keys(prLandingShim).sort()).toEqual(
-      Object.keys(prLandingReal).sort(),
-    );
-  });
-
-  it('exports exactly the documented value surface', () => {
-    expect(Object.keys(prLandingShim).sort()).toEqual([
+const cases: readonly SubpathCase[] = [
+  {
+    subpath: '/actors',
+    shim: actorsShim,
+    real: actorsReal,
+    expected: ['runActor'],
+  },
+  {
+    subpath: '/actors/pr-landing',
+    shim: prLandingShim,
+    real: prLandingReal,
+    expected: [
       'PrLandingActor',
       'mkPrObservationAtom',
       'mkPrObservationAtomId',
       'mkPrObservationFailedAtom',
       'renderPrObservationBody',
-    ]);
+    ],
+    classes: ['PrLandingActor'],
+  },
+];
+
+describe.each(cases)('public surface: $subpath subpath', ({ shim, real, expected, classes }) => {
+  it('shim re-exports exactly the real barrel', () => {
+    expect(Object.keys(shim).sort()).toEqual(Object.keys(real).sort());
   });
 
-  it('PrLandingActor is a constructable class', () => {
-    expect(typeof prLandingShim.PrLandingActor).toBe('function');
-    expect(prLandingShim.PrLandingActor.prototype).toBeDefined();
+  it('exports exactly the documented value surface', () => {
+    expect(Object.keys(shim).sort()).toEqual([...expected].sort());
   });
 
-  it('pr-observation helpers are callable functions', () => {
-    expect(typeof prLandingShim.mkPrObservationAtom).toBe('function');
-    expect(typeof prLandingShim.mkPrObservationAtomId).toBe('function');
-    expect(typeof prLandingShim.mkPrObservationFailedAtom).toBe('function');
-    expect(typeof prLandingShim.renderPrObservationBody).toBe('function');
+  it('every documented value is a callable function', () => {
+    for (const name of expected) {
+      expect(typeof shim[name], `${name} typeof`).toBe('function');
+    }
   });
+
+  if (classes && classes.length > 0) {
+    it('every documented class has a prototype', () => {
+      for (const name of classes) {
+        const cls = shim[name] as { prototype?: unknown } | undefined;
+        expect(cls, `${name} is defined`).toBeDefined();
+        expect(cls?.prototype, `${name}.prototype`).toBeDefined();
+      }
+    });
+  }
 });
