@@ -50,6 +50,9 @@ jobs:
 
       - name: Quickstart smoke
         # Prove the public API path resolves against the just-built dist.
+        # Same assertion is covered by test/public-surface/quickstart.test.ts
+        # (runs under `npm test` + `npm run test:public-surface`); this step
+        # keeps a bare-spawn signal on every CI run as a belt-and-braces gate.
         run: node examples/quickstart.mjs
 
   package-hygiene:
