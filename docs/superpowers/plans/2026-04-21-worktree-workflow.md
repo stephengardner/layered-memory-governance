@@ -33,7 +33,7 @@
 - `CLAUDE.md` (repo root)  -  add one-paragraph pointer to the new skill under an existing section (do NOT edit the auto-managed canon block).
 - `package.json`  -  add `"wt": "node scripts/wt.mjs"` npm script; add bootstrap target if needed.
 - `scripts/bootstrap-all-canon.mjs`  -  call the new bootstrap in its pipeline (if the pattern applies; verify at task time).
-- `C:\Users\opens\.claude\projects\C--Users-opens-memory-governance\memory\feedback_branch_off_main_not_stacks.md`  -  revise to reflect the nuance.
+- Operator-local auto-memory entry `feedback_branch_off_main_not_stacks` (outside the repo; operator resolves the path on their own machine via their memory tooling)  -  revise to reflect the stacking-allowed-for-genuine-coupling nuance.
 
 **Do NOT modify:**
 - `apps/console/CLAUDE.md` (sibling-convention reference stays until migration PR).
@@ -50,7 +50,7 @@
 
 - [ ] **Step 1: Read the reference skill**
 
-Read `C:/Users/opens/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.5/skills/using-git-worktrees/SKILL.md` to match its tone, structure, and "Announce at start" convention.
+Read the `superpowers:using-git-worktrees` skill (via its plugin-qualified name so the resolver picks up whatever version is installed) to match its tone, structure, and "Announce at start" convention.
 
 - [ ] **Step 2: Write the skill file**
 
@@ -572,7 +572,7 @@ describe('renderNotesSkeleton', () => {
 export function renderNotesSkeleton({ slug, baseLabel, baseSha }) {
   return `# ${slug}
 
-**Intent:** (1 line  -  what this worktree exists to do)
+**Intent** (1 line: what this worktree exists to do)
 **Branched off:** ${baseLabel} @ ${baseSha}
 **PR:** (pending)
 
@@ -1102,7 +1102,15 @@ const ATOMS = [
     ],
     layer: 'L3',
     confidence: 1.0,
-    provenance_source: 'operator-ratification-via-pr-merge',
+    // `provenance.kind` must be a valid ProvenanceKind enum member:
+    // 'user-directive' | 'agent-observed' | 'agent-inferred' |
+    // 'llm-refined' | 'canon-promoted' | 'operator-seeded'.
+    // Bootstrap-time atoms use 'operator-seeded'.
+    provenance: {
+      kind: 'operator-seeded',
+      source: { session_id: 'bootstrap-workflow-canon', agent_id: 'bootstrap' },
+      derived_from: /* see above */ [],
+    },
     // …match the field shape of existing atoms in bootstrap-dev-canon-proposals.mjs…
   },
 ];
@@ -1133,16 +1141,12 @@ git commit -m "canon: parallel-workstreams-use-worktrees L3 directive"
 
 ---
 
-## Task 18: Update memory `feedback_branch_off_main_not_stacks.md`
+## Task 18: Update memory `feedback_branch_off_main_not_stacks`
 
 **Files:**
-- Modify: `C:\Users\opens\.claude\projects\C--Users-opens-memory-governance\memory\feedback_branch_off_main_not_stacks.md`
+- Modify: the operator-local auto-memory entry slug `feedback_branch_off_main_not_stacks` (outside the repo; resolve the path on your machine via your memory tooling - paths are machine-specific and must not be committed).
 
-- [ ] **Step 1: Read current memory file**
-
-```bash
-cat "C:/Users/opens/.claude/projects/C--Users-opens-memory-governance/memory/feedback_branch_off_main_not_stacks.md"
-```
+- [ ] **Step 1: Read current memory file** (via whatever path your memory tooling reports)
 
 - [ ] **Step 2: Revise content**
 

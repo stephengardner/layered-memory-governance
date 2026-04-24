@@ -37,9 +37,9 @@ export function parseGitWorktreeList(output) {
   return blocks.map((block) => {
     const rec = { path: null, head: null, branch: null, detached: false };
     for (const line of block.split(/\r?\n/)) {
-      if (line.startsWith('worktree ')) rec.path = line.slice('worktree '.length);
-      else if (line.startsWith('HEAD ')) rec.head = line.slice('HEAD '.length);
-      else if (line.startsWith('branch ')) rec.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+      if (line.startsWith('worktree ')) rec.path = line.slice('worktree '.length).trim();
+      else if (line.startsWith('HEAD ')) rec.head = line.slice('HEAD '.length).trim();
+      else if (line.startsWith('branch ')) rec.branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
       else if (line === 'detached') rec.detached = true;
     }
     return rec;
@@ -85,28 +85,104 @@ export function detectStale({
   thresholdMs,
 }) {
   const reasons = [];
-  if (now - lastCommitMs > thresholdMs) reasons.push('no commits for 14+ days');
-  if (now - notesMtimeMs > thresholdMs) reasons.push('NOTES.md untouched for 14+ days');
+  // Reason strings reflect the actual threshold passed in so an operator
+  // setting WT_STALE_DAYS=7 sees "7+ days", not a hardcoded "14+". Use
+  // ceil so a sub-day threshold rounds up to 1 and the user-facing
+  // message always has a concrete integer.
+  const days = Math.max(1, Math.ceil(thresholdMs / (24 * 60 * 60 * 1000)));
+  if (now - lastCommitMs > thresholdMs) reasons.push(`no commits for ${days}+ days`);
+  if (now - notesMtimeMs > thresholdMs) reasons.push(`NOTES.md untouched for ${days}+ days`);
   if (branchMerged) reasons.push('branch merged to main');
   if (prClosed) reasons.push('PR closed');
   return { stale: reasons.length > 0, reasons };
 }
 
-const PACKAGE_MANAGERS = [
-  { file: 'package.json', tool: 'npm', install: 'npm install' },
+/**
+ * Lockfile precedence: the presence of a non-npm lockfile is a strong
+ * signal that running `npm install` would clobber the team's actual
+ * package-manager state. Ordered most-specific first so Bun (bun.lockb)
+ * wins over pnpm when both somehow exist.
+ */
+const LOCKFILES = [
+  { file: 'bun.lockb', tool: 'bun', install: 'bun install' },
+  { file: 'pnpm-lock.yaml', tool: 'pnpm', install: 'pnpm install' },
+  { file: 'yarn.lock', tool: 'yarn', install: 'yarn install' },
+  { file: 'package-lock.json', tool: 'npm', install: 'npm install' },
+];
+
+/**
+ * Non-JS manifest fallbacks. These do not collide with a package.json,
+ * so a package.json that also has (e.g.) a pyproject.toml still routes
+ * to npm (the JS lockfile / packageManager / package.json path takes
+ * priority in detectPackageManager).
+ */
+const NON_JS_MANIFESTS = [
   { file: 'Cargo.toml', tool: 'cargo', install: 'cargo build' },
   { file: 'pyproject.toml', tool: 'poetry', install: 'poetry install' },
   { file: 'go.mod', tool: 'go', install: 'go mod download' },
 ];
 
 /**
- * Auto-detect package manager from root directory files.
- * Returns { tool, install } on match, null if none found.
- * Prefers first match in precedence order: npm > cargo > poetry > go.
+ * Auto-detect package manager from root directory files + optional
+ * package.json content.
+ *
+ * Priority:
+ *   1. Lockfile presence (bun.lockb > pnpm-lock.yaml > yarn.lock >
+ *      package-lock.json) - strongest signal of the team's actual tool.
+ *   2. `packageManager` field in package.json (Corepack convention) -
+ *      authoritative when declared, and lockfile-free repos use it.
+ *   3. package.json without either of the above - fall back to npm.
+ *   4. Non-JS manifest (Cargo.toml / pyproject.toml / go.mod).
+ *
+ * The old behavior (unconditional `npm install` on any package.json)
+ * silently rewrote the lockfile of pnpm/yarn/bun repos, swapping
+ * dependency resolutions. CR #128 flagged this as an adoption blocker
+ * for any small/mid team outside this repo.
+ *
+ * @param rootFiles - file names present at the worktree root.
+ * @param packageJsonContent - optional string contents of package.json,
+ *   parsed to read `packageManager`. When undefined or unparseable,
+ *   priority 2 is skipped.
+ * @returns { tool, install } on match, null if none found.
  */
-export function detectPackageManager(rootFiles) {
+export function detectPackageManager(rootFiles, packageJsonContent) {
   const set = new Set(rootFiles);
-  for (const pm of PACKAGE_MANAGERS) {
+
+  // 1. Lockfile wins: it names the tool the team actually uses.
+  for (const lf of LOCKFILES) {
+    if (set.has(lf.file)) return { tool: lf.tool, install: lf.install };
+  }
+
+  // 2. Corepack `packageManager` field. Only consulted if a
+  //    package.json exists.
+  if (set.has('package.json') && typeof packageJsonContent === 'string') {
+    try {
+      const pkg = JSON.parse(packageJsonContent);
+      const pm = typeof pkg.packageManager === 'string' ? pkg.packageManager : null;
+      if (pm) {
+        // Corepack format is `<tool>@<version>[+<hash>]`; we only
+        // need the tool name. Fall back to npm on unrecognized tool
+        // rather than silently skip, since an unknown string is still
+        // stronger signal than absence of it.
+        const tool = pm.split('@')[0];
+        if (tool === 'pnpm') return { tool: 'pnpm', install: 'pnpm install' };
+        if (tool === 'yarn') return { tool: 'yarn', install: 'yarn install' };
+        if (tool === 'bun') return { tool: 'bun', install: 'bun install' };
+        if (tool === 'npm') return { tool: 'npm', install: 'npm install' };
+      }
+    } catch {
+      // Malformed package.json - fall through to priority 3.
+    }
+  }
+
+  // 3. Plain package.json with no other signal - npm is the safe
+  //    default (npm ships with Node, so it is always available).
+  if (set.has('package.json')) {
+    return { tool: 'npm', install: 'npm install' };
+  }
+
+  // 4. Non-JS manifests.
+  for (const pm of NON_JS_MANIFESTS) {
     if (set.has(pm.file)) return { tool: pm.tool, install: pm.install };
   }
   return null;

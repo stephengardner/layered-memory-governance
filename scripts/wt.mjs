@@ -29,6 +29,70 @@ import {
 
 const COMMANDS = ['new', 'list', 'rm', 'clean', 'stack', 'note'];
 
+function parsePositiveNumber(raw, fallback) {
+  const n = Number(raw);
+  return (Number.isFinite(n) && n > 0) ? n : fallback;
+}
+
+/**
+ * Resolve the trunk ref used for ahead/behind, merge-check, and
+ * stale-PR comparisons. Teams with `origin/master`, `origin/trunk`,
+ * `origin/develop`, or a non-`origin` remote (fork workflow,
+ * `upstream/main`) set `WT_TRUNK_REF` to override. Defaults to
+ * `origin/main` for backward compat.
+ */
+function trunkRef() {
+  const raw = process.env.WT_TRUNK_REF;
+  if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
+  return 'origin/main';
+}
+
+/**
+ * Parse an $EDITOR string that may contain arguments, e.g.
+ * `code --wait`, `nvim -u NONE`, `emacsclient -n`. Returns
+ * `{ bin, args }` or null when the string is empty/whitespace.
+ *
+ * Simple whitespace split is sufficient for the vast majority of
+ * operator-configured editors; the pathological case of an editor
+ * whose executable path contains a literal space needs a quoted
+ * EDITOR ("/path/with space/editor" arg1) which we handle by
+ * respecting balanced double quotes.
+ */
+function parseEditorCommand(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  const parts = [];
+  let buf = '';
+  let inQuote = false;
+  for (const ch of trimmed) {
+    if (ch === '"') { inQuote = !inQuote; continue; }
+    if (!inQuote && /\s/.test(ch)) {
+      if (buf.length > 0) { parts.push(buf); buf = ''; }
+      continue;
+    }
+    buf += ch;
+  }
+  if (buf.length > 0) parts.push(buf);
+  if (parts.length === 0) return null;
+  return { bin: parts[0], args: parts.slice(1) };
+}
+
+/**
+ * Read package.json (if present at the root) and return its raw
+ * contents as a string. The caller forwards this to
+ * `detectPackageManager` so the Corepack `packageManager` field can
+ * be honored. Returns undefined on any error (missing, unreadable)
+ * so the detector can still apply its other priorities.
+ */
+async function readPackageJsonIfAny(rootPath) {
+  try {
+    return await readFile(join(rootPath, 'package.json'), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
 function usage() {
   console.log(`Usage: wt <command> [args]
 
@@ -37,12 +101,17 @@ Commands:
   list                            Show all worktrees with state + stale flags.
   rm <slug>                       Remove worktree (confirms if dirty or unmerged).
   clean [--dry-run]               Prompt to remove merged/abandoned worktrees.
+                                  Worktrees showing activity (recent HEAD,
+                                  dirty tree, index.lock) are skipped.
   stack <parent> <child>          Create child stacked on parent via git-spice.
-  note [<slug>]                   Open NOTES.md in $EDITOR.
+  note [<slug>]                   Open NOTES.md in $EDITOR (supports args).
 
 Env:
   WT_ACTIVITY_MIN   Activity-window minutes (default 10).
-  WT_STALE_DAYS     Stale-threshold days (default 14).`);
+  WT_STALE_DAYS     Stale-threshold days (default 14).
+  WT_TRUNK_REF      Trunk ref for ahead/behind and merge checks
+                    (default origin/main; set to origin/master,
+                    upstream/main, etc. for non-default trunks).`);
 }
 
 async function main() {
@@ -69,8 +138,21 @@ async function cmdNew(args) {
   const positional = [];
   let from = 'main';
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--from') { from = args[++i]; }
-    else positional.push(args[i]);
+    if (args[i] === '--from') {
+      if (i + 1 >= args.length) {
+        console.error('[wt new] --from requires a value');
+        process.exit(2);
+      }
+      const nextVal = args[++i];
+      // Guard against `--from` followed by a flag-looking or empty
+      // value (e.g. `wt new foo --from $EMPTY_VAR`). Without this
+      // the failure surfaced later at `git fetch origin undefined`.
+      if (typeof nextVal !== 'string' || nextVal.trim().length === 0 || nextVal.startsWith('--')) {
+        console.error(`[wt new] --from requires a non-empty ref (got ${JSON.stringify(nextVal ?? '')})`);
+        process.exit(2);
+      }
+      from = nextVal.trim();
+    } else positional.push(args[i]);
   }
   const rawSlug = positional[0];
   const v = validateSlug(rawSlug);
@@ -99,7 +181,7 @@ async function cmdNew(args) {
   catch { console.warn(`[wt new] fetch origin ${from} failed; proceeding with local ref`); }
 
   // Parallel-agent collision scan.
-  const activityWindowMs = (Number(process.env.WT_ACTIVITY_MIN ?? 10)) * 60 * 1000;
+  const activityWindowMs = parsePositiveNumber(process.env.WT_ACTIVITY_MIN, 10) * 60 * 1000;
   const now = Date.now();
   const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
   const records = parseGitWorktreeList(wtList.stdout);
@@ -140,16 +222,31 @@ async function cmdNew(args) {
   const notes = renderNotesSkeleton({ slug, baseLabel: from, baseSha });
   await writeFile(join(wtPath, 'NOTES.md'), notes, 'utf8');
 
-  // Verify NOTES is gitignored inside the new worktree.
+  // Verify NOTES is gitignored inside the new worktree. A warning
+  // here would scroll past in busy CI logs; the skill promises the
+  // operator that `wt new` refuses to proceed, and "kill-switch
+  // before autonomy" favors the strict option: exit loud, let the
+  // operator add `/NOTES.md` to `.gitignore` before retrying.
   try {
     await execa('git', ['-C', wtPath, 'check-ignore', '-q', 'NOTES.md']);
   } catch {
-    console.error(`[wt new] WARNING: NOTES.md is NOT gitignored in ${wtPath}. Add /NOTES.md to .gitignore before committing.`);
+    console.error(
+      `[wt new] ERROR: NOTES.md is NOT gitignored in ${wtPath}.\n`
+      + `  Add "/NOTES.md" to .gitignore in the parent repo (or its ancestor) so\n`
+      + `  per-worktree handoff notes never land in a commit by accident. After\n`
+      + `  fixing the gitignore, remove the worktree (wt rm ${slug} --force) and\n`
+      + `  run wt new again.`,
+    );
+    process.exit(2);
   }
 
-  // Auto-detect + run package-manager setup.
+  // Auto-detect + run package-manager setup. Passing the raw
+  // package.json content lets the detector honor Corepack's
+  // `packageManager` field and avoid clobbering pnpm/yarn/bun
+  // lockfiles with a bare `npm install`.
   const rootEntries = await readdir(wtPath);
-  const pm = detectPackageManager(rootEntries);
+  const packageJsonContent = await readPackageJsonIfAny(wtPath);
+  const pm = detectPackageManager(rootEntries, packageJsonContent);
   if (pm) {
     console.log(`[wt new] running ${pm.install} in ${wtPath}`);
     try {
@@ -169,9 +266,9 @@ async function cmdList(args) {
   const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
   const records = parseGitWorktreeList(wtList.stdout);
 
-  const staleDays = Number(process.env.WT_STALE_DAYS ?? 14);
+  const staleDays = parsePositiveNumber(process.env.WT_STALE_DAYS, 14);
   const thresholdMs = staleDays * 24 * 60 * 60 * 1000;
-  const activityWindowMs = (Number(process.env.WT_ACTIVITY_MIN ?? 10)) * 60 * 1000;
+  const activityWindowMs = parsePositiveNumber(process.env.WT_ACTIVITY_MIN, 10) * 60 * 1000;
   const now = Date.now();
 
   const rows = [];
@@ -181,13 +278,14 @@ async function cmdList(args) {
     const slug = isPrimary ? '(main)' : rec.path.split(/[\\/]/).pop() ?? rec.path;
     const branch = rec.branch ?? (rec.detached ? '(detached)' : '?');
 
-    // Ahead/behind main.
+    // Ahead/behind trunk (WT_TRUNK_REF, default origin/main).
     let ahead = 0, behind = 0;
     if (!isPrimary) {
       try {
-        ahead = Number((await execa('git', ['-C', rec.path, 'rev-list', '--count', 'origin/main..HEAD'])).stdout.trim()) || 0;
-        behind = Number((await execa('git', ['-C', rec.path, 'rev-list', '--count', 'HEAD..origin/main'])).stdout.trim()) || 0;
-      } catch { /* offline or no origin/main - leave 0 */ }
+        const trunk = trunkRef();
+        ahead = Number((await execa('git', ['-C', rec.path, 'rev-list', '--count', `${trunk}..HEAD`])).stdout.trim()) || 0;
+        behind = Number((await execa('git', ['-C', rec.path, 'rev-list', '--count', `HEAD..${trunk}`])).stdout.trim()) || 0;
+      } catch { /* offline or no trunk ref - leave 0 */ }
     }
 
     // NOTES.md mtime.
@@ -225,11 +323,11 @@ async function cmdList(args) {
       } catch { prState = 'none'; }
     }
 
-    // Branch merged check.
+    // Branch merged check against the configured trunk ref.
     let branchMerged = false;
     if (!isPrimary && branch && branch !== '(detached)') {
       try {
-        const merged = await execa('git', ['branch', '--merged', 'origin/main', '--list', branch]);
+        const merged = await execa('git', ['branch', '--merged', trunkRef(), '--list', branch]);
         branchMerged = merged.stdout.trim().length > 0;
       } catch {}
     }
@@ -296,24 +394,25 @@ async function cmdRm(args) {
     dirty = st.stdout.trim().length > 0;
   } catch {}
 
-  // Check ahead of main.
+  // Check ahead of the configured trunk.
+  const trunk = trunkRef();
   let aheadCount = 0;
   try {
-    aheadCount = Number((await execa('git', ['-C', wtPath, 'rev-list', '--count', 'origin/main..HEAD'])).stdout.trim()) || 0;
+    aheadCount = Number((await execa('git', ['-C', wtPath, 'rev-list', '--count', `${trunk}..HEAD`])).stdout.trim()) || 0;
   } catch {}
 
-  // Check unmerged (local branch merged into origin/main?).
+  // Check unmerged (local branch merged into trunk?).
   const branch = `feat/${slug}`;
   let branchMerged = false;
   try {
-    const m = await execa('git', ['branch', '--merged', 'origin/main', '--list', branch]);
+    const m = await execa('git', ['branch', '--merged', trunk, '--list', branch]);
     branchMerged = m.stdout.trim().length > 0;
   } catch {}
   const hasUnmerged = aheadCount > 0 && !branchMerged;
 
   const concerns = [];
   if (dirty) concerns.push(`dirty working tree`);
-  if (hasUnmerged) concerns.push(`${aheadCount} commit(s) ahead of origin/main and not merged`);
+  if (hasUnmerged) concerns.push(`${aheadCount} commit(s) ahead of ${trunk} and not merged`);
 
   if (concerns.length > 0 && !force) {
     const isTTY = process.stdin.isTTY;
@@ -335,6 +434,7 @@ async function cmdRm(args) {
 
   await execa('git', ['worktree', 'remove', wtPath, '--force'], { stdio: 'inherit' });
   console.log(`[wt rm] removed .worktrees/${slug}/`);
+  try { await execa('git', ['worktree', 'prune']); } catch { /* non-fatal */ }
 
   if (deleteBranch) {
     try {
@@ -352,17 +452,45 @@ async function cmdClean(args) {
   const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
   const records = parseGitWorktreeList(wtList.stdout);
 
-  const staleDays = Number(process.env.WT_STALE_DAYS ?? 14);
+  const staleDays = parsePositiveNumber(process.env.WT_STALE_DAYS, 14);
   const thresholdMs = staleDays * 24 * 60 * 60 * 1000;
+  const activityWindowMs = parsePositiveNumber(process.env.WT_ACTIVITY_MIN, 10) * 60 * 1000;
   const now = Date.now();
 
   const candidates = [];
+  const skippedActive = [];
   for (const rec of records) {
     if (!rec.path) continue;
     if (rec.path === repoRoot) continue; // skip primary
 
     const slug = rec.path.split(/[\\/]/).pop() ?? rec.path;
     const branch = rec.branch ?? '';
+
+    // Activity gate (CR #128 Critical). `wt clean` prompts before
+    // `git worktree remove --force`, which bypasses git's own
+    // dirty-tree protection. An agent can be mid-edit right now
+    // while the last commit is >thresholdMs old, and a single
+    // muscle-memory `y` would wipe their work. Gate any
+    // remove-candidate on detectActivity: if the worktree shows
+    // recent HEAD motion, a fresh index mtime, a lockfile, or a
+    // dirty tree, skip it entirely and tell the operator why.
+    const gitAdminDir = join(repoRoot, '.git', 'worktrees', slug);
+    let headMtimeMs = 0, indexMtimeMs = 0, hasLockfile = false;
+    try { headMtimeMs = (await stat(join(gitAdminDir, 'HEAD'))).mtimeMs; } catch {}
+    try { indexMtimeMs = (await stat(join(gitAdminDir, 'index'))).mtimeMs; } catch {}
+    try { hasLockfile = existsSync(join(gitAdminDir, 'index.lock')); } catch {}
+    let dirty = false;
+    try {
+      const st = await execa('git', ['-C', rec.path, 'status', '--porcelain']);
+      dirty = st.stdout.trim().length > 0;
+    } catch {}
+    const activity = detectActivity({
+      headMtimeMs, indexMtimeMs, hasLockfile, dirty, now, windowMs: activityWindowMs,
+    });
+    if (activity.active) {
+      skippedActive.push({ slug, reasons: activity.reasons });
+      continue;
+    }
 
     // Last commit time.
     let lastCommitMs = now;
@@ -375,11 +503,11 @@ async function cmdClean(args) {
     let notesMtimeMs = lastCommitMs;
     try { notesMtimeMs = (await stat(join(rec.path, 'NOTES.md'))).mtimeMs; } catch {}
 
-    // Branch merged check against local merge-base vs origin/main.
+    // Branch merged check against the configured trunk ref.
     let branchMerged = false;
     if (branch) {
       try {
-        const m = await execa('git', ['branch', '--merged', 'origin/main', '--list', branch]);
+        const m = await execa('git', ['branch', '--merged', trunkRef(), '--list', branch]);
         branchMerged = m.stdout.trim().length > 0;
       } catch {}
     }
@@ -400,8 +528,16 @@ async function cmdClean(args) {
     }
   }
 
+  if (skippedActive.length > 0) {
+    console.log('[wt clean] skipping active worktrees (never offer to remove mid-work):');
+    for (const s of skippedActive) {
+      console.log(`  ${s.slug}  (${s.reasons.join(', ')})`);
+    }
+  }
+
   if (candidates.length === 0) {
-    console.log('[wt clean] no stale worktrees found.');
+    if (skippedActive.length === 0) console.log('[wt clean] no stale worktrees found.');
+    else console.log('[wt clean] no stale worktrees offered (all candidates skipped above for activity).');
     return;
   }
 
@@ -432,6 +568,7 @@ async function cmdClean(args) {
     try {
       await execa('git', ['worktree', 'remove', c.path, '--force'], { stdio: 'inherit' });
       console.log(`  removed .worktrees/${c.slug}/`);
+      try { await execa('git', ['worktree', 'prune']); } catch { /* non-fatal */ }
     } catch (err) {
       console.warn(`  failed to remove ${c.slug}: ${err.message}`);
     }
@@ -482,12 +619,9 @@ async function cmdStack(args) {
   await execa('git', ['worktree', 'add', childPath, '-b', childBranch, parentBranch], { stdio: 'inherit' });
 
   // Register the stack with git-spice.
-  // TODO: verify exact gs subcommand against `gs --help` at gs-install time.
   // `gs branch track --base <parent>` is the idiomatic way to declare a base in git-spice
-  // (see https://abhinav.github.io/git-spice/cli/branch/track/). An alternative is
-  // `gs branch create` which creates AND tracks. Since the branch already exists via
-  // git worktree add, `gs branch track --base <parentBranch>` is the correct call.
-  // Leaving the TODO marker so the first operator with gs installed can confirm.
+  // (see https://abhinav.github.io/git-spice/cli/branch/track/). Since the branch already exists
+  // via git worktree add, tracking with an explicit base is the correct call.
   await execa('gs', ['-C', childPath, 'branch', 'track', '--base', parentBranch], { stdio: 'inherit' });
 
   // Resolve parent HEAD for NOTES.
@@ -497,16 +631,25 @@ async function cmdStack(args) {
   const notes = renderNotesSkeleton({ slug: child, baseLabel: parent, baseSha: parentSha });
   await writeFile(join(childPath, 'NOTES.md'), notes, 'utf8');
 
-  // Verify NOTES is gitignored inside the new worktree.
+  // Verify NOTES is gitignored inside the new worktree. Same
+  // strict contract as cmdNew: exit loud rather than warn-and-continue
+  // so NOTES.md never lands in a commit by accident.
   try {
     await execa('git', ['-C', childPath, 'check-ignore', '-q', 'NOTES.md']);
   } catch {
-    console.error(`[wt stack] WARNING: NOTES.md is NOT gitignored in ${childPath}. Add /NOTES.md to .gitignore.`);
+    console.error(
+      `[wt stack] ERROR: NOTES.md is NOT gitignored in ${childPath}.\n`
+      + `  Add "/NOTES.md" to .gitignore in the parent repo (or its ancestor).\n`
+      + `  After fixing the gitignore, remove the stacked worktree\n`
+      + `  (wt rm ${child} --force) and re-run wt stack.`,
+    );
+    process.exit(2);
   }
 
-  // Auto-detect + run package-manager setup.
+  // Auto-detect + run package-manager setup (lockfile / packageManager-aware).
   const rootEntries = await readdir(childPath);
-  const pm = detectPackageManager(rootEntries);
+  const packageJsonContent = await readPackageJsonIfAny(childPath);
+  const pm = detectPackageManager(rootEntries, packageJsonContent);
   if (pm) {
     console.log(`[wt stack] running ${pm.install} in ${childPath}`);
     try {
@@ -567,9 +710,13 @@ async function cmdNote(args) {
 
   const notesPath = join(wtPath, 'NOTES.md');
 
-  const editor = process.env.EDITOR;
-  if (editor) {
-    await execa(editor, [notesPath], { stdio: 'inherit' });
+  // $EDITOR commonly contains arguments (`code --wait`, `nvim -u NONE`,
+  // `emacsclient -n`). execa with a single binary name treats the
+  // whole string as the executable and hits ENOENT. Parse the string
+  // into bin + args so the canonical operator setups work.
+  const parsed = parseEditorCommand(process.env.EDITOR);
+  if (parsed !== null) {
+    await execa(parsed.bin, [...parsed.args, notesPath], { stdio: 'inherit' });
   } else {
     // Try 'code' as fallback.
     try {

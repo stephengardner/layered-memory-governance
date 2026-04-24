@@ -149,11 +149,64 @@ describe('detectStale', () => {
     });
     expect(r.stale).toBe(false);
   });
+  it('flags stale when prClosed is true (CR #128 coverage gap)', () => {
+    const r = detectStale({
+      lastCommitMs: now,
+      notesMtimeMs: now,
+      branchMerged: false,
+      prClosed: true,
+      now,
+      thresholdMs: 14 * DAY,
+    });
+    expect(r.stale).toBe(true);
+    expect(r.reasons).toContain('PR closed');
+  });
+  it('reason string reflects the threshold actually passed (not a hardcoded "14+ days")', () => {
+    const r = detectStale({
+      lastCommitMs: now - 10 * DAY,
+      notesMtimeMs: now - 10 * DAY,
+      branchMerged: false,
+      prClosed: false,
+      now,
+      thresholdMs: 7 * DAY,
+    });
+    expect(r.stale).toBe(true);
+    expect(r.reasons[0]).toMatch(/no commits for 7\+ days/);
+  });
 });
 
 describe('detectPackageManager', () => {
-  it('picks npm for package.json', () => {
+  it('picks npm for package.json alone (no lockfile, no Corepack field)', () => {
     expect(detectPackageManager(['package.json'])).toEqual({ tool: 'npm', install: 'npm install' });
+  });
+  it('picks pnpm when pnpm-lock.yaml is present alongside package.json', () => {
+    expect(detectPackageManager(['package.json', 'pnpm-lock.yaml'])).toEqual({
+      tool: 'pnpm',
+      install: 'pnpm install',
+    });
+  });
+  it('picks yarn when yarn.lock is present alongside package.json', () => {
+    expect(detectPackageManager(['package.json', 'yarn.lock'])).toEqual({
+      tool: 'yarn',
+      install: 'yarn install',
+    });
+  });
+  it('picks bun when bun.lockb is present alongside package.json', () => {
+    expect(detectPackageManager(['package.json', 'bun.lockb'])).toEqual({
+      tool: 'bun',
+      install: 'bun install',
+    });
+  });
+  it('honors Corepack packageManager field when no lockfile present', () => {
+    const pkg = JSON.stringify({ name: 'x', packageManager: 'pnpm@9.0.0' });
+    expect(detectPackageManager(['package.json'], pkg)).toEqual({
+      tool: 'pnpm',
+      install: 'pnpm install',
+    });
+  });
+  it('lockfile wins over Corepack packageManager field (concrete state beats declaration)', () => {
+    const pkg = JSON.stringify({ name: 'x', packageManager: 'pnpm@9.0.0' });
+    expect(detectPackageManager(['package.json', 'yarn.lock'], pkg).tool).toBe('yarn');
   });
   it('picks cargo for Cargo.toml', () => {
     expect(detectPackageManager(['Cargo.toml'])).toEqual({ tool: 'cargo', install: 'cargo build' });
@@ -164,11 +217,17 @@ describe('detectPackageManager', () => {
   it('picks go for go.mod', () => {
     expect(detectPackageManager(['go.mod'])).toEqual({ tool: 'go', install: 'go mod download' });
   });
-  it('prefers first matched when multiple manifests present', () => {
+  it('package.json wins over non-JS manifests (prioritizes the JS toolchain)', () => {
     expect(detectPackageManager(['package.json', 'go.mod']).tool).toBe('npm');
   });
   it('returns null for none', () => {
     expect(detectPackageManager(['README.md'])).toBeNull();
+  });
+  it('gracefully handles malformed package.json (falls back to plain npm)', () => {
+    expect(detectPackageManager(['package.json'], '{ not valid json')).toEqual({
+      tool: 'npm',
+      install: 'npm install',
+    });
   });
 });
 
@@ -180,8 +239,11 @@ describe('renderNotesSkeleton', () => {
       baseSha: '5ef8fea',
     });
     expect(out).toContain('# foo-bar');
-    expect(out).toContain('**Intent**');
-    expect(out).toContain('main @ 5ef8fea');
+    // Pin the literal template form so the plan doc and the renderer
+    // cannot silently drift (CR #128: `**Intent**` vs `**Intent:**`
+    // matched either variant and the drift went unnoticed).
+    expect(out).toContain('**Intent** (1 line: what this worktree exists to do)');
+    expect(out).toContain('**Branched off:** main @ 5ef8fea');
     expect(out).toContain('## Open threads');
     expect(out).toContain('## Decisions this worktree');
     expect(out).toContain('## Next pick-up');

@@ -33,7 +33,7 @@ if [ -f pyproject.toml ]; then poetry install; fi
 if [ -f go.mod ];       then go mod download; fi
 ```
 
-First match wins; if multiple manifests are present (e.g. package.json + go.mod), npm takes priority.
+Selection order: lockfile presence first (`bun.lockb` > `pnpm-lock.yaml` > `yarn.lock` > `package-lock.json`), then Corepack's `packageManager` field in `package.json`, then plain `package.json` (defaults to npm), then the non-JS manifests above. The lockfile-first rule is deliberate: running `npm install` in a repo whose team uses pnpm/yarn/bun would silently rewrite their lockfile and swap dependency resolutions.
 
 ## NOTES.md schema
 
@@ -73,7 +73,7 @@ wt list
 | NOTES mtime | Last modification time of NOTES.md |
 | flags | `dirty` (uncommitted changes), `stale` (inactive beyond threshold) |
 
-Default thresholds: activity window **10 minutes** (`WT_ACTIVITY_MIN`), stale threshold **14 days** (`WT_STALE_DAYS`). Override either via environment variable.
+Default thresholds: activity window **10 minutes** (`WT_ACTIVITY_MIN`), stale threshold **14 days** (`WT_STALE_DAYS`). Trunk ref for ahead/behind + merge checks defaults to `origin/main` (`WT_TRUNK_REF` overrides - set to `origin/master`, `upstream/main`, etc. for non-default trunks). Override any of them via environment variable.
 
 ## Removing a worktree
 
@@ -83,7 +83,7 @@ wt rm <slug>
 
 - If the worktree has uncommitted changes or its branch is not merged into main, `wt rm` prints the status and asks for confirmation.
 - `--force` skips confirmation.
-- `--delete-branch` also deletes the `feat/<slug>` branch locally and on origin.
+- `--delete-branch` also deletes the `feat/<slug>` branch locally (via `git branch -D`). It does NOT touch `origin`; push-delete the remote separately with `git push origin --delete feat/<slug>` if needed.
 
 Runs `git worktree prune` after removal to clean up stale administrative files.
 

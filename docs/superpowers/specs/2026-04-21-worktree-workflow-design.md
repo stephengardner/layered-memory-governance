@@ -115,8 +115,8 @@ One file, Node (matches existing `scripts/*.mjs` convention), thin over `git wor
 
 ### 6. Canon + skill + memory updates
 
-- **New L3 canon atom** (one line):
-  > *Parallel workstreams use isolated `.worktrees/<slug>/` branched off main; one worktree per branch. Stacking is permitted for genuinely-dependent work (see worktree-workflow skill); never share a checkout across parallel work.*
+- **New L3 canon atom** (summary; the canonical body shipped by `scripts/bootstrap-workflow-canon.mjs` is longer and authoritative):
+  > *Parallel workstreams must use isolated `.worktrees/<slug>/` branched off main; one worktree per branch. Stacking is permitted for genuinely-dependent work (codified in the skill); cleanup is operator-invoked via `wt clean` (no scheduled job); mechanics live in the skill, not canon.*
 - **Revise memory** `feedback_branch_off_main_not_stacks.md` to reflect nuance: default branch-off-main, stack deliberately per the codified test.
 - **New skill** at `.claude/skills/worktree-workflow/SKILL.md`  -  describes CLI, NOTES schema, stacking test, cleanup policy. Any agent entering this repo inherits it.
 - **Update** `apps/console/CLAUDE.md:43`  -  drop the sibling-dir instruction once the sibling worktrees are migrated. Until then leave a transitional note.
@@ -126,7 +126,7 @@ One file, Node (matches existing `scripts/*.mjs` convention), thin over `git wor
 
 The CLI and skill are built as if extractable into `@<ns>/worktree-cli` later. Concretely:
 
-1. `scripts/wt.mjs` has **zero imports from `src/`**, zero references to `.lag/`, canon, atoms, principals. Enforced by a test in `tests/scripts/wt.no-lag-imports.test.ts`.
+1. `scripts/wt.mjs` has **zero imports from `src/`**, zero references to `.lag/`, canon, atoms, principals. Enforced by `test/scripts/wt.portability.test.ts`.
 2. Project setup auto-detects: `package.json` → npm, `Cargo.toml` → cargo, `pyproject.toml` → poetry, `go.mod` → go, else skip. Same pattern as the official superpowers `using-git-worktrees` skill.
 3. PR-merge check in `wt clean` degrades gracefully if `gh` is missing; local merge-base is the universal default, `gh` is a strict upgrade layered on top.
 4. NOTES.md schema is generic: no atom IDs, no canon pointers, no principal references. It's prose for whoever reads it.
@@ -157,4 +157,4 @@ Tier 3 (contribute upstream to the `superpowers` plugin as a richer `using-git-w
 - Official `superpowers:using-git-worktrees` skill (`.worktrees/<branch>/`, no NOTES).
 - Another repo the operator cited (`sessions/<name>/` with worktrees + NOTES.md)  -  community convention.
 - Graphite / git-spice for stacked-PR tooling; Anthropic's internal practice (stacks + worktrees + review discipline) publicly discussed.
-- LAG canon: `branch-off-main-not-stacks`, `governance-before-autonomy`, `kill-switch-before-dial`, `canon-strategic-not-tactical`, `indie-floor-and-org-ceiling`.
+- LAG canon (prefixed IDs as shipped; match `scripts/bootstrap-workflow-canon.mjs` `derived_from`): `dev-canon-is-strategic-not-tactical`, `inv-governance-before-autonomy`, `inv-kill-switch-first`, `dev-indie-floor-org-ceiling`, `dev-forward-thinking-no-regrets`.

@@ -101,10 +101,32 @@ function atomFromSpec(spec) {
 
 function diffAtom(existing, expected) {
   const diffs = [];
-  for (const k of ['type', 'layer', 'content', 'principal_id', 'taint']) {
+  // `scope` added to the integrity set (CR #128 Major): atomFromSpec
+  // pins scope='project'; a drift there must fail loud because scope
+  // is what scope-filtered canon renders use to pick atoms.
+  for (const k of ['type', 'layer', 'content', 'principal_id', 'taint', 'scope']) {
     if (existing[k] !== expected[k]) {
       diffs.push(`${k}: stored=${JSON.stringify(existing[k])} expected=${JSON.stringify(expected[k])}`);
     }
+  }
+  // Lifecycle fields (CR #128 Major): if an operator has superseded the
+  // directive out-of-band (non-empty `superseded_by`, or an unexpected
+  // `supersedes` entry), treating it as "already in sync" would let the
+  // revoked directive survive the rebuild silently. The bootstrap has
+  // no authority to reconcile supersession state unilaterally; any
+  // mismatch forces operator review. Matches the diffFenceAtom
+  // discipline in src/examples/virtual-org-bootstrap/fence-seed.ts.
+  if (JSON.stringify(existing.supersedes ?? []) !== JSON.stringify(expected.supersedes)) {
+    diffs.push(
+      `supersedes: stored=${JSON.stringify(existing.supersedes)} `
+      + `expected=${JSON.stringify(expected.supersedes)}`,
+    );
+  }
+  if (JSON.stringify(existing.superseded_by ?? []) !== JSON.stringify(expected.superseded_by)) {
+    diffs.push(
+      `superseded_by: stored=${JSON.stringify(existing.superseded_by)} `
+      + `expected=${JSON.stringify(expected.superseded_by)}`,
+    );
   }
   const em = existing.metadata ?? {};
   const xm = expected.metadata;
