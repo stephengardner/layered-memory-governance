@@ -17,8 +17,14 @@ operator's question, with full provenance.
 
 ## Non-goals (deferred)
 
-- Sub-actor delegation (Phase 55c). An approved plan still does not
-  invoke PrLandingActor in this phase.
+- Sub-actor delegation (Phase 55c). Seam landed in #148:
+  PlanningActor accepts `delegateTo` in options and stamps
+  `metadata.delegation.sub_actor_principal_id` on the plan atom, which
+  the auto-approve dispatcher reads alongside its own
+  `policy.allowed_sub_actors` gate. Still deferred from Phase 55b+
+  scope: teaching the `PlanningJudgment` to recommend a target and
+  wiring any specific approved-plan -> target-invoker flow beyond the
+  existing auto-approve dispatcher path.
 - Merge authority. Pr-merge-* policy stays deny. D13 stands.
 - Scheduled ticks. CTO runs on explicit invocation only.
 - Real `--dry-run`. Ships when the no-op Host decorator does.
