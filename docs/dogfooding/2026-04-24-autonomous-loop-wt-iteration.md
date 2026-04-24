@@ -27,7 +27,7 @@ One Claude Code session, cron-driven via `/loop 5m`, iterated on the `wt` worktr
 | # | Invariant | Mechanism | Captured in |
 |---|---|---|---|
 | 4 | CR withholds `CodeRabbit` commit status when PR branch is BEHIND trunk, even after APPROVED review | `gh pr view` shows `mergeStateStatus=BEHIND`; rebase + force-push triggers CR re-review + status post | memory: `feedback_cr_status_requires_branch_up_to_date.md` |
-| 5 | CR withholds status for clean PRs (zero findings on first pass; no CHANGES_REQUESTED → APPROVED cycle) | PR #137 observed same pathology; rebase is a no-op when already up-to-date; unresolved | open question: needs CR config tweak or `@coderabbitai` command that forces status-post |
+| 5 | CR status is *slow but eventual* for clean PRs (zero findings on first pass; no CHANGES_REQUESTED → APPROVED cycle) | PR #137 observed: APPROVED @ 08:30:53Z, status SUCCESS @ 08:37:22Z. ~7 min delay. Earlier #136 case sat 20+ min without status - that one was BEHIND, a different root cause. | the clean-PR case self-heals on an eventual-consistency timeline; the BEHIND case does not |
 | 6 | `gh-as lag-ceo pr merge --admin` does NOT bypass required checks for the bot | GraphQL rejects with "Required status check X is expected"; admin on human != admin via App | empirical |
 
 ## Canon discipline held under autonomy
@@ -55,7 +55,7 @@ Every tick respected canon. Notable near-misses that were correctly refused:
 
 ## Open items after this session
 
-- **PR #137 is stuck with the clean-PR CR pathology.** Not my PR; the operator-side auto-opener will need to either (a) configure CR to force-post status on empty reviews, (b) add a pre-merge "dismiss + request re-review" dance that cycles through CHANGES_REQUESTED state, or (c) accept that bot-opened clean PRs need manual nudge.
+- **PR #137 self-resolved on the ~7-min eventual-consistency timer.** Worth a patience budget: clean PRs don't need rebase/intervention, just wait. The BEHIND case is the one that genuinely gets stuck.
 - **`wt prune-refs` or equivalent** could close the orphan-branch gap (43 orphan refs this session required a shell loop).
 - **`feat/code-author-drafter`** has PR state=none (no PR ever opened). Possibly stale WIP from an earlier session; operator decides.
 - **Memory `project_lag_is_governance_substrate.md`** names `@lag/integration/langgraph` as the "CURRENT FOCUS" but all recent PRs (#127-#137) have been autonomous-org + tooling, not LangGraph. Possibly a stale trajectory pointer.
