@@ -78,10 +78,12 @@ export type AtomType =
   // conflict and skips. Functions as both the mutual-exclusion lock
   // and the historical record of the reconciliation event.
   | 'plan-merge-settled'
-  // Operator-initiated directive captured interactively. Model for
-  // human intent that drives plan creation, priority shifts, and
-  // governance nudges; captures deliberate operator action distinct
-  // from agent-inferred or agent-observed signals.
+  // Operator-authored trust envelope authorizing autonomous-solve
+  // dispatch. metadata.trust_envelope gates plan auto-approval and
+  // sub-actor selection; metadata.expires_at is the real lifetime
+  // gate (capped 72h per pol-operator-intent-creation), distinct
+  // from confidence decay. Distinct from `directive` (L3 canon) and
+  // `observation` (passive record): this is an L1 authorizing act.
   | 'operator-intent';
 
 /**
