@@ -26,6 +26,7 @@ import {
   detectPackageManager,
   renderNotesSkeleton,
   prStateToStaleSignals,
+  findWorktreeBySlug,
 } from './lib/wt.mjs';
 
 const COMMANDS = ['new', 'list', 'rm', 'clean', 'stack', 'note'];
@@ -391,14 +392,17 @@ async function cmdRm(args) {
   // Resolve the actual branch checked out in this worktree. The old
   // `feat/${slug}` assumption silently failed for every non-feat branch
   // (substrate/*, fix/*, docs/*, chore/*, spec/*, task-*, code-author/*,
-  // etc.); all three live-dogfood removals on 2026-04-24 hit this. Use
-  // the porcelain worktree listing as the source of truth; fall back
-  // to `feat/<slug>` only when parsing can't find a record.
+  // etc.); all three live-dogfood removals on 2026-04-24 hit this.
+  //
+  // Match is done via findWorktreeBySlug (basename comparison) instead
+  // of raw path equality because `git worktree list --porcelain` emits
+  // forward slashes on Windows while `path.join` emits backslashes; a
+  // naive `r.path === wtPath` comparison never matched cross-platform.
   let branch = `feat/${slug}`;
   try {
     const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
     const records = parseGitWorktreeList(wtList.stdout);
-    const rec = records.find((r) => r.path === wtPath);
+    const rec = findWorktreeBySlug(records, slug);
     if (rec?.branch) branch = rec.branch;
   } catch { /* fall back to feat/<slug> */ }
 

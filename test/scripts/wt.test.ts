@@ -7,6 +7,7 @@ import {
   detectPackageManager,
   renderNotesSkeleton,
   prStateToStaleSignals,
+  findWorktreeBySlug,
 } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
@@ -295,5 +296,71 @@ describe('prStateToStaleSignals', () => {
   it('returns no signal for unrecognized states', () => {
     expect(prStateToStaleSignals('DRAFT')).toEqual({ branchMerged: false, prClosed: false });
     expect(prStateToStaleSignals('PENDING')).toEqual({ branchMerged: false, prClosed: false });
+  });
+});
+
+describe('findWorktreeBySlug', () => {
+  // Regression: the first pass of the cmdRm --delete-branch fix used
+  // `r.path === wtPath`, which failed every Windows scenario because
+  // `git worktree list --porcelain` emits forward-slash paths while
+  // `path.join` produces backslashes. A 2026-04-24 live smoke test
+  // caught the bug after the initial fix had already passed ubuntu +
+  // windows CI (no existing test exercised this code path).
+  it('finds a record by forward-slash path', () => {
+    const records = [
+      { path: 'C:/Users/opens/memory-governance/.worktrees/foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('finds a record by backslash path (Windows path.join output)', () => {
+    const records = [
+      { path: 'C:\\Users\\opens\\memory-governance\\.worktrees\\foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('finds a record by mixed-separator path', () => {
+    const records = [
+      { path: 'C:/Users\\opens/memory-governance\\.worktrees/foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('finds a record by posix path', () => {
+    const records = [
+      { path: '/home/user/repo/.worktrees/foo', branch: 'feat/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('returns the first match when multiple candidates exist', () => {
+    const records = [
+      { path: '/a/.worktrees/foo', branch: 'feat/foo' },
+      { path: '/b/.worktrees/foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('returns undefined when no record matches', () => {
+    const records = [
+      { path: '/a/.worktrees/bar', branch: 'feat/bar' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toBeUndefined();
+  });
+  it('skips records with null or empty path', () => {
+    const records = [
+      { path: null, branch: 'feat/foo' },
+      { path: '', branch: 'feat/foo' },
+      { path: '/a/.worktrees/foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[2]);
+  });
+  it('returns undefined for invalid inputs', () => {
+    expect(findWorktreeBySlug(null as unknown as [], 'foo')).toBeUndefined();
+    expect(findWorktreeBySlug([], '')).toBeUndefined();
+    expect(findWorktreeBySlug([], null as unknown as string)).toBeUndefined();
+  });
+  it('does not match a partial slug substring', () => {
+    const records = [
+      { path: '/a/.worktrees/foo-bar', branch: 'feat/foo-bar' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toBeUndefined();
+    expect(findWorktreeBySlug(records, 'foo-bar')).toEqual(records[0]);
   });
 });
