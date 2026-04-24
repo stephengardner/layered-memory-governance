@@ -113,6 +113,18 @@ export interface PlanningActorOptions {
    * does not bypass that gate.
    */
   readonly delegateTo?: PrincipalId;
+  /**
+   * When the planning run was triggered by an intent atom (Task 7),
+   * pass its id here so it is appended to each produced Plan atom's
+   * `provenance.derived_from`. This closes the provenance chain from
+   * intent -> plan, enabling taint propagation and audit traces to
+   * follow the full lineage.
+   *
+   * Callers that do not use the intent substrate omit this option;
+   * the produced plan atom is byte-identical to the pre-seam
+   * baseline. Default: null (no intent id appended).
+   */
+  readonly intentId?: string | null;
 }
 
 export interface PlanningObservation {
@@ -157,27 +169,197 @@ function buildQuestionMetadata(
 }
 
 /**
- * Map the optional `delegateTo` option into the Plan atom's
- * `metadata.delegation.sub_actor_principal_id`. Mirrors the
- * omit-when-empty contract used for originatingQuestion: an
- * undefined or empty `delegateTo` produces no `delegation` key,
- * keeping plan-atom shape identical to the pre-seam baseline and
- * hash-keyed fixtures stable.
+ * Full delegation descriptor that can appear on a plan atom's
+ * `metadata.delegation` field. Carries the declared sub-actor
+ * principal, the rationale for the delegation, and an estimated
+ * blast radius so the auto-approve dispatcher can gate on scope
+ * before firing the sub-actor invoker.
+ *
+ * All three fields are optional at the type level: callers that
+ * only know `sub_actor_principal_id` (e.g. older callsites using
+ * the `delegateTo` option) continue to produce a valid object; the
+ * richer fields are stamped when available from a PLAN_DRAFT output.
+ */
+export interface DelegationDescriptor {
+  readonly sub_actor_principal_id: PrincipalId;
+  readonly reason?: string;
+  readonly implied_blast_radius?: string;
+}
+
+/**
+ * Map the optional `delegateTo` option OR a full DelegationDescriptor
+ * into the Plan atom's `metadata.delegation`. Omit-when-empty
+ * contract: an undefined or empty `delegateTo` (and no descriptor)
+ * produces no `delegation` key, keeping plan-atom shape identical to
+ * the pre-seam baseline and hash-keyed fixtures stable.
+ *
+ * When a full descriptor is provided it takes precedence over the
+ * plain `delegateTo` string, allowing PLAN_DRAFT outputs to stamp
+ * reason + implied_blast_radius alongside sub_actor_principal_id.
  */
 function buildDelegationMetadata(
   delegateTo: PlanningActorOptions['delegateTo'],
+  descriptor?: DelegationDescriptor,
 ): Record<string, unknown> {
-  // Trim before length check so whitespace-only principal ids are
-  // treated as empty, same discipline as buildQuestionMetadata
-  // above. A '   ' principal would never resolve in the auto-approve
-  // dispatcher's registry lookup anyway; treating it as empty fails
-  // at the seam, not silently deeper.
+  // Full descriptor takes precedence when supplied.
+  if (descriptor !== undefined) {
+    if (
+      typeof descriptor.sub_actor_principal_id !== 'string' ||
+      descriptor.sub_actor_principal_id.trim().length === 0
+    ) {
+      return {};
+    }
+    const out: Record<string, unknown> = {
+      sub_actor_principal_id: descriptor.sub_actor_principal_id,
+    };
+    if (typeof descriptor.reason === 'string' && descriptor.reason.trim().length > 0) {
+      out.reason = descriptor.reason;
+    }
+    if (
+      typeof descriptor.implied_blast_radius === 'string' &&
+      descriptor.implied_blast_radius.trim().length > 0
+    ) {
+      out.implied_blast_radius = descriptor.implied_blast_radius;
+    }
+    return { delegation: out };
+  }
+  // Fallback to the plain delegateTo principal id. Trim before
+  // length check so whitespace-only principal ids are treated as
+  // empty, same discipline as buildQuestionMetadata above.
   if (typeof delegateTo !== 'string' || delegateTo.trim().length === 0) {
     return {};
   }
   return {
     delegation: {
       sub_actor_principal_id: delegateTo,
+    },
+  };
+}
+
+/**
+ * Input shape for the buildPlanAtom pure function. Represents the
+ * minimal set of values needed to construct a Plan atom without a
+ * running host or actor context. Exported so unit tests can call
+ * buildPlanAtom directly without wiring a full ActorContext.
+ */
+export interface BuildPlanAtomInput {
+  /**
+   * The PLAN_DRAFT output fields used to construct the atom body.
+   * `derived_from` maps to provenance.derived_from; `delegation`
+   * (when present) maps to metadata.delegation.
+   */
+  readonly draft: {
+    readonly title: string;
+    readonly body: string;
+    readonly derived_from: ReadonlyArray<string>;
+    readonly principles_applied: ReadonlyArray<string>;
+    readonly alternatives_rejected: ReadonlyArray<{
+      readonly option: string;
+      readonly reason: string;
+    }>;
+    readonly what_breaks_if_revisit: string;
+    readonly confidence?: number;
+    readonly delegation?: DelegationDescriptor;
+  };
+  /** Running principal id; becomes atom.principal_id + provenance.source.agent_id. */
+  readonly principalId: string;
+  /**
+   * When the plan was triggered by an intent atom, append the intent
+   * id to provenance.derived_from so the provenance chain is
+   * complete. Pass null when no intent drove this plan.
+   */
+  readonly intentId: string | null;
+  /** Wall-clock instant for created_at + last_reinforced_at. */
+  readonly now: Date;
+  /**
+   * Determinism nonce; typically a short random string or a
+   * counter. Combined with title + principalId to produce the atom
+   * id without relying on the wall-clock alone.
+   */
+  readonly nonce: string;
+}
+
+/**
+ * Pure function: construct a Plan atom from the provided inputs
+ * without writing to any store. Extracted from PlanningActor.apply
+ * so tests can verify the atom shape in isolation without wiring a
+ * full host, and so callers like a virtual-org executor can reuse
+ * the same construction logic.
+ *
+ * Exported for unit tests (test/runtime/actors/planning/delegation.test.ts
+ * and future callers). The PlanningActor.apply method calls this
+ * internally to keep atom construction in one place.
+ */
+export function buildPlanAtom(input: BuildPlanAtomInput): Atom {
+  const { draft, principalId, intentId, now, nonce } = input;
+  const nowStr = now.toISOString() as Time;
+
+  // Deterministic id: title-slug + principal + nonce so tests can
+  // pass a fixed nonce and get a stable id.
+  const slug = draft.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40);
+  const planAtomId =
+    `plan-${slug}-${principalId}-${nonce}` as AtomId;
+
+  // Build derived_from: start with draft's citations, append intentId
+  // when present so the provenance chain traces back to the triggering
+  // intent atom.
+  const derivedFrom: string[] = [...draft.derived_from];
+  if (typeof intentId === 'string' && intentId.trim().length > 0) {
+    derivedFrom.push(intentId);
+  }
+
+  // Convert draft's flat arrays into ProposedPlan-compatible shapes
+  // for renderPlanMarkdown.
+  const proposedPlan: ProposedPlan = {
+    title: draft.title,
+    body: draft.body,
+    derivedFrom: draft.derived_from as ReadonlyArray<AtomId>,
+    principlesApplied: draft.principles_applied as ReadonlyArray<AtomId>,
+    alternativesRejected: draft.alternatives_rejected,
+    whatBreaksIfRevisit: draft.what_breaks_if_revisit,
+    ...(draft.confidence !== undefined ? { confidence: draft.confidence } : {}),
+  };
+
+  return {
+    schema_version: 1,
+    id: planAtomId,
+    content: renderPlanMarkdown(proposedPlan),
+    type: 'plan',
+    layer: 'L1',
+    provenance: {
+      kind: 'agent-observed',
+      source: {
+        agent_id: principalId as PrincipalId,
+      },
+      derived_from: derivedFrom as AtomId[],
+    },
+    confidence: draft.confidence ?? 0.8,
+    created_at: nowStr,
+    last_reinforced_at: nowStr,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: principalId as PrincipalId,
+    taint: 'clean',
+    plan_state: 'proposed',
+    metadata: {
+      planning_actor_version: '0.1.0',
+      title: draft.title,
+      principles_applied: [...draft.principles_applied],
+      alternatives_rejected: draft.alternatives_rejected.map((a) => a.option),
+      what_breaks_if_revisit: draft.what_breaks_if_revisit,
+      ...buildDelegationMetadata(undefined, draft.delegation),
     },
   };
 }
@@ -271,51 +453,51 @@ export class PlanningActor implements Actor<
     // proposal.
     const draftKey = draftContentKey(action.payload);
     const existingAtomId = this.atomIdByDraftKey.get(draftKey);
-    const planAtomId: AtomId = existingAtomId
-      ?? deterministicPlanId(plan.title, principalId, nowFn());
     const now = nowFn();
 
-    const planAtom: Atom = {
-      schema_version: 1,
-      id: planAtomId,
-      content: renderPlanMarkdown(plan),
-      type: 'plan',
-      layer: 'L1',
-      provenance: {
-        kind: 'agent-observed',
-        source: {
-          agent_id: principalId,
-        },
-        derived_from: [...plan.derivedFrom],
-      },
-      confidence: plan.confidence ?? 0.8,
-      created_at: now,
-      last_reinforced_at: now,
-      expires_at: null,
-      supersedes: [],
-      superseded_by: [],
-      scope: 'project',
-      signals: {
-        agrees_with: [],
-        conflicts_with: [],
-        validation_status: 'unchecked',
-        last_validated_at: null,
-      },
-      principal_id: principalId,
-      taint: 'clean',
-      // plan_state is a TOP-LEVEL field on the Atom interface (see
-      // src/types.ts), not a metadata key. Callers that filter by
-      // plan state (e.g., dispatch loops, auto-approve passes) read
-      // the top-level field; writing it in metadata would leave
-      // plan_state undefined to those readers and the plan atom
-      // would never surface.
-      plan_state: 'proposed',
-      metadata: {
-        planning_actor_version: this.version,
+    // Build via the exported pure helper so the atom construction
+    // logic lives in one place and unit tests can exercise it without
+    // a running host. The nonce is derived from the plan index to
+    // keep atom ids deterministic across retries (same index -> same
+    // id), matching the pre-seam deterministicPlanId contract.
+    const builtAtom = buildPlanAtom({
+      draft: {
         title: plan.title,
+        body: plan.body,
+        derived_from: [...plan.derivedFrom],
         principles_applied: [...plan.principlesApplied],
-        alternatives_rejected: plan.alternativesRejected.map((a) => a.option),
+        alternatives_rejected: [...plan.alternativesRejected],
         what_breaks_if_revisit: plan.whatBreaksIfRevisit,
+        ...(plan.confidence !== undefined ? { confidence: plan.confidence } : {}),
+        // DelegationDescriptor is not on ProposedPlan; it comes from
+        // actor options only. The pure function path picks it up via
+        // the descriptor field; absence means no delegation key.
+        ...(this.options.delegateTo
+          ? { delegation: { sub_actor_principal_id: this.options.delegateTo } satisfies DelegationDescriptor }
+          : {}),
+      },
+      principalId,
+      intentId: this.options.intentId ?? null,
+      now: new Date(now),
+      // Nonce: use the wall-clock timestamp string so the id is
+      // deterministic for a given (title, principal, time) tuple,
+      // matching the pre-seam deterministicPlanId contract.
+      nonce: now.replace(/[^0-9]/g, '').slice(0, 14),
+    });
+
+    // Carry forward the originating-question metadata which lives on
+    // actor options (not on the draft shape) and merge with the atom
+    // produced by buildPlanAtom.
+    const planAtomId: AtomId = existingAtomId ?? builtAtom.id;
+    // When retrying a previously-written plan we need the same atom
+    // id (existingAtomId) but the question-metadata merge still
+    // applies. Reconstruct with the correct id + question fields in
+    // both the first-write and retry paths.
+    const planAtom: Atom = {
+      ...builtAtom,
+      id: planAtomId,
+      metadata: {
+        ...builtAtom.metadata,
         // Propagate the originating Question's id + verbatim body
         // into metadata. Load-bearing for the CodeAuthor drafter:
         // plan_content is the governance-layer Decision (may
@@ -328,7 +510,6 @@ export class PlanningActor implements Actor<
         // baseline -- MemoryLLM fixture keys + downstream
         // `'question_id' in metadata` checks stay honest.
         ...buildQuestionMetadata(this.options.originatingQuestion),
-        ...buildDelegationMetadata(this.options.delegateTo),
       },
     };
 
