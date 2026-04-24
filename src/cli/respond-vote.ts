@@ -112,7 +112,7 @@ export async function castVoteInteractive(
   if (roleInput === null) return null;
   const role = roleInput.trim();
 
-  const confidenceInput = await readLine(iter, 'Confidence [0..1] (blank = 0.9): ');
+  const confidenceInput = await readLine(iter, 'Confidence (0, 1] (blank = 0.9): ');
   if (confidenceInput === null) return null;
   let confidence = 0.9;
   const confidenceStr = confidenceInput.trim();
@@ -134,6 +134,7 @@ export async function castVoteInteractive(
       confidence,
       scope: ctx.scope,
       nowIso: ctx.nowIso,
+      tool: 'lag-respond',
     };
     const voteAtomId = role.length > 0
       ? await writePlanApprovalVote(host, { ...baseInput, role })

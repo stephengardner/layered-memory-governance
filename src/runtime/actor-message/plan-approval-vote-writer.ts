@@ -21,12 +21,16 @@
  *     policies (required_roles)
  *   - metadata.rationale: required >= 10 chars, surfaced in audit
  *
- * Deterministic id: `sha256(planId|voterId|vote|nowIso)` truncated so
- * re-issuing an identical vote in the same ISO ms is a no-op rather
- * than writing a duplicate. A reviewer changing their mind between
- * timestamps creates a new atom (the later atom wins semantically
- * because `evaluateVotes` takes first-approve-per-principal but a
- * fresh reject from the same principal still hard-rejects).
+ * Deterministic id: `sha256(planId|voterId|vote|nowIso|rationale|role|confidence)`
+ * truncated so re-issuing an identical vote is a no-op rather than
+ * writing a duplicate. A reviewer changing their mind at the same ISO
+ * ms (different rationale/role/confidence) produces a distinct atom
+ * so intent-changing re-submits land instead of being silently eaten
+ * on the ConflictError branch (CR #131 Minor). A reviewer changing
+ * between timestamps also creates a new atom (the later atom wins
+ * semantically because `evaluateVotes` takes first-approve-per-
+ * principal but a fresh reject from the same principal still hard-
+ * rejects).
  */
 
 import { createHash } from 'node:crypto';
@@ -63,6 +67,18 @@ export interface PlanApprovalVoteInput {
    * compares against policy.max_age_ms) and for the deterministic id.
    */
   readonly nowIso: Time;
+  /**
+   * Caller surface identifier. Stamped on `provenance.source.tool`
+   * so downstream lineage tools can distinguish which writer wrote
+   * the vote (e.g. 'lag-respond', a future chat-inbox actor, an HTTP
+   * API). Keeping this on the input (vs. hardcoded inside the
+   * writer) preserves the mechanism-only discipline for framework
+   * code in src/runtime/: the writer is reusable by any surface;
+   * surface-specific identity lives at the surface.
+   */
+  readonly tool: string;
+  /** Optional session id stamped on provenance.source.session_id. */
+  readonly sessionId?: string;
 }
 
 const MIN_RATIONALE_LENGTH = 10;
@@ -79,7 +95,16 @@ export function buildPlanApprovalVoteAtom(input: PlanApprovalVoteInput): Atom {
       `plan-approval-vote rationale must be >= ${MIN_RATIONALE_LENGTH} characters (got ${rationale.length})`,
     );
   }
-  const id = makeVoteId(input.planId, input.voterId, input.vote, input.nowIso);
+  const roleForId = typeof input.role === 'string' ? input.role : '';
+  const id = makeVoteId(
+    input.planId,
+    input.voterId,
+    input.vote,
+    input.nowIso,
+    rationale,
+    roleForId,
+    input.confidence,
+  );
 
   const metadata: Record<string, unknown> = {
     vote: input.vote,
@@ -91,6 +116,14 @@ export function buildPlanApprovalVoteAtom(input: PlanApprovalVoteInput): Atom {
     metadata['role'] = input.role;
   }
 
+  const source: Record<string, string> = {
+    agent_id: String(input.voterId),
+    tool: input.tool,
+  };
+  if (typeof input.sessionId === 'string' && input.sessionId.length > 0) {
+    source['session_id'] = input.sessionId;
+  }
+
   return {
     schema_version: 1,
     id,
@@ -99,7 +132,7 @@ export function buildPlanApprovalVoteAtom(input: PlanApprovalVoteInput): Atom {
     layer: 'L1',
     provenance: {
       kind: 'user-directive',
-      source: { agent_id: String(input.voterId), tool: 'lag-respond' },
+      source,
       derived_from: [input.planId],
     },
     confidence: input.confidence,
@@ -150,7 +183,16 @@ function makeVoteId(
   voterId: PrincipalId,
   vote: string,
   nowIso: Time,
+  rationale: string,
+  role: string,
+  confidence: number,
 ): AtomId {
+  // Hash rationale/role/confidence in addition to the coarse key so a
+  // same-ms re-submit with a corrected rationale (CR #131 flagged the
+  // original key ate intent-changing re-submits silently) gets a
+  // distinct atom id and a fresh write. An exact-duplicate re-submit
+  // (identical payload) still collides and is a no-op, which is the
+  // idempotency the CLI and tests rely on.
   const digest = createHash('sha256')
     .update(String(planId))
     .update('|')
@@ -159,6 +201,12 @@ function makeVoteId(
     .update(vote)
     .update('|')
     .update(String(nowIso))
+    .update('|')
+    .update(rationale)
+    .update('|')
+    .update(role)
+    .update('|')
+    .update(confidence.toFixed(6))
     .digest('hex')
     .slice(0, 16);
   return `plan-approval-vote-${digest}` as AtomId;

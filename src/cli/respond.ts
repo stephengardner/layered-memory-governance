@@ -27,7 +27,7 @@
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
 import { createFileHost, type FileHost } from '../adapters/file/index.js';
-import type { Disposition, NotificationHandle, PrincipalId, Scope } from '../types.js';
+import type { Disposition, NotificationHandle, PrincipalId } from '../types.js';
 import {
   castVoteInteractive,
   resolvePlanIdFromAtomRefs,
@@ -219,12 +219,23 @@ async function processHandle(
       console.log('This event has no plan atom ref; [v]ote is not applicable. Skipping.');
       return 'skipped';
     }
-    const scope = (entry.event as unknown as { scope?: Scope }).scope ?? 'project';
+    // Scope must come from the plan atom, not inferred from the
+    // notifier event. Atom.scope is the canonical source of truth
+    // (the Event type has no scope field; the cast we were doing on
+    // entry.event was unsafe and its fallback was a guess). Re-fetch
+    // the plan here because the vote atom's scope needs to match the
+    // plan's scope for scope-filtered canon renders to see the right
+    // pair together.
+    const planAtom = await host.atoms.get(planId);
+    if (planAtom === null) {
+      console.log('Plan atom disappeared before vote could be cast. Skipping.');
+      return 'skipped';
+    }
     const nowIso = host.clock.now();
     const voteResult = await castVoteInteractive(host, lineIter, {
       planId,
       voterId: responder,
-      scope,
+      scope: planAtom.scope,
       nowIso,
     });
     if (voteResult === null) {

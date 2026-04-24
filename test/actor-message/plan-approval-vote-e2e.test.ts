@@ -111,6 +111,7 @@ describe('plan-approval e2e: writer + reader', () => {
       confidence: 0.9,
       scope: 'project',
       nowIso: NOW,
+      tool: 'lag-respond',
     });
     await writePlanApprovalVote(host, {
       planId: 'plan-e2e' as AtomId,
@@ -121,6 +122,7 @@ describe('plan-approval e2e: writer + reader', () => {
       confidence: 0.95,
       scope: 'project',
       nowIso: NOW,
+      tool: 'lag-respond',
     });
 
     const r = await runPlanApprovalTick(host, { now: () => NOW });
@@ -145,20 +147,20 @@ describe('plan-approval e2e: writer + reader', () => {
       voterId: 'alice' as PrincipalId,
       vote: 'approve',
       rationale: 'low signal review; would lgtm',
-      role: undefined,
       confidence: 0.9,
       scope: 'project',
       nowIso: NOW,
+      tool: 'lag-respond',
     });
     await writePlanApprovalVote(host, {
       planId: 'plan-rejectable' as AtomId,
       voterId: 'carol' as PrincipalId,
       vote: 'reject',
       rationale: 'plan violates pol-code-author-allowed-paths fence',
-      role: undefined,
       confidence: 0.95,
       scope: 'project',
       nowIso: NOW,
+      tool: 'lag-respond',
     });
 
     const r = await runPlanApprovalTick(host, { now: () => NOW });
