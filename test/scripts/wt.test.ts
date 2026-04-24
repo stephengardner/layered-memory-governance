@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { validateSlug, parseGitWorktreeList, detectActivity, detectStale, detectPackageManager, renderNotesSkeleton } from '../../scripts/lib/wt.mjs';
+import {
+  validateSlug,
+  parseGitWorktreeList,
+  detectActivity,
+  detectStale,
+  detectPackageManager,
+  renderNotesSkeleton,
+  prStateToStaleSignals,
+  findWorktreeBySlug,
+} from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
   it('accepts kebab-case slugs', () => {
@@ -247,5 +256,111 @@ describe('renderNotesSkeleton', () => {
     expect(out).toContain('## Open threads');
     expect(out).toContain('## Decisions this worktree');
     expect(out).toContain('## Next pick-up');
+  });
+});
+
+describe('prStateToStaleSignals', () => {
+  // The CLI calls `gh pr view --json state --jq .state`; this helper
+  // translates the raw state string into the stale-detection signals
+  // (branchMerged, prClosed) that `cmdClean` feeds to `detectStale`.
+  //
+  // Regression context (post-#128 live dogfood): the original
+  // implementation only flagged PR state === 'CLOSED', and set
+  // `branchMerged` solely via `git branch --merged`. Squash-merge and
+  // rebase-merge produce main-side commits whose ancestry does NOT
+  // include the source branch tip, so `--merged` returns false for
+  // every squash-merged branch. 20+ worktrees with `AHEAD>0 + PR=MERGED`
+  // slipped through `wt clean` as a result. This helper makes PR state
+  // an authoritative merge signal.
+  it('treats MERGED as branchMerged (catches squash-merge blindspot)', () => {
+    expect(prStateToStaleSignals('MERGED')).toEqual({ branchMerged: true, prClosed: false });
+  });
+  it('treats CLOSED as prClosed', () => {
+    expect(prStateToStaleSignals('CLOSED')).toEqual({ branchMerged: false, prClosed: true });
+  });
+  it('treats OPEN as no signal', () => {
+    expect(prStateToStaleSignals('OPEN')).toEqual({ branchMerged: false, prClosed: false });
+  });
+  it('is case-insensitive (defensive against gh output drift)', () => {
+    expect(prStateToStaleSignals('merged')).toEqual({ branchMerged: true, prClosed: false });
+    expect(prStateToStaleSignals('closed')).toEqual({ branchMerged: false, prClosed: true });
+  });
+  it('trims whitespace', () => {
+    expect(prStateToStaleSignals('  MERGED  \n')).toEqual({ branchMerged: true, prClosed: false });
+  });
+  it('returns no signal for empty / null / undefined', () => {
+    expect(prStateToStaleSignals('')).toEqual({ branchMerged: false, prClosed: false });
+    expect(prStateToStaleSignals(null as unknown as string)).toEqual({ branchMerged: false, prClosed: false });
+    expect(prStateToStaleSignals(undefined as unknown as string)).toEqual({ branchMerged: false, prClosed: false });
+  });
+  it('returns no signal for unrecognized states', () => {
+    expect(prStateToStaleSignals('DRAFT')).toEqual({ branchMerged: false, prClosed: false });
+    expect(prStateToStaleSignals('PENDING')).toEqual({ branchMerged: false, prClosed: false });
+  });
+});
+
+describe('findWorktreeBySlug', () => {
+  // Regression: the first pass of the cmdRm --delete-branch fix used
+  // `r.path === wtPath`, which failed every Windows scenario because
+  // `git worktree list --porcelain` emits forward-slash paths while
+  // `path.join` produces backslashes. A 2026-04-24 live smoke test
+  // caught the bug after the initial fix had already passed ubuntu +
+  // windows CI (no existing test exercised this code path).
+  it('finds a record by forward-slash path', () => {
+    const records = [
+      { path: 'C:/Users/opens/memory-governance/.worktrees/foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('finds a record by backslash path (Windows path.join output)', () => {
+    const records = [
+      { path: 'C:\\Users\\opens\\memory-governance\\.worktrees\\foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('finds a record by mixed-separator path', () => {
+    const records = [
+      { path: 'C:/Users\\opens/memory-governance\\.worktrees/foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('finds a record by posix path', () => {
+    const records = [
+      { path: '/home/user/repo/.worktrees/foo', branch: 'feat/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('returns the first match when multiple candidates exist', () => {
+    const records = [
+      { path: '/a/.worktrees/foo', branch: 'feat/foo' },
+      { path: '/b/.worktrees/foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[0]);
+  });
+  it('returns undefined when no record matches', () => {
+    const records = [
+      { path: '/a/.worktrees/bar', branch: 'feat/bar' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toBeUndefined();
+  });
+  it('skips records with null or empty path', () => {
+    const records = [
+      { path: null, branch: 'feat/foo' },
+      { path: '', branch: 'feat/foo' },
+      { path: '/a/.worktrees/foo', branch: 'chore/foo' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toEqual(records[2]);
+  });
+  it('returns undefined for invalid inputs', () => {
+    expect(findWorktreeBySlug(null as unknown as [], 'foo')).toBeUndefined();
+    expect(findWorktreeBySlug([], '')).toBeUndefined();
+    expect(findWorktreeBySlug([], null as unknown as string)).toBeUndefined();
+  });
+  it('does not match a partial slug substring', () => {
+    const records = [
+      { path: '/a/.worktrees/foo-bar', branch: 'feat/foo-bar' },
+    ];
+    expect(findWorktreeBySlug(records, 'foo')).toBeUndefined();
+    expect(findWorktreeBySlug(records, 'foo-bar')).toEqual(records[0]);
   });
 });

@@ -25,6 +25,8 @@ import {
   detectStale,
   detectPackageManager,
   renderNotesSkeleton,
+  prStateToStaleSignals,
+  findWorktreeBySlug,
 } from './lib/wt.mjs';
 
 const COMMANDS = ['new', 'list', 'rm', 'clean', 'stack', 'note'];
@@ -387,6 +389,23 @@ async function cmdRm(args) {
     process.exit(2);
   }
 
+  // Resolve the actual branch checked out in this worktree. The old
+  // `feat/${slug}` assumption silently failed for every non-feat branch
+  // (substrate/*, fix/*, docs/*, chore/*, spec/*, task-*, code-author/*,
+  // etc.); all three live-dogfood removals on 2026-04-24 hit this.
+  //
+  // Match is done via findWorktreeBySlug (basename comparison) instead
+  // of raw path equality because `git worktree list --porcelain` emits
+  // forward slashes on Windows while `path.join` emits backslashes; a
+  // naive `r.path === wtPath` comparison never matched cross-platform.
+  let branch = `feat/${slug}`;
+  try {
+    const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
+    const records = parseGitWorktreeList(wtList.stdout);
+    const rec = findWorktreeBySlug(records, slug);
+    if (rec?.branch) branch = rec.branch;
+  } catch { /* fall back to feat/<slug> */ }
+
   // Check dirty.
   let dirty = false;
   try {
@@ -401,8 +420,10 @@ async function cmdRm(args) {
     aheadCount = Number((await execa('git', ['-C', wtPath, 'rev-list', '--count', `${trunk}..HEAD`])).stdout.trim()) || 0;
   } catch {}
 
-  // Check unmerged (local branch merged into trunk?).
-  const branch = `feat/${slug}`;
+  // Check unmerged (local branch merged into trunk? - ancestry check
+  // only; squash-merged branches return false here, which is fine for
+  // `wt rm`'s safety prompt: the operator still sees the ahead-count
+  // warning and chooses).
   let branchMerged = false;
   try {
     const m = await execa('git', ['branch', '--merged', trunk, '--list', branch]);
@@ -512,13 +533,20 @@ async function cmdClean(args) {
       } catch {}
     }
 
-    // PR state via gh (graceful fallback).
+    // PR state via gh (graceful fallback). `git branch --merged` uses
+    // ancestry, which squash-merge and rebase-merge invalidate: the
+    // trunk-side commit has no relationship to the branch tip, so
+    // `--merged` returns false for every squash-merged branch. Using
+    // PR state as an authoritative merge signal (MERGED => branchMerged,
+    // CLOSED => prClosed) closes the blindspot that left 20+
+    // squash-merged worktrees slipping through `wt clean` post-#128.
     let prClosed = false;
     if (branch) {
       try {
         const res = await execa('gh', ['pr', 'view', branch, '--json', 'state', '--jq', '.state']);
-        const state = res.stdout.trim();
-        prClosed = state === 'CLOSED';
+        const signals = prStateToStaleSignals(res.stdout);
+        if (signals.branchMerged) branchMerged = true;
+        if (signals.prClosed) prClosed = true;
       } catch { /* gh unavailable or no PR */ }
     }
 

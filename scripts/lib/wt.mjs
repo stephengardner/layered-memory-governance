@@ -47,6 +47,37 @@ export function parseGitWorktreeList(output) {
 }
 
 /**
+ * Find the worktree record whose filesystem path's last segment matches
+ * `slug`, treating both forward and backward separators as equivalent.
+ *
+ * Why this exists: on Windows, `git worktree list --porcelain` emits
+ * forward-slash paths (`C:/Users/.../.worktrees/foo`) while Node's
+ * `path.join` produces backslashes (`C:\\Users\\...\\.worktrees\\foo`).
+ * A naive `r.path === wtPath` comparison never matches on Windows,
+ * causing `cmdRm` to silently fall back to a hardcoded branch name.
+ * (Caught only by a 2026-04-24 live dogfood smoke test after the
+ * initial fix had already merged logic; plain vitest ran on both
+ * ubuntu and windows CI but no test exercised this code path.)
+ *
+ * Match on the last path segment (the slug) because `.worktrees/` is
+ * a flat single-level directory and the slug is unique there.
+ *
+ * @param {Array<{path: string|null, branch: string|null}>} records - output of parseGitWorktreeList.
+ * @param {string} slug - validated kebab-case slug.
+ * @returns matching record, or undefined.
+ */
+export function findWorktreeBySlug(records, slug) {
+  if (!Array.isArray(records) || typeof slug !== 'string' || slug.length === 0) {
+    return undefined;
+  }
+  return records.find((r) => {
+    if (!r || typeof r.path !== 'string' || r.path.length === 0) return false;
+    const segments = r.path.split(/[\\/]/);
+    return segments[segments.length - 1] === slug;
+  });
+}
+
+/**
  * Decide whether a worktree is "active" based on injected signals.
  * Pure function: caller does the filesystem reads.
  *
@@ -186,6 +217,38 @@ export function detectPackageManager(rootFiles, packageJsonContent) {
     if (set.has(pm.file)) return { tool: pm.tool, install: pm.install };
   }
   return null;
+}
+
+/**
+ * Translate a PR state string (from `gh pr view --json state --jq .state`)
+ * into stale-detection signals for `detectStale`.
+ *
+ * Why this exists: `git branch --merged <trunk>` relies on ancestry,
+ * which squash-merge and rebase-merge both invalidate. The trunk-side
+ * commit produced by those merge strategies does not have the source
+ * branch's tip as an ancestor, so `--merged` returns false for every
+ * squash-merged branch. Using PR state as an authoritative merge signal
+ * closes that gap.
+ *
+ * Mapping:
+ *   - MERGED -> branchMerged: true. The PR shipped; the branch is
+ *     effectively on trunk regardless of local ancestry.
+ *   - CLOSED -> prClosed: true. The PR was rejected or abandoned
+ *     without merge. The worktree is a candidate for cleanup.
+ *   - OPEN / DRAFT / unrecognized / empty -> no signal.
+ *
+ * Case-insensitive and trim-tolerant; gh has shipped both uppercase
+ * and title-case in different versions and a defensive normalization
+ * costs nothing.
+ *
+ * @param {string|null|undefined} state - raw PR state string.
+ * @returns {{ branchMerged: boolean, prClosed: boolean }}
+ */
+export function prStateToStaleSignals(state) {
+  const normalized = (state ?? '').toString().trim().toUpperCase();
+  if (normalized === 'MERGED') return { branchMerged: true, prClosed: false };
+  if (normalized === 'CLOSED') return { branchMerged: false, prClosed: true };
+  return { branchMerged: false, prClosed: false };
 }
 
 /**
