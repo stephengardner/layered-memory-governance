@@ -252,6 +252,28 @@ export function prStateToStaleSignals(state) {
 }
 
 /**
+ * Parse the flag combination for `wt clean`. Pure helper so the flag
+ * contract is testable without standing up the whole cmdClean harness
+ * (stat, execa, readline). Kept here because `.mjs` dispatcher scripts
+ * are not type-checked by tsc + Vitest runs transpile-only, so the
+ * only backstop against a flag-precedence regression is a runtime test
+ * (CR #154 learning).
+ *
+ * Precedence: both flags independently read from args; --dry-run and
+ * --yes are orthogonal. If both are set, the cmdClean caller takes the
+ * dry-run early-return path first (prints candidates and exits without
+ * removing), so the yes flag is effectively a no-op in that combo.
+ *
+ * @param {string[]} args - raw argv passed to cmdClean.
+ * @returns {{ dryRun: boolean, yes: boolean }}
+ */
+export function parseCleanFlags(args) {
+  const dryRun = args.includes('--dry-run');
+  const yes = args.includes('--yes') || args.includes('-y');
+  return { dryRun, yes };
+}
+
+/**
  * Render the NOTES.md skeleton for a new worktree.
  * Returns a markdown template with placeholders filled in.
  */

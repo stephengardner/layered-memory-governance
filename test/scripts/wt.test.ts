@@ -8,6 +8,7 @@ import {
   renderNotesSkeleton,
   prStateToStaleSignals,
   findWorktreeBySlug,
+  parseCleanFlags,
 } from '../../scripts/lib/wt.mjs';
 
 describe('validateSlug', () => {
@@ -362,5 +363,31 @@ describe('findWorktreeBySlug', () => {
     ];
     expect(findWorktreeBySlug(records, 'foo')).toBeUndefined();
     expect(findWorktreeBySlug(records, 'foo-bar')).toEqual(records[0]);
+  });
+});
+
+describe('parseCleanFlags', () => {
+  // CR #154 learning: `.mjs` scripts are not tsc-type-checked and
+  // Vitest runs transpile-only, so a regression that flips flag
+  // precedence would go unnoticed until a live invocation. These
+  // tests pin the (dryRun, yes) contract so cmdClean's branching
+  // stays honest.
+  it('returns both false for no flags', () => {
+    expect(parseCleanFlags([])).toEqual({ dryRun: false, yes: false });
+  });
+  it('parses --dry-run alone', () => {
+    expect(parseCleanFlags(['--dry-run'])).toEqual({ dryRun: true, yes: false });
+  });
+  it('parses --yes alone', () => {
+    expect(parseCleanFlags(['--yes'])).toEqual({ dryRun: false, yes: true });
+  });
+  it('accepts -y as a short form of --yes', () => {
+    expect(parseCleanFlags(['-y'])).toEqual({ dryRun: false, yes: true });
+  });
+  it('parses --dry-run + --yes together (dry-run wins in caller)', () => {
+    expect(parseCleanFlags(['--dry-run', '--yes'])).toEqual({ dryRun: true, yes: true });
+  });
+  it('ignores unrelated flags', () => {
+    expect(parseCleanFlags(['--force', 'foo', '--other'])).toEqual({ dryRun: false, yes: false });
   });
 });

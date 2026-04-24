@@ -27,6 +27,7 @@ import {
   renderNotesSkeleton,
   prStateToStaleSignals,
   findWorktreeBySlug,
+  parseCleanFlags,
 } from './lib/wt.mjs';
 
 const COMMANDS = ['new', 'list', 'rm', 'clean', 'stack', 'note'];
@@ -469,8 +470,7 @@ async function cmdRm(args) {
   }
 }
 async function cmdClean(args) {
-  const dryRun = args.includes('--dry-run');
-  const yes = args.includes('--yes') || args.includes('-y');
+  const { dryRun, yes } = parseCleanFlags(args);
 
   const repoRoot = (await execa('git', ['rev-parse', '--show-toplevel'])).stdout.trim();
   const wtList = await execa('git', ['worktree', 'list', '--porcelain']);
