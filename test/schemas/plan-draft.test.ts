@@ -26,9 +26,15 @@ describe('PLAN_DRAFT schema', () => {
     const res = PLAN_DRAFT.zodSchema.safeParse({ plans: [withoutDelegation] });
     expect(res.success).toBe(false);
   });
-  it('rejects when sub_actor_principal_id is not in v1 allowlist', () => {
+  it('accepts any non-empty sub_actor_principal_id (deployment-agnostic)', () => {
     const res = PLAN_DRAFT.zodSchema.safeParse({
       plans: [{ ...valid, delegation: { ...valid.delegation, sub_actor_principal_id: 'deploy-actor' } }],
+    });
+    expect(res.success).toBe(true);
+  });
+  it('rejects when sub_actor_principal_id is empty', () => {
+    const res = PLAN_DRAFT.zodSchema.safeParse({
+      plans: [{ ...valid, delegation: { ...valid.delegation, sub_actor_principal_id: '' } }],
     });
     expect(res.success).toBe(false);
   });
