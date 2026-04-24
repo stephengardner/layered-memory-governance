@@ -263,6 +263,7 @@ Operator commands ship as npm bins:
 - `lag-respond` - interactive human-approval prompt. Displays pending notifications; accepts approve/reject/ignore/skip/quit via stdin.
 - `lag-compromise` - operator incident response. Marks a principal compromised, propagates taint across direct and derived atoms, prints the affected atom ids and an audit summary.
 - `lag-actors` - per-role GitHub App identity provisioning. `sync` walks `roles.json` and creates one App per un-provisioned actor (browser-approval flow, one click per role). `list` enumerates provisioned actors and their `<slug>[bot]` identities. `demo-pr` and `demo-adapter` exercise the full auth chain end-to-end. See "Actor identities" below.
+- `lag-tg` - Telegram-daemon lifecycle CLI (`start | stop | status | restart`). Uses the `/lifecycle` primitive so a SessionStart hook and an operator invocation share the same idempotent semantics; the pid lockfile lives at `.lag/daemon.pid` and stdout/stderr are tee'd to `.lag/daemon.log`. `lag-tg start` is idempotent (no-op when already running); `lag-tg status` reports `running | stopped | stale` with the pid.
 
 Runnable scripts (no install):
 
