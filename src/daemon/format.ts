@@ -310,9 +310,19 @@ function extractMarkdownTables(text: string, placeholders: Placeholder[]): strin
     const headerLine = lines[i] ?? '';
     const separatorLine = lines[i + 1] ?? '';
     const headerCells = parseTableRow(headerLine);
+    // Reject header rows where every cell is separator-shaped
+    // (`['---', '---']`), so two separator-style lines in a row are
+    // not consumed as header + separator. Authors who paste the
+    // separator twice, or tables whose headers are literally dashes,
+    // now fall through as plain text.
+    const headerIsAllSeparatorShaped =
+      headerCells !== null
+      && headerCells.length > 0
+      && headerCells.every((cell) => /^:?-+:?$/.test(cell));
     if (
       headerCells !== null
       && headerCells.length > 0
+      && !headerIsAllSeparatorShaped
       && isTableSeparatorRow(separatorLine)
       && parseTableRow(separatorLine)!.length === headerCells.length
     ) {
@@ -350,7 +360,8 @@ function extractMarkdownTables(text: string, placeholders: Placeholder[]): strin
  *
  * Cell contents are HTML-escaped; separator row is regenerated at the
  * correct per-column width. No per-column alignment syntax (`:---:`)
- * is honored today; every column is left-padded to the column width.
+ * is honored today; every column is left-aligned (cells are padded
+ * with trailing spaces).
  *
  * `minWidths` comes from the separator row's dash count per column
  * and acts as a floor so the rendered table is at least as wide as
@@ -377,7 +388,11 @@ function renderTableAsPre(
     return cell + ' '.repeat(width - cell.length);
   };
   const header = rows[0]!.map((c, idx) => padCell(c, widths[idx]!)).join(' | ');
-  const separator = widths.map((w) => '-'.repeat(Math.max(w, 3))).join(' | ');
+  // Separator must match the column widths exactly (no Math.max floor)
+  // so a narrow-cell table like `| x | y |` renders with `x | y` and
+  // `- | -` instead of a jagged `x | y` / `--- | ---` that looks like
+  // the separator belongs to a different table.
+  const separator = widths.map((w) => '-'.repeat(w)).join(' | ');
   const body = rows
     .slice(1)
     .map((row) => row.map((c, idx) => padCell(c, widths[idx]!)).join(' | '));

@@ -168,11 +168,16 @@ describe('markdownToTelegramHtml', () => {
         '|      | b     |',
       ].join('\n');
       const out = markdownToTelegramHtml(input);
-      // Empty cells stay as spaces wide enough for the column.
-      expect(out).toContain('k    | v');
-      expect(out).toMatch(/a\s+\|\s+$|a\s+\|/m);
-      // Line with empty first cell still renders both columns.
-      expect(out).toMatch(/\|\s+b/);
+      // Pin the exact expected output so the "do not collapse columns"
+      // invariant is literal: header widths come from the separator
+      // (4 and 5), data cells are padded to the same width.
+      const expectedBody = [
+        'k    | v    ',
+        '---- | -----',
+        'a    |      ',
+        '     | b    ',
+      ].join('\n');
+      expect(out).toBe(`<pre>${expectedBody}</pre>`);
     });
 
     it('escapes HTML-special chars inside table cells', () => {
