@@ -222,6 +222,31 @@ import {
 import type { Host, Atom, AtomId, PrincipalId } from 'layered-autonomous-governance';
 ```
 
+### Subpath reference
+
+The full list of subpaths declared in `package.json#exports`, each with one reason to reach for it:
+
+| Subpath | Reach for it when... |
+| --- | --- |
+| `.` (root) | you need the everyday governance primitives: `LoopRunner`, `PromotionEngine`, `arbitrate`, `CanonMdManager`, embedders, the core types. |
+| `/adapters/memory` | you want a zero-config in-memory `Host` for tests, spikes, and the indie-floor story. |
+| `/adapters/file` | you want a `Host` that persists atoms, canon, principals, and audits to `.lag/` on disk. |
+| `/adapters/bridge` | you want to stitch a secondary atom store alongside the primary one (e.g. bridge-into an existing memory palace). |
+| `/adapters/notifier` | you're wiring the Telegram notifier or reading inbound callback payloads. |
+| `/actors` | you're defining or running an Actor via `runActor`. The Actor primitive only. |
+| `/actors/pr-landing` | you want the reference outward actor that drives a PR through review feedback to clean. |
+| `/actors/pr-review` | you're composing the PR-review adapter surface (`PrReviewAdapter`) with a GitHub implementation. |
+| `/actors/code-author` | you're invoking the blast-radius-fenced code-author actor or its drafter/PR-creation primitives. |
+| `/actors/planning` | you're embedding the planning actor + host-LLM judgment seam. |
+| `/actors/provisioning` | you're standing up per-role GitHub App identities (roles.json -> one App per actor). |
+| `/actor-message` | you need the inbox primitive: rate limiter, pickup, circuit breaker, auditor, plan-dispatch loop. |
+| `/actor-message/executor-default` | you want the default code-author executor wiring for dispatching inbox code-author invocations. |
+| `/external/github` | you want the gh-CLI-backed GitHub transport shared across actors. |
+| `/external/github-app` | you need App-scoped GitHub auth (installation-token cache, App JWT, App-backed gh client). |
+| `/lifecycle` | you're starting, stopping, or probing a long-running LAG service via the lifecycle primitive. |
+
+The value surface of every subpath is pinned by `test/public-surface/subpaths.test.ts`. That file is the authoritative answer to "what is actually exported, right now"; adding or removing an export there is the signal that the public contract changed.
+
 ## CLIs and runtime surfaces
 
 Operator commands ship as npm bins:
