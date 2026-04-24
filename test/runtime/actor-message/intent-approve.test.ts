@@ -456,4 +456,38 @@ describe('runIntentAutoApprovePass', () => {
     const meta = plan?.metadata as Record<string, unknown>;
     expect(meta['approved_via']).toBeUndefined();
   });
+
+  // 11. Unknown plan implied_blast_radius -> fail-closed: silently skipped (not approved)
+  it('T11: unknown implied_blast_radius on plan -> fail-closed, not approved', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-unknown-radius', { max_blast_radius: 'framework' }));
+    await host.atoms.put(
+      planAtom('plan-unknown-radius', 'intent-unknown-radius', { implied_blast_radius: 'galaxy-brain' }),
+    );
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(0);
+    const plan = await host.atoms.get('plan-unknown-radius' as AtomId);
+    expect(plan?.plan_state).toBe('proposed');
+  });
+
+  // 12. Unknown envelope max_blast_radius -> fail-closed: silently skipped (not approved)
+  it('T12: unknown max_blast_radius in envelope -> fail-closed, not approved', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-unknown-env', { max_blast_radius: 'total-destruction' }));
+    await host.atoms.put(
+      planAtom('plan-unknown-env', 'intent-unknown-env', { implied_blast_radius: 'tooling' }),
+    );
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(0);
+    const plan = await host.atoms.get('plan-unknown-env' as AtomId);
+    expect(plan?.plan_state).toBe('proposed');
+  });
 });

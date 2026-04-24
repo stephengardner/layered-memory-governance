@@ -280,15 +280,11 @@ export async function runIntentAutoApprovePass(
       : [];
     if (!envAllowedSubActors.includes(subActor)) continue;
 
-    const planRadius = typeof delegation.implied_blast_radius === 'string'
-      ? delegation.implied_blast_radius
-      : 'none';
-    const envelopeMax = typeof envelope.max_blast_radius === 'string'
-      ? envelope.max_blast_radius
-      : 'none';
-    const planRadiusRank = RADIUS_RANK[planRadius as BlastRadius] ?? 0;
-    const envelopeMaxRank = RADIUS_RANK[envelopeMax as BlastRadius] ?? 0;
-    if (planRadiusRank > envelopeMaxRank) continue;
+    const planRadius = delegation.implied_blast_radius;
+    const envelopeMax = envelope.max_blast_radius;
+    if (typeof planRadius !== 'string' || !(planRadius in RADIUS_RANK)) continue;
+    if (typeof envelopeMax !== 'string' || !(envelopeMax in RADIUS_RANK)) continue;
+    if (RADIUS_RANK[planRadius as BlastRadius] > RADIUS_RANK[envelopeMax as BlastRadius]) continue;
 
     // Claim-before-mutate: re-read to prevent double-approve under
     // concurrent ticks. If the plan has moved, skip.
@@ -301,7 +297,6 @@ export async function runIntentAutoApprovePass(
     await host.atoms.update(plan.id as AtomId, {
       plan_state: 'approved',
       metadata: {
-        ...latest.metadata,
         approved_via: String(approvePolicy.atomId ?? 'pol-plan-autonomous-intent-approve'),
         approved_at: nowIso,
         approved_intent_id: String(intent.id),
