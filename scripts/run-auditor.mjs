@@ -96,7 +96,7 @@ async function main() {
     supersedes: [],
     superseded_by: [],
     taint: 'clean',
-    signals: { agrees_with: [], disagrees_with: [], refined_by: [] },
+    signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
   };
   await host.atoms.put(verdictAtom);
 

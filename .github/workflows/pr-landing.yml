@@ -139,6 +139,10 @@ jobs:
   lag-auditor:
     name: LAG auditor gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
     if: |
       github.event_name == 'pull_request' &&
       contains(github.event.pull_request.labels.*.name, 'autonomous-intent')
