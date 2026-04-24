@@ -168,7 +168,7 @@ function buildDelegationMetadata(
   delegateTo: PlanningActorOptions['delegateTo'],
 ): Record<string, unknown> {
   // Trim before length check so whitespace-only principal ids are
-  // treated as empty — same discipline as buildQuestionMetadata
+  // treated as empty, same discipline as buildQuestionMetadata
   // above. A '   ' principal would never resolve in the auto-approve
   // dispatcher's registry lookup anyway; treating it as empty fails
   // at the seam, not silently deeper.
