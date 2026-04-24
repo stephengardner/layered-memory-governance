@@ -60,3 +60,13 @@ playwright/.cache/
 
 # Windows artifacts
 NUL
+
+# Worktrees created by the scripts/wt.mjs CLI for isolated parallel work.
+# Each .worktrees/<slug>/ is itself a git worktree; contents are the branch,
+# not the repo. Ignored so the main checkout's `git status` stays clean and
+# no worktree body ever lands in a commit on the wrong branch.
+/.worktrees/
+
+# NOTES.md at repo root (or worktree root) is the agent-written handoff doc
+# for the current worktree. Ephemeral; never tracked on a branch.
+/NOTES.md

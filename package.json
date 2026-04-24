@@ -118,6 +118,7 @@
     "terminal": "npm run build --silent && node scripts/lag-terminal.mjs",
     "terminal:auto": "npm run build --silent && node scripts/lag-terminal.mjs --claude-args \"--permission-mode auto\"",
     "resume-session": "node scripts/resume-session.mjs",
+    "wt": "node scripts/wt.mjs",
     "clean": "rimraf dist coverage .vitest-cache *.tsbuildinfo .lag"
   },
   "dependencies": {
