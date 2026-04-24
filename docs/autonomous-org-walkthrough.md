@@ -4,6 +4,8 @@ This is a concrete walkthrough of what happens when you hand LAG a question and 
 
 The goal of this doc is not to argue the architecture; `docs/framework.md` and `design/target-architecture.md` cover that. It is to show the seams a new reader needs to locate before running their first autonomous deliberation. For the operational retro that motivated this walkthrough (including why CodeAuthor did not produce a diff on the real run), see [`docs/dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md`](dogfooding/2026-04-23-virtual-org-phase-3-git-as-push-auth.md).
 
+> **Snapshot staleness note.** The commit pin above is 2026-04-23. Main has moved since. Known additions that touch the walkthrough flow: the PlanningActor `delegateTo` seam ([#148](https://github.com/stephengardner/layered-autonomous-governance/pull/148)) routes `metadata.delegation.sub_actor_principal_id` directly, and `scripts/run-cto-actor.mjs` grew a `--delegate-to <id>` flag ([#151](https://github.com/stephengardner/layered-autonomous-governance/pull/151)) that flows through the seam. The claims below were not re-verified against current main; treat them as accurate at snapshot time and grep for seam/flag names before relying on specific wiring.
+
 ## Implementation status
 
 Not every arrow in the diagram below is fully wired. Reading the walkthrough without this context will make more of the loop sound automated than it is today. Concretely at commit 63c6c40:
