@@ -224,6 +224,11 @@ describe('HostLlmPlanningJudgment', () => {
             ],
             what_breaks_if_revisit: 'None: auditor is superseded when it is.',
             confidence: 0.8,
+            delegation: {
+              sub_actor_principal_id: 'code-author',
+              reason: 'Requires implementing new PlanningActor role.',
+              implied_blast_radius: 'framework',
+            },
           },
         ],
       });
@@ -249,6 +254,11 @@ describe('HostLlmPlanningJudgment', () => {
             alternatives_rejected: [{ option: 'Skip', reason: 'invalid' }],
             what_breaks_if_revisit: '...',
             confidence: 0.7,
+            delegation: {
+              sub_actor_principal_id: 'code-author',
+              reason: 'Implement valid plan.',
+              implied_blast_radius: 'framework',
+            },
           },
           {
             title: 'Invented-citation plan',
@@ -258,6 +268,11 @@ describe('HostLlmPlanningJudgment', () => {
             alternatives_rejected: [{ option: 'Skip', reason: 'invalid' }],
             what_breaks_if_revisit: '...',
             confidence: 0.9,
+            delegation: {
+              sub_actor_principal_id: 'code-author',
+              reason: 'Implement plan with hallucinated citation.',
+              implied_blast_radius: 'framework',
+            },
           },
         ],
       });
@@ -281,6 +296,11 @@ describe('HostLlmPlanningJudgment', () => {
             alternatives_rejected: [{ option: 'Skip', reason: 'invalid' }],
             what_breaks_if_revisit: '...',
             confidence: 0.8,
+            delegation: {
+              sub_actor_principal_id: 'code-author',
+              reason: 'Implement confident plan with high rigor.',
+              implied_blast_radius: 'framework',
+            },
           },
           {
             title: 'Shaky plan',
@@ -290,6 +310,11 @@ describe('HostLlmPlanningJudgment', () => {
             alternatives_rejected: [{ option: 'Skip', reason: 'invalid' }],
             what_breaks_if_revisit: '...',
             confidence: 0.3,
+            delegation: {
+              sub_actor_principal_id: 'code-author',
+              reason: 'Implement uncertain plan.',
+              implied_blast_radius: 'framework',
+            },
           },
         ],
       });
@@ -313,6 +338,11 @@ describe('HostLlmPlanningJudgment', () => {
             alternatives_rejected: [{ option: 'Skip', reason: 'invalid' }],
             what_breaks_if_revisit: '...',
             confidence: 0.9,
+            delegation: {
+              sub_actor_principal_id: 'code-author',
+              reason: 'Plan cites only invented directives.',
+              implied_blast_radius: 'framework',
+            },
           },
         ],
       });
