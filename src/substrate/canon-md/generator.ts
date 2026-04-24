@@ -56,6 +56,11 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   'actor-message-ack': 'Actor Message Acks',
   'circuit-breaker-trip': 'Circuit Breaker Trips',
   'circuit-breaker-reset': 'Circuit Breaker Resets',
+  // Plan-approval votes are L1 process signals; the canon applier
+  // filters to L3 and never renders these into a CLAUDE.md target.
+  // Included here for deterministic ordering if a caller explicitly
+  // dumps non-L3 atoms for debugging.
+  'plan-approval-vote': 'Plan Approval Votes',
 };
 
 export interface RenderOptions {

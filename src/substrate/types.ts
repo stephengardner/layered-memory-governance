@@ -62,7 +62,15 @@ export type AtomType =
   | 'actor-message'
   | 'actor-message-ack'
   | 'circuit-breaker-trip'
-  | 'circuit-breaker-reset';
+  | 'circuit-breaker-reset'
+  // Multi-reviewer plan approval vote. Each atom is one reviewer's
+  // signal on one plan; the approval pass counts distinct-principal
+  // votes against a policy-defined threshold. derived_from points at
+  // the plan being voted on; metadata.vote is 'approve' or 'reject';
+  // metadata.role is an optional free-string used by role-quorum
+  // policies. Votes inherit the atom store's standard guards (taint,
+  // superseded_by); a reviewer rescinds by superseding their own vote.
+  | 'plan-approval-vote';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite

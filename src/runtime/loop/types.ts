@@ -45,6 +45,12 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // pair after a few months.
   'circuit-breaker-trip': 180 * 24 * 60 * 60 * 1000,   // ~6 months
   'circuit-breaker-reset': 180 * 24 * 60 * 60 * 1000,  // ~6 months
+  // Plan-approval votes are process signals attached to a specific
+  // plan, not decaying canonical facts. The plan-approval pass
+  // enforces its own freshness via max_age_ms; decay is irrelevant
+  // for the authority grant, so a long half-life keeps the vote's
+  // stated confidence stable during the approval window.
+  'plan-approval-vote': 180 * 24 * 60 * 60 * 1000,  // ~6 months
 });
 
 export interface LoopOptions {

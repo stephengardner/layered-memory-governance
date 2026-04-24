@@ -99,6 +99,16 @@ export type {
 } from './auto-approve.js';
 
 export {
+  runPlanApprovalTick,
+  FALLBACK_PLAN_APPROVAL,
+} from './plan-approval.js';
+export type {
+  PlanApprovalPolicyConfig,
+  PlanApprovalTickOptions,
+  PlanApprovalTickResult,
+} from './plan-approval.js';
+
+export {
   sendOperatorEscalation,
   shouldEscalate,
   renderEscalationBody,
