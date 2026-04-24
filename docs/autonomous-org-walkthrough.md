@@ -95,7 +95,11 @@ This is deliberate, not a gap. Canon atom `pol-plan-auto-approve-low-stakes` has
 
 CodeAuthor mutates external state (opens PRs, pushes commits). Per canon `dev-l3-promotion-requires-human-approval` and `governance-before-autonomy`, the `proposed → approved` transition is an operator gate.
 
-The operator advances the plan either through `lag-respond` (interactive) or by editing the allowlist via `/decide` to widen auto-approval (rare, requires operator intent).
+The operator has three ways to advance the plan:
+
+1. **Single-reviewer close via `lag-respond [a]`** (legacy): marks the notifier ticket responded, but does not transition `plan_state`. Useful only as an inbox clear.
+2. **Multi-reviewer vote via `lag-respond [v]`**: casts a `plan-approval-vote` atom (`type: 'plan-approval-vote'`, `metadata.vote: 'approve'|'reject'`, `metadata.rationale`, optional `metadata.role`). Once N distinct-principal fresh approve votes have landed (N = `pol-plan-multi-reviewer-approval.min_votes`, default 2), `runPlanApprovalTick` transitions the plan to `approved` per the policy. A single fresh `reject` vote hard-blocks when `hard_reject_on_any_reject: true`.
+3. **Widen the single-principal allowlist via `/decide`**: adds the target sub-actor's principal to `pol-plan-auto-approve-low-stakes.allowed_sub_actors`. `runAutoApprovePass` picks it up on the next tick. Rare; requires explicit operator intent and survives the "mutates external state" directive only for low-stakes actors.
 
 ## Advancing the Plan: proposed → approved → executing → succeeded
 
@@ -104,9 +108,23 @@ The operator advances the plan either through `lag-respond` (interactive) or by 
 #    inbox, carries a correlation id so the reply threads back).
 #    Canonical shape in scripts/run-cto-self-audit-continue.mjs.
 
-# 4. Operator approves via lag-respond:
-lag-respond --root-dir .lag
-# -> disposition: approve
+# 4. Operator advances the plan. Two shapes:
+#
+#    a) Single-principal allowlist path (rare; widens
+#       pol-plan-auto-approve-low-stakes):
+#       lag-respond --root-dir .lag
+#       -> disposition: a  (closes the notifier ticket)
+#       (runAutoApprovePass transitions the plan if the target
+#        principal is on the allowlist.)
+#
+#    b) Multi-reviewer vote path (default for code-author-class
+#       actors per pol-plan-multi-reviewer-approval):
+#       lag-respond --root-dir .lag --responder alice
+#       -> disposition: v  approve  "fence atoms intact, diff looks clean"
+#       lag-respond --root-dir .lag --responder bob
+#       -> disposition: v  approve  "matches spec scope"
+#       (runPlanApprovalTick transitions the plan to 'approved'
+#        once distinct-principal votes hit min_votes.)
 
 # 5. Dispatch tick writes the plan to code-author's inbox:
 node -e "/* runDispatchTick(host, subActorRegistry) */"
@@ -144,8 +162,8 @@ Each step is deterministic. Each atom carries provenance. `.lag/atoms/` lets you
 **Skeleton / manual (instance-level gaps):**
 - **CodeAuthorActor loop.** `scripts/run-code-author.mjs → CodeAuthorActor` is the fence-validation skeleton described in "Implementation status". No plan pickup, no drafter invocation, no PR creation from this path. Operator runs the plan's steps until the loop is wired.
 - **Delegation envelope injection.** `run-cto-actor` drops the Plan at `proposed` with no `metadata.delegation`; a follow-up will chain envelope + auto-approve + dispatch into one command.
-- **`proposed → approved` for state-mutating sub-actors (code-author).** Operator approval via `lag-respond` is required by `pol-plan-auto-approve-low-stakes` ("Never auto-approve a sub-actor that mutates state beyond atom writes"). Governance gate, not a bug.
-- **Plan-state writeback on PR merge.** `PrLandingActor` observes the merge but does not update the originating Plan atom's `plan_state` to `succeeded`. The state machine (`src/runtime/plans/state.ts`) and `executePlan()` seam exist; code-author does not currently route through `executePlan()`.
+- **`proposed → approved` for state-mutating sub-actors (code-author).** Operator approval via `lag-respond [v]` (multi-reviewer votes) is the default path per `pol-plan-auto-approve-low-stakes` ("Never auto-approve a sub-actor that mutates state beyond atom writes"). The machinery is wired end-to-end: `lag-respond [v]` writes `plan-approval-vote` atoms, `runPlanApprovalTick` transitions the plan on distinct-principal consensus. Widening single-principal auto-approval via `/decide` is also available for low-stakes actors. Governance gate, not a bug.
+- **Plan-state writeback on PR merge.** `runPlanStateReconcileTick` scans `pr-observation` atoms with terminal merge states and transitions the originating Plan atom to `succeeded` (merged) or `abandoned` (closed), claimed via a deterministic `plan-merge-settled` marker id for race safety and crash recovery. `PrLandingActor` observes PRs; the reconciler closes the write loop.
 
 ## Debugging checklist when a Plan sits stuck
 
@@ -153,7 +171,7 @@ Each step is deterministic. Each atom carries provenance. `.lag/atoms/` lets you
 2. **Plan in `approved`, no inbox message**: `runDispatchTick` not running. Check the SubActorRegistry knows about the target.
 3. **Inbox message present, CodeAuthor converged empty**: drafter didn't see a literal payload. Check `metadata.question_prompt` on the Plan (PR #125 closed this gap for CTO-produced plans).
 4. **PR open but blocked**: check `gh pr view <n> --json statusCheckRollup` for missing `CodeRabbit` legacy status. `@coderabbitai review` nudges, or a new real-diff push forces CR to re-post.
-5. **PR merged but Plan atom still in `executing` / `proposed`**: the writeback gap noted above. Manual fix: update the atom's `plan_state` via `host.atoms.update(planId, { plan_state: 'succeeded' })`.
+5. **PR merged but Plan atom still in `executing` / `proposed`**: check that the reconcile tick is running. `runPlanStateReconcileTick` requires a pr-observation atom with `metadata.plan_id` and a terminal `merge_state_status`. Manual fallback if a workload isn't calling the tick: `host.atoms.update(planId, { plan_state: 'succeeded' })`.
 
 ## Governance posture, in one paragraph
 

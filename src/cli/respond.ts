@@ -7,9 +7,11 @@
  *
  * Walks `rootDir/notifier/pending/`, displays each event (summary + body +
  * optional diff), and accepts single-key input from stdin:
- *   a  approve
- *   r  reject
+ *   a  approve (closes notifier ticket; no atom written)
+ *   r  reject  (closes notifier ticket; no atom written)
  *   i  ignore
+ *   v  vote    (writes a plan-approval-vote atom AND closes the notifier)
+ *              only offered when the event references a plan atom
  *   s  skip (leave pending)
  *   q  quit
  *
@@ -24,8 +26,12 @@
 
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
-import { FileNotifier } from '../adapters/file/notifier.js';
-import type { Disposition, NotificationHandle, PrincipalId } from '../types.js';
+import { createFileHost, type FileHost } from '../adapters/file/index.js';
+import type { Disposition, NotificationHandle, PrincipalId, Scope } from '../types.js';
+import {
+  castVoteInteractive,
+  resolvePlanIdFromAtomRefs,
+} from './respond-vote.js';
 
 interface CliArgs {
   readonly rootDir: string;
@@ -77,6 +83,14 @@ function printUsage(): void {
       '  --watch              Poll for new pending items every 1s.',
       '  --responder <name>   Principal id recorded on your responses (default: "operator").',
       '  --help               Print this message.',
+      '',
+      'Dispositions:',
+      '  a  approve (closes notifier ticket; no atom written)',
+      '  r  reject  (closes notifier ticket; no atom written)',
+      '  i  ignore',
+      '  v  vote    (plan events only; writes plan-approval-vote atom + closes ticket)',
+      '  s  skip    (leave pending for next run)',
+      '  q  quit',
     ].join('\n'),
   );
 }
@@ -99,7 +113,7 @@ async function readLineWithPrompt(
   return next.value;
 }
 
-function dispositionFromInput(input: string): Disposition | 'skip' | 'quit' | null {
+function dispositionFromInput(input: string): Disposition | 'skip' | 'quit' | 'vote' | null {
   const first = input.trim().toLowerCase().charAt(0);
   switch (first) {
     case 'a':
@@ -108,6 +122,8 @@ function dispositionFromInput(input: string): Disposition | 'skip' | 'quit' | nu
       return 'reject';
     case 'i':
       return 'ignore';
+    case 'v':
+      return 'vote';
     case 's':
       return 'skip';
     case 'q':
@@ -133,13 +149,19 @@ function formatTimeLeft(timeoutAt: number): string {
 }
 
 async function processHandle(
-  notifier: FileNotifier,
+  host: FileHost,
   handle: NotificationHandle,
   responder: PrincipalId,
   lineIter: AsyncIterableIterator<string>,
 ): Promise<'processed' | 'skipped' | 'quit'> {
+  const notifier = host.notifier;
   const entry = await notifier.getPendingEntry(handle);
   if (!entry) return 'skipped';
+
+  // Resolve a plan atom id up front so we can show/hide the [v]ote
+  // option. Scans atom_refs and picks the first whose type is 'plan'.
+  // Null means this event isn't about a plan; [v] stays hidden.
+  const planId = await resolvePlanIdFromAtomRefs(host, entry.event.atom_refs);
 
   console.log('');
   console.log('──────────────────────────────────────────────────────────────');
@@ -172,10 +194,10 @@ async function processHandle(
   }
   console.log('──────────────────────────────────────────────────────────────');
 
-  const answer = await readLineWithPrompt(
-    lineIter,
-    'Disposition [a]pprove / [r]eject / [i]gnore / [s]kip / [q]uit: ',
-  );
+  const promptStr = planId !== null
+    ? 'Disposition [a]pprove / [r]eject / [i]gnore / [v]ote / [s]kip / [q]uit: '
+    : 'Disposition [a]pprove / [r]eject / [i]gnore / [s]kip / [q]uit: ';
+  const answer = await readLineWithPrompt(lineIter, promptStr);
   if (answer === null) {
     console.log('\n(stdin closed)');
     return 'quit';
@@ -192,6 +214,38 @@ async function processHandle(
     console.log('Skipped (still pending).');
     return 'skipped';
   }
+  if (decision === 'vote') {
+    if (planId === null) {
+      console.log('This event has no plan atom ref; [v]ote is not applicable. Skipping.');
+      return 'skipped';
+    }
+    const scope = (entry.event as unknown as { scope?: Scope }).scope ?? 'project';
+    const nowIso = host.clock.now();
+    const voteResult = await castVoteInteractive(host, lineIter, {
+      planId,
+      voterId: responder,
+      scope,
+      nowIso,
+    });
+    if (voteResult === null) {
+      console.log('Vote not cast. Notifier ticket left pending.');
+      return 'skipped';
+    }
+    // Vote atom landed. Close the notifier ticket symmetrically so the
+    // queue reflects that the operator has dispositioned this event.
+    try {
+      await notifier.respond(handle, voteResult.disposition, responder);
+      console.log(
+        `Vote cast: ${voteResult.disposition} (vote atom ${voteResult.voteAtomId}); notifier ticket closed.`,
+      );
+      return 'processed';
+    } catch (err) {
+      console.error(
+        `Vote atom written (${voteResult.voteAtomId}) but failed to close notifier ticket: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 'skipped';
+    }
+  }
   try {
     await notifier.respond(handle, decision, responder);
     console.log(`Responded: ${decision}.`);
@@ -203,7 +257,8 @@ async function processHandle(
 }
 
 async function mainLoop(args: CliArgs): Promise<number> {
-  const notifier = new FileNotifier(args.rootDir);
+  const host = await createFileHost({ rootDir: args.rootDir });
+  const notifier = host.notifier;
   const responder = args.responder as PrincipalId;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const lineIter = rl[Symbol.asyncIterator]();
@@ -234,7 +289,7 @@ async function mainLoop(args: CliArgs): Promise<number> {
       if (args.watch) process.stdout.write('\n');
       for (const handle of handles) {
         if (stop) break;
-        const outcome = await processHandle(notifier, handle, responder, lineIter);
+        const outcome = await processHandle(host, handle, responder, lineIter);
         if (outcome === 'quit') {
           stop = true;
           break;
