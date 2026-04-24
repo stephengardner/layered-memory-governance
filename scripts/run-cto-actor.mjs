@@ -127,7 +127,14 @@ function parseArgs(argv) {
       args.maxIterations = n;
     } else if (a === '--principal' && i + 1 < argv.length) args.principalId = argv[++i];
     else if (a === '--origin' && i + 1 < argv.length) args.origin = argv[++i];
-    else if (a === '--delegate-to' && i + 1 < argv.length) args.delegateTo = argv[++i];
+    else if (a === '--delegate-to' && i + 1 < argv.length) {
+      const v = argv[++i];
+      if (typeof v !== 'string' || v.trim().length === 0) {
+        console.error('ERROR: --delegate-to expects a non-empty principal id');
+        process.exit(2);
+      }
+      args.delegateTo = v;
+    }
     else if (a === '-h' || a === '--help') {
       console.log([
         'Usage: node scripts/run-cto-actor.mjs --request "<text>" [options]',
