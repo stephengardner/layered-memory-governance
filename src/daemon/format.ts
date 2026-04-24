@@ -30,6 +30,17 @@ export function markdownToTelegramHtml(text: string): string {
   const placeholders: Placeholder[] = [];
   let s = text;
 
+  // 0. Markdown tables. Telegram HTML parse mode does not support
+  //    `<table>`, `<tr>`, `<td>`; a table left untouched would render
+  //    as a flat wall of pipes. Detect `| cell | cell |` rows with an
+  //    immediately-following `| --- | --- |` separator row and
+  //    synthesize a `<pre>` block with space-padded aligned columns.
+  //    Extraction runs BEFORE fenced-code / inline-code passes so the
+  //    synthesized `<pre>` is stored as a placeholder and not
+  //    reprocessed as prose. Non-table pipe characters (stray `|` in
+  //    prose) are ignored by the detector and fall through unchanged.
+  s = extractMarkdownTables(s, placeholders);
+
   // 1. Fenced code blocks (greedy across lines, but non-overlapping).
   //    CRITICAL ORDERING: code extraction MUST run before the
   //    <details>/<summary> pass below. Otherwise a literal markdown
@@ -249,6 +260,149 @@ export function splitMarkdownForTelegram(text: string, maxChars = TELEGRAM_MAX_C
 }
 
 // ---- Internal helpers ---------------------------------------------------
+
+/**
+ * Parse a single markdown-table row `| a | b |` into its cell array.
+ * Trims outer pipes + per-cell whitespace. Returns null when the line
+ * does not look like a table row (no pipe characters at all).
+ *
+ * Edge case: empty cells `|  |  |` produce `['', '']`, which the
+ * renderer handles as space-only columns. Trailing-pipe presence is
+ * tolerated (both `| a | b` and `| a | b |` split to `['a', 'b']`).
+ */
+function parseTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return null;
+  if (!trimmed.includes('|')) return null;
+  const stripped = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  return stripped.split('|').map((c) => c.trim());
+}
+
+/**
+ * A markdown-table separator row is `| --- | :---: | ---: |` (dashes,
+ * optionally with leading/trailing `:` for alignment, per row). Return
+ * true when every cell in the row is a separator cell with >= 1 dash
+ * (GFM tolerates `|-|-|` as well as `|---|---|`).
+ */
+function isTableSeparatorRow(line: string): boolean {
+  const cells = parseTableRow(line);
+  if (cells === null || cells.length === 0) return false;
+  return cells.every((cell) => /^:?-+:?$/.test(cell));
+}
+
+/**
+ * Scan `text` line-by-line for markdown tables (a header row followed
+ * by a separator row followed by zero or more data rows). For each
+ * detected table, emit a `<pre>` block with space-padded columns and
+ * place it in the placeholders array. Non-table lines pass through.
+ *
+ * Column widths are computed across header + data rows so alignment
+ * stays consistent. The separator row in the output is re-rendered
+ * as `---- | ----` (matching each column's width) rather than left
+ * as the raw `---` markdown, so the rendered block reads like a
+ * plain-text table rather than markdown source.
+ */
+function extractMarkdownTables(text: string, placeholders: Placeholder[]): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const headerLine = lines[i] ?? '';
+    const separatorLine = lines[i + 1] ?? '';
+    const headerCells = parseTableRow(headerLine);
+    // Reject header rows where every cell is separator-shaped
+    // (`['---', '---']`), so two separator-style lines in a row are
+    // not consumed as header + separator. Authors who paste the
+    // separator twice, or tables whose headers are literally dashes,
+    // now fall through as plain text.
+    const headerIsAllSeparatorShaped =
+      headerCells !== null
+      && headerCells.length > 0
+      && headerCells.every((cell) => /^:?-+:?$/.test(cell));
+    if (
+      headerCells !== null
+      && headerCells.length > 0
+      && !headerIsAllSeparatorShaped
+      && isTableSeparatorRow(separatorLine)
+      && parseTableRow(separatorLine)!.length === headerCells.length
+    ) {
+      // The separator row's dash count per cell acts as a column-
+      // width hint: `| ---- | ----- |` tells us the author intended
+      // 4- and 5-wide columns even if every data cell is 1 char.
+      // Honoring that matches most markdown renderers and keeps the
+      // output visually aligned with the source.
+      const sepCells = parseTableRow(separatorLine)!;
+      const minWidths = sepCells.map((c) => c.replace(/:/g, '').length);
+      // Collect data rows until we hit a non-table line or run out.
+      const rows: string[][] = [headerCells];
+      let j = i + 2;
+      while (j < lines.length) {
+        const candidate = lines[j] ?? '';
+        const cells = parseTableRow(candidate);
+        if (cells === null || cells.length !== headerCells.length) break;
+        rows.push(cells);
+        j++;
+      }
+      out.push(renderTableAsPre(rows, minWidths, placeholders));
+      i = j;
+      continue;
+    }
+    out.push(headerLine);
+    i++;
+  }
+  return out.join('\n');
+}
+
+/**
+ * Render the collected rows as a space-padded `<pre>` block and
+ * replace it with a placeholder so downstream passes (fenced-code,
+ * emphasis, escaping) do not touch the block's content.
+ *
+ * Cell contents are HTML-escaped; separator row is regenerated at the
+ * correct per-column width. No per-column alignment syntax (`:---:`)
+ * is honored today; every column is left-aligned (cells are padded
+ * with trailing spaces).
+ *
+ * `minWidths` comes from the separator row's dash count per column
+ * and acts as a floor so the rendered table is at least as wide as
+ * the author signalled in the source. Data rows can expand a column
+ * further; they never shrink it below the separator width.
+ */
+function renderTableAsPre(
+  rows: string[][],
+  minWidths: ReadonlyArray<number>,
+  placeholders: Placeholder[],
+): string {
+  const cols = rows[0]!.length;
+  const widths: number[] = [];
+  for (let c = 0; c < cols; c++) {
+    let w = minWidths[c] ?? 0;
+    for (const row of rows) {
+      const cell = row[c] ?? '';
+      if (cell.length > w) w = cell.length;
+    }
+    widths[c] = w;
+  }
+  const padCell = (cell: string, width: number) => {
+    if (cell.length >= width) return cell;
+    return cell + ' '.repeat(width - cell.length);
+  };
+  const header = rows[0]!.map((c, idx) => padCell(c, widths[idx]!)).join(' | ');
+  // Separator must match the column widths exactly (no Math.max floor)
+  // so a narrow-cell table like `| x | y |` renders with `x | y` and
+  // `- | -` instead of a jagged `x | y` / `--- | ---` that looks like
+  // the separator belongs to a different table.
+  const separator = widths.map((w) => '-'.repeat(w)).join(' | ');
+  const body = rows
+    .slice(1)
+    .map((row) => row.map((c, idx) => padCell(c, widths[idx]!)).join(' | '));
+  const textLines = [header, separator, ...body];
+  const escaped = textLines.map(escapeHtml).join('\n');
+  const html = `<pre>${escaped}</pre>`;
+  const idx = placeholders.length;
+  placeholders.push({ tag: 'TABLE', html });
+  return `${PH_PREFIX}TABLE_${idx}${PH_SUFFIX}`;
+}
 
 function extractPattern(
   text: string,

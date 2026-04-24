@@ -122,6 +122,111 @@ describe('markdownToTelegramHtml', () => {
   it('returns empty for empty input', () => {
     expect(markdownToTelegramHtml('')).toBe('');
   });
+
+  // Tables: Telegram HTML parse mode does not support <table>/<tr>/<td>.
+  // Rendering markdown tables as <pre> blocks with space-padded columns
+  // keeps them readable in Telegram without adding a rendering dep. The
+  // passes MUST run before code-fence extraction (they synthesize a
+  // fenced block) and before generic line-level transforms so pipe
+  // characters and header dashes are consumed by the table pass, not
+  // mistaken for bullets or other line-start markers.
+  describe('markdown tables', () => {
+    it('renders a simple table as a <pre> block with padded columns', () => {
+      const input = [
+        '| name | count |',
+        '| ---- | ----- |',
+        '| a    | 1     |',
+        '| bb   | 22    |',
+      ].join('\n');
+      const out = markdownToTelegramHtml(input);
+      // Body should be inside a <pre> block.
+      expect(out.startsWith('<pre>')).toBe(true);
+      expect(out.endsWith('</pre>')).toBe(true);
+      // Columns are space-padded to the widest cell.
+      expect(out).toContain('name | count');
+      expect(out).toContain('---- | -----');
+      expect(out).toContain('a    | 1');
+      expect(out).toContain('bb   | 22');
+    });
+
+    it('renders a header-only table (separator row, no data rows)', () => {
+      const input = [
+        '| col1 | col2 |',
+        '| ---- | ---- |',
+      ].join('\n');
+      const out = markdownToTelegramHtml(input);
+      expect(out.startsWith('<pre>')).toBe(true);
+      expect(out).toContain('col1 | col2');
+      expect(out).toContain('---- | ----');
+    });
+
+    it('renders a table with empty cells without collapsing columns', () => {
+      const input = [
+        '| k    | v     |',
+        '| ---- | ----- |',
+        '| a    |       |',
+        '|      | b     |',
+      ].join('\n');
+      const out = markdownToTelegramHtml(input);
+      // Pin the exact expected output so the "do not collapse columns"
+      // invariant is literal: header widths come from the separator
+      // (4 and 5), data cells are padded to the same width.
+      const expectedBody = [
+        'k    | v    ',
+        '---- | -----',
+        'a    |      ',
+        '     | b    ',
+      ].join('\n');
+      expect(out).toBe(`<pre>${expectedBody}</pre>`);
+    });
+
+    it('escapes HTML-special chars inside table cells', () => {
+      const input = [
+        '| html        |',
+        '| ----------- |',
+        '| <b>x</b> & y |',
+      ].join('\n');
+      const out = markdownToTelegramHtml(input);
+      expect(out).toContain('&lt;b&gt;x&lt;/b&gt; &amp; y');
+      expect(out).not.toContain('<b>x</b>');
+    });
+
+    it('leaves a pipe in prose (not matching the table shape) untouched', () => {
+      const input = 'use the | operator for pipes';
+      const out = markdownToTelegramHtml(input);
+      expect(out).toBe('use the | operator for pipes');
+    });
+
+    it('treats a line starting with | but no separator row as plain text', () => {
+      // Without a `| --- |` separator on the next line, this is not a
+      // markdown table and must not be promoted to <pre>. Pin the
+      // exact preserved output so a regression that drops or mangles
+      // the pipes does not silently pass this assertion.
+      const input = '| lone pipe-looking line |';
+      const out = markdownToTelegramHtml(input);
+      expect(out).toBe('| lone pipe-looking line |');
+    });
+
+    it('preserves surrounding prose around a table', () => {
+      // Pin the exact output shape: blank-line separators around the <pre>
+      // block, prose on the outside, and the padded table on the inside.
+      // A regression that collapses blank lines, glues <pre> to surrounding
+      // text, or shifts prose inside the block must not pass silently.
+      const input = [
+        'before the table',
+        '',
+        '| x | y |',
+        '| - | - |',
+        '| 1 | 2 |',
+        '',
+        'after the table',
+      ].join('\n');
+      const out = markdownToTelegramHtml(input);
+      expect(out).toBe(
+        'before the table\n\n<pre>x | y\n- | -\n1 | 2</pre>\n\nafter the table',
+      );
+    });
+  });
 });
 
 describe('splitMarkdownForTelegram', () => {
