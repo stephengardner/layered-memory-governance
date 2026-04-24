@@ -114,6 +114,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:public-surface": "vitest run test/public-surface",
     "bootstrap": "npm run build && node scripts/bootstrap.mjs",
     "terminal": "npm run build --silent && node scripts/lag-terminal.mjs",
     "terminal:auto": "npm run build --silent && node scripts/lag-terminal.mjs --claude-args \"--permission-mode auto\"",

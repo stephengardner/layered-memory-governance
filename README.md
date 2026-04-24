@@ -245,7 +245,7 @@ The full list of subpaths declared in `package.json#exports`, each with one reas
 | `/external/github-app` | you need App-scoped GitHub auth (installation-token cache, App JWT, App-backed gh client). |
 | `/lifecycle` | you're starting, stopping, or probing a long-running LAG service via the lifecycle primitive. |
 
-The value surface of every subpath is pinned by `test/public-surface/subpaths.test.ts` (53 assertions across 17 rows: root `.` plus 16 subpaths). That file is the authoritative answer to "what is actually exported, right now"; adding or removing an export there is the signal that the public contract changed. To list exports from the built package for one subpath at runtime:
+The value surface of every subpath is pinned by `test/public-surface/subpaths.test.ts` (53 assertions across 17 rows: root `.` plus 16 subpaths). That file is the authoritative answer to "what is actually exported, right now"; adding or removing an export there is the signal that the public contract changed. The full public-surface suite (exports, `bin`, `files`, and the quickstart spawn guard - 4 files, 135 assertions, ~3s) runs via `npm run test:public-surface`. To list exports from the built package for one subpath at runtime:
 
 ```bash
 # root package entry (the `.` subpath; everyday governance primitives):
