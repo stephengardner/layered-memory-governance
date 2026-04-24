@@ -199,10 +199,12 @@ describe('markdownToTelegramHtml', () => {
 
     it('treats a line starting with | but no separator row as plain text', () => {
       // Without a `| --- |` separator on the next line, this is not a
-      // markdown table and must not be promoted to <pre>.
+      // markdown table and must not be promoted to <pre>. Pin the
+      // exact preserved output so a regression that drops or mangles
+      // the pipes does not silently pass this assertion.
       const input = '| lone pipe-looking line |';
       const out = markdownToTelegramHtml(input);
-      expect(out.startsWith('<pre>')).toBe(false);
+      expect(out).toBe('| lone pipe-looking line |');
     });
 
     it('preserves surrounding prose around a table', () => {
