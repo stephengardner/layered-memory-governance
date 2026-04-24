@@ -29,6 +29,7 @@ import {
   findWorktreeBySlug,
   parseCleanFlags,
   classifyBranchRefs,
+  localTrunkBranchName,
 } from './lib/wt.mjs';
 
 const COMMANDS = ['new', 'list', 'rm', 'clean', 'prune-refs', 'stack', 'note'];
@@ -636,8 +637,7 @@ async function cmdClean(args) {
 async function cmdPruneRefs(args) {
   const { dryRun, yes } = parseCleanFlags(args);
 
-  const trunk = trunkRef();
-  const trunkBranch = trunk.includes('/') ? trunk.slice(trunk.indexOf('/') + 1) : trunk;
+  const trunkBranch = localTrunkBranchName(trunkRef());
 
   let currentBranch = null;
   try {
@@ -666,22 +666,48 @@ async function cmdPruneRefs(args) {
   }
 
   console.log(`[wt prune-refs] checking ${partition.candidates.length} candidate${partition.candidates.length === 1 ? '' : 's'} (branches with no worktree)...`);
-  const eligible = [];
-  const skipped = [];
-  for (const branch of partition.candidates) {
-    let state = null;
+
+  // Bounded-concurrency probe (CR #155 Major). Serial across 43+
+  // candidates was a multi-second stall; a worker-pool of ~8 keeps
+  // wall time close to the slowest single call while still being
+  // polite to GitHub's API. The delete phase below stays serial
+  // because mutations must be observable in order.
+  const PROBE_CONCURRENCY = 8;
+  const probeOne = async (branch) => {
     try {
       const res = await execa('gh', ['pr', 'view', branch, '--json', 'state', '--jq', '.state']);
-      state = res.stdout.trim();
+      return { branch, state: res.stdout.trim(), ok: true };
     } catch {
-      skipped.push({ branch, reason: 'no PR found or gh unavailable' });
+      return { branch, state: null, ok: false };
+    }
+  };
+  const probeResults = new Array(partition.candidates.length);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (true) {
+      const i = nextIdx++;
+      if (i >= partition.candidates.length) return;
+      probeResults[i] = await probeOne(partition.candidates[i]);
+    }
+  };
+  const workers = Array.from(
+    { length: Math.min(PROBE_CONCURRENCY, partition.candidates.length) },
+    () => worker(),
+  );
+  await Promise.all(workers);
+
+  const eligible = [];
+  const skipped = [];
+  for (const r of probeResults) {
+    if (!r.ok) {
+      skipped.push({ branch: r.branch, reason: 'no PR found or gh unavailable' });
       continue;
     }
-    const signals = prStateToStaleSignals(state);
+    const signals = prStateToStaleSignals(r.state);
     if (signals.branchMerged || signals.prClosed) {
-      eligible.push({ branch, state });
+      eligible.push({ branch: r.branch, state: r.state });
     } else {
-      skipped.push({ branch, reason: `PR state=${state}` });
+      skipped.push({ branch: r.branch, reason: `PR state=${r.state}` });
     }
   }
 
