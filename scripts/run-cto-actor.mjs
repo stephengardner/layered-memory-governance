@@ -88,6 +88,7 @@ function parseArgs(argv) {
     maxBudgetUsdPerCall: undefined,
     timeoutMs: undefined,
     minConfidence: undefined,
+    delegateTo: undefined,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -126,6 +127,14 @@ function parseArgs(argv) {
       args.maxIterations = n;
     } else if (a === '--principal' && i + 1 < argv.length) args.principalId = argv[++i];
     else if (a === '--origin' && i + 1 < argv.length) args.origin = argv[++i];
+    else if (a === '--delegate-to' && i + 1 < argv.length) {
+      const v = argv[++i];
+      if (typeof v !== 'string' || v.trim().length === 0) {
+        console.error('ERROR: --delegate-to expects a non-empty principal id');
+        process.exit(2);
+      }
+      args.delegateTo = v;
+    }
     else if (a === '-h' || a === '--help') {
       console.log([
         'Usage: node scripts/run-cto-actor.mjs --request "<text>" [options]',
@@ -141,6 +150,7 @@ function parseArgs(argv) {
         '  --max-iterations <n>     runActor iteration cap. Default 2.',
         '  --principal <id>         Principal to run as. Default cto-actor.',
         '  --origin <id>            runActor origin tag. Default operator.',
+        '  --delegate-to <id>       Declared target sub-actor principal for any plan produced this run. Stamps metadata.delegation.sub_actor_principal_id on the plan atom for the auto-approve dispatcher to read, gated by its own policy.allowed_sub_actors. Omit to leave the plan unrouted. Example: --delegate-to code-author.',
       ].join('\n'));
       process.exit(0);
     } else {
@@ -324,6 +334,13 @@ async function main() {
       id: questionAtom.id,
       prompt: args.request,
     },
+    // Optional: when --delegate-to is provided, stamp the target
+    // sub-actor principal id onto the plan atom so the auto-approve
+    // dispatcher (src/runtime/actor-message/auto-approve.ts) can
+    // route an approved plan to the registered invoker. The gate
+    // still lives on the auto-approve policy's allowed_sub_actors;
+    // this just carries declared intent from operator to plan atom.
+    ...(args.delegateTo ? { delegateTo: args.delegateTo } : {}),
   });
 
   // Size the deadline so we never budget-deadline a run whose LLM
