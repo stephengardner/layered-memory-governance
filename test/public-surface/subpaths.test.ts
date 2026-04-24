@@ -73,7 +73,7 @@ import * as lifecycle from '../../src/lifecycle/index.js';
 
 interface SubpathCase {
   readonly subpath: string;
-  readonly shim: Record<string, unknown>;
+  readonly mod: Record<string, unknown>;
   readonly real?: Record<string, unknown>;
   readonly expected: readonly string[];
   readonly classes?: readonly string[];
@@ -83,13 +83,13 @@ const cases: readonly SubpathCase[] = [
   // /actors family
   {
     subpath: '/actors',
-    shim: actorsShim,
+    mod: actorsShim,
     real: actorsReal,
     expected: ['runActor'],
   },
   {
     subpath: '/actors/pr-landing',
-    shim: prLandingShim,
+    mod: prLandingShim,
     real: prLandingReal,
     expected: [
       'PrLandingActor',
@@ -102,7 +102,7 @@ const cases: readonly SubpathCase[] = [
   },
   {
     subpath: '/actors/code-author',
-    shim: codeAuthorShim,
+    mod: codeAuthorShim,
     real: codeAuthorReal,
     expected: [
       'CodeAuthorActor',
@@ -124,14 +124,14 @@ const cases: readonly SubpathCase[] = [
   },
   {
     subpath: '/actors/pr-review',
-    shim: prReviewShim,
+    mod: prReviewShim,
     real: prReviewReal,
     expected: ['GitHubPrReviewAdapter', 'UserAccountCommentTrigger', 'getTokenFromEnv'],
     classes: ['GitHubPrReviewAdapter', 'UserAccountCommentTrigger'],
   },
   {
     subpath: '/actors/planning',
-    shim: planningShim,
+    mod: planningShim,
     real: planningReal,
     expected: [
       'DEFAULT_JUDGE_TIMEOUT_MS',
@@ -144,7 +144,7 @@ const cases: readonly SubpathCase[] = [
   },
   {
     subpath: '/actors/provisioning',
-    shim: provisioningShim,
+    mod: provisioningShim,
     real: provisioningReal,
     expected: [
       'assessRoleRisk',
@@ -163,7 +163,7 @@ const cases: readonly SubpathCase[] = [
   // /actor-message family
   {
     subpath: '/actor-message',
-    shim: actorMessageShim,
+    mod: actorMessageShim,
     real: actorMessageReal,
     expected: [
       'ActorMessageRateLimiter',
@@ -197,7 +197,7 @@ const cases: readonly SubpathCase[] = [
   },
   {
     subpath: '/actor-message/executor-default',
-    shim: executorDefaultShim,
+    mod: executorDefaultShim,
     real: executorDefaultReal,
     expected: ['buildDefaultCodeAuthorExecutor'],
   },
@@ -205,7 +205,7 @@ const cases: readonly SubpathCase[] = [
   // /adapters family (no shim)
   {
     subpath: '/adapters/memory',
-    shim: memoryAdapter,
+    mod: memoryAdapter,
     expected: [
       'MemoryAtomStore',
       'MemoryAuditor',
@@ -230,7 +230,7 @@ const cases: readonly SubpathCase[] = [
   },
   {
     subpath: '/adapters/file',
-    shim: fileAdapter,
+    mod: fileAdapter,
     expected: [
       'FileAtomStore',
       'FileAuditor',
@@ -253,13 +253,13 @@ const cases: readonly SubpathCase[] = [
   },
   {
     subpath: '/adapters/bridge',
-    shim: bridgeAdapter,
+    mod: bridgeAdapter,
     expected: ['BridgeAtomStore', 'createBridgeHost', 'dumpDrawers'],
     classes: ['BridgeAtomStore'],
   },
   {
     subpath: '/adapters/notifier',
-    shim: notifierAdapter,
+    mod: notifierAdapter,
     expected: ['TelegramNotifier', 'parseCallbackData'],
     classes: ['TelegramNotifier'],
   },
@@ -267,12 +267,12 @@ const cases: readonly SubpathCase[] = [
   // /external and /lifecycle (no shim)
   {
     subpath: '/external/github',
-    shim: githubExternal,
+    mod: githubExternal,
     expected: ['GhClientError', 'createGhClient', 'defaultGhExecutor'],
   },
   {
     subpath: '/external/github-app',
-    shim: githubAppExternal,
+    mod: githubAppExternal,
     expected: [
       'InstallationTokenCache',
       'convertManifestCode',
@@ -290,21 +290,32 @@ const cases: readonly SubpathCase[] = [
   },
   {
     subpath: '/lifecycle',
-    shim: lifecycle,
+    mod: lifecycle,
     expected: ['ensureServiceRunning', 'getServiceStatus', 'stopService'],
   },
 ];
 
-// Pin the total count separately so a silent "case accidentally
-// deleted" regression (would pass per-row assertions because every
-// remaining row still validates) fails here. Counts the subpaths
-// declared in package.json#exports minus the root `.` (not covered
-// by this file yet; tracked separately if we add it).
-const EXPECTED_CASE_COUNT = 15;
+// Read subpaths straight from package.json so the regression "added
+// a new export, forgot a row" fails here, not just the dual of
+// "deleted a row". Set-equality is the honest contract for what
+// this test name promises.
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const pkg = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'),
+) as { exports: Record<string, unknown> };
+// package.json keys are written as `./actors` etc; our rows carry
+// the consumer-facing `/actors` form. Strip the leading `.` so the
+// two compare cleanly.
+const declaredSubpaths = Object.keys(pkg.exports)
+  .filter((k) => k !== '.')
+  .map((k) => k.replace(/^\./, ''))
+  .sort();
 
 describe('public surface: case coverage', () => {
-  it('covers every non-root subpath from package.json exports', () => {
-    expect(cases).toHaveLength(EXPECTED_CASE_COUNT);
+  it('covers every non-root subpath from package.json#exports', () => {
+    expect(cases.map((c) => c.subpath).sort()).toEqual(declaredSubpaths);
   });
 
   it('has no duplicate subpath rows', () => {
@@ -313,29 +324,40 @@ describe('public surface: case coverage', () => {
   });
 });
 
-describe.each(cases)('public surface: $subpath subpath', ({ shim, real, expected, classes }) => {
+describe.each(cases)('public surface: $subpath subpath', ({ mod, real, expected, classes }) => {
   if (real !== undefined) {
     it('shim re-exports exactly the real barrel', () => {
-      expect(Object.keys(shim).sort()).toEqual(Object.keys(real).sort());
+      expect(Object.keys(mod).sort()).toEqual(Object.keys(real).sort());
     });
   }
 
   it('exports exactly the documented value surface', () => {
-    expect(Object.keys(shim).sort()).toEqual([...expected].sort());
+    expect(Object.keys(mod).sort()).toEqual([...expected].sort());
   });
 
   it('every documented value is defined', () => {
     for (const name of expected) {
-      expect(shim[name], `${name} defined`).toBeDefined();
+      expect(mod[name], `${name} defined`).toBeDefined();
     }
   });
 
   if (classes && classes.length > 0) {
-    it('every documented class has a prototype', () => {
+    it('every documented class is an ES6 class', () => {
       for (const name of classes) {
-        const cls = shim[name] as { prototype?: unknown } | undefined;
-        expect(cls, `${name} is defined`).toBeDefined();
-        expect(cls?.prototype, `${name}.prototype`).toBeDefined();
+        // A plain function has `prototype` too, so prototype-defined
+        // alone does not distinguish classes from factories. Anchor
+        // on `prototype.constructor === fn` (true for both, so weak)
+        // AND `toString().startsWith('class ')` (true only for ES6
+        // class syntax). Together they fail a class-was-refactored-
+        // into-a-factory regression.
+        const fn = mod[name] as (new (...args: never[]) => unknown) | undefined;
+        expect(fn, `${name} is defined`).toBeDefined();
+        expect(typeof fn, `${name} typeof`).toBe('function');
+        expect(fn?.prototype?.constructor, `${name}.prototype.constructor`).toBe(fn);
+        expect(
+          Function.prototype.toString.call(fn).startsWith('class '),
+          `${name} declared via class keyword`,
+        ).toBe(true);
       }
     });
   }
