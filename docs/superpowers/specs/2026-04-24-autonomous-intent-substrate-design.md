@@ -94,7 +94,13 @@ interface OperatorIntentAtom extends Atom {
 - `expires_at`: 24h default safety bound. An intent that sits un-actioned for a day dies; re-declaring is a conscious operator act.
 - `consumed_by_*`: observability; helps trace what the intent produced.
 
-**Rejected alternative:** extend `question` atoms with a trust_envelope. Rejected because questions are inquisitive ("what should we do about X?"); intents are authorizing ("solve X within these bounds"). The semantic blur would corrupt both atom types for future framework users; separate types keep the policy surface clean.
+**Rejected alternatives:**
+
+1. **Extend `question` atoms with a `trust_envelope`.** Rejected because questions are inquisitive ("what should we do about X?"); intents are authorizing ("solve X within these bounds"). The semantic blur would corrupt both atom types for future framework users; separate types keep the policy surface clean.
+
+2. **Extend `plan` atoms with intent-class fields inline** (put `trust_envelope` directly on the plan). Rejected because authorization must precede proposal. If the trust_envelope lived on the plan, the CTO would be the one deciding what to authorize, which collapses the human-in-the-loop authorization gate into bot self-approval. Separating intent (human-authored) from plan (bot-authored) preserves the authorization boundary.
+
+3. **A new `authorization` atom type generic across kinds of work.** Rejected as premature generalization. We have one kind of authorization (autonomous-solve) and two future candidates (research-only, incident). A single-purpose `operator-intent` type with a versioned `kind` field serves both v1 and the likely extensions without over-abstracting. If a third clearly-distinct authorization class emerges, promote to a generic type then.
 
 ### 2. Declarative CLI: `scripts/intend.mjs`
 
@@ -143,12 +149,13 @@ const planDraftOutput = z.object({
     delegation: z.object({
       sub_actor_principal_id: z.enum(['code-author', 'auditor-actor']),
       reason: z.string().min(1).max(300),
+      implied_blast_radius: z.enum(['none', 'tooling', 'docs', 'framework', 'l3-canon-proposal']),
     }),
   })).min(1).max(5),
 });
 ```
 
-Values constrained to v1 allowlist. Future sub-actors (deploy-actor, security-reviewer) add to the enum via a separate PR.
+Values constrained to v1 allowlist. Future sub-actors (deploy-actor, security-reviewer) add to the enum via a separate PR. `implied_blast_radius` is the CTO's own classification of the change scope, cited in the draft body; the tick compares against intent's `max_blast_radius` without needing a server-side lookup table.
 
 **3b. PLAN_DRAFT system prompt update** (`src/schemas/index.ts`)
 
@@ -177,20 +184,31 @@ DELEGATION:
 
 **3c. Planning-actor writer** (`src/runtime/actors/planning/planning-actor.ts`)
 
-When constructing the plan atom's metadata:
+When constructing the plan atom:
 
 ```typescript
-metadata: {
+const plan: Atom = {
   // ...existing fields...
-  delegation: {
-    sub_actor_principal_id: draft.delegation.sub_actor_principal_id,
-    reason: draft.delegation.reason,
+  provenance: {
+    kind: 'agent-authored',
+    source: { actor: 'cto-actor', ... },
+    derived_from: [
+      ...canonCitations,            // existing: cited directives/decisions
+      ...(intentId ? [intentId] : []), // NEW: intent id if invoked with --intent-id
+    ],
   },
-  derived_from_intent: intentId ?? null,  // populated when invoked with --intent-id
-}
+  metadata: {
+    // ...existing fields...
+    delegation: {
+      sub_actor_principal_id: draft.delegation.sub_actor_principal_id,
+      reason: draft.delegation.reason,
+      implied_blast_radius: draft.delegation.implied_blast_radius, // see 3a schema
+    },
+  },
+};
 ```
 
-The `derived_from_intent` link is CRITICAL: it lets `runAutoApprovePass` walk from plan → intent to find the trust envelope.
+**`derived_from_intent` lives on `provenance.derived_from`, NOT `metadata`.** Canon `inv-every-atom-has-provenance` is unambiguous: provenance chain is where cross-atom derivation belongs. The approval tick walks `provenance.derived_from` looking for an atom with `type: 'operator-intent'`. No duplicate link in metadata.
 
 ### 4. Approval tick integration: new intent-based policy
 
@@ -223,29 +241,40 @@ New tick `runIntentAutoApprovePass` in `src/runtime/actor-message/intent-approve
 
 ```typescript
 async function runIntentAutoApprovePass(host: Host, options?: TickOptions): Promise<Result> {
-  const policy = await readIntentApprovePolicy(host);
-  if (policy.allowed_sub_actors.length === 0) return { scanned: 0, approved: 0 };
+  // Kill-switch takes absolute priority.
+  if (await host.killSwitch.isTripped()) {
+    return { scanned: 0, approved: 0, rejected: 0, stale: 0, halted: true };
+  }
 
-  // Scan proposed plans with an intent link.
-  const plans = await queryProposedPlansWithIntent(host, maxScan);
+  const policy = await readIntentApprovePolicy(host);                 // reads pol-plan-autonomous-intent-approve
+  if (policy.allowed_sub_actors.length === 0) return { scanned: 0, approved: 0, rejected: 0, stale: 0 };
+  const principalPolicy = await readIntentCreationPolicy(host);        // reads pol-operator-intent-creation
+
+  const plans = await queryProposedPlansWithIntent(host, maxScan);     // filters plans whose provenance.derived_from includes an operator-intent atom
   let scanned = 0, approved = 0, rejected = 0;
+
   for (const plan of plans) {
     scanned++;
-    const intent = await host.atoms.get(plan.metadata.derived_from_intent);
-    if (!intent || intent.type !== 'operator-intent') continue;          // no intent found
-    if (intent.taint !== 'clean') continue;                              // compromised intent
-    if (Date.parse(intent.metadata.expires_at) < Date.now()) continue;    // expired
-    if (!intentPrincipalAllowed(intent.principal_id, host)) continue;     // non-whitelisted author
+    // Extract intent via provenance walk (canonical link, not metadata).
+    const intentId = await findIntentInProvenance(host, plan);
+    if (!intentId) continue;
+    const intent = await host.atoms.get(intentId);
+    if (!intent || intent.type !== 'operator-intent') { rejected++; continue; }
+    if (intent.taint !== 'clean') { rejected++; continue; }
+    if (Date.parse(intent.metadata.expires_at) < Date.now()) { rejected++; continue; }
+    // Principal-allowlist check via pol-operator-intent-creation.allowed_principal_ids.
+    if (!principalPolicy.allowed_principal_ids.includes(intent.principal_id)) { rejected++; continue; }
 
     // Envelope check.
     const env = intent.metadata.trust_envelope;
     if (plan.confidence < env.min_plan_confidence) continue;
     if (!env.allowed_sub_actors.includes(plan.metadata.delegation.sub_actor_principal_id)) continue;
-    // (blast_radius check: deferred to classification on the plan; see 4b below)
+    if (RADIUS_RANK[plan.metadata.delegation.implied_blast_radius] > RADIUS_RANK[env.max_blast_radius]) continue;
 
     // Transition plan -> approved. Re-read for claim-before-mutate.
     const latest = await host.atoms.get(plan.id);
     if (!latest || latest.plan_state !== 'proposed') continue;
+    if (latest.taint !== 'clean') continue;
     await host.atoms.update(plan.id, {
       plan_state: 'approved',
       metadata: {
@@ -255,16 +284,53 @@ async function runIntentAutoApprovePass(host: Host, options?: TickOptions): Prom
         approved_intent_id: intent.id,
       },
     });
-    await host.auditor.log({ kind: 'plan.approved-by-intent', /* ... */ });
+    await host.auditor.log({ kind: 'plan.approved-by-intent', refs: { atom_ids: [plan.id, intent.id] }, principal_id: intent.principal_id, /* ... */ });
     approved++;
   }
   return { scanned, approved, rejected, stale: 0 };
 }
 ```
 
-Wire `runIntentAutoApprovePass` into `run-approval-cycle.mjs` as tick 0 (before the existing auto-approve and multi-reviewer ticks), because intent approval is the most specific gate.
+Wire `runIntentAutoApprovePass` into `run-approval-cycle.mjs` as **tick 0** (before the existing auto-approve and multi-reviewer ticks), because intent approval is the most specific gate.
 
-**4b. Blast-radius check.** For v1, the blast_radius check is *advisory*: the plan's `delegation.sub_actor_principal_id` implies a blast radius (code-author → framework; auditor-actor → none/read-only). The check is `plan.implied_blast_radius <= intent.max_blast_radius`. A future PR makes the CTO emit `plan.metadata.blast_radius` explicitly with classification; for v1, we use a lookup table in the tick.
+`pol-operator-intent-creation` canon atom shape:
+
+```typescript
+{
+  id: 'pol-operator-intent-creation',
+  subject: 'operator-intent-creation',
+  layer: 'L3',
+  reason:
+    'Whitelist of principals allowed to author operator-intent atoms that the ' +
+    'autonomous-intent approval tick honors. Non-whitelisted authors can still ' +
+    'write atoms of type operator-intent (for audit), but the tick treats them as ' +
+    'non-authorizing observations. v1 ships with operator-principal only; adding ' +
+    'a bot or delegated-human principal is a conscious canon-edit moment that ' +
+    'broadens the authorization surface. Do NOT widen without an explicit operator ' +
+    'decision atom citing the broadening rationale.',
+  fields: {
+    allowed_principal_ids: ['operator-principal'],      // flat list; no signed_by-chain walk in v1
+    max_expires_in_hours: 72,                            // cap on intent.expires_at; anything beyond refuses write
+    required_trust_envelope_fields: [                    // fields the CLI MUST populate (non-defaultable)
+      'max_blast_radius',
+      'allowed_sub_actors',
+    ],
+  },
+}
+```
+
+Flat `allowed_principal_ids` list, no transitive signed_by walk in v1. Future iterations can add "principal X is authorized to delegate intent creation to principal Y" chains.
+
+**4b. Blast-radius check.** The CTO emits `plan.metadata.delegation.implied_blast_radius` as part of PLAN_DRAFT (see 3a). The tick compares with a simple ordinal check:
+
+```typescript
+const RADIUS_RANK = { none: 0, docs: 1, tooling: 2, framework: 3, 'l3-canon-proposal': 4 };
+if (RADIUS_RANK[plan.metadata.delegation.implied_blast_radius] > RADIUS_RANK[env.max_blast_radius]) continue;
+```
+
+`RADIUS_RANK` lives as a const in `src/runtime/actor-message/intent-approve.ts`. **This is mechanism, not org shape** — the ordinal is a fixed property of the radius labels themselves, not a tenant-specific mapping. If a tenant adds their own radius label, they edit this file, matching the existing pattern (layer ordinals in `src/substrate/layers.ts`).
+
+**4c. Kill-switch integration.** `runIntentAutoApprovePass` checks `.lag/STOP` at the top of each invocation via `host.killSwitch.isTripped()`. If tripped, returns `{ scanned: 0, approved: 0, stale: 0, halted: true }` immediately. Kill-switch takes absolute priority over intent-based approval.
 
 ### 5. Dispatch invoker registration
 
@@ -291,28 +357,35 @@ Long-running loop that calls `run-approval-cycle.mjs --once` every N seconds. No
 
 **6a. Existing `runPlanStateReconcileTick`** already watches for `pr-observation` atoms with terminal `merge_state_status`. No change needed. When `code-author`'s PR lands, pr-landing actor writes `pr-observation` with `merge_state_status: 'merged'`; reconcile-tick transitions plan to `succeeded`.
 
-**6b. Auditor pre-flight gate** (required when `intent.trust_envelope.require_auditor_observation: true`):
+**6b. Auditor pre-flight gate** (required when `intent.trust_envelope.require_auditor_observation: true`).
 
-Before reconcile transitions `executing → succeeded`, the auditor-actor must have written an observation atom with `kind: 'auditor-plan-check'`, `derived_from: plan.id`, and a verdict field. Reconcile checks:
+**Sequencing: chain-based, synchronous.** Dispatch invoker (5a) invokes code-author which produces a PR. The PR's pr-landing workflow triggers the auditor-actor as a post-PR-open, pre-merge step. Auditor writes:
+1. An observation atom with `kind: 'auditor-plan-check'`, `provenance.derived_from: [plan.id, pr_atom_id]`, and `metadata.verdict: 'pass' | 'fail' | 'deferred'`.
+2. A GitHub Commit Status with context `LAG-auditor` and state `success` (verdict=pass) or `failure` (verdict=fail). Branch protection on `main` is extended to require `LAG-auditor` as a required status check; this provides a hard merge gate in GitHub's own machinery (no LAG-side race).
+
+Reconcile-tick still reads `pr-observation` atoms as today. When the PR merges, pr-observation lands with `merge_state_status: 'merged'`. Reconcile checks:
 
 ```typescript
 if (plan.metadata.approved_intent_id) {
   const intent = await host.atoms.get(plan.metadata.approved_intent_id);
   if (intent?.metadata.trust_envelope.require_auditor_observation) {
     const auditor_verdict = await queryAuditorVerdict(host, plan.id);
-    if (!auditor_verdict) continue;  // wait
-    if (auditor_verdict.verdict === 'fail') {
-      // Transition to abandoned, not succeeded.
-      await host.atoms.update(plan.id, { plan_state: 'abandoned', metadata: { abandoned_reason: 'auditor-fail', abandoned_by: auditor_verdict.id } });
+    if (!auditor_verdict) continue;  // wait for auditor atom
+    if (auditor_verdict.metadata.verdict === 'fail') {
+      // Should never happen if LAG-auditor status gate worked; defensive.
+      await host.atoms.update(plan.id, { plan_state: 'abandoned', metadata: { abandoned_reason: 'auditor-fail-post-merge', abandoned_by: auditor_verdict.id } });
       continue;
     }
   }
 }
+// Normal path: plan -> succeeded.
 ```
 
-Auditor-actor is invoked as part of the dispatch chain: `code-author` produces PR; `auditor-actor` is invoked (after PR opens, before merge) and writes the verdict. The dispatch chain is extended in 5a.
+**Rationale for chain-based over tick-based:** chain-based is the simplest viable sequencing and aligns with how the existing pr-landing agent composes post-open hooks. Tick-based (a scanner watching for `executing` plans without verdict) survives mid-dispatch failure better but adds a whole new tick + race considerations. v1 picks chain-based; if operational experience shows mid-flight failures leave plans stuck, a follow-up introduces a compensating `runAuditorChaseTick`.
 
-For v1, the auditor's logic is minimal: reads the PR's diff, checks blast-radius matches intent.max_blast_radius, writes a pass/fail atom. Deeper audits (security, cost) are follow-ups.
+**Failure mode: auditor never runs or crashes.** GitHub-side: `LAG-auditor` required status remains pending; merge cannot complete. LAG-side: plan stays in `executing` indefinitely. Recovery: operator investigates via `/plans` UI + `.cto-runs/` logs; writes a decision atom to either retry or abandon the plan.
+
+For v1, the auditor's logic is minimal: reads the PR's diff via `gh pr diff`, checks blast-radius matches `intent.max_blast_radius`, writes the pass/fail atom + status. Deeper audits (security static analysis, dependency changes, cost estimation) are follow-ups.
 
 ### 7. Deliberation model (minimal v1)
 
@@ -386,12 +459,12 @@ Shipped as one cohesive PR. No migration of existing stuck plans (out of scope).
 | Runaway: one intent produces too many plans | Cost + complexity blowup | `intent.max_plans` caps CTO draft count per intent; CTO checks before emitting. |
 | Auditor gate blocks everything, plans pile up in executing | Pipeline stall | Intent can waive auditor gate via `require_auditor_observation: false` per-request; stale plans sweep in follow-up. |
 
-## Open questions (to resolve in review)
+## Resolved decisions (were open; locked before writing-plans)
 
-1. **Who invokes the CTO for an intent?** Operator runs `intend --trigger`? Or a separate `run-cto-on-open-intents.mjs` daemon scans for intents without `consumed_by_plans` and invokes CTO? Current spec: manual --trigger in v1.
-2. **How does the auditor know to check a plan?** Dispatch invoker could chain auditor after code-author. Or a separate tick scans for `executing` plans with `require_auditor_observation` and no verdict. Current spec: dispatch chain (5a).
-3. **What if the plan produces multiple PRs?** Multi-PR plans are rare; v1 assumes one plan = one PR. Spec flags this as a limit; multi-PR plans should be decomposed into multiple sibling plans citing the same intent.
-4. **Intent version enum?** `kind: 'autonomous-solve'` is v1. `kind: 'research-only'`, `kind: 'incident'` are future. Leave room but don't over-specify.
+1. **Who invokes the CTO for an intent?** **Resolved: `intend --trigger` in v1.** The `intend` CLI, when invoked with `--trigger`, spawns `run-cto-actor.mjs --request <request> --intent-id <id>` as a child process. Output streams to stdout. A separate `run-cto-on-open-intents.mjs` daemon is a follow-up (not v1) because it adds a scanner-loop + race considerations (what if two daemons see the same intent?) without proportional benefit; one intent = one trigger is the simplest invariant.
+2. **How does the auditor know to check a plan?** **Resolved: chain-based via post-PR-open hook.** See §6b. Chain-based over tick-based picked for simplicity + existing pr-landing composition model.
+3. **Multi-PR plans.** **Resolved: v1 assumes one plan = one PR.** Multi-PR plans must be decomposed into sibling plans citing the same intent. This is enforced by the CTO's PLAN_DRAFT prompt (new section): "If the change naturally requires multiple PRs, emit multiple plans in plans[], each with its own delegation." A single plan producing multiple PRs in v1 is treated as a planner error; reconcile-tick only watches the first pr-observation and succeeds on its merge.
+4. **Intent version enum.** **Resolved: ship `kind: 'autonomous-solve'` only.** Leave the enum open (`z.enum([...])` not `z.literal`) but don't implement other values. `research-only`, `incident`, `l3-canon-proposal` are follow-ups.
 
 ## Acceptance criteria
 
