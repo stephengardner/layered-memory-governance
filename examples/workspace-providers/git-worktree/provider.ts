@@ -36,7 +36,7 @@
  * (after confirming none have unmerged work).
  */
 
-import { execa } from 'execa';
+import { execa, type execa as ExecaType } from 'execa';
 import { randomBytes } from 'node:crypto';
 import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -52,34 +52,72 @@ export interface GitWorktreeProviderOptions {
   readonly copyCredsForRoles: ReadonlyArray<string>;
   /** Base directory for worktrees. Defaults to `<repoDir>/.worktrees/agentic`. */
   readonly worktreesRoot?: string;
+  /**
+   * Optional execa override. Defaults to the real `execa` from the
+   * `execa` package. Tests inject a stub that records argv so the
+   * `-b`-vs-no-`-b` worktree-add semantics can be pinned as a
+   * regression-guard.
+   */
+  readonly execImpl?: typeof ExecaType;
 }
 
 export class GitWorktreeProvider implements WorkspaceProvider {
   private readonly worktreesRoot: string;
+  private readonly exec: typeof ExecaType;
 
   constructor(private readonly opts: GitWorktreeProviderOptions) {
     this.worktreesRoot = opts.worktreesRoot ?? join(opts.repoDir, '.worktrees', 'agentic');
+    this.exec = opts.execImpl ?? execa;
   }
 
   async acquire(input: AcquireInput): Promise<Workspace> {
-    // Validate baseRef exists.
-    const r = await execa('git', ['-C', this.opts.repoDir, 'rev-parse', '--verify', `${input.baseRef}^{commit}`], { reject: false });
+    // Validate baseRef exists. This stays an upfront gate even when
+    // `checkoutBranch` is set: baseRef is the comparison baseline for
+    // diff/PR-against-base operations regardless of which branch we
+    // actually check out.
+    const r = await this.exec('git', ['-C', this.opts.repoDir, 'rev-parse', '--verify', `${input.baseRef}^{commit}`], { reject: false });
     if (r.exitCode !== 0) {
       throw new Error(`GitWorktreeProvider: baseRef '${input.baseRef}' not found in repo`);
     }
     const id = sanitizeId(input.correlationId);
     const path = join(this.worktreesRoot, id);
     await mkdir(this.worktreesRoot, { recursive: true });
-    const branch = `agentic/${id}`;
-    const create = await execa('git', ['-C', this.opts.repoDir, 'worktree', 'add', '-b', branch, path, input.baseRef], { reject: false });
-    if (create.exitCode !== 0) {
-      throw new Error(`GitWorktreeProvider: worktree add failed: ${create.stderr}`);
+
+    // Two acquire paths:
+    //   - `input.checkoutBranch` present: existing branch (local or
+    //     remote); `git worktree add <path> <branch>` WITHOUT `-b` so
+    //     commits land on the checked-out branch (fix-actor flow).
+    //   - `input.checkoutBranch` absent: legacy default; create a new
+    //     branch `agentic/<id>` off `baseRef` (code-author flow).
+    if (input.checkoutBranch !== undefined && input.checkoutBranch.length > 0) {
+      // Defense-in-depth branch-name validation. `execa` array form
+      // already prevents shell injection; this guard rejects
+      // path-traversal-shaped branch names that could otherwise escape
+      // the worktrees root via git's ref-resolution rules.
+      if (input.checkoutBranch.includes('..')) {
+        throw new Error(`GitWorktreeProvider: checkoutBranch must not contain '..': ${input.checkoutBranch}`);
+      }
+      // Best-effort fetch so a remote-only branch resolves before
+      // `worktree add`. Failure is non-fatal: a fully-local branch
+      // (e.g. test fixtures with no `origin`) still resolves directly.
+      await this.exec('git', ['-C', this.opts.repoDir, 'fetch', 'origin', input.checkoutBranch], { reject: false });
+      const create = await this.exec('git', ['-C', this.opts.repoDir, 'worktree', 'add', path, input.checkoutBranch], { reject: false });
+      if (create.exitCode !== 0) {
+        throw new Error(`GitWorktreeProvider: worktree add for checkoutBranch '${input.checkoutBranch}' failed: ${create.stderr}`);
+      }
+    } else {
+      const branch = `agentic/${id}`;
+      const create = await this.exec('git', ['-C', this.opts.repoDir, 'worktree', 'add', '-b', branch, path, input.baseRef], { reject: false });
+      if (create.exitCode !== 0) {
+        throw new Error(`GitWorktreeProvider: worktree add failed: ${create.stderr}`);
+      }
     }
     // Cred-copy is wrapped: if any mkdir/copyFile throws, the worktree
     // we just created would otherwise leak to disk + leave a dangling
     // branch. Tear it down and re-throw so the caller sees the
     // original error and acquire() is atomic (succeeds with creds, or
-    // fails with no side effects).
+    // fails with no side effects). Runs unchanged for both acquire
+    // paths above.
     try {
       // Copy bot creds.
       for (const role of this.opts.copyCredsForRoles) {
@@ -107,7 +145,7 @@ export class GitWorktreeProvider implements WorkspaceProvider {
       // Best-effort cleanup; reject:false so a tear-down failure can't
       // shadow the original cred-copy error. Operators see the real
       // cause; orphaned worktrees surface via `git worktree prune`.
-      await execa('git', ['-C', this.opts.repoDir, 'worktree', 'remove', '--force', path], { reject: false });
+      await this.exec('git', ['-C', this.opts.repoDir, 'worktree', 'remove', '--force', path], { reject: false });
       throw err;
     }
     return { id, path, baseRef: input.baseRef };
@@ -115,7 +153,7 @@ export class GitWorktreeProvider implements WorkspaceProvider {
 
   async release(workspace: Workspace): Promise<void> {
     // Idempotent: if the worktree is already gone, swallow.
-    const r = await execa('git', ['-C', this.opts.repoDir, 'worktree', 'remove', '--force', workspace.path], { reject: false });
+    const r = await this.exec('git', ['-C', this.opts.repoDir, 'worktree', 'remove', '--force', workspace.path], { reject: false });
     if (r.exitCode !== 0) {
       const stderr = r.stderr ?? '';
       // Git's "not a working tree" / "is not a working tree" wording
