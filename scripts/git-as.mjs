@@ -105,6 +105,7 @@ import {
 import {
   buildPushEnv,
   buildPushSpawnArgs,
+  extractSetUpstreamPlan,
   buildReadOnlyEnv,
   findRemoteArg,
   isPushCommand,
@@ -176,13 +177,45 @@ async function main() {
   // Bearer extraHeader path.
   let spawnArgs = gitArgs;
   let spawnEnv;
+  // Captured for the post-push upstream-setup step. Non-null only when
+  // the user passed `-u` / `--set-upstream` AND the push was rewritten
+  // through the URL-auth path. We strip the flag before spawning so
+  // git does not persist the transient x-access-token URL into
+  // `branch.<name>.remote` of `.git/config`  --  see extractSetUpstreamPlan
+  // JSDoc for the leak mechanism.
+  let postPushUpstream = null;
   if (isPushCommand(gitArgs)) {
     const remoteInfo = findRemoteArg(gitArgs);
     const remoteName = remoteInfo?.remote ?? 'origin';
     const remoteUrl = await resolveRemoteUrl(remoteName);
     const rewritten = buildPushSpawnArgs(gitArgs, remoteUrl, token.token);
     if (rewritten !== null) {
-      spawnArgs = rewritten;
+      // Push routes through URL-auth. If `-u` was present, strip it
+      // from the spawn args so git does not record the URL (with
+      // embedded token) as the branch's upstream remote.
+      const upstreamPlan = extractSetUpstreamPlan(gitArgs);
+      if (upstreamPlan !== null) {
+        const reRewritten = buildPushSpawnArgs(
+          upstreamPlan.strippedArgs,
+          remoteUrl,
+          token.token,
+        );
+        if (reRewritten !== null) {
+          spawnArgs = reRewritten;
+          postPushUpstream = {
+            remoteName: upstreamPlan.remoteName,
+            branchHint: upstreamPlan.branchHint,
+          };
+        } else {
+          // Defensive fallback: re-rewrite failed (should be impossible
+          // since we just rewrote successfully). Use the original
+          // rewrite to preserve push behaviour; the leak risk surfaces
+          // here but the alternative is a broken push.
+          spawnArgs = rewritten;
+        }
+      } else {
+        spawnArgs = rewritten;
+      }
       spawnEnv = buildPushEnv();
     } else {
       // Non-GitHub-HTTPS remote or bare `git push`. The Bearer path
@@ -214,6 +247,52 @@ async function main() {
     console.error(`[git-as] failed to spawn git: ${err?.message ?? err}`);
     exitCode = 1;
   }
+
+  // Post-push upstream setup. When the user passed `-u` and we routed
+  // through URL-auth, we stripped `-u` from the spawn argv to avoid
+  // persisting the transient x-access-token URL into `.git/config`.
+  // After the push succeeds, set the upstream config manually using
+  // the REMOTE NAME (e.g. `origin`), not the URL. Failure here does
+  // not flip the push exit code  --  the push itself succeeded; setting
+  // an upstream is operator-convenience, not correctness.
+  if (exitCode === 0 && postPushUpstream !== null) {
+    let branchName = postPushUpstream.branchHint;
+    if (branchName === null) {
+      try {
+        const r = await execa(
+          'git',
+          ['rev-parse', '--abbrev-ref', 'HEAD'],
+          { reject: false },
+        );
+        const stdout = typeof r.stdout === 'string' ? r.stdout.trim() : '';
+        branchName = stdout.length > 0 ? stdout : null;
+      } catch {
+        branchName = null;
+      }
+    }
+    if (branchName !== null) {
+      await execa(
+        'git',
+        ['config', `branch.${branchName}.remote`, postPushUpstream.remoteName],
+        { reject: false, stdio: 'ignore' },
+      );
+      await execa(
+        'git',
+        ['config', `branch.${branchName}.merge`, `refs/heads/${branchName}`],
+        { reject: false, stdio: 'ignore' },
+      );
+      console.error(
+        `[git-as] -u stripped from push to avoid token-URL leak; `
+        + `set upstream to '${postPushUpstream.remoteName}/${branchName}' via 'git config'`,
+      );
+    } else {
+      console.error(
+        `[git-as] -u stripped from push to avoid token-URL leak; `
+        + `could not resolve current branch  --  operator must set upstream manually`,
+      );
+    }
+  }
+
   process.exit(exitCode);
 }
 

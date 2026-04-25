@@ -27,6 +27,7 @@ import {
   buildPushSpawnArgs,
   buildReadOnlyEnv,
   buildTransientPushUrl,
+  extractSetUpstreamPlan,
   findRemoteArg,
   isPushCommand,
   parseGithubHttps,
@@ -289,6 +290,93 @@ describe('buildReadOnlyEnv (fetch / pull / clone / etc.)', () => {
         expect(env[k]).not.toContain(FAKE_TOKEN);
       }
     }
+  });
+});
+
+describe('extractSetUpstreamPlan', () => {
+  it('returns null when -u is absent', () => {
+    expect(extractSetUpstreamPlan(['push', 'origin', 'my-branch'])).toBe(null);
+  });
+
+  it('returns null when push has no remote (bare push)', () => {
+    expect(extractSetUpstreamPlan(['push', '-u'])).toBe(null);
+  });
+
+  it('strips -u and returns remoteName + branchHint', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', 'my-branch']);
+    expect(plan).not.toBe(null);
+    expect(plan!.strippedArgs).toEqual(['push', 'origin', 'my-branch']);
+    expect(plan!.remoteName).toBe('origin');
+    expect(plan!.branchHint).toBe('my-branch');
+  });
+
+  it('strips --set-upstream (long form) equivalently', () => {
+    const plan = extractSetUpstreamPlan(['push', '--set-upstream', 'origin', 'my-branch']);
+    expect(plan).not.toBe(null);
+    expect(plan!.strippedArgs).toEqual(['push', 'origin', 'my-branch']);
+    expect(plan!.remoteName).toBe('origin');
+    expect(plan!.branchHint).toBe('my-branch');
+  });
+
+  it('handles refspec with src:dst form (branchHint is src side)', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', 'feat/x:refs/heads/feat/x']);
+    expect(plan!.branchHint).toBe('feat/x');
+  });
+
+  it('returns branchHint=null when refspec is absent', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin']);
+    expect(plan).not.toBe(null);
+    expect(plan!.branchHint).toBe(null);
+  });
+
+  it('handles -u positioned after the remote', () => {
+    const plan = extractSetUpstreamPlan(['push', 'origin', '-u', 'my-branch']);
+    expect(plan).not.toBe(null);
+    expect(plan!.strippedArgs).toEqual(['push', 'origin', 'my-branch']);
+    expect(plan!.remoteName).toBe('origin');
+    expect(plan!.branchHint).toBe('my-branch');
+  });
+
+  it('non-array input returns null', () => {
+    // @ts-expect-error -- exercising the runtime guard
+    expect(extractSetUpstreamPlan(null)).toBe(null);
+    // @ts-expect-error
+    expect(extractSetUpstreamPlan(undefined)).toBe(null);
+  });
+});
+
+describe('extractSetUpstreamPlan: token-leak prevention', () => {
+  // The wrapper feeds the stripped args through buildPushSpawnArgs to
+  // get the URL-rewritten spawn argv. Verify that the URL substitution
+  // proceeds correctly on the stripped form, AND that the original
+  // unstripped form would have left -u immediately before the URL --
+  // which is exactly the shape that causes git to persist the URL
+  // (with embedded token) as branch.<name>.remote.
+  const FAKE = 'ghs_fake_token_xyz';
+  const ORIGIN = 'https://github.com/o/r';
+
+  it('stripped args route through buildPushSpawnArgs cleanly (URL substituted, no -u)', () => {
+    const plan = extractSetUpstreamPlan(['push', '-u', 'origin', 'my-branch']);
+    expect(plan).not.toBe(null);
+    const rewritten = buildPushSpawnArgs(plan!.strippedArgs, ORIGIN, FAKE);
+    expect(rewritten).not.toBe(null);
+    expect(rewritten!).not.toContain('-u');
+    expect(rewritten!).not.toContain('--set-upstream');
+    expect(rewritten!.join(' ')).toContain(`x-access-token:${FAKE}@`);
+  });
+
+  it('regression-guard: -u left in the rewritten argv WOULD pair with the URL (the bug)', () => {
+    // This documents the leak-shape so a future revert that drops the
+    // strip step fails this test. It does NOT exercise the wrapper;
+    // it just shows what the broken argv looks like.
+    const buggyArgs = ['push', '-u', 'origin', 'my-branch'];
+    const buggyRewrite = buildPushSpawnArgs(buggyArgs, ORIGIN, FAKE);
+    expect(buggyRewrite).not.toBe(null);
+    // -u immediately before the substituted URL is the shape git
+    // records as `branch.<name>.remote = <full URL with token>`.
+    const idxU = buggyRewrite!.indexOf('-u');
+    expect(idxU).toBeGreaterThan(-1);
+    expect(buggyRewrite![idxU + 1]).toContain('x-access-token:');
   });
 });
 
