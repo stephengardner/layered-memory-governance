@@ -465,14 +465,17 @@ function extractTargetPathsFromProse(prose: string): string[] {
   // matching any of its inner fragments (`etc/...`, `tc/...`,
   // `passwd.md`'s leaf, etc.) -- every starting position inside
   // the escape token is preceded by a blocked char.
-  // First segment cannot start with a `.` (excludes `./foo.md`).
-  // Subsequent segments allow `.` so filenames with dots
-  // (`my.config.yml`) keep working. Together with the per-segment
-  // `..` / `.` guard below and the reader sandbox check, this is
-  // three independent lines of defense against a plan whose prose
+  // First segment cannot start with a `.` (excludes `./foo.md`) but
+  // may contain `.` so dotted top-level filenames (`my.config.yml`,
+  // `tsconfig.json`, `README.md`) match. Path segments are
+  // zero-or-more so a top-level filename in prose ("update README.md")
+  // is recognized; the prior `+` quantifier required at least one `/`
+  // and silently dropped top-level paths. Together with the per-
+  // segment `..` / `.` guard below and the reader sandbox check, this
+  // is three independent lines of defense against a plan whose prose
   // tries to exfiltrate or write outside repoDir.
   const pathRe = new RegExp(
-    `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_-]*(?:\\/[A-Za-z0-9_.-]+)+\\.(?:${extAllowlist}))\\b`,
+    `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\\/[A-Za-z0-9_.-]+)*\\.(?:${extAllowlist}))\\b`,
     'g',
   );
   const seen = new Set<string>();

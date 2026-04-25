@@ -440,8 +440,13 @@ function extractStringArray(
  */
 function extractTargetPathsFromProse(prose: string): string[] {
   const extAllowlist = 'md|ts|tsx|js|jsx|mjs|cjs|json|yml|yaml|toml|css|scss|html|sh|py|go|rs|java|kt|rb|ex|exs';
+  // First segment may contain `.` so dotted top-level filenames
+  // (`README.md`, `tsconfig.json`) match. Path segments are
+  // zero-or-more so prose like "update README.md" extracts the
+  // top-level path; the prior `+` form silently dropped it. Mirrors
+  // the diff-based variant byte-for-byte.
   const pathRe = new RegExp(
-    `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_-]*(?:\\/[A-Za-z0-9_.-]+)+\\.(?:${extAllowlist}))\\b`,
+    `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\\/[A-Za-z0-9_.-]+)*\\.(?:${extAllowlist}))\\b`,
     'g',
   );
   const seen = new Set<string>();

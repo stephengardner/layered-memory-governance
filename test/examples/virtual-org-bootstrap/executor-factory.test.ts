@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe('createVirtualOrgCodeAuthorFn', () => {
-  it('builds the default executor once and forwards it to runCodeAuthor on each invocation', async () => {
+  it('builds the diff-based executor once and forwards it to runCodeAuthor on each invocation', async () => {
     const fakeExecutor = { execute: vi.fn() } as unknown as ReturnType<typeof execDiffBased.buildDiffBasedCodeAuthorExecutor>;
     const buildSpy = vi
       .spyOn(execDiffBased, 'buildDiffBasedCodeAuthorExecutor')
