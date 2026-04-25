@@ -23,7 +23,7 @@ import { randomBytes } from 'node:crypto';
 import { execa } from 'execa';
 import type { Actor, ActorContext } from '../actor.js';
 import type { Classified, ProposedAction, Reflection } from '../types.js';
-import type { AtomId, PrFixObservationMeta, ReplayTier } from '../../../substrate/types.js';
+import type { AtomId, PrFixObservationMeta, ReplayTier, Time } from '../../../substrate/types.js';
 import type { PrIdentifier, ReviewComment } from '../pr-review/adapter.js';
 import type {
   AgentLoopResult,
@@ -33,6 +33,8 @@ import type { Workspace } from '../../../substrate/workspace-provider.js';
 import { defaultBudgetCap, type BudgetCap } from '../../../substrate/agent-budget.js';
 import { loadReplayTier } from '../../../substrate/policy/replay-tier.js';
 import { loadBlobThreshold } from '../../../substrate/policy/blob-threshold.js';
+import { sendOperatorEscalation } from '../../actor-message/index.js';
+import type { ActorReport } from '../types.js';
 import type {
   PrFixObservation,
   PrFixAction,
@@ -420,7 +422,49 @@ export class PrFixActor implements Actor<
     ctx: ActorContext<PrFixAdapters>,
   ): Promise<PrFixOutcome> {
     if (action.payload.kind === 'pr-escalate') {
-      throw new Error('PrFixActor.apply: pr-escalate not implemented (Task 10)');
+      const reason = action.payload.reason;
+      const obs = this.lastObservation;
+      // Best-effort path: if observe has not run yet (or did not complete),
+      // we can still surface the halt to runActor's reflect via the
+      // Outcome. The escalation atom would otherwise lack the PR
+      // identifier the helper expects, so skip the side-effect rather
+      // than synthesize a half-baked context.
+      if (obs === undefined) {
+        return { kind: 'escalated', reason };
+      }
+      const nowIso = (this.options.now ?? defaultNow)() as Time;
+      // Synthesize an ActorReport for the helper's context. PrFixActor's
+      // apply is mid-iteration (runActor has not yet halted from its own
+      // POV); we use the haltReason 'policy-escalate-blocking' so the
+      // escalation atom carries the intent semantically. The reflect
+      // method (Task 11) translates this Outcome into runActor's halt.
+      const synthReport: ActorReport = {
+        actor: this.name,
+        principal: ctx.principal.id,
+        haltReason: 'policy-escalate-blocking',
+        iterations: ctx.iteration,
+        startedAt: nowIso,
+        endedAt: nowIso,
+        escalations: [reason],
+        lastNote: reason,
+      };
+      try {
+        await sendOperatorEscalation({
+          host: ctx.host,
+          report: synthReport,
+          pr: { owner: obs.pr.owner, repo: obs.pr.repo, number: obs.pr.number },
+          observation: { comments: obs.lineComments, bodyNits: obs.bodyNits },
+          origin: 'pr-fix-actor',
+        });
+      } catch {
+        // A delivery failure must not block the actor's halt path. The
+        // operator-message atom may have failed to write (storage error,
+        // dedup-conflict beyond the helper's ConflictError swallow,
+        // etc.); the actor still returns 'escalated' so reflect halts
+        // and the operator sees the escalation via the PR's existing
+        // CR thread regardless.
+      }
+      return { kind: 'escalated', reason };
     }
     const dispatch = action.payload;
     const obs = this.lastObservation;

@@ -1035,7 +1035,38 @@ describe('PrFixActor.apply (agent-loop-dispatch)', () => {
     }
   });
 
-  it("pr-escalate branch throws (Task 10 placeholder)", async () => {
+});
+
+// ---------------------------------------------------------------------------
+// PrFixActor.apply (pr-escalate)
+//
+// Scenario: classify returned 'ci-failure' or 'architectural'. propose
+// emitted a 'pr-escalate' action carrying a human-readable reason. apply
+// surfaces the escalation through the actor-message channel via
+// `sendOperatorEscalation` and returns `{kind: 'escalated', reason}` so
+// reflect can halt the loop.
+//
+// Behaviors guarded:
+//   1. CI-failure escalation writes an actor-message atom and returns
+//      `{kind: 'escalated', reason}`.
+//   2. Architectural escalation writes the same shape and the atom's
+//      content embeds the reason so the operator sees full context.
+//   3. A storage failure during atom write does NOT mask the actor's
+//      halt path. apply still returns `{kind: 'escalated', reason}`.
+//   4. Pre-observation call (apply before observe ran) is best-effort:
+//      returns `{kind: 'escalated', reason}` and does NOT throw.
+// ---------------------------------------------------------------------------
+
+function escalateAction(reason: string): ProposedAction<PrFixAction> {
+  return {
+    tool: 'pr-escalate',
+    description: `escalate: ${reason}`,
+    payload: { kind: 'pr-escalate', reason },
+  };
+}
+
+describe('PrFixActor.apply (pr-escalate)', () => {
+  it("CI-failure escalation: returns {kind:'escalated', reason} and writes an actor-message atom", async () => {
     const review = new StubResolveAdapter();
     const agentLoop = recordingAgentLoop({
       kind: 'completed',
@@ -1046,11 +1077,101 @@ describe('PrFixActor.apply (agent-loop-dispatch)', () => {
     const workspaceProvider = recordingWorkspaceProvider();
     const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
     const actor = new PrFixActor({ pr: APPLY_PR });
-    const action: ProposedAction<PrFixAction> = {
-      tool: 'pr-escalate',
-      description: 'escalate',
-      payload: { kind: 'pr-escalate', reason: 'CI failure: lint' },
+    await primeObservation(actor, adapters);
+
+    const reason = 'CI failure: test-suite, ci/build';
+    const host = createMemoryHost();
+    const ctx = makeStubCtx({ host, adapters });
+    const outcome = await actor.apply(escalateAction(reason), ctx);
+
+    expect(outcome.kind).toBe('escalated');
+    if (outcome.kind !== 'escalated') throw new Error('unreachable');
+    expect(outcome.reason).toBe(reason);
+
+    const messages = await host.atoms.query({ type: ['actor-message'] }, 100);
+    expect(messages.atoms.length).toBeGreaterThanOrEqual(1);
+    // Workspace was never touched on the escalate path.
+    expect(workspaceProvider.captured.acquire).toHaveLength(0);
+    expect(workspaceProvider.captured.releaseCount).toBe(0);
+  });
+
+  it("architectural escalation: atom body embeds the reason", async () => {
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'never' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'x', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({ pr: APPLY_PR });
+    await primeObservation(actor, adapters);
+
+    const reason = 'Architectural concern: arch-c1: large refactor needed';
+    const host = createMemoryHost();
+    const ctx = makeStubCtx({ host, adapters });
+    const outcome = await actor.apply(escalateAction(reason), ctx);
+
+    expect(outcome.kind).toBe('escalated');
+    if (outcome.kind !== 'escalated') throw new Error('unreachable');
+    expect(outcome.reason).toBe(reason);
+
+    const messages = await host.atoms.query({ type: ['actor-message'] }, 100);
+    expect(messages.atoms.length).toBeGreaterThanOrEqual(1);
+    const message = messages.atoms[0];
+    expect(message?.content).toContain(reason);
+  });
+
+  it("storage failure during sendOperatorEscalation does NOT mask the halt", async () => {
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'never' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'x', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({ pr: APPLY_PR });
+    await primeObservation(actor, adapters);
+
+    const host = createMemoryHost();
+    // Inject a put failure so the helper's atom write throws something
+    // other than ConflictError; the actor must swallow it and still
+    // return {kind:'escalated', reason}.
+    (host.atoms as unknown as { put: typeof host.atoms.put }).put = async () => {
+      throw new Error('atom store refused write');
     };
-    await expect(actor.apply(action, mkApplyCtx(adapters))).rejects.toThrow(/Task 10/);
+    const ctx = makeStubCtx({ host, adapters });
+    const reason = 'CI failure: lint';
+
+    const outcome = await actor.apply(escalateAction(reason), ctx);
+    expect(outcome.kind).toBe('escalated');
+    if (outcome.kind !== 'escalated') throw new Error('unreachable');
+    expect(outcome.reason).toBe(reason);
+  });
+
+  it("returns {kind:'escalated', reason} when apply runs before observe (best-effort)", async () => {
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'never' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'x', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({ pr: APPLY_PR });
+    // NOTE: no primeObservation() call here -- lastObservation is undefined.
+
+    const host = createMemoryHost();
+    const ctx = makeStubCtx({ host, adapters });
+    const reason = 'CI failure: lint';
+
+    const outcome = await actor.apply(escalateAction(reason), ctx);
+    expect(outcome.kind).toBe('escalated');
+    if (outcome.kind !== 'escalated') throw new Error('unreachable');
+    expect(outcome.reason).toBe(reason);
   });
 });
