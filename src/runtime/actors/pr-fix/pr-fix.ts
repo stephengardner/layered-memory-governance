@@ -19,6 +19,7 @@
  * orchestrates them.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { Actor, ActorContext } from '../actor.js';
 import type { Classified, ProposedAction, Reflection } from '../types.js';
 import type { AtomId, PrFixObservationMeta } from '../../../substrate/types.js';
@@ -175,11 +176,78 @@ export class PrFixActor implements Actor<
     };
   }
 
+  /**
+   * Map a `Classified<PrFixObservation>` to zero or one `ProposedAction`s.
+   *
+   * Action mapping (each `tool` literal MUST match the corresponding policy
+   * atom name; a typo silently disables the policy gate):
+   *   - 'all-clean'    -> []  (loop ends naturally)
+   *   - 'partial'      -> []  (do-not-decide; let next iteration retry observe)
+   *   - 'has-findings' -> one `agent-loop-dispatch` action carrying the
+   *                       union of `lineComments` + `bodyNits` as findings,
+   *                       a freshly-minted plan-atom id (mintPlanAtomId;
+   *                       written to the store later by apply), and the
+   *                       PR's HEAD branch (workspace pins to it).
+   *   - 'ci-failure'   -> one `pr-escalate` action with a 'CI failure: ...'
+   *                       reason listing the failed run / status names.
+   *   - 'architectural'-> one `pr-escalate` action with an
+   *                       'Architectural concern: ...' reason citing the
+   *                       first matching comment id + the first 200 chars
+   *                       of its first line.
+   *
+   * Defensive: when `classified.metadata` is undefined (classify did not
+   * populate it), return [] rather than throwing. This keeps the loop
+   * progressing one more iteration where classify will re-run and either
+   * fix the metadata or surface the underlying issue.
+   */
   async propose(
-    _classified: Classified<PrFixObservation>,
+    classified: Classified<PrFixObservation>,
     _ctx: ActorContext<PrFixAdapters>,
   ): Promise<ReadonlyArray<ProposedAction<PrFixAction>>> {
-    throw new Error('PrFixActor.propose: not implemented (Task 8)');
+    const meta = classified.metadata as
+      | { classification: PrFixClassification; ciFailures: number; arch: number }
+      | undefined;
+    if (meta === undefined) return [];
+    const obs = classified.observation;
+    const classification = meta.classification;
+
+    switch (classification) {
+      case 'all-clean':
+      case 'partial':
+        return [];
+      case 'has-findings': {
+        const findings = [...obs.lineComments, ...obs.bodyNits];
+        const planAtomId = mintPlanAtomId();
+        return [{
+          tool: 'agent-loop-dispatch',
+          description: `Dispatch agent loop to address ${findings.length} unresolved finding(s) on PR ${obs.pr.owner}/${obs.pr.repo}#${obs.pr.number}`,
+          payload: {
+            kind: 'agent-loop-dispatch',
+            findings,
+            planAtomId,
+            headBranch: obs.headBranch,
+          },
+        }];
+      }
+      case 'ci-failure':
+        return [{
+          tool: 'pr-escalate',
+          description: `Escalate CI failure on PR ${obs.pr.owner}/${obs.pr.repo}#${obs.pr.number}`,
+          payload: {
+            kind: 'pr-escalate',
+            reason: `CI failure: ${describeCiFailures(obs)}`,
+          },
+        }];
+      case 'architectural':
+        return [{
+          tool: 'pr-escalate',
+          description: `Escalate architectural concern on PR ${obs.pr.owner}/${obs.pr.repo}#${obs.pr.number}`,
+          payload: {
+            kind: 'pr-escalate',
+            reason: `Architectural concern: ${describeArchitectural(obs)}`,
+          },
+        }];
+    }
   }
 
   async apply(
@@ -242,4 +310,46 @@ function countArchitectural(obs: PrFixObservation): number {
 function summarizeReviewState(reviews: ReadonlyArray<{ readonly state: string }>): string {
   if (reviews.length === 0) return '';
   return [...reviews].map((r) => r.state).sort().join('+');
+}
+
+// ---------------------------------------------------------------------------
+// File-private propose helpers.
+//
+// `mintPlanAtomId` mints an id only; the plan atom itself is NOT written
+// here. Whether/when a plan atom is persisted to the store is decided
+// by `apply`. The id flows into the `agent-loop-dispatch` payload so
+// downstream consumers (apply, the agent-loop substrate) can chain
+// provenance back to a single plan-id per dispatch attempt.
+//
+// `describeCiFailures` and `describeArchitectural` build short prose
+// summaries used inside the escalation `reason` field. Conservative:
+// they return a literal `'unknown'` when no matching detail surfaces
+// rather than throwing, so an unexpected shape does not abort the
+// escalation path.
+// ---------------------------------------------------------------------------
+
+function mintPlanAtomId(): AtomId {
+  const nonce = randomBytes(6).toString('hex');
+  return `pr-fix-plan-${nonce}` as AtomId;
+}
+
+function describeCiFailures(obs: PrFixObservation): string {
+  const failedRuns = obs.checkRuns
+    .filter((c) => c.status === 'completed' && c.conclusion === 'failure')
+    .map((c) => c.name);
+  const failedStatuses = obs.legacyStatuses
+    .filter((s) => s.state === 'failure' || s.state === 'error')
+    .map((s) => s.context);
+  const all = [...failedRuns, ...failedStatuses];
+  return all.length === 0 ? 'unknown' : all.join(', ');
+}
+
+function describeArchitectural(obs: PrFixObservation): string {
+  for (const c of [...obs.lineComments, ...obs.bodyNits]) {
+    if (ARCH_MARKER_RE.test(c.body) && ARCH_SUBSTR_RE.test(c.body)) {
+      const firstLine = c.body.split('\n', 1)[0]?.slice(0, 200) ?? '';
+      return `${c.id}: ${firstLine}`;
+    }
+  }
+  return 'unknown';
 }

@@ -4,6 +4,7 @@ import type { AtomId, PrFixObservationMeta, PrincipalId } from '../../../../src/
 import { mkPrFixObservationAtom } from '../../../../src/runtime/actors/pr-fix/pr-fix-observation.js';
 import { PrFixActor } from '../../../../src/runtime/actors/pr-fix/pr-fix.js';
 import type { ActorContext } from '../../../../src/runtime/actors/actor.js';
+import type { Classified, ProposedAction } from '../../../../src/runtime/actors/types.js';
 import type {
   PrIdentifier,
   PrReviewAdapter,
@@ -454,5 +455,125 @@ describe('PrFixActor.classify', () => {
     const cA = await actor.classify({ ...baseObs, submittedReviews: orderA }, makeClassifyCtx());
     const cB = await actor.classify({ ...baseObs, submittedReviews: orderB }, makeClassifyCtx());
     expect(cA.key).toBe(cB.key);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PrFixActor.propose
+// ---------------------------------------------------------------------------
+
+function makeProposeCtx(): ActorContext<PrFixAdapters> {
+  const host = createMemoryHost();
+  const adapters = {} as unknown as PrFixAdapters;
+  return makeStubCtx({ host, adapters });
+}
+
+describe('PrFixActor.propose', () => {
+  it("returns [] for 'all-clean' classification", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const classified: Classified<PrFixObservation> = {
+      observation: baseObs,
+      key: 'pr-fix:lineN=0:bodyN=0:cr=:ci=0:arch=0',
+      metadata: { classification: 'all-clean' satisfies PrFixClassification, ciFailures: 0, arch: 0 },
+    };
+    const actions = await actor.propose(classified, makeProposeCtx());
+    expect(actions).toEqual([]);
+  });
+
+  it("returns [] for 'partial' classification (do-not-decide)", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const classified: Classified<PrFixObservation> = {
+      observation: { ...baseObs, partial: true },
+      key: 'pr-fix:partial=true',
+      metadata: { classification: 'partial' satisfies PrFixClassification, ciFailures: 0, arch: 0 },
+    };
+    const actions = await actor.propose(classified, makeProposeCtx());
+    expect(actions).toEqual([]);
+  });
+
+  it("returns one 'agent-loop-dispatch' action for 'has-findings'", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const lineComments = [
+      mkLineComment({ id: 'l1', body: 'rename this' }),
+      mkLineComment({ id: 'l2', body: 'extract helper' }),
+    ];
+    const bodyNits = [mkLineComment({ id: 'b1', body: 'body nit' })];
+    const obs: PrFixObservation = { ...baseObs, lineComments, bodyNits };
+    const classified: Classified<PrFixObservation> = {
+      observation: obs,
+      key: 'pr-fix:lineN=2:bodyN=1:cr=:ci=0:arch=0',
+      metadata: { classification: 'has-findings' satisfies PrFixClassification, ciFailures: 0, arch: 0 },
+    };
+    const actions = await actor.propose(classified, makeProposeCtx());
+    expect(actions).toHaveLength(1);
+    const a = actions[0] as ProposedAction<PrFixAction>;
+    expect(a.tool).toBe('agent-loop-dispatch');
+    expect(a.payload.kind).toBe('agent-loop-dispatch');
+    if (a.payload.kind !== 'agent-loop-dispatch') throw new Error('discriminant');
+    expect(a.payload.findings).toEqual([...lineComments, ...bodyNits]);
+    expect(a.payload.headBranch).toBe(obs.headBranch);
+    expect(a.payload.planAtomId).toMatch(/^pr-fix-plan-/);
+    expect(a.description).toContain('o/r#1');
+    expect(a.description).toContain('3');
+  });
+
+  it("returns one 'pr-escalate' action with reason 'CI failure: ...' for 'ci-failure'", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const checkRuns: ReadonlyArray<CheckRun> = [
+      { name: 'lint', status: 'completed', conclusion: 'success' },
+      { name: 'test-suite', status: 'completed', conclusion: 'failure' },
+    ];
+    const legacyStatuses: ReadonlyArray<LegacyStatus> = [
+      { context: 'ci/build', state: 'failure', updatedAt: '2026-04-25T00:00:00.000Z' },
+    ];
+    const obs: PrFixObservation = { ...baseObs, checkRuns, legacyStatuses };
+    const classified: Classified<PrFixObservation> = {
+      observation: obs,
+      key: 'pr-fix:lineN=0:bodyN=0:cr=:ci=2:arch=0',
+      metadata: { classification: 'ci-failure' satisfies PrFixClassification, ciFailures: 2, arch: 0 },
+    };
+    const actions = await actor.propose(classified, makeProposeCtx());
+    expect(actions).toHaveLength(1);
+    const a = actions[0] as ProposedAction<PrFixAction>;
+    expect(a.tool).toBe('pr-escalate');
+    expect(a.payload.kind).toBe('pr-escalate');
+    if (a.payload.kind !== 'pr-escalate') throw new Error('discriminant');
+    expect(a.payload.reason.startsWith('CI failure:')).toBe(true);
+    expect(a.payload.reason).toContain('test-suite');
+    expect(a.payload.reason).toContain('ci/build');
+    expect(a.description).toContain('o/r#1');
+  });
+
+  it("returns one 'pr-escalate' action with reason 'Architectural concern: ...' for 'architectural'", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const archBody = '\u{1F7E0} Major: this requires an architectural rework of the loop';
+    const obs: PrFixObservation = {
+      ...baseObs,
+      lineComments: [mkLineComment({ id: 'arch-c1', body: archBody })],
+    };
+    const classified: Classified<PrFixObservation> = {
+      observation: obs,
+      key: 'pr-fix:lineN=1:bodyN=0:cr=:ci=0:arch=1',
+      metadata: { classification: 'architectural' satisfies PrFixClassification, ciFailures: 0, arch: 1 },
+    };
+    const actions = await actor.propose(classified, makeProposeCtx());
+    expect(actions).toHaveLength(1);
+    const a = actions[0] as ProposedAction<PrFixAction>;
+    expect(a.tool).toBe('pr-escalate');
+    expect(a.payload.kind).toBe('pr-escalate');
+    if (a.payload.kind !== 'pr-escalate') throw new Error('discriminant');
+    expect(a.payload.reason.startsWith('Architectural concern:')).toBe(true);
+    expect(a.payload.reason).toContain('arch-c1');
+  });
+
+  it('returns [] (defensive) when classified.metadata is undefined (never throws)', async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const classified: Classified<PrFixObservation> = {
+      observation: baseObs,
+      key: 'pr-fix:partial=true',
+      // metadata intentionally omitted
+    };
+    const actions = await actor.propose(classified, makeProposeCtx());
+    expect(actions).toEqual([]);
   });
 });
