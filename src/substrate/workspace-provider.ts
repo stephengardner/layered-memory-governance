@@ -55,7 +55,7 @@ export interface AcquireInput {
    * on it; `baseRef` becomes the comparison baseline for diff
    * operations rather than the parent of a new branch. When unset,
    * the provider creates a new branch off `baseRef` (the existing
-   * default, matching PR2's AgenticCodeAuthorExecutor flow).
+   * default).
    *
    * Providers that do not support checking out an existing branch MUST
    * throw with a recognizable error rather than silently fall through
