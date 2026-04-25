@@ -20,7 +20,10 @@ import type { execa } from 'execa';
 import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
-import { buildDefaultCodeAuthorExecutor } from '../../src/runtime/actor-message/code-author-executor-default.js';
+import {
+  buildDefaultCodeAuthorExecutor,
+  buildSelfCorrectingPrompt,
+} from '../../src/runtime/actor-message/code-author-executor-default.js';
 import {
   DRAFT_SCHEMA,
   DRAFT_SYSTEM_PROMPT,
@@ -942,7 +945,6 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     // carries no original question_prompt (base=undefined); the
     // git-ops stub returns exit 1 at the `git apply` step (not the
     // pre-check), so the error string mirrors the apply stage.
-    const { buildSelfCorrectingPrompt } = await import('../../src/runtime/actor-message/code-author-executor-default.js');
     const exactRetryPrompt = buildSelfCorrectingPrompt({
       base: undefined,
       previousDiff: malformedDiff,
@@ -1072,7 +1074,6 @@ describe('buildDefaultCodeAuthorExecutor', () => {
 
 describe('buildSelfCorrectingPrompt', () => {
   it('returns base unchanged on first attempt (no previous diff/error)', async () => {
-    const { buildSelfCorrectingPrompt } = await import('../../src/runtime/actor-message/code-author-executor-default.js');
     expect(
       buildSelfCorrectingPrompt({ base: 'do the thing', previousDiff: null, previousError: null }),
     ).toBe('do the thing');
@@ -1082,7 +1083,6 @@ describe('buildSelfCorrectingPrompt', () => {
   });
 
   it('appends a SELF-CORRECTION block on retry', async () => {
-    const { buildSelfCorrectingPrompt } = await import('../../src/runtime/actor-message/code-author-executor-default.js');
     const out = buildSelfCorrectingPrompt({
       base: 'fix the README',
       previousDiff: '--- a/README.md\n+++ b/README.md\nBROKEN',
@@ -1099,7 +1099,6 @@ describe('buildSelfCorrectingPrompt', () => {
   });
 
   it('omits ORIGINAL_REQUEST section when base prompt is undefined', async () => {
-    const { buildSelfCorrectingPrompt } = await import('../../src/runtime/actor-message/code-author-executor-default.js');
     const out = buildSelfCorrectingPrompt({
       base: undefined,
       previousDiff: 'd',
