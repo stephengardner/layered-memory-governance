@@ -14,8 +14,15 @@
  *   2. Principal              - pr-fix-actor from host.principals
  *   3. PrReviewAdapter        - GitHubPrReviewAdapter (D17 seam, shared
  *                               with pr-landing-actor; cheap shared dep).
- *   4. AgentLoopAdapter       - ClaudeCodeAgentLoopAdapter (real CLI;
- *                               substrate primitive owning LLM IO).
+ *   4. AgentLoopAdapter       - ResumeAuthorAgentLoopAdapter wrapping
+ *                               ClaudeCodeAgentLoopAdapter as the
+ *                               fresh-spawn fallback. Strategies tried
+ *                               in order; today only the same-machine
+ *                               CLI strategy is wired. The wrapper is
+ *                               policy-free orchestration; it tries to
+ *                               resume the original PR-authoring agent's
+ *                               session and falls through to fresh-spawn
+ *                               when no candidate resolves.
  *   5. WorkspaceProvider      - GitWorktreeProvider with checkoutBranch
  *                               support so the worktree pins to the PR's
  *                               HEAD branch.
@@ -62,6 +69,11 @@ import { createGhClient } from '../dist/external/github/index.js';
 // when the build does not emit them, which is the correct mechanical
 // signal that the build path needs to be widened.
 import { ClaudeCodeAgentLoopAdapter } from '../dist/examples/agent-loops/claude-code/index.js';
+import {
+  ResumeAuthorAgentLoopAdapter,
+  SameMachineCliResumeStrategy,
+  walkAuthorSessions,
+} from '../dist/examples/agent-loops/resume-author/index.js';
 import { FileBlobStore } from '../dist/examples/blob-stores/file/index.js';
 import { RegexRedactor } from '../dist/examples/redactors/regex-default/index.js';
 import { GitWorktreeProvider } from '../dist/examples/workspace-providers/git-worktree/index.js';
@@ -212,9 +224,53 @@ async function main() {
   // Claude Code CLI in agentic-headless mode; FileBlobStore stores
   // tool-call payloads above the blobThreshold; RegexRedactor scrubs
   // secret-shaped strings before atom write.
-  const agentLoopAdapter = new ClaudeCodeAgentLoopAdapter({});
+  const freshAgentLoop = new ClaudeCodeAgentLoopAdapter({});
   const blobStore = new FileBlobStore(args.blobRoot);
   const redactor = new RegexRedactor();
+
+  // Wrap the fresh-spawn adapter with the resume-author wrapper so
+  // PrFixActor's per-iteration agent-loop call resumes the original PR
+  // author's session when one is recoverable. Strategies tried in order;
+  // first non-null ResolvedSession wins. Today's reference driver wires
+  // ONLY [SameMachineCliResumeStrategy]: BlobShippedSessionResumeStrategy
+  // is shipped + constructible but NOT wired here. An operator that wants
+  // cross-machine session capture copies this driver and explicitly opts
+  // in via the four construction guards documented on the strategy class
+  // (default-deny `acknowledgeSessionDataFlow: true`, required redactor,
+  // destination guard, CLI-version pin).
+  //
+  // assembleCandidates is invoked once per `agentLoop.run(input)` call.
+  // PrFixActor writes a generic observation atom (`type: 'observation'`,
+  // `metadata.kind: 'pr-fix-observation'`) in its observe() pass BEFORE
+  // calling the agent-loop, so the most-recent such atom in the store at
+  // run-time names the current iteration. We query for it here and walk
+  // backwards through `provenance.derived_from` collecting prior
+  // dispatched sessions on the same PR. The walker handles the
+  // PR-boundary scoping, cycle guard, and missing-extra fall-through;
+  // see examples/agent-loops/resume-author/walk-author-sessions.ts.
+  //
+  // When the query returns no pr-fix-observation (first iteration on a
+  // brand-new PR), the callback returns []; the wrapper then iterates
+  // strategies, all return null, and the wrapper delegates to the
+  // fresh-spawn fallback. This is the correct first-iteration behavior:
+  // there is no author session to resume, so spawn fresh.
+  const agentLoopAdapter = new ResumeAuthorAgentLoopAdapter({
+    fallback: freshAgentLoop,
+    host,
+    strategies: [new SameMachineCliResumeStrategy({ maxStaleHours: 8 })],
+    assembleCandidates: async (_input) => {
+      const recent = await host.atoms.query({ type: ['observation'] }, 50);
+      const prFixObs = recent.atoms.find((a) => {
+        const meta = a.metadata;
+        return meta !== null
+          && typeof meta === 'object'
+          && meta.kind === 'pr-fix-observation';
+      });
+      if (prFixObs === undefined) return [];
+      return walkAuthorSessions(host, prFixObs.id);
+    },
+    maxStaleHours: 8,
+  });
 
   // GitWorktreeProvider checks out the PR's existing HEAD branch (per
   // the AcquireInput.checkoutBranch substrate extension) so the agent's
@@ -234,7 +290,7 @@ async function main() {
   const adapterBag = {
     review: reviewAdapter,
     ghClient: withAdapterIdentity(ghClient, 'gh-client', '0.1.0'),
-    agentLoop: withAdapterIdentity(agentLoopAdapter, 'claude-code-agent-loop', '0.1.0'),
+    agentLoop: withAdapterIdentity(agentLoopAdapter, 'resume-author-agent-loop', '0.1.0'),
     workspaceProvider: withAdapterIdentity(workspaceProvider, 'git-worktree', '0.1.0'),
     blobStore: withAdapterIdentity(blobStore, 'file-blob-store', '0.1.0'),
     redactor: withAdapterIdentity(redactor, 'regex-default-redactor', '0.1.0'),
