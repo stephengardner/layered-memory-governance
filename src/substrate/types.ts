@@ -482,7 +482,7 @@ export interface SearchHit {
  * `BlobRef`s so a future replay can re-feed the model deterministically
  * (modulo provider sampling noise) without re-running tools. `strict`
  * further requires the adapter to pin a `canon_snapshot_blob_ref` so
- * canon at session-start is reproducible — at the cost of an extra
+ * canon at session-start is reproducible, at the cost of an extra
  * 10-100 KB blob per session.
  */
 export type ReplayTier = 'best-effort' | 'content-addressed' | 'strict';

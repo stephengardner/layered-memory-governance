@@ -13,7 +13,7 @@
  * - `pattern` MUST anchor on word boundaries (`\b`) so partial
  *   matches inside larger strings still hit (e.g. "see token AKIA...
  *   in logs" should redact).
- * - `replacement` is `[REDACTED:<name>]` — the marker preserves
+ * - `replacement` is `[REDACTED:<name>]`; the marker preserves
  *   provenance of the redaction (audits know which pattern fired);
  *   replacing with empty string would lose that signal.
  * - Replacements MUST NOT themselves match any pattern in this set

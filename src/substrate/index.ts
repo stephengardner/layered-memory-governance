@@ -17,7 +17,7 @@ export * as promotion from './promotion/index.js';
 export * as taint from './taint/index.js';
 
 // Agentic actor loop seams. camelCase namespace names match the
-// existing barrel style (canonMd, killSwitch) — no snake_case.
+// existing barrel style (canonMd, killSwitch); no snake_case.
 export * as agentLoop from './agent-loop.js';
 export * as workspaceProvider from './workspace-provider.js';
 export * as blobStore from './blob-store.js';

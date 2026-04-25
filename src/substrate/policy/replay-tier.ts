@@ -50,7 +50,7 @@ export interface ReplayTierTarget {
 /**
  * Compute the canonical atom id for a replay-tier policy atom.
  * Throws if neither principal nor actor-type is provided (callers must
- * pick one — the resolver tries them in order).
+ * pick one; the resolver tries them in order).
  */
 export function replayTierAtomId(target: ReplayTierTarget): AtomId {
   if (target.target_principal !== undefined) {
