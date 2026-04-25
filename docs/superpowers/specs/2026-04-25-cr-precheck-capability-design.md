@@ -48,7 +48,7 @@ A single helper script `scripts/cr-precheck.mjs` invoked by PR-authoring agents 
 **Inputs:** none (auto-detects diff via `git diff` against the upstream branch). Optional flags:
 - `--base <ref>` -- override the comparison base (default: `origin/main` or the upstream branch).
 - `--strict` -- fail on `medium` findings too, not just `critical`/`major` (default: critical+major only).
-- `--no-audit` -- suppress the audit-atom write on skip (operator can disable for one-off ad-hoc runs; not recommended for agent flows).
+- (no `--no-audit` flag; the audit atom is non-bypassable. Suppressing the audit atom would be a silent-skip vector. Operators who legitimately need to test the helper without writing atoms set `CR_PRECHECK_DRY_RUN=1` at the shell level; the helper logs that the env var is set and exits before the audit-atom write but with a separate `dry-run` log line. A sub-agent dispatched from a clean env cannot set this var without explicit operator action.)
 - `--quiet` -- suppress the loud detection log (operator-only; agents MUST NOT pass this).
 
 **Behavior:**
@@ -61,9 +61,9 @@ A single helper script `scripts/cr-precheck.mjs` invoked by PR-authoring agents 
    - Write the `cr-precheck-skip` audit atom (unless `--no-audit`).
    - Exit 0 (do NOT block the push; progressive enhancement).
 
-2. **Compute diff.** Run `git diff <base>...HEAD` to get the full PR-equivalent diff. If the diff is empty: skip (nothing to review).
+2. **Compute diff.** Run `git diff <base>...HEAD` to get the full PR-equivalent diff. If the diff is empty: print `[cr-precheck] no diff vs <base>; nothing to review.` and exit 0 WITHOUT writing any atom (empty diff is not a gate-skip; it's no-op).
 
-3. **Invoke CR CLI.** Run `coderabbit review --plain` (or equivalent invocation per CR CLI v0.4.2 docs) against the working tree. Capture stdout + stderr + exit code.
+3. **Invoke CR CLI.** Run `coderabbit review --plain` (or equivalent invocation per CR CLI v0.4.2 docs) against the working tree. Capture stdout + stderr + exit code. If CR CLI itself errors (non-zero exit before findings parseable, or unrecognized output): print error + write a `cr-precheck-skip` atom with `reason: 'cli-error'` AND exit non-zero (does NOT silently fall through; the gate explicitly catches CLI failures rather than treating them as "review passed").
 
 4. **Parse output.** CR CLI's `--plain` output has a structured shape (verify before implementation). Extract findings classified by severity: `critical`, `major`, `minor`.
 
@@ -97,33 +97,54 @@ CR CLI requires an API key (or anonymous token); the workflow stores it in repo 
 
 ### 3.4 Audit atoms
 
+Discriminated by `metadata.kind`. Exactly ONE of the two payload keys is populated per atom; the other is absent.
+
+**Skip atom** (CR CLI not on PATH, or CLI errored, or some other gate-bypass condition):
+
 ```ts
-// observation atom
 {
   type: 'observation',
   layer: 'L0',
   scope: 'project',
   metadata: {
-    kind: 'cr-precheck-skip',  // OR 'cr-precheck-run'
+    kind: 'cr-precheck-skip',
     cr_precheck_skip: {
-      reason: 'coderabbit-not-on-path',  // or 'no-diff-to-review' or 'cli-error'
+      reason: 'coderabbit-not-on-path' | 'cli-error',
       commit_sha: '<HEAD sha at the moment of skip>',
       cwd: '<absolute path>',
       os: 'win32' | 'linux' | 'darwin',
-      captured_at: '<ISO-8601>',
-    },
-    // OR for kind: 'cr-precheck-run':
-    cr_precheck_run: {
-      commit_sha: '<HEAD sha>',
-      findings: { critical: 0, major: 0, minor: 3 },
-      cli_version: '0.4.2',
-      duration_ms: 8421,
+      cli_error_message?: string,  // set when reason='cli-error'
       captured_at: '<ISO-8601>',
     },
   },
   // ... standard atom envelope
 }
 ```
+
+**Run atom** (CR CLI ran successfully on a non-empty diff):
+
+```ts
+{
+  type: 'observation',
+  layer: 'L0',
+  scope: 'project',
+  metadata: {
+    kind: 'cr-precheck-run',
+    cr_precheck_run: {
+      commit_sha: '<HEAD sha>',
+      findings: { critical: number, major: number, minor: number },
+      cli_version: string,  // e.g. '0.4.2'
+      duration_ms: number,
+      captured_at: '<ISO-8601>',
+    },
+  },
+  // ... standard atom envelope
+}
+```
+
+Empty-diff runs do NOT write any atom (no-op, not a skip).
+
+The `cr-precheck-audit.mjs` query helper filters by `metadata.kind` to surface skips vs runs cleanly.
 
 ### 3.5 Integration with `dev-implementation-canon-audit-loop`
 
@@ -197,6 +218,8 @@ agent runs cr-precheck
 The helper writes audit atoms to `.lag/atoms/`. This is the same trust boundary as the rest of `.lag/`. No new exfiltration surface.
 
 CR CLI sends the diff to CR's API for review. This is the same data flow as today's CR web review (which already receives the diff via GitHub webhook). No new data flow.
+
+**Secrets in working tree:** `git diff` only emits committed-tracked file content. Untracked or gitignored files (`.env`, credentials, etc.) never reach CR CLI. This is the same protection git has against the CR web review path; flagged here to confirm it was considered.
 
 ## 6. Open architectural decisions
 
