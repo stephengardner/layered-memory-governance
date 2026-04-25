@@ -21,7 +21,7 @@ export function classifyClaudeCliFailure(
   if (/\bauth\b|\b401\b|\b403\b/i.test(stderr)) {
     return 'catastrophic';
   }
-  if (/\brate limit\b|\b429\b/i.test(stderr)) {
+  if (/\brate limit\b|\b429\b|\b50[234]\b|\bbad gateway\b|\bservice unavailable\b|\bgateway timeout\b|\bupstream\b/i.test(stderr)) {
     return 'transient';
   }
   if (exitCode !== null && exitCode !== 0) {

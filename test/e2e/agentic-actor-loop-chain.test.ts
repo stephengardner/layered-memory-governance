@@ -365,6 +365,7 @@ describe('agentic-actor-loop end-to-end', () => {
     // Validate canonical AgentTurnMeta shape across emitted turns.
     const turnAtoms = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
     expect(turnAtoms.length).toBeGreaterThanOrEqual(2);
+    let totalToolCalls = 0;
     const canonicalTurnKeys = ['session_atom_id', 'turn_index', 'llm_input', 'llm_output', 'tool_calls', 'latency_ms'];
     for (const t of turnAtoms) {
       const md = t.metadata as Record<string, unknown>;
@@ -374,6 +375,7 @@ describe('agentic-actor-loop end-to-end', () => {
       }
       // tool_calls[i] uses canonical field names (tool, args, result, latency_ms, outcome).
       const toolCalls = tm['tool_calls'] as ReadonlyArray<Record<string, unknown>>;
+      totalToolCalls += toolCalls.length;
       for (const tc of toolCalls) {
         expect(tc).toHaveProperty('tool');           // NOT tool_name
         expect(tc).toHaveProperty('args');           // NOT args_redacted
@@ -384,6 +386,11 @@ describe('agentic-actor-loop end-to-end', () => {
         expect(['success', 'tool-error', 'policy-refused']).toContain(tc['outcome']);
       }
     }
+    // Streamed input includes one tool_use (tu_1 Bash) + matching tool_result;
+    // regression guard only fires if at least one tool_call survived. A future
+    // refactor that drops `tool_calls` entirely would otherwise pass the
+    // per-entry assertions above silently (empty arrays satisfy `for...of`).
+    expect(totalToolCalls).toBeGreaterThan(0);
   });
 
   it('chain: budget-exhausted result maps to CodeAuthorExecutorFailure with stage agentic/budget-exhausted', async () => {

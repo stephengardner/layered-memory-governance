@@ -33,19 +33,45 @@ function makeStubExeca(stdoutLines: string[], opts: { exitCode?: number; stderr?
   // synchronously, before the promise resolves. The adapter does
   // `proc.stdout!` BEFORE `await proc`, so the stub MUST expose
   // `.stdout` on the synchronously-returned promise.
+  //
+  // Mirrors execa v9 behavior: calling `.kill()` rejects the
+  // result-promise with an Error whose `.isTerminated === true`.
+  // Without this, the adapter's catch-block flag-routing (budget /
+  // wall-clock / signal) is never exercised by tests, masking the
+  // scope bug where flags declared inside the try block were
+  // out-of-scope in the catch handler.
   return ((..._args: unknown[]) => {
     const stdoutStream = Readable.from(stdoutLines.map((l) => `${l}\n`));
     const stderrText = opts.stderr ?? '';
     const stderrStream = Readable.from([stderrText]);
-    const resultPromise = Promise.resolve({
-      stdout: stdoutLines.join('\n'),
-      stderr: stderrText,
-      exitCode: opts.exitCode ?? 0,
+    let resolveResult!: (v: unknown) => void;
+    let rejectResult!: (e: unknown) => void;
+    const resultPromise: Promise<unknown> = new Promise((res, rej) => {
+      resolveResult = res;
+      rejectResult = rej;
+    });
+    let killed = false;
+    const kill = (_signal?: NodeJS.Signals) => {
+      if (!killed) {
+        killed = true;
+        rejectResult(Object.assign(new Error('subprocess killed'), { isTerminated: true }));
+      }
+      return true;
+    };
+    // Resolve once stdout drains, unless kill() was called first.
+    stdoutStream.on('end', () => {
+      if (!killed) {
+        resolveResult({
+          stdout: stdoutLines.join('\n'),
+          stderr: stderrText,
+          exitCode: opts.exitCode ?? 0,
+        });
+      }
     });
     return Object.assign(resultPromise, {
       stdout: stdoutStream,
       stderr: stderrStream,
-      kill: (_signal?: NodeJS.Signals) => true,
+      kill,
     }) as never;
   }) as never;
 }
@@ -304,6 +330,10 @@ describe('ClaudeCodeAgentLoopAdapter -- budget guards', () => {
     };
     const result = await adapter.run(input);
     expect(result.kind).toBe('budget-exhausted');
+    // Pin the turn-count: max_turns=2 means exactly 2 placeholder turns
+    // were opened before the trip fired. A future regression that
+    // miscounts (e.g. opens N+1 before checking the cap) shows up here.
+    expect(result.turnAtomIds.length).toBe(2);
   });
 });
 

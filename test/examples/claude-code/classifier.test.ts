@@ -23,6 +23,12 @@ describe('classifyClaudeCliFailure', () => {
     expect(classifyClaudeCliFailure(null, 1, 'Error 429: rate limit hit')).toBe('transient');
   });
 
+  it('5xx upstream markers in stderr classify as transient', () => {
+    expect(classifyClaudeCliFailure(null, 1, 'Error 503: upstream unavailable')).toBe('transient');
+    expect(classifyClaudeCliFailure(null, 1, 'Bad Gateway')).toBe('transient');
+    expect(classifyClaudeCliFailure(null, 1, 'Gateway Timeout')).toBe('transient');
+  });
+
   it('generic non-zero exit is structural', () => {
     expect(classifyClaudeCliFailure(null, 1, 'Some unrelated error')).toBe('structural');
   });

@@ -111,6 +111,22 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
     let costUsd: number | undefined;
     let kind: AgentLoopResult['kind'] = 'completed';
     let failure: AgentLoopResult['failure'] | undefined;
+    // Hoisted out of the try block so the catch handler can route on
+    // them. Without this, execa rejecting the result-promise on kill
+    // (the documented v9 behavior: `subprocess.kill()` rejects with
+    // ExecaError where isTerminated=true) would land in the catch with
+    // these flags out of scope, and budget-exhausted / wall-clock /
+    // signal-abort would all be misclassified as `kind: 'error'` via
+    // the structural/transient default classifier.
+    let wallClockExpired = false;
+    let signalAborted = false;
+    let turnsExhausted = false;
+    // Captured from the CLI's `system` event (see stream-json-parser).
+    // Threaded into the finally-block session-atom update so the agent
+    // session records the model the CLI actually routed to (which may
+    // differ from the hardcoded entry-time default, e.g. when the
+    // operator's CLI auto-routes to a non-Opus default).
+    let capturedModelId: string | undefined;
     // Hoisted so `finally` can clean them up even when the try block
     // throws before reaching its own cleanup site. The wall-clock
     // timer, signal-abort listener, and SIGKILL fallback timer all
@@ -140,7 +156,8 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       // contract's max_wall_clock_ms. SIGTERM first, then SIGKILL
       // after killGracePeriodMs (default 5000ms) as a hard fallback.
       // Both .unref() so the timer never blocks process exit on its own.
-      let wallClockExpired = false;
+      // wallClockExpired is hoisted to the run() scope so the catch
+      // handler can route on it when execa rejects on kill().
       wallClockTimer = setTimeout(() => {
         wallClockExpired = true;
         try { proc.kill('SIGTERM'); } catch { /* already dead */ }
@@ -155,7 +172,8 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       // SIGTERM first, then SIGKILL after killGracePeriodMs as a hard
       // fallback. Set a flag so the post-loop classifier can map this
       // to kind: 'aborted' instead of relying on the exitCode.
-      let signalAborted = false;
+      // signalAborted is hoisted to the run() scope so the catch
+      // handler can route on it when execa rejects on kill().
       onAbort = () => {
         signalAborted = true;
         try { proc.kill('SIGTERM'); } catch { /* already dead */ }
@@ -177,8 +195,9 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       // max_turns guard: tripped in the tool-result branch when the
       // CLI is about to feed results back for the (max_turns+1)-th turn.
       // The substrate distinguishes structural exhaustion (this) from
-      // catastrophic wall-clock cap above.
-      let turnsExhausted = false;
+      // catastrophic wall-clock cap above. Hoisted to the run() scope
+      // so the catch handler can route on it when execa rejects on
+      // the post-trip kill().
 
       // Tool-use correlation maps. In-memory only, never persisted.
       // The (turn_id, index) pair is the only safe correlation under
@@ -226,6 +245,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
         for (const ev of events) {
           if (turnsExhausted || wallClockExpired || signalAborted) break;
           if (ev.kind === 'system') {
+            if (ev.modelId !== undefined) capturedModelId = ev.modelId;
             if (!pendingFirstTurnOpened) {
               currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, prompt);
               pendingFirstTurnOpened = true;
@@ -399,16 +419,46 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
         };
       }
     } catch (err) {
-      kind = 'error';
-      const errName = err instanceof Error ? err.name : '';
-      const isRedactorErr = errName === 'RedactorError';
-      const isBlobStoreErr = errName === 'BlobStoreError';
-      const pinnedCatastrophic = isRedactorErr || isBlobStoreErr;
-      failure = {
-        kind: pinnedCatastrophic ? 'catastrophic' : classifyClaudeCliFailure(err, null, ''),
-        reason: err instanceof Error ? err.message : String(err),
-        stage: isRedactorErr ? 'redactor' : (isBlobStoreErr ? 'blob-store' : 'claude-cli'),
-      };
+      // Precedence order matches the post-loop classifier above:
+      // signal-abort beats wall-clock beats turns-exhausted beats
+      // generic error. execa v9 rejects the result-promise when the
+      // subprocess is killed (ExecaError.isTerminated === true), so a
+      // budget trip that signals SIGTERM lands HERE, not in the
+      // try-block's procResult branch. Flag-routing keeps the
+      // classification consistent across both paths.
+      if (signalAborted) {
+        kind = 'aborted';
+        failure = {
+          kind: 'catastrophic',
+          reason: 'caller cancelled',
+          stage: 'signal',
+        };
+      } else if (wallClockExpired) {
+        kind = 'aborted';
+        failure = {
+          kind: 'catastrophic',
+          reason: 'wall-clock budget exhausted',
+          stage: 'wall-clock-cap',
+        };
+      } else if (turnsExhausted) {
+        kind = 'budget-exhausted';
+        failure = {
+          kind: 'structural',
+          reason: 'turn budget hit',
+          stage: 'max-turns-cap',
+        };
+      } else {
+        kind = 'error';
+        const errName = err instanceof Error ? err.name : '';
+        const isRedactorErr = errName === 'RedactorError';
+        const isBlobStoreErr = errName === 'BlobStoreError';
+        const pinnedCatastrophic = isRedactorErr || isBlobStoreErr;
+        failure = {
+          kind: pinnedCatastrophic ? 'catastrophic' : classifyClaudeCliFailure(err, null, ''),
+          reason: err instanceof Error ? err.message : String(err),
+          stage: isRedactorErr ? 'redactor' : (isBlobStoreErr ? 'blob-store' : 'claude-cli'),
+        };
+      }
     } finally {
       // Hoisted-cleanup discipline: clear timers + remove the abort
       // listener even when the try block throws. Each closure holds
@@ -426,7 +476,12 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
         await input.host.atoms.update(sessionId, {
           metadata: {
             agent_session: {
-              model_id: 'claude-opus-4-7',
+              // Prefer the model the CLI's `system` event reported (so
+              // operator CLIs that auto-route to a different default
+              // record the actual model that ran). Fall back to the
+              // entry-time default for runs that never reached the
+              // first system event (e.g. spawn-time error).
+              model_id: capturedModelId ?? 'claude-opus-4-7',
               adapter_id: 'claude-code-agent-loop',
               workspace_id: input.workspace.id,
               started_at: startedAt,
