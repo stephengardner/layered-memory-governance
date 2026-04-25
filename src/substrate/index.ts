@@ -16,6 +16,17 @@ export * as killSwitch from './kill-switch/index.js';
 export * as promotion from './promotion/index.js';
 export * as taint from './taint/index.js';
 
+// Agentic actor loop seams. camelCase namespace names match the
+// existing barrel style (canonMd, killSwitch) — no snake_case.
+export * as agentLoop from './agent-loop.js';
+export * as workspaceProvider from './workspace-provider.js';
+export * as blobStore from './blob-store.js';
+export * as redactor from './redactor.js';
+export * as agentBudget from './agent-budget.js';
+export * as policyReplayTier from './policy/replay-tier.js';
+export * as policyBlobThreshold from './policy/blob-threshold.js';
+export * as projectionsSessionTree from './projections/session-tree.js';
+
 export type * from './types.js';
 export type * from './interface.js';
 export * from './errors.js';
