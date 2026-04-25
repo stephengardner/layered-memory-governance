@@ -1,1 +1,2 @@
-export { ClaudeCodeAgentLoopSkeleton, type ClaudeCodeAgentLoopSkeletonOptions } from './loop.js';
+export { ClaudeCodeAgentLoopAdapter } from './loop.js';
+export type { ClaudeCodeAgentLoopOptions } from './loop.js';
