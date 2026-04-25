@@ -269,11 +269,14 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       }
     } catch (err) {
       kind = 'error';
-      const isRedactorErr = err instanceof Error && err.name === 'RedactorError';
+      const errName = err instanceof Error ? err.name : '';
+      const isRedactorErr = errName === 'RedactorError';
+      const isBlobStoreErr = errName === 'BlobStoreError';
+      const pinnedCatastrophic = isRedactorErr || isBlobStoreErr;
       failure = {
-        kind: isRedactorErr ? 'catastrophic' : classifyClaudeCliFailure(err, null, ''),
+        kind: pinnedCatastrophic ? 'catastrophic' : classifyClaudeCliFailure(err, null, ''),
         reason: err instanceof Error ? err.message : String(err),
-        stage: isRedactorErr ? 'redactor' : 'claude-cli',
+        stage: isRedactorErr ? 'redactor' : (isBlobStoreErr ? 'blob-store' : 'claude-cli'),
       };
     } finally {
       const completedAt = new Date().toISOString();
@@ -347,7 +350,17 @@ async function routePayload(
   threshold: number,
 ): Promise<{ readonly inline: string } | { readonly ref: BlobRef }> {
   if (Buffer.byteLength(payload, 'utf8') > threshold) {
-    const ref = await blobStore.put(payload);
+    let ref: BlobRef;
+    try {
+      ref = await blobStore.put(payload);
+    } catch (e) {
+      // Wrap with a typed marker so the run() catch block can pin
+      // failure.kind = 'catastrophic'. A BlobStore put failure on an
+      // over-threshold payload cannot fall through to inline (the
+      // payload may not fit safely in an atom), and re-running the
+      // CLI is unlikely to succeed without operator intervention.
+      throw Object.assign(new Error('blob-store put failed'), { name: 'BlobStoreError', cause: e });
+    }
     return { ref };
   }
   return { inline: payload };

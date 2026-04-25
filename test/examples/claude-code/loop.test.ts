@@ -262,4 +262,25 @@ describe('ClaudeCodeAgentLoopAdapter -- blob threshold', () => {
     expect(llmOutput).toHaveProperty('ref');
     expect(typeof llmOutput['ref']).toBe('string');
   });
+
+  it('blobStore.put throw on over-threshold payload pins failure to catastrophic with stage blob-store', async () => {
+    const host = createMemoryHost();
+    const explodingBlob: BlobStore = {
+      put: async () => { throw new Error('disk full'); },
+      get: async () => Buffer.alloc(0),
+      has: async () => false,
+    };
+    const longText = 'x'.repeat(8192);
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: longText }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    const input = { ...mkInput(host), blobStore: explodingBlob, blobThreshold: 4096 };
+    const result = await adapter.run(input);
+    expect(result.kind).toBe('error');
+    expect(result.failure?.kind).toBe('catastrophic');
+    expect(result.failure?.stage).toBe('blob-store');
+  });
 });
