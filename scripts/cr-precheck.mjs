@@ -26,7 +26,7 @@
  *     - {"type":"review_context", reviewType, currentBranch, baseBranch, workingDirectory}
  *     - {"type":"status", phase, status}
  *     - {"type":"finding", severity, fileName, codegenInstructions, suggestions}
- *         severity ∈ "critical" | "major" | "minor" (extra labels treated as minor)
+ *         severity in "critical" | "major" | "minor" (extra labels treated as minor)
  *     - {"type":"complete", status, findings}
  *     - {"type":"error", errorType, message, recoverable, details}
  */
@@ -300,7 +300,7 @@ async function main() {
 
   // Compute diff. Empty diff is a no-op (not a skip): nothing to review,
   // no audit atom emitted. The skip-vs-empty asymmetry matches the spec
-  // (§3.1 step 2) so the audit log doesn't fill with empty-diff noise.
+  // (spec section 3.1 step 2) so the audit log does not fill with empty-diff noise.
   let diff = '';
   try {
     diff = execSync(`git diff ${args.base}...HEAD`, { encoding: 'utf8' });
