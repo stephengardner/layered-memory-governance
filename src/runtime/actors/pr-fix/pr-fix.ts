@@ -28,6 +28,7 @@ import type {
   PrFixAction,
   PrFixOutcome,
   PrFixAdapters,
+  PrFixClassification,
 } from './types.js';
 import { mkPrFixObservationAtom, mkPrFixObservationAtomId } from './pr-fix-observation.js';
 
@@ -130,11 +131,48 @@ export class PrFixActor implements Actor<
 
   // The remaining lifecycle methods are filled in by subsequent tasks.
 
+  /**
+   * Map a `PrFixObservation` to one of the five `PrFixClassification`
+   * literals and a convergence key. The key uses interpolated numeric
+   * counts so two consecutive iterations with identical PR state
+   * produce identical keys; runActor halts on key-equality with
+   * `progress: false`. `obs.partial === true` short-circuits to
+   * `'partial'` with a fixed key (the do-not-decide signal).
+   */
   async classify(
-    _obs: PrFixObservation,
+    obs: PrFixObservation,
     _ctx: ActorContext<PrFixAdapters>,
   ): Promise<Classified<PrFixObservation>> {
-    throw new Error('PrFixActor.classify: not implemented (Task 7)');
+    if (obs.partial) {
+      return {
+        observation: obs,
+        key: 'pr-fix:partial=true',
+        metadata: {
+          classification: 'partial' satisfies PrFixClassification,
+          ciFailures: 0,
+          arch: 0,
+        },
+      };
+    }
+    const ciFailures = countCiFailures(obs);
+    const arch = countArchitectural(obs);
+    const totalFindings = obs.lineComments.length + obs.bodyNits.length;
+    const key = `pr-fix:lineN=${obs.lineComments.length}:bodyN=${obs.bodyNits.length}:cr=${summarizeReviewState(obs.submittedReviews)}:ci=${ciFailures}:arch=${arch}`;
+    let classification: PrFixClassification;
+    if (totalFindings === 0 && ciFailures === 0 && obs.mergeStateStatus !== 'BEHIND') {
+      classification = 'all-clean';
+    } else if (ciFailures > 0) {
+      classification = 'ci-failure';
+    } else if (arch > 0) {
+      classification = 'architectural';
+    } else {
+      classification = 'has-findings';
+    }
+    return {
+      observation: obs,
+      key,
+      metadata: { classification, ciFailures, arch },
+    };
   }
 
   async propose(
@@ -158,4 +196,50 @@ export class PrFixActor implements Actor<
   ): Promise<Reflection> {
     throw new Error('PrFixActor.reflect: not implemented (Task 11)');
   }
+}
+
+// ---------------------------------------------------------------------------
+// File-private classification helpers.
+//
+// Counters here are deliberately conservative: only completed+failure
+// check-runs and explicit failure/error legacy statuses count as CI
+// failures; anything pending (queued, in_progress, or `state: 'pending'`)
+// is excluded so a transient in-flight check never trips the escalate
+// branch. Architectural detection requires BOTH the literal severity
+// marker AND a coarse-grained substring match, so a finding that just
+// uses the word "major" in prose does not get escalated.
+// ---------------------------------------------------------------------------
+
+function countCiFailures(obs: PrFixObservation): number {
+  const checkRunFails = obs.checkRuns.filter(
+    (c) => c.status === 'completed' && c.conclusion === 'failure',
+  ).length;
+  const legacyFails = obs.legacyStatuses.filter(
+    (s) => s.state === 'failure' || s.state === 'error',
+  ).length;
+  return checkRunFails + legacyFails;
+}
+
+// Orange-circle emoji marker (\u{1F7E0}) followed by ' Major' (case-insensitive).
+// The reviewer's literal severity marker for major-severity findings.
+// Combined with ARCH_SUBSTR_RE so a stray "major" in prose does not
+// promote a comment to architectural.
+const ARCH_MARKER_RE = /\u{1F7E0}\s*Major/iu;
+const ARCH_SUBSTR_RE = /(architectural|large refactor|redesign)/i;
+
+function countArchitectural(obs: PrFixObservation): number {
+  let n = 0;
+  for (const c of [...obs.lineComments, ...obs.bodyNits]) {
+    if (ARCH_MARKER_RE.test(c.body) && ARCH_SUBSTR_RE.test(c.body)) n++;
+  }
+  return n;
+}
+
+// Compact summary of submitted-review states for the convergence key.
+// Sorted alphabetically + joined with `+` so two iterations with the
+// same set of reviewer states produce the same key regardless of
+// fetch order. Returns '' for an empty review set.
+function summarizeReviewState(reviews: ReadonlyArray<{ readonly state: string }>): string {
+  if (reviews.length === 0) return '';
+  return [...reviews].map((r) => r.state).sort().join('+');
 }

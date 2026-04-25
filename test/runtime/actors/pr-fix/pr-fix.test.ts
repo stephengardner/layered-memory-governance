@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { PrFixObservation, PrFixAction, PrFixOutcome, PrFixAdapters } from '../../../../src/runtime/actors/pr-fix/types.js';
+import type { PrFixObservation, PrFixAction, PrFixOutcome, PrFixAdapters, PrFixClassification } from '../../../../src/runtime/actors/pr-fix/types.js';
 import type { AtomId, PrFixObservationMeta, PrincipalId } from '../../../../src/substrate/types.js';
 import { mkPrFixObservationAtom } from '../../../../src/runtime/actors/pr-fix/pr-fix-observation.js';
 import { PrFixActor } from '../../../../src/runtime/actors/pr-fix/pr-fix.js';
@@ -8,6 +8,10 @@ import type {
   PrIdentifier,
   PrReviewAdapter,
   PrReviewStatus,
+  ReviewComment,
+  CheckRun,
+  LegacyStatus,
+  SubmittedReview,
 } from '../../../../src/runtime/actors/pr-review/adapter.js';
 import type {
   GhClient,
@@ -233,5 +237,222 @@ describe('PrFixActor.observe', () => {
     const stored = await host.atoms.get(obs.observationAtomId);
     expect(stored?.created_at).toBe(fixed);
     expect(stored?.last_reinforced_at).toBe(fixed);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PrFixActor.classify
+// ---------------------------------------------------------------------------
+
+const baseObs: PrFixObservation = {
+  pr: PR,
+  headBranch: 'feat/x',
+  headSha: 'abc1234',
+  baseRef: 'main',
+  lineComments: [],
+  bodyNits: [],
+  submittedReviews: [],
+  checkRuns: [],
+  legacyStatuses: [],
+  mergeStateStatus: 'CLEAN',
+  mergeable: true,
+  partial: false,
+  observationAtomId: 'pr-fix-obs-test' as AtomId,
+};
+
+function makeClassifyCtx(): ActorContext<PrFixAdapters> {
+  const host = createMemoryHost();
+  const adapters = {} as unknown as PrFixAdapters;
+  return makeStubCtx({ host, adapters });
+}
+
+function mkLineComment(overrides: Partial<ReviewComment> = {}): ReviewComment {
+  return {
+    id: overrides.id ?? 'c1',
+    author: overrides.author ?? 'coderabbitai',
+    path: overrides.path ?? 'src/foo.ts',
+    line: overrides.line ?? 10,
+    body: overrides.body ?? 'nit: fix this',
+    createdAt: overrides.createdAt ?? '2026-04-25T00:00:00.000Z',
+    resolved: overrides.resolved ?? false,
+    ...overrides,
+  };
+}
+
+describe('PrFixActor.classify', () => {
+  it("returns 'all-clean' when zero findings + zero CI failures + mergeStateStatus !== 'BEHIND'", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const c = await actor.classify(baseObs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('all-clean');
+    expect(c.observation).toBe(baseObs);
+    expect(c.key).toBe('pr-fix:lineN=0:bodyN=0:cr=:ci=0:arch=0');
+  });
+
+  it("returns 'partial' when obs.partial === true (short-circuits before count helpers)", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const obs: PrFixObservation = { ...baseObs, partial: true };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('partial');
+    expect(c.key).toBe('pr-fix:partial=true');
+  });
+
+  it("returns 'ci-failure' when at least one check-run is completed+failure", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const checkRuns: ReadonlyArray<CheckRun> = [
+      { name: 'lint', status: 'completed', conclusion: 'success' },
+      { name: 'test', status: 'completed', conclusion: 'failure' },
+    ];
+    const obs: PrFixObservation = { ...baseObs, checkRuns };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('ci-failure');
+    expect((c.metadata as { ciFailures: number }).ciFailures).toBe(1);
+    expect(c.key).toBe('pr-fix:lineN=0:bodyN=0:cr=:ci=1:arch=0');
+  });
+
+  it("returns 'ci-failure' when a legacy status is failure or error", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const legacyStatuses: ReadonlyArray<LegacyStatus> = [
+      { context: 'ci/build', state: 'failure', updatedAt: '2026-04-25T00:00:00.000Z' },
+      { context: 'ci/lint', state: 'error', updatedAt: '2026-04-25T00:00:00.000Z' },
+    ];
+    const obs: PrFixObservation = { ...baseObs, legacyStatuses };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('ci-failure');
+    expect((c.metadata as { ciFailures: number }).ciFailures).toBe(2);
+  });
+
+  it("returns 'has-findings' when there are line comments but no CI failure or arch marker", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const obs: PrFixObservation = {
+      ...baseObs,
+      lineComments: [mkLineComment({ id: 'c1', body: 'nit: rename this' })],
+    };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('has-findings');
+    expect(c.key).toBe('pr-fix:lineN=1:bodyN=0:cr=:ci=0:arch=0');
+  });
+
+  it("returns 'architectural' when a comment body has BOTH the orange-circle Major marker AND an architectural substring", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const archBody = '\u{1F7E0} Major: this requires an architectural rework of the loop';
+    const obs: PrFixObservation = {
+      ...baseObs,
+      lineComments: [mkLineComment({ id: 'c1', body: archBody })],
+    };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('architectural');
+    expect((c.metadata as { arch: number }).arch).toBe(1);
+    expect(c.key).toBe('pr-fix:lineN=1:bodyN=0:cr=:ci=0:arch=1');
+  });
+
+  it("matches 'large refactor' as architectural when combined with the marker", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const body = '\u{1F7E0} Major\nThis would require a large refactor to address.';
+    const obs: PrFixObservation = {
+      ...baseObs,
+      lineComments: [mkLineComment({ id: 'c1', body })],
+    };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('architectural');
+    expect((c.metadata as { arch: number }).arch).toBe(1);
+  });
+
+  it("matches 'redesign' as architectural when combined with the marker", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const body = '\u{1F7E0} Major - propose a redesign of the API surface';
+    const obs: PrFixObservation = {
+      ...baseObs,
+      lineComments: [mkLineComment({ id: 'c1', body })],
+    };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('architectural');
+  });
+
+  it("does NOT classify 'this is a major usability issue' as architectural (regression: marker required)", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    // The substring 'architectural' is present but the orange-circle Major
+    // marker is NOT, so this must fall through to has-findings.
+    const body = 'this is a major usability issue with architectural impact';
+    const obs: PrFixObservation = {
+      ...baseObs,
+      lineComments: [mkLineComment({ id: 'c1', body })],
+    };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('has-findings');
+    expect((c.metadata as { arch: number }).arch).toBe(0);
+  });
+
+  it("does NOT classify '\u{1F7E0} Major: typo here' (marker but no arch substring) as architectural", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const body = '\u{1F7E0} Major: typo on this line, please fix';
+    const obs: PrFixObservation = {
+      ...baseObs,
+      lineComments: [mkLineComment({ id: 'c1', body })],
+    };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('has-findings');
+    expect((c.metadata as { arch: number }).arch).toBe(0);
+  });
+
+  it('does NOT count pending check-runs (queued / in_progress) as failures', async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const checkRuns: ReadonlyArray<CheckRun> = [
+      { name: 'lint', status: 'queued', conclusion: null },
+      { name: 'test', status: 'in_progress', conclusion: null },
+    ];
+    const obs: PrFixObservation = { ...baseObs, checkRuns };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('all-clean');
+    expect((c.metadata as { ciFailures: number }).ciFailures).toBe(0);
+  });
+
+  it("does NOT count pending legacy statuses (state 'pending') as failures", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const legacyStatuses: ReadonlyArray<LegacyStatus> = [
+      { context: 'CodeRabbit', state: 'pending', updatedAt: '2026-04-25T00:00:00.000Z' },
+    ];
+    const obs: PrFixObservation = { ...baseObs, legacyStatuses };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect((c.metadata as { classification: PrFixClassification }).classification).toBe('all-clean');
+    expect((c.metadata as { ciFailures: number }).ciFailures).toBe(0);
+  });
+
+  it("convergence key carries concrete numeric counts (not literal 'N' placeholders)", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const lineComments = [
+      mkLineComment({ id: 'l1' }),
+      mkLineComment({ id: 'l2' }),
+    ];
+    const bodyNits = [mkLineComment({ id: 'b1', body: 'body nit' })];
+    const submittedReviews: ReadonlyArray<SubmittedReview> = [
+      { author: 'cr', state: 'CHANGES_REQUESTED', submittedAt: '2026-04-25T00:00:00.000Z' },
+      { author: 'human', state: 'APPROVED', submittedAt: '2026-04-25T00:00:01.000Z' },
+    ];
+    const obs: PrFixObservation = {
+      ...baseObs,
+      lineComments,
+      bodyNits,
+      submittedReviews,
+    };
+    const c = await actor.classify(obs, makeClassifyCtx());
+    expect(c.key).toBe('pr-fix:lineN=2:bodyN=1:cr=APPROVED+CHANGES_REQUESTED:ci=0:arch=0');
+    // Regression: literal 'N' placeholder MUST NOT appear
+    expect(c.key).not.toMatch(/lineN=N/);
+    expect(c.key).not.toMatch(/bodyN=N/);
+  });
+
+  it('cr= summary is order-independent (sorted alphabetically)', async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const orderA: ReadonlyArray<SubmittedReview> = [
+      { author: 'a', state: 'APPROVED', submittedAt: 't1' },
+      { author: 'b', state: 'COMMENTED', submittedAt: 't2' },
+    ];
+    const orderB: ReadonlyArray<SubmittedReview> = [
+      { author: 'b', state: 'COMMENTED', submittedAt: 't2' },
+      { author: 'a', state: 'APPROVED', submittedAt: 't1' },
+    ];
+    const cA = await actor.classify({ ...baseObs, submittedReviews: orderA }, makeClassifyCtx());
+    const cB = await actor.classify({ ...baseObs, submittedReviews: orderB }, makeClassifyCtx());
+    expect(cA.key).toBe(cB.key);
   });
 });
