@@ -8,7 +8,7 @@ This design must survive a 3-month-later review with 10x more actors, 10x more c
 
 | Canon | How this design satisfies it |
 |---|---|
-| `dev-design-decisions-3-month-review` | Strategy pluggability + adapter-neutral naming (`resumable_session_id`, not `cli_session_id`; `sessionPersistExtras`, not `cliSessionExtras`) means LangGraph or other future agent-loop adapters reuse the same shape without forking. The wrapper itself is generic; today's claude-code-specific logic lives only in the strategy implementation. |
+| `dev-design-decisions-3-month-review` | Strategy pluggability + adapter-neutral naming (`resumable_session_id`, not `resumable_session_id`; `sessionPersistExtras`, not `sessionPersistExtras`) means LangGraph or other future agent-loop adapters reuse the same shape without forking. The wrapper itself is generic; today's claude-code-specific logic lives only in the strategy implementation. |
 | `dev-indie-floor-org-ceiling` | Indie default is `[SameMachineCliResumeStrategy]` (zero config; works with the operator's existing local Claude CLI sessions). Org ceiling enables `BlobShippedSessionResumeStrategy` (with operator-tuned redactor + BYO BlobStore + explicit consent). Same wrapper code; capability dialed by constructor options. See §6.5. |
 | `dev-substrate-not-prescription` | The wrapper + strategies live in `examples/agent-loops/resume-author/`, not `src/`. The only `src/` touch is `BlobStore.describeStorage()` (general-purpose; useful for any caller wanting destination introspection). No actor names, no PR-specific logic, no claude-code-specific surface in `src/`. |
 | `dev-easy-vs-pluggability-tradeoff` | The "easy" path would be embedding resume into `ClaudeCodeAgentLoopAdapter` directly. Rejected for pluggability: a wrapper-pattern keeps the existing adapter narrow ("spawn fresh CLI session") and lets operators compose. See §2 + §3.7. |
@@ -16,6 +16,8 @@ This design must survive a 3-month-later review with 10x more actors, 10x more c
 | `inv-conflict-detection-at-write-time` | Capture-side `onSessionPersist` fires synchronously on session-end before the session atom is finalized; any redactor/blob-store error surfaces immediately as a session failure, not a delayed nightly batch. |
 | `inv-l3-requires-human-default` | Capture-side strategy writes to `extra` on a non-canon (L0) atom; no L3 promotion involved. Resume-side never escalates. |
 | `inv-design-kill-switch-first` | Wrapper inherits the substrate's existing kill-switch behavior (signal propagated through `AgentLoopInput.signal`); both resume + fallback paths abort cooperatively. |
+| `dev-coderabbit-cli-pre-push` | PR6 itself ships through this gate: task #123 lands first, then PR6's diff goes through CR CLI locally before push. See §9.2. |
+| `dev-implementation-canon-audit-loop` | Plan dispatches a canon-compliance auditor sub-agent per task during implementation, IN ADDITION to spec-compliance and code-quality reviewers. The auditor reads the canon + the diff + the threat-model section and returns Approved or Issues Found. See §9.1 + §9.3. |
 
 ## 1. Purpose
 
@@ -78,30 +80,41 @@ Reference `FileBlobStore` (`examples/blob-stores/file/`) implements: returns `{ 
 
 Two changes, both additive:
 
-1. **Persist `cli_session_id`.** The adapter extracts the CLI's `session_id` UUID from stream-json's system-init message (already captured at `examples/agent-loops/claude-code/stream-json-parser.ts:50`). On session-atom finalization, write this UUID to `metadata.agent_session.extra.cli_session_id`. No schema change; `AgentSessionMeta.extra` is the documented extension slot.
+1. **Persist `resumable_session_id`.** The adapter extracts the CLI's `session_id` UUID from stream-json's system-init message (already captured at `examples/agent-loops/claude-code/stream-json-parser.ts:50`). On session-atom finalization, write this UUID to `metadata.agent_session.extra.resumable_session_id`. No schema change; `AgentSessionMeta.extra` is the documented extension slot.
 
 2. **Optional capture hook.** New constructor option:
 
    ```ts
-   readonly cliSessionExtras?: (input: {
+   readonly sessionPersistExtras?: (input: {
      readonly sessionId: string;             // CLI UUID
      readonly workspace: Workspace;
      readonly host: Host;
    }) => Promise<Record<string, unknown>>;
    ```
 
-   Called once after a successful session ends, BEFORE the session atom is updated for finalization. The hook's return value is merged into `metadata.agent_session.extra` (after the standard `cli_session_id` is added). On hook throw: log via host audit and continue with finalization (the failure record on the session atom is unchanged); the adapter does NOT fail-loud on a hook exception because the hook is an extension surface, not a contract obligation.
+   Called once after a successful session ends, BEFORE the session atom is updated for finalization. The hook's return value is merged into `metadata.agent_session.extra` (after the standard `resumable_session_id` is added). On hook throw: log via host audit and continue with finalization (the failure record on the session atom is unchanged); the adapter does NOT fail-loud on a hook exception because the hook is an extension surface, not a contract obligation.
 
 ### 3.3 `ResumeAuthorAgentLoopAdapter` -- the wrapper
+
+The wrapper is actor-neutral. The actor (or runner script) provides an `assembleCandidates` callback at construction; the wrapper invokes it per call to assemble the session-candidate list passed to strategies. PR-fix's callback walks `dispatched_session_atom_id`; future actors plug different walks (Auditor, Migrator, etc.) without touching the wrapper.
 
 ```ts
 export interface ResumeAuthorAdapterOptions {
   readonly fallback: AgentLoopAdapter;        // typically ClaudeCodeAgentLoopAdapter
   readonly host: Host;
   readonly strategies: ReadonlyArray<SessionResumeStrategy>;  // tried in order
-  /** PR observation atom this fix-iteration is acting on; the wrapper walks back from this. */
-  readonly prObservationAtomId: AtomId;
-  /** Default 8 hours. Sessions older than this are treated as stale and skipped. */
+  /**
+   * Caller-supplied callback that assembles candidate sessions for the current
+   * fix-iteration. Invoked once per `run(input)` call. The callback does whatever
+   * walk makes sense for its actor (PR-fix walks dispatched_session_atom_id from
+   * the prior PR observation; auditor walks audit-event chains; etc.). The wrapper
+   * does NOT interpret atoms; it only iterates the returned list against strategies.
+   *
+   * Returning an empty array is fine: strategies will all return null and the
+   * wrapper delegates to `fallback`.
+   */
+  readonly assembleCandidates: (input: AgentLoopInput) => Promise<ReadonlyArray<CandidateSession>>;
+  /** Default 8 hours. Strategies SHOULD respect this; some may apply their own additional staleness rules. */
   readonly maxStaleHours?: number;
 }
 
@@ -116,12 +129,13 @@ export class ResumeAuthorAgentLoopAdapter implements AgentLoopAdapter {
 
 `run(input)` semantics:
 
-1. Build a `ResumeContext` from the prior PR observation chain: walk `dispatched_session_atom_id` pointers on the PR's prior `pr-fix-observation` and `pr-observation` atoms, collect candidate `agent-session` atoms newer than `maxStaleHours`, sorted newest-first.
-2. Iterate strategies in declaration order; first non-null result wins. Each strategy returns either `null` ("can't help, try next") or a `ResolvedSession` with the resumable CLI session id (and any side effects already performed, e.g., session-file rehydration).
-3. If a strategy resolves: spawn `claude --resume <uuid> -p <prompt>` (or equivalent). On success, write a NEW `agent-session` atom for this run with `metadata.agent_session.extra.resumed_from_atom_id` and `extra.resume_strategy_used` set; chain via `provenance.derived_from`.
-4. If resume's CLI invocation returns a structural failure ("session not found", session corrupt, model-side context overflow), the wrapper delegates to `opts.fallback.run(input)`. Both attempts get separate `agent-session` atoms cross-referenced for audit.
-5. If resume's CLI returns a transient failure (rate-limit, network blip per `defaultClassifyFailure`), the wrapper retries within bounds (matches the fallback's retry policy) before delegating.
-6. If NO strategy resolves: skip resume entirely, delegate to `opts.fallback.run(input)`.
+1. Call `opts.assembleCandidates(input)` to get the candidate session list (newest-first; up to `maxStaleHours` filtering can also happen here, or be deferred to strategies).
+2. Build a `ResumeContext` from `{ candidateSessions, workspace: input.workspace, host: opts.host }`. Iterate `opts.strategies` in declaration order; first non-null `ResolvedSession` wins.
+3. If a strategy resolves: invoke `resolved.preparation?.()` if present (e.g., session-file rehydration writes `.jsonl` to local CLI cache). Then spawn the resume invocation via the underlying CLI / SDK using `resolved.resumableSessionId`. On success, write a NEW `agent-session` atom for this run with `metadata.agent_session.extra.resumed_from_atom_id` (= `resolved.resumedFromSessionAtomId`) and `extra.resume_strategy_used` (= `resolved.strategyName`); chain via `provenance.derived_from`. Return `AgentLoopResult` as the underlying invocation produced it.
+4. If resume's invocation returns ANY non-`completed` result OR throws, the wrapper delegates to `opts.fallback.run(input)`. The wrapper does NOT retry resume itself; the underlying adapter (the spawn-call inside `findResumableSession.preparation`-and-spawn path) handles its own retries the same way the fallback does. Compounded retry is a known anti-pattern. Both attempts get separate `agent-session` atoms; the wrapper writes a small `extra.fallback_invoked: true` field on the original resumed atom for audit clarity.
+5. If NO strategy resolves (all return null): skip resume entirely, delegate to `opts.fallback.run(input)` directly.
+
+The intent is that the wrapper itself is policy-free: it doesn't classify failures, doesn't retry, doesn't escalate. Strategies own resume-specific decisions; the fallback owns its own behavior; the wrapper only orchestrates the try-resume-then-fallback shape.
 
 ### 3.4 `SessionResumeStrategy` interface (actor-neutral)
 
@@ -184,13 +198,18 @@ export interface SessionResumeStrategy {
 Concrete claude-code adapter implementation. Filters candidates to those produced by `'claude-code-agent-loop'` (the adapter id PR1+PR3 wired) so it skips sessions from incompatible adapters; returns the freshest within `maxStaleHours`. No preparation needed (`claude --resume` reads from the local `~/.claude/projects/<slug>/` directly).
 
 ```ts
+const DEFAULT_MAX_STALE_HOURS = 8;
+const HOUR_MS = 60 * 60 * 1000;
+
 export class SameMachineCliResumeStrategy implements SessionResumeStrategy {
   readonly name = 'same-machine-cli';
-  constructor(opts?: { maxStaleHours?: number }) {}
+  private readonly maxStaleMs: number;
+  constructor(opts?: { maxStaleHours?: number }) {
+    this.maxStaleMs = (opts?.maxStaleHours ?? DEFAULT_MAX_STALE_HOURS) * HOUR_MS;
+  }
   async findResumableSession(ctx: ResumeContext): Promise<ResolvedSession | null> {
     const compatible = ctx.candidateSessions.filter(s => s.adapterId === 'claude-code-agent-loop');
-    const fresh = compatible.find(s =>
-      Date.now() - new Date(s.startedAt).getTime() < (this.maxStaleMs ?? DEFAULT));
+    const fresh = compatible.find(s => Date.now() - new Date(s.startedAt).getTime() < this.maxStaleMs);
     if (!fresh) return null;
     return {
       resumableSessionId: fresh.resumableSessionId,
@@ -261,8 +280,16 @@ async findResumableSession(ctx): Promise<ResolvedSession | null> {
       preparation: async () => {
         const bytes = await this.blobStore.get(blobRef as BlobRef);
         // Resolve the local CLI cache path: ~/.claude/projects/<slug>/<uuid>.jsonl
-        // where <slug> is the cwd-derived project slug Claude Code uses.
-        // Write bytes there. Permissions: 0600.
+        // where <slug> is Claude Code CLI's project slug for the workspace cwd.
+        // Slug derivation (CLI v2.x convention; verify on each --resume version
+        // bump): take absolute cwd, drop the leading separator, replace remaining
+        // path separators (`/` on POSIX, `\` on Windows) with `-`. Example:
+        // `/Users/op/memory-governance` -> `Users-op-memory-governance`.
+        // The strategy's CLI-version pin (cliVersion option) is exactly the gate
+        // that catches a CLI version where this convention changes; a mismatch
+        // makes findResumableSession return null and the wrapper falls through.
+        // Write bytes to that path. Permissions: 0600. Parent directories
+        // created with mode 0700.
       },
     };
   }
@@ -308,7 +335,7 @@ The `prObservationAtomId` is sourced from PrFixActor's per-iteration observation
 
 ```
 [author Claude session ends successfully on machine A]
-     -> ClaudeCodeAgentLoopAdapter.cliSessionExtras hook fires
+     -> ClaudeCodeAgentLoopAdapter.sessionPersistExtras hook fires
      -> BlobShippedSessionResumeStrategy.onSessionPersist runs:
             reads ~/.claude/projects/<slug>/<uuid>.jsonl
             applies redactor
@@ -328,7 +355,7 @@ PrFixActor.apply -> ctx.adapters.agentLoop.run(input)
                 SameMachineCliResumeStrategy.findResumableSession:
                     pick freshest candidate within maxStaleHours
                     return ResolvedSession{ resumableSessionId, ... }
-            spawn `claude --resume <cli_session_id> -p <prompt>` via execa
+            spawn `claude --resume <resumable_session_id> -p <prompt>` via execa
             (success path) write new agent-session atom with resumed_from_atom_id, return AgentLoopResult
             (structural failure) delegate to fallback.run(input); both atoms recorded
      -> AgentLoopResult flows back to PrFixActor.apply -> commit-SHA verify -> thread resolve
@@ -400,7 +427,7 @@ Note: today's `ClaudeCodeAgentLoopAdapter` does NOT capture the .jsonl by defaul
 
 ### 6.4 What if the wrapper is misconfigured (no fallback)?
 
-If `opts.fallback` is undefined or throws on `run`, the wrapper has no recovery. Construct-time guard: `fallback` is required (TypeScript `readonly fallback: AgentLoopAdapter` already enforces). Runtime: any throw from the fallback propagates as the wrapper's throw. No additional fallback chain (would compound failure modes).
+If `opts.fallback` is undefined: the TypeScript `readonly fallback: AgentLoopAdapter` enforces presence at compile time. The runtime constructor adds a defensive `if (!opts.fallback) throw` so JS callers get a clear error rather than a delayed `TypeError` mid-`run`. If the fallback's `run()` throws synchronously (rare; constructor-stage misconfig usually): the wrapper does NOT catch — the synchronous throw propagates as the wrapper's throw. Consumer's responsibility to construct a working fallback. No additional fallback chain (would compound failure modes).
 
 ### 6.5 Indie-floor + org-ceiling fit
 
@@ -437,7 +464,7 @@ docs/superpowers/plans/2026-04-25-resume-author-agent-loop-adapter.md         # 
 
 ### 8.1 Unit
 
-- `walkAuthorSessions(host, prObservationAtomId, maxStaleMs)` returns the candidate list correctly across stale + missing-extra + non-`pr-fix-observation` atoms in the chain.
+- `walkAuthorSessions(host, prObservationAtomId, maxStaleMs)` is the example-level helper PrFixActor's runner uses to construct its `assembleCandidates` callback (per §6.1 Option I). Tests verify the helper returns the candidate list correctly across stale + missing-extra + non-`pr-fix-observation` atoms in the chain. The helper is NOT part of the wrapper's public API; it lives in `examples/agent-loops/resume-author/walk-author-sessions.ts` as a reference for actor authors.
 - `SameMachineCliResumeStrategy` returns the freshest candidate; null on empty; null on all-stale.
 - `BlobShippedSessionResumeStrategy` constructor: throws on `acknowledgeSessionDataFlow: false`, missing redactor, identity redactor, in-tree FileBlobStore. Logs INFO on remote BlobStore.
 - `BlobShippedSessionResumeStrategy.findResumableSession`: skips on missing blob ref, skips on cli-version mismatch, returns ResolvedSession with preparation closure on match.
@@ -448,7 +475,7 @@ docs/superpowers/plans/2026-04-25-resume-author-agent-loop-adapter.md         # 
 
 End-to-end on `MemoryHost`:
 
-1. Seed a prior `pr-fix-observation` atom on PR (owner, repo, number, head_sha) with `dispatched_session_atom_id` -> a stub `agent-session` atom whose `extra.cli_session_id` is `'test-uuid-001'`.
+1. Seed a prior `pr-fix-observation` atom on PR (owner, repo, number, head_sha) with `dispatched_session_atom_id` -> a stub `agent-session` atom whose `extra.resumable_session_id` is `'test-uuid-001'`.
 2. Construct `ResumeAuthorAgentLoopAdapter` with `[stubResumeStrategy]` that returns ResolvedSession; fallback that returns canned AgentLoopResult.
 3. Call `adapter.run(input)`. Assert: stubResumeStrategy was called; fallback was NOT called; AgentLoopResult carries `extra.resume_strategy_used: 'stub'`; atom store gained one new agent-session atom whose `extra.resumed_from_atom_id` matches the seed.
 
@@ -456,7 +483,7 @@ Mirror the test for the failure path: stubResumeStrategy returns null; fallback 
 
 ### 8.3 Regression guards
 
-- A claude-code session WITHOUT `extra.cli_session_id` (legacy session predating PR6) MUST be skipped by SameMachineCliResumeStrategy without throwing.
+- A claude-code session WITHOUT `extra.resumable_session_id` (legacy session predating PR6) MUST be skipped by SameMachineCliResumeStrategy without throwing.
 - A `BlobStore` whose `describeStorage` is missing (legacy implementation) is treated as remote (defensive default); the constructor logs and proceeds. (Belt-and-suspenders for back-compat; actual back-compat is the new method being added by PR6 itself.)
 
 ### 8.4 What NOT to test
@@ -465,12 +492,29 @@ Per YAGNI:
 - No tests against a real Claude Code CLI process. The ClaudeCodeAgentLoopAdapter integration test in PR3 covers that surface; PR6 stubs the spawn.
 - No tests against a real network BlobStore. The trust-transfer guard is documented; the test suite covers the local-file destination guard.
 
-## 9. Pre-flight before push
+## 9. Implementation discipline + pre-flight
+
+### 9.1 Per-task canon-compliance audit (during implementation)
+
+Per canon `dev-implementation-canon-audit-loop`, every substantive task in the plan dispatches a separate canon-compliance auditor sub-agent BEFORE commit. The auditor receives:
+
+- The canon (CLAUDE.md plus relevant `.lag/atoms/`)
+- The plan task being executed
+- The implementer's diff (git diff against the prior task's HEAD)
+- The threat model section (§5) for tasks touching `BlobShippedSessionResumeStrategy`, the destination guard, the redactor contract, or the `BlobStore.describeStorage()` substrate change
+
+The auditor evaluates: canon adherence, security/correctness concerns, substrate purity, indie-floor/org-ceiling fit, pluggability, spec match. Returns Approved or Issues Found; on Issues Found the implementer fixes and the auditor re-reviews before commit. This runs IN ADDITION TO the existing spec-compliance reviewer and code-quality reviewer in `superpowers:subagent-driven-development`. The plan's task template MUST include a "canon-audit" step between "implement + tests pass" and "commit."
+
+### 9.2 Pre-push gates
 
 1. Task #123 (CR CLI capability in repo) MUST land first. Once available, run CR CLI on the PR6 diff locally and address every critical/major finding before pushing. Per canon `dev-coderabbit-cli-pre-push`.
 2. Standard pre-push grep: emdashes, AI attribution, design/ refs in src/, PR-phase markers in src/.
-3. `npm run typecheck && npm run build && npx vitest run` — all green.
+3. `npm run typecheck && npm run build && npx vitest run` -- all green.
 4. Push via `node scripts/git-as.mjs lag-ceo`. Open PR via `node scripts/gh-as.mjs lag-ceo`.
+
+### 9.3 Final canon-audit before push
+
+In addition to per-task canon-audit, dispatch one final canon-compliance auditor on the FULL diff before pushing. This catches cross-task drift (e.g., a refactor on task 4 that subtly violates an invariant established in task 2; per-task audit on task 4 alone may not surface this). Same auditor profile, broader scope.
 
 ## 10. Open follow-ups (not PR6)
 
