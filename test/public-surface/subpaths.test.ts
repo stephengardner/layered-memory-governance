@@ -51,6 +51,8 @@ import * as actorsShim from '../../src/actors/index.js';
 import * as actorsReal from '../../src/runtime/actors/index.js';
 import * as prLandingShim from '../../src/actors/pr-landing/index.js';
 import * as prLandingReal from '../../src/runtime/actors/pr-landing/index.js';
+import * as prFixShim from '../../src/actors/pr-fix/index.js';
+import * as prFixReal from '../../src/runtime/actors/pr-fix/index.js';
 import * as codeAuthorShim from '../../src/actors/code-author/index.js';
 import * as codeAuthorReal from '../../src/runtime/actors/code-author/index.js';
 import * as prReviewShim from '../../src/actors/pr-review/index.js';
@@ -220,6 +222,18 @@ const cases: readonly SubpathCase[] = [
       'renderPrObservationBody',
     ],
     classes: ['PrLandingActor'],
+  },
+  {
+    subpath: '/actors/pr-fix',
+    mod: prFixShim,
+    real: prFixReal,
+    expected: [
+      'PrFixActor',
+      'mkPrFixObservationAtom',
+      'mkPrFixObservationAtomId',
+      'renderObservationContent',
+    ],
+    classes: ['PrFixActor'],
   },
   {
     subpath: '/actors/code-author',

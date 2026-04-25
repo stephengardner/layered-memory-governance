@@ -44,6 +44,10 @@
       "import": "./dist/actors/pr-landing/index.js",
       "types": "./dist/actors/pr-landing/index.d.ts"
     },
+    "./actors/pr-fix": {
+      "import": "./dist/actors/pr-fix/index.js",
+      "types": "./dist/actors/pr-fix/index.d.ts"
+    },
     "./actors/code-author": {
       "import": "./dist/actors/code-author/index.js",
       "types": "./dist/actors/code-author/index.d.ts"
@@ -109,8 +113,10 @@
     "human-in-the-loop"
   ],
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc -b tsconfig.examples.json",
+    "build:src": "tsc -b tsconfig.json",
+    "build:examples": "tsc -b tsconfig.examples.json",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
