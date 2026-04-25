@@ -48,6 +48,21 @@ export interface AcquireInput {
   readonly baseRef: string;
   /** Dispatch correlation id; ties the workspace to the chain. */
   readonly correlationId: string;
+  /**
+   * Optional: existing branch (local or remote) to check out in the
+   * acquired workspace. When set, the provider checks out this branch
+   * directly (e.g., `git worktree add <path> <branch>`) so commits go
+   * on it; `baseRef` becomes the comparison baseline for diff
+   * operations rather than the parent of a new branch. When unset,
+   * the provider creates a new branch off `baseRef` (the existing
+   * default, matching PR2's AgenticCodeAuthorExecutor flow).
+   *
+   * Providers that do not support checking out an existing branch MUST
+   * throw with a recognizable error rather than silently fall through
+   * to baseRef behavior; that would let a caller think it got the
+   * pinned branch when it did not.
+   */
+  readonly checkoutBranch?: string;
 }
 
 export interface Workspace {
