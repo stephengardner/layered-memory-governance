@@ -25,6 +25,8 @@ import type {
   AgentLoopResult,
 } from '../../../src/substrate/agent-loop.js';
 import type { BlobStore, BlobRef } from '../../../src/substrate/blob-store.js';
+import type { Host } from '../../../src/substrate/interface.js';
+import type { Workspace } from '../../../src/substrate/workspace-provider.js';
 import type {
   AgentSessionMeta,
   AgentTurnMeta,
@@ -43,6 +45,21 @@ export interface ClaudeCodeAgentLoopOptions {
   readonly verbose?: boolean;
   readonly execImpl?: typeof ExecaType;
   readonly killGracePeriodMs?: number;
+  /**
+   * Optional capture hook called after a successful session ends, BEFORE
+   * the session atom is finalized. The hook's return value is merged into
+   * `metadata.agent_session.extra` (after `resumable_session_id` is added).
+   * On hook throw: logged via host audit; the session still completes
+   * normally and its `failure` record is unchanged.
+   *
+   * Mechanism-only naming so future agent-loop adapters that adopt the
+   * same shape do not need to fork the field name.
+   */
+  readonly sessionPersistExtras?: (input: {
+    readonly sessionId: string;
+    readonly workspace: Workspace;
+    readonly host: Host;
+  }) => Promise<Readonly<Record<string, unknown>>>;
 }
 
 export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
@@ -127,6 +144,13 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
     // differ from the hardcoded entry-time default, e.g. when the
     // operator's CLI auto-routes to a non-Opus default).
     let capturedModelId: string | undefined;
+    // Captured from the same CLI `system` event. The CLI's own session
+    // UUID, persisted on success into
+    // `metadata.agent_session.extra.resumable_session_id` so callers
+    // can reference (or attempt to resume) this session via an
+    // adapter-neutral token. Field name is mechanism-only; the
+    // underlying value is opaque to consumers.
+    let capturedResumableSessionId: string | undefined;
     // Hoisted so `finally` can clean them up even when the try block
     // throws before reaching its own cleanup site. The wall-clock
     // timer, signal-abort listener, and SIGKILL fallback timer all
@@ -246,6 +270,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
           if (turnsExhausted || wallClockExpired || signalAborted) break;
           if (ev.kind === 'system') {
             if (ev.modelId !== undefined) capturedModelId = ev.modelId;
+            if (ev.sessionId !== undefined) capturedResumableSessionId = ev.sessionId;
             if (!pendingFirstTurnOpened) {
               currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, prompt);
               pendingFirstTurnOpened = true;
@@ -471,6 +496,37 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       if (input.signal !== undefined && onAbort !== null) {
         input.signal.removeEventListener('abort', onAbort);
       }
+      // Build the `extra` slot for the finalized session atom. On
+      // successful completion we always persist the captured CLI
+      // session UUID under the adapter-neutral key
+      // `resumable_session_id`, then merge in whatever the optional
+      // `sessionPersistExtras` capture hook returned. The hook is an
+      // extension surface, not a contract obligation: a hook throw is
+      // logged via the host auditor and swallowed; the session atom's
+      // failure record is unaffected.
+      let extras: Record<string, unknown> = {};
+      const sessionSucceeded = kind === 'completed' && failure === undefined;
+      if (sessionSucceeded && capturedResumableSessionId !== undefined) {
+        extras['resumable_session_id'] = capturedResumableSessionId;
+      }
+      if (sessionSucceeded && this.opts.sessionPersistExtras !== undefined) {
+        try {
+          const hookResult = await this.opts.sessionPersistExtras({
+            sessionId: capturedResumableSessionId ?? '',
+            workspace: input.workspace,
+            host: input.host,
+          });
+          extras = { ...extras, ...hookResult };
+        } catch (err) {
+          await input.host.auditor.log({
+            kind: 'agent-session-extras-hook-failed',
+            principal_id: input.principal,
+            timestamp: new Date().toISOString(),
+            refs: { atom_ids: [sessionId] },
+            details: { reason: err instanceof Error ? err.message : String(err) },
+          }).catch(() => undefined);
+        }
+      }
       const completedAt = new Date().toISOString();
       try {
         await input.host.atoms.update(sessionId, {
@@ -494,6 +550,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
                 ...(costUsd !== undefined ? { usd: costUsd } : {}),
               },
               ...(failure !== undefined ? { failure } : {}),
+              ...(Object.keys(extras).length > 0 ? { extra: extras } : {}),
             } satisfies AgentSessionMeta,
           },
         });
