@@ -338,6 +338,41 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     expect(checkoutCall!.args).toContain(result.branchName);
   });
 
+  it('sanitizer collapses long disallowed-char runs without polynomial backtracking', async () => {
+    // Adversarial plan id mixes 60 chars of `?` (each disallowed) with
+    // 60 chars of `-` (kept literal in the old impl, still collapses
+    // in the new one). The CodeQL polynomial-redos heuristic flagged
+    // the previous regex-based sanitizer; this regression test pins
+    // output shape so a future revert cannot silently re-introduce
+    // the unsafe form. Linearity is guaranteed by the impl (single
+    // pass, length-bounded); we assert correctness here.
+    const adversarial = 'a' + '?'.repeat(60) + '-'.repeat(60) + 'b';
+    const plan = mkPlan(adversarial, '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    }, '');
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({ number: 1, html_url: '', url: '', node_id: '', state: 'open' })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'nonce1',
+      execImpl,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-id-1' as AtomId });
+    if (result.kind !== 'dispatched') throw new Error('expected dispatched');
+    // The runs of `?` and `-` collapse to a single `-` between the
+    // bookend letters; the surrounding `code-author/` and `-nonce1`
+    // segments come from the executor wrapping.
+    expect(result.branchName).toBe('code-author/a-b-nonce1');
+  });
+
   it('observationAtomId from invoker is threaded into PR body footer (not a placeholder)', async () => {
     const plan = mkPlan('plan-threaded', '# plan\n\ncontent', {
       target_paths: ['README.md'],

@@ -576,14 +576,36 @@ async function readTargetContents(
 }
 
 function sanitizeGitRefComponent(s: string): string {
-  // Keep ASCII letters, digits, dot, underscore, slash, dash.
-  // Replace anything else with '-'. Collapse repeat dashes so a
-  // pathological id does not produce a `---` run. Trim leading and
-  // trailing dashes + dots so we never produce `.lock`, `-`, `./..`
-  // shapes that git rejects.
-  return s
-    .replace(/[^A-Za-z0-9._/-]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^[.\-/]+|[.\-/]+$/g, '')
-    .slice(0, 120) || 'unnamed';
+  // Single-pass linear sanitizer (no regex). Allowed chars
+  // [A-Za-z0-9._/] are kept verbatim; '-' and any disallowed char
+  // collapse into a single '-'. Length-bounded to 120. Final trim of
+  // leading/trailing '.', '-', '/' keeps git-ref-illegal shapes
+  // (`.lock`, `-`, `./..`) out of the output.
+  //
+  // This is provably linear in the input length. The previous
+  // regex-based form (`/^[.\-/]+|[.\-/]+$/g` with `/-+/g`) tripped
+  // CodeQL's polynomial-redos heuristic on adversarial dash-runs.
+  if (s.length === 0) return 'unnamed';
+  const buf: string[] = [];
+  let prevDash = false;
+  for (let i = 0; i < s.length && buf.length < 120; i++) {
+    const ch = s.charCodeAt(i);
+    const isAlpha = (ch >= 0x41 && ch <= 0x5a) || (ch >= 0x61 && ch <= 0x7a);
+    const isDigit = ch >= 0x30 && ch <= 0x39;
+    const isDot = ch === 0x2e;
+    const isUnderscore = ch === 0x5f;
+    const isSlash = ch === 0x2f;
+    if (isAlpha || isDigit || isDot || isUnderscore || isSlash) {
+      buf.push(s[i]!);
+      prevDash = false;
+    } else if (!prevDash) {
+      buf.push('-');
+      prevDash = true;
+    }
+  }
+  let start = 0;
+  let end = buf.length;
+  while (start < end && (buf[start] === '.' || buf[start] === '-' || buf[start] === '/')) start++;
+  while (end > start && (buf[end - 1] === '.' || buf[end - 1] === '-' || buf[end - 1] === '/')) end--;
+  return start < end ? buf.slice(start, end).join('') : 'unnamed';
 }
