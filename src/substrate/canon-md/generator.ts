@@ -50,10 +50,6 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   // tooling path explicitly dumps non-L3 atoms.
   'agent-session',
   'agent-turn',
-  // L0 actor-orchestration record; same canon-applier filtering as
-  // agent-session/agent-turn. Included for deterministic ordering of
-  // debug dumps that explicitly include non-L3 atoms.
-  'pr-fix-observation',
 ];
 
 const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
@@ -82,7 +78,6 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   // explicitly dumps non-L3 atoms (e.g. a session-replay debugger).
   'agent-session': 'Agent Sessions',
   'agent-turn': 'Agent Turns',
-  'pr-fix-observation': 'PR Fix Observations',
 };
 
 export interface RenderOptions {

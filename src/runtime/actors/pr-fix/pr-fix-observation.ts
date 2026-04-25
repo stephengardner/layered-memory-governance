@@ -1,12 +1,18 @@
 /**
- * pr-fix-observation atom builder + content renderer + id generator.
+ * pr-fix observation atom builder + content renderer + id generator.
  *
- * Mechanism: writes one atom per `PrFixActor.observe()` pass. The atom
- * captures the structurally-fixed snapshot (counts, classification,
- * mergeable state) the actor classified on. Subsequent writes chain
- * via `provenance.derived_from` to the prior observation for the same
- * PR, so consumers can walk the chain without scanning the whole
- * store.
+ * Mechanism: writes one generic `observation` atom per actor `observe()`
+ * pass. The atom captures the structurally-fixed snapshot (counts,
+ * classification, mergeable state) the actor classified on. Subsequent
+ * writes chain via `provenance.derived_from` to the prior observation
+ * for the same PR, so consumers can walk the chain without scanning the
+ * whole store.
+ *
+ * Uses `type: 'observation'` with `metadata.kind: 'pr-fix-observation'`
+ * as the discriminator so downstream consumers can opt into this
+ * observation shape without expanding the core AtomType surface. This
+ * mirrors the sibling pr-landing actor's `metadata.kind: 'pr-observation'`
+ * pattern; framework substrate stays mechanism-focused and pluggable.
  *
  * `dispatched_session_atom_id` is patched onto the atom AFTER `apply()`
  * runs (via `host.atoms.update`); the initial atom written in
@@ -21,8 +27,8 @@ import type {
   Atom,
   AtomId,
   PrincipalId,
-  PrFixObservationMeta,
 } from '../../../substrate/types.js';
+import type { PrFixObservationMeta } from './types.js';
 
 export function mkPrFixObservationAtom(input: {
   readonly principal: PrincipalId;
@@ -47,7 +53,7 @@ export function mkPrFixObservationAtom(input: {
     schema_version: 1,
     id: input.observationId,
     content: renderObservationContent(input.meta),
-    type: 'pr-fix-observation',
+    type: 'observation',
     layer: 'L0',
     provenance: {
       kind: 'agent-observed',
@@ -69,7 +75,10 @@ export function mkPrFixObservationAtom(input: {
     },
     principal_id: input.principal,
     taint: 'clean',
-    metadata: { pr_fix_observation: m },
+    metadata: {
+      kind: 'pr-fix-observation',
+      pr_fix_observation: m,
+    },
   };
 }
 

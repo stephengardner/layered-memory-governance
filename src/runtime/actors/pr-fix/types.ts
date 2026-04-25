@@ -8,6 +8,36 @@ import type { ActorAdapter } from '../types.js';
 import type { AtomId } from '../../../substrate/types.js';
 
 /**
+ * Stored on generic `observation` atoms with `metadata.kind:
+ * 'pr-fix-observation'` under `metadata.pr_fix_observation`. One per
+ * actor `observe()` pass; carries the PR snapshot the actor classified
+ * on. The actor patches `dispatched_session_atom_id` onto the atom
+ * AFTER `apply()` runs (via `host.atoms.update`); the initial atom
+ * written in `observe()` does not have it set.
+ *
+ * `extra` is the open extension slot for adapter-specific signals
+ * (e.g. CR comment IDs, thread refs); namespace keys to avoid collision.
+ */
+export interface PrFixObservationMeta {
+  readonly pr_owner: string;
+  readonly pr_repo: string;
+  readonly pr_number: number;
+  readonly head_branch: string;
+  readonly head_sha: string;
+  readonly cr_review_states: ReadonlyArray<{ readonly author: string; readonly state: string; readonly submitted_at: string }>;
+  readonly merge_state_status: string | null;
+  readonly mergeable: boolean | null;
+  readonly line_comment_count: number;
+  readonly body_nit_count: number;
+  readonly check_run_failure_count: number;
+  readonly legacy_status_failure_count: number;
+  readonly partial: boolean;
+  readonly classification: 'all-clean' | 'has-findings' | 'ci-failure' | 'architectural' | 'partial';
+  readonly dispatched_session_atom_id?: AtomId;
+  readonly extra?: Readonly<Record<string, unknown>>;
+}
+
+/**
  * The adapter map `PrFixActor` requires.
  *
  * Substrate primitives (`AgentLoopAdapter`, `WorkspaceProvider`, `BlobStore`,

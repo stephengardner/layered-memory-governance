@@ -5,9 +5,10 @@
  * Loop (this task ships only `observe`; the rest land in subsequent tasks):
  *   observe  -> read PR review status (line comments + body nits + checks +
  *               legacy statuses + mergeable flag) and the PR head ref/SHA;
- *               write a `pr-fix-observation` atom that captures the snapshot
- *               and chains via `provenance.derived_from` to the prior
- *               observation for the same PR.
+ *               write a generic `observation` atom (with
+ *               `metadata.kind: 'pr-fix-observation'`) that captures the
+ *               snapshot and chains via `provenance.derived_from` to the
+ *               prior observation for the same PR.
  *   classify -> partition findings, detect convergence, propagate `partial`.
  *   propose  -> delegate fixes to an agent-loop run, or escalate.
  *   apply    -> dispatch the agent-loop run and verify the resulting commit.
@@ -23,7 +24,7 @@ import { randomBytes } from 'node:crypto';
 import { execa } from 'execa';
 import type { Actor, ActorContext } from '../actor.js';
 import type { Classified, ProposedAction, Reflection } from '../types.js';
-import type { AtomId, PrFixObservationMeta, ReplayTier, Time } from '../../../substrate/types.js';
+import type { AtomId, ReplayTier, Time } from '../../../substrate/types.js';
 import type { PrIdentifier, ReviewComment } from '../pr-review/adapter.js';
 import type {
   AgentLoopResult,
@@ -41,6 +42,7 @@ import type {
   PrFixOutcome,
   PrFixAdapters,
   PrFixClassification,
+  PrFixObservationMeta,
 } from './types.js';
 import { mkPrFixObservationAtom, mkPrFixObservationAtomId } from './pr-fix-observation.js';
 

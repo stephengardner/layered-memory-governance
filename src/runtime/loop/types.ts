@@ -72,12 +72,6 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // purge (after N months) lives in a follow-up policy atom.
   'agent-session': 365 * 24 * 60 * 60 * 1000,    // ~1 year
   'agent-turn': 365 * 24 * 60 * 60 * 1000,       // ~1 year
-  // PR-fix observations are audit records of CR/CI snapshots taken by
-  // PrFixActor.observe(); confidence decay is irrelevant. Match the
-  // 1-year half-life used by audit-shaped atoms (agent-session,
-  // agent-turn, operator-intent) so a forensic re-read of a PR's
-  // observation history months later still works.
-  'pr-fix-observation': 365 * 24 * 60 * 60 * 1000,    // ~1 year
 });
 
 export interface LoopOptions {

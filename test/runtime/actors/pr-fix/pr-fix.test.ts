@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { PrFixObservation, PrFixAction, PrFixOutcome, PrFixAdapters, PrFixClassification } from '../../../../src/runtime/actors/pr-fix/types.js';
-import type { AtomId, PrFixObservationMeta, PrincipalId } from '../../../../src/substrate/types.js';
+import type { PrFixObservation, PrFixAction, PrFixOutcome, PrFixAdapters, PrFixClassification, PrFixObservationMeta } from '../../../../src/runtime/actors/pr-fix/types.js';
+import type { AtomId, PrincipalId } from '../../../../src/substrate/types.js';
 import { mkPrFixObservationAtom } from '../../../../src/runtime/actors/pr-fix/pr-fix-observation.js';
 import { PrFixActor } from '../../../../src/runtime/actors/pr-fix/pr-fix.js';
 import type { ActorContext } from '../../../../src/runtime/actors/actor.js';
@@ -68,12 +68,13 @@ describe('mkPrFixObservationAtom', () => {
       dispatchedSessionAtomId: undefined,
       now: '2026-04-25T00:00:00.000Z',
     });
-    expect(atom.type).toBe('pr-fix-observation');
+    expect(atom.type).toBe('observation');
     expect(atom.layer).toBe('L0');
     expect(atom.scope).toBe('project');
     expect(atom.principal_id).toBe('pr-fix-actor');
     expect(atom.provenance.kind).toBe('agent-observed');
     expect(atom.provenance.derived_from).toContain('pr-fix-obs-0');
+    expect((atom.metadata as { kind?: string }).kind).toBe('pr-fix-observation');
     expect((atom.metadata as { pr_fix_observation: PrFixObservationMeta }).pr_fix_observation.classification).toBe('all-clean');
   });
 
@@ -191,7 +192,8 @@ describe('PrFixActor.observe', () => {
 
     const stored = await host.atoms.get(obs.observationAtomId);
     expect(stored).not.toBeNull();
-    expect(stored?.type).toBe('pr-fix-observation');
+    expect(stored?.type).toBe('observation');
+    expect((stored?.metadata as { kind?: string }).kind).toBe('pr-fix-observation');
     const meta = (stored?.metadata as { pr_fix_observation: PrFixObservationMeta }).pr_fix_observation;
     expect(meta.head_sha).toBe('abc1234');
     expect(meta.head_branch).toBe('feat/x');
@@ -1362,8 +1364,11 @@ describe('PrFixActor end-to-end (MemoryHost)', () => {
     const obs = await actor.observe(ctx);
     expect(obs.headBranch).toBe('feat/x');
     expect(obs.lineComments).toHaveLength(1);
-    const obsAtoms = await host.atoms.query({ type: ['pr-fix-observation'] }, 100);
-    expect(obsAtoms.atoms).toHaveLength(1);
+    const obsAtoms = await host.atoms.query({ type: ['observation'] }, 100);
+    const prFixObsAtoms = obsAtoms.atoms.filter(
+      (a) => (a.metadata as { kind?: string }).kind === 'pr-fix-observation',
+    );
+    expect(prFixObsAtoms).toHaveLength(1);
 
     // classify
     const classified = await actor.classify(obs, ctx);
