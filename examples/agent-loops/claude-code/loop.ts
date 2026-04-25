@@ -48,7 +48,13 @@ export interface ClaudeCodeAgentLoopOptions {
   /**
    * Optional capture hook called after a successful session ends, BEFORE
    * the session atom is finalized. The hook's return value is merged into
-   * `metadata.agent_session.extra` (after `resumable_session_id` is added).
+   * `metadata.agent_session.extra`.
+   *
+   * Merge precedence: hook-returned keys that collide with
+   * framework-managed keys (currently `resumable_session_id`) are
+   * dropped. The framework value always wins, so a buggy hook cannot
+   * substitute the resume token.
+   *
    * On hook throw: logged via host audit; the session still completes
    * normally and its `failure` record is unchanged.
    *
@@ -59,6 +65,13 @@ export interface ClaudeCodeAgentLoopOptions {
     readonly sessionId: string;
     readonly workspace: Workspace;
     readonly host: Host;
+    /**
+     * The session's owning principal. Capture-side hooks that perform
+     * redaction or audit MUST pass this through (e.g. as the redactor
+     * `ctx.principal`) so audit logs and per-principal redactor rules
+     * receive correct attribution rather than a strategy-level sentinel.
+     */
+    readonly principal: PrincipalId;
   }) => Promise<Readonly<Record<string, unknown>>>;
 }
 
@@ -511,6 +524,12 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       // extension surface, not a contract obligation: a hook throw is
       // logged via the host auditor and swallowed; the session atom's
       // failure record is unaffected.
+      //
+      // Merge precedence: framework-managed keys (currently
+      // `resumable_session_id`) WIN against any colliding hook return
+      // key. A buggy or hostile `sessionPersistExtras` cannot substitute
+      // the resume token and degrade subsequent `claude --resume <uuid>`
+      // calls into attaching a different CLI session.
       let extras: Record<string, unknown> = {};
       const sessionSucceeded = kind === 'completed' && failure === undefined;
       if (sessionSucceeded && capturedResumableSessionId !== undefined) {
@@ -522,8 +541,12 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
             sessionId: capturedResumableSessionId ?? '',
             workspace: input.workspace,
             host: input.host,
+            principal: input.principal,
           });
-          extras = { ...extras, ...hookResult };
+          // Hook fields are layered FIRST, then the framework-captured
+          // extras spread on top so keys we manage (e.g.
+          // `resumable_session_id`) cannot be clobbered by the hook.
+          extras = { ...hookResult, ...extras };
         } catch (err) {
           await input.host.auditor.log({
             kind: 'agent-session-extras-hook-failed',

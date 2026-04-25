@@ -257,9 +257,17 @@ export class BlobShippedSessionResumeStrategy implements SessionResumeStrategy {
           const slug = derivePosixSlugFromCwd(cwd);
           const targetDir = path.join(home, '.claude', 'projects', slug);
           const targetFile = path.join(targetDir, `${resumableSessionId}.jsonl`);
-          // Parent dir mode 0700; file mode 0600.
+          // Parent dir mode 0700; file mode 0600 enforced even on
+          // overwrite. `fs.writeFile(..., { mode })` only honors `mode`
+          // at file CREATE time; on a second fix-run against the same
+          // resumable session the existing file's mode (potentially
+          // 0644 from a stale write or umask) would survive. Explicit
+          // `unlink` + `chmod` belt-and-suspenders ensures the locked-
+          // down perms claim of this strategy is real on every run.
           await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
+          await fs.rm(targetFile, { force: true });
           await fs.writeFile(targetFile, bytes, { mode: 0o600 });
+          await fs.chmod(targetFile, 0o600);
         },
       };
     }
@@ -270,6 +278,7 @@ export class BlobShippedSessionResumeStrategy implements SessionResumeStrategy {
     readonly sessionId: string;
     readonly workspace: Workspace;
     readonly host: Host;
+    readonly principal: PrincipalId;
   }): Promise<Readonly<Record<string, unknown>>> {
     const cwd = input.workspace.path;
     const home = this.opts.homeDirOverride ?? homedir();
@@ -286,9 +295,15 @@ export class BlobShippedSessionResumeStrategy implements SessionResumeStrategy {
     }
     // Apply redactor BEFORE BlobStore.put. Spec section 5.2 + threat-model
     // ordering: untransformed bytes MUST NOT touch the BlobStore.
+    //
+    // Pass the session's owning principal (NOT the constructor-time
+    // PROBE_PRINCIPAL sentinel). Audit logs, per-principal redactor
+    // allowlists, and tenant-scoped rules all branch on `ctx.principal`;
+    // a sentinel leak would misattribute every real capture to the
+    // probe identity.
     const redacted = this.opts.redactor.redact(raw, {
       kind: 'tool-result',
-      principal: PROBE_PRINCIPAL,
+      principal: input.principal,
     });
     const ref = await this.opts.blobStore.put(redacted);
     return {

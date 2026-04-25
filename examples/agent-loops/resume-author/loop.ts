@@ -87,11 +87,15 @@ export interface ResumeAuthorAdapterOptions {
    * and the wrapper delegates directly to `fallback`.
    */
   readonly assembleCandidates: (input: AgentLoopInput) => Promise<ReadonlyArray<CandidateSession>>;
-  /**
-   * Default 8 hours. Strategies SHOULD respect this; some MAY apply
-   * additional staleness rules of their own.
+  /*
+   * Staleness windows are owned by individual strategies (each strategy
+   * accepts its own `maxStaleHours` constructor option). The wrapper
+   * intentionally exposes no global default to avoid the dead-knob
+   * trap: a wrapper-level field that never reaches strategies misleads
+   * operators tuning a single number and seeing no effect. If a future
+   * cross-strategy default emerges, plumb it via `ResumeContext` so
+   * strategies can read and choose to honor it.
    */
-  readonly maxStaleHours?: number;
 }
 
 export class ResumeAuthorAgentLoopAdapter implements AgentLoopAdapter {
