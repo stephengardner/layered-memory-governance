@@ -20,10 +20,19 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { execa } from 'execa';
 import type { Actor, ActorContext } from '../actor.js';
 import type { Classified, ProposedAction, Reflection } from '../types.js';
-import type { AtomId, PrFixObservationMeta } from '../../../substrate/types.js';
-import type { PrIdentifier } from '../pr-review/adapter.js';
+import type { AtomId, PrFixObservationMeta, ReplayTier } from '../../../substrate/types.js';
+import type { PrIdentifier, ReviewComment } from '../pr-review/adapter.js';
+import type {
+  AgentLoopResult,
+  AgentTask,
+} from '../../../substrate/agent-loop.js';
+import type { Workspace } from '../../../substrate/workspace-provider.js';
+import { defaultBudgetCap, type BudgetCap } from '../../../substrate/agent-budget.js';
+import { loadReplayTier } from '../../../substrate/policy/replay-tier.js';
+import { loadBlobThreshold } from '../../../substrate/policy/blob-threshold.js';
 import type {
   PrFixObservation,
   PrFixAction,
@@ -40,6 +49,121 @@ export interface PrFixOptions {
    * `() => new Date().toISOString()`.
    */
   readonly now?: () => string;
+  /**
+   * Used by the policy resolvers (`loadReplayTier`, `loadBlobThreshold`)
+   * to look up per-actor-type policy atoms. Defaults to `'pr-fix-actor'`.
+   */
+  readonly actorType?: string;
+  /**
+   * Budget cap forwarded to the agent-loop subagent. Defaults to
+   * `defaultBudgetCap()`. Operators override per-deployment via the
+   * driver script.
+   */
+  readonly budget?: BudgetCap;
+  /**
+   * Tools to disallow in the subagent BEYOND the floor (`WebFetch`,
+   * `WebSearch`, `NotebookEdit`). Operators add diagnostic-only flags
+   * (e.g. `['Bash']` for read-only runs) here without unsafely
+   * narrowing the substrate floor.
+   */
+  readonly additionalDisallowedTools?: ReadonlyArray<string>;
+  /**
+   * Test-only override for the workspace HEAD reader. Defaults to
+   * `git rev-parse HEAD` via `execa`. The production path always uses
+   * the default; this seam exists so tests can drive SHA mismatch and
+   * SHA match scenarios without touching real git.
+   */
+  readonly readWorkspaceHeadSha?: (workspacePath: string) => Promise<string>;
+  /**
+   * Test-only override for the touched-paths reader. Defaults to
+   * `git diff --name-only <baseRef>..HEAD` via `execa`. Same rationale
+   * as `readWorkspaceHeadSha`.
+   */
+  readonly readTouchedPaths?: (workspacePath: string, baseRef: string) => Promise<ReadonlySet<string>>;
+}
+
+/**
+ * Layer-B sub-agent disallowedTools floor. Mirrors the spec's §3.4
+ * Layer-B contract: the spawned Claude inside the workspace MUST NOT
+ * call these tools regardless of operator config; operator extension
+ * is additive (see `PrFixOptions.additionalDisallowedTools`).
+ *
+ * - WebFetch / WebSearch: agent runs with the bot's GitHub creds; deny
+ *   external IO so a prompt-injection finding cannot exfil.
+ * - NotebookEdit: .ipynb editing is not a CR-fix concern in scope.
+ *
+ * Stronger guards (push-target restriction, secret-shape redaction)
+ * live in WorkspaceProvider's cred provisioning + the Redactor seam;
+ * this constant is one layer of the defense-in-depth stack.
+ */
+const SUB_AGENT_DISALLOWED_FLOOR: ReadonlyArray<string> = ['WebFetch', 'WebSearch', 'NotebookEdit'];
+
+/**
+ * Default workspace HEAD reader. Wraps `git rev-parse HEAD` via
+ * `execa`. Trims trailing newline. Throws on a non-zero exit so the
+ * caller maps the failure onto a `fix-failed` stage.
+ */
+async function readWorkspaceHeadShaDefault(workspacePath: string): Promise<string> {
+  const { stdout } = await execa('git', ['rev-parse', 'HEAD'], { cwd: workspacePath });
+  return stdout.trim();
+}
+
+/**
+ * Default touched-paths reader. Wraps `git diff --name-only
+ * <baseRef>..HEAD` via `execa`. Empty stdout (no diff) yields the
+ * empty set. Throws on a non-zero exit; the caller treats a read
+ * failure as "no resolvable threads this iteration" rather than
+ * masking the upstream success.
+ */
+async function readTouchedPathsDefault(workspacePath: string, baseRef: string): Promise<ReadonlySet<string>> {
+  const { stdout } = await execa('git', ['diff', '--name-only', `${baseRef}..HEAD`], { cwd: workspacePath });
+  return new Set(stdout.split('\n').map((s) => s.trim()).filter((s) => s.length > 0));
+}
+
+/**
+ * Build the agent's questionPrompt from a list of CR findings. Each
+ * finding gets a fenced `<cr_finding>` block so the agent can parse
+ * structure rather than scrape prose. Includes the headBranch so the
+ * agent knows it is operating on the PR's existing branch (no new
+ * branch creation expected).
+ *
+ * This function does NOT pre-redact: the AgentLoopAdapter applies
+ * `input.redactor` before atom write per the substrate contract. A
+ * redaction pass here would either duplicate work (idempotent
+ * redactor) or, worse, run before the substrate-mandated step and let
+ * a non-default redactor be bypassed.
+ */
+function buildQuestionPrompt(
+  findings: ReadonlyArray<ReviewComment>,
+  headBranch: string,
+): string {
+  const blocks = findings.map((f, i) => {
+    const path = f.path ?? '<unknown-path>';
+    const line = f.line !== undefined ? `:${f.line}` : '';
+    return `<cr_finding index="${i + 1}" id="${f.id}" path="${path}${line}">\n${f.body}\n</cr_finding>`;
+  }).join('\n\n');
+  return (
+    `You are running on branch '${headBranch}', the HEAD of an open pull request. ` +
+    `Address the CodeRabbit review findings below by editing files in this workspace, ` +
+    `committing the changes, and pushing to update the PR. Do NOT create new branches; ` +
+    `the PR already exists. After your fix, run the project's tests to verify nothing regresses.\n\n` +
+    blocks
+  );
+}
+
+/**
+ * Dedupe path strings across a finding set; drops findings without a
+ * path (body-nits without a target file). Order is insertion-stable
+ * over the input array.
+ */
+function dedupePaths(findings: ReadonlyArray<ReviewComment>): ReadonlyArray<string> {
+  const set = new Set<string>();
+  for (const f of findings) if (f.path !== undefined) set.add(f.path);
+  return [...set];
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 const defaultNow = (): string => new Date().toISOString();
@@ -54,8 +178,18 @@ export class PrFixActor implements Actor<
   readonly version = '1';
 
   private lastObservationId: AtomId | undefined;
+  private lastObservation: PrFixObservation | undefined;
+  /**
+   * Resolved at construction so policy lookups + atom-store writes share
+   * one stable string. Defaults to `'pr-fix-actor'` (the actor's own
+   * `name`); operators override per deployment via `options.actorType`
+   * when running multiple flavor-specific instances.
+   */
+  private readonly actorType: string;
 
-  constructor(private readonly options: PrFixOptions) {}
+  constructor(private readonly options: PrFixOptions) {
+    this.actorType = options.actorType ?? 'pr-fix-actor';
+  }
 
   async observe(ctx: ActorContext<PrFixAdapters>): Promise<PrFixObservation> {
     const { review, ghClient } = ctx.adapters;
@@ -113,7 +247,7 @@ export class PrFixActor implements Actor<
     await ctx.host.atoms.put(atom);
     this.lastObservationId = obsId;
 
-    return {
+    const observation: PrFixObservation = {
       pr: this.options.pr,
       headBranch: prDetails.head.ref,
       headSha: prDetails.head.sha,
@@ -128,6 +262,11 @@ export class PrFixActor implements Actor<
       partial: status.partial,
       observationAtomId: obsId,
     };
+    // Cached so apply() can recover baseRef + pr-identity + headSha
+    // without re-fetching; runActor calls observe before each apply,
+    // so this is always the freshest snapshot for this actor instance.
+    this.lastObservation = observation;
+    return observation;
   }
 
   // The remaining lifecycle methods are filled in by subsequent tasks.
@@ -250,11 +389,225 @@ export class PrFixActor implements Actor<
     }
   }
 
+  /**
+   * Drive a single proposed action to an outcome.
+   *
+   * Two branches keyed off `action.payload.kind`:
+   *   - `'agent-loop-dispatch'`: acquire a workspace pinned to the PR's
+   *     HEAD branch, run the agent-loop substrate, verify the
+   *     adapter-supplied commit-SHA against `git rev-parse HEAD`, then
+   *     resolve threads on touched paths only.
+   *   - `'pr-escalate'`: deferred to Task 10. Throws today.
+   *
+   * Substrate-mandated steps (per the AgentLoopAdapter contract):
+   *   1. Compose `replayTier` + `blobThreshold` from per-actor-type
+   *      policy atoms (fail-loud on malformed; default on missing).
+   *   2. Acquire workspace through the WorkspaceProvider with
+   *      `checkoutBranch: action.headBranch` (substrate extension).
+   *   3. Run the agent-loop with the Layer-B disallowedTools floor +
+   *      operator extension.
+   *   4. Verify `result.artifacts.commitSha` equals workspace HEAD
+   *      (defense against a misbehaving adapter that fabricates a SHA).
+   *   5. Resolve CR threads ONLY for findings whose path is in the
+   *      touched-paths set AND whose kind is not 'body-nit' (body-nits
+   *      cannot be resolved individually).
+   *   6. Always release the workspace in `finally{}`. Release errors
+   *      are swallowed: a release failure must not mask the upstream
+   *      result.
+   */
   async apply(
-    _action: ProposedAction<PrFixAction>,
-    _ctx: ActorContext<PrFixAdapters>,
+    action: ProposedAction<PrFixAction>,
+    ctx: ActorContext<PrFixAdapters>,
   ): Promise<PrFixOutcome> {
-    throw new Error('PrFixActor.apply: not implemented (Tasks 9-10)');
+    if (action.payload.kind === 'pr-escalate') {
+      throw new Error('PrFixActor.apply: pr-escalate not implemented (Task 10)');
+    }
+    const dispatch = action.payload;
+    const obs = this.lastObservation;
+    if (obs === undefined) {
+      return {
+        kind: 'fix-failed',
+        stage: 'no-observation',
+        reason: 'apply called before observe',
+        sessionAtomId: null,
+      };
+    }
+
+    const correlationId = `pr-fix:${obs.pr.owner}/${obs.pr.repo}#${obs.pr.number}:${obs.headSha.slice(0, 12)}:${randomBytes(3).toString('hex')}`;
+
+    // 1. Resolve per-actor-type substrate policies. Malformed atoms
+    // fail loud; missing atoms fall back to substrate defaults.
+    let replayTier: ReplayTier;
+    let blobThreshold: number;
+    try {
+      replayTier = await loadReplayTier(ctx.host.atoms, ctx.principal.id, this.actorType);
+      blobThreshold = await loadBlobThreshold(ctx.host.atoms, ctx.principal.id, this.actorType);
+    } catch (err) {
+      return {
+        kind: 'fix-failed',
+        stage: 'policy-resolution',
+        reason: errorMessage(err),
+        sessionAtomId: null,
+      };
+    }
+
+    // 2. Acquire workspace pinned to the PR's HEAD branch (substrate
+    // extension shipped in Task 1; provider checks out the branch
+    // directly so commits land on it).
+    let workspace: Workspace;
+    try {
+      workspace = await ctx.adapters.workspaceProvider.acquire({
+        principal: ctx.principal.id,
+        baseRef: obs.baseRef,
+        checkoutBranch: dispatch.headBranch,
+        correlationId,
+      });
+    } catch (err) {
+      return {
+        kind: 'fix-failed',
+        stage: 'workspace-acquire',
+        reason: errorMessage(err),
+        sessionAtomId: null,
+      };
+    }
+
+    try {
+      // 3. Compose the AgentTask + budget + tool policy.
+      const task: AgentTask = {
+        planAtomId: dispatch.planAtomId,
+        questionPrompt: buildQuestionPrompt(dispatch.findings, dispatch.headBranch),
+        targetPaths: dedupePaths(dispatch.findings),
+      };
+      const budget = this.options.budget ?? defaultBudgetCap();
+      const disallowedTools: ReadonlyArray<string> = [
+        ...SUB_AGENT_DISALLOWED_FLOOR,
+        ...(this.options.additionalDisallowedTools ?? []),
+      ];
+
+      // 4. Run the agent-loop. Adapter is the substrate primitive that
+      // owns LLM IO + tool dispatch; this actor never reaches around it.
+      let agentResult: AgentLoopResult;
+      try {
+        agentResult = await ctx.adapters.agentLoop.run({
+          host: ctx.host,
+          principal: ctx.principal.id,
+          workspace,
+          task,
+          budget,
+          toolPolicy: { disallowedTools },
+          redactor: ctx.adapters.redactor,
+          blobStore: ctx.adapters.blobStore,
+          replayTier,
+          blobThreshold,
+          correlationId,
+          signal: ctx.abortSignal,
+        });
+      } catch (err) {
+        const kind = ctx.adapters.agentLoop.capabilities.classify_failure(err);
+        return {
+          kind: 'fix-failed',
+          stage: `agent-loop-throw/${kind}`,
+          reason: errorMessage(err),
+          sessionAtomId: null,
+        };
+      }
+
+      // 5. Map non-completed kinds. The substrate vocabulary is one
+      // word away from the dashboard contract; the stage shape is
+      // `agent-loop/<kind>[/<failure-kind>]`.
+      if (agentResult.kind !== 'completed') {
+        const stage = agentResult.failure
+          ? `agent-loop/${agentResult.kind}/${agentResult.failure.kind}`
+          : `agent-loop/${agentResult.kind}`;
+        const reason = agentResult.failure?.reason ?? `agent loop ended in ${agentResult.kind}`;
+        return {
+          kind: 'fix-failed',
+          stage,
+          reason,
+          sessionAtomId: agentResult.sessionAtomId,
+        };
+      }
+
+      // 6. Substrate-mandated commit-SHA verification. The agent-loop
+      // contract states "consumers MUST verify the commit exists in
+      // the workspace before trusting it"; this is the load-bearing
+      // step that prevents a misbehaving adapter from claiming a fix
+      // landed when none did.
+      const commitSha = agentResult.artifacts?.commitSha;
+      if (commitSha === undefined) {
+        return {
+          kind: 'fix-failed',
+          stage: 'agent-no-commit',
+          reason: 'agent loop completed but did not commit',
+          sessionAtomId: agentResult.sessionAtomId,
+        };
+      }
+      const readHead = this.options.readWorkspaceHeadSha ?? readWorkspaceHeadShaDefault;
+      let workspaceHead: string;
+      try {
+        workspaceHead = await readHead(workspace.path);
+      } catch (err) {
+        return {
+          kind: 'fix-failed',
+          stage: 'rev-parse-failed',
+          reason: errorMessage(err),
+          sessionAtomId: agentResult.sessionAtomId,
+        };
+      }
+      if (workspaceHead !== commitSha) {
+        return {
+          kind: 'fix-failed',
+          stage: 'verify-commit-sha',
+          reason: `adapter-supplied SHA ${commitSha} does not match HEAD ${workspaceHead}`,
+          sessionAtomId: agentResult.sessionAtomId,
+        };
+      }
+
+      // 7. Touched-paths heuristic for thread resolution. A read
+      // failure is non-fatal: the commit already landed and CR's
+      // re-review is the ground truth on the next iteration.
+      const readPaths = this.options.readTouchedPaths ?? readTouchedPathsDefault;
+      let touched: ReadonlySet<string>;
+      try {
+        touched = await readPaths(workspace.path, obs.baseRef);
+      } catch {
+        touched = new Set();
+      }
+
+      // 8. Resolve CR threads addressed by the fix. Body-nits cannot
+      // be resolved individually (they live inside a single review
+      // body); findings whose path was not touched are definitionally
+      // not addressed by this iteration. Resolve failures for one
+      // thread do not block the others; the next iteration's observe
+      // re-checks any unresolved comments.
+      const resolvedCommentIds: string[] = [];
+      for (const f of dispatch.findings) {
+        if (f.kind === 'body-nit') continue;
+        if (f.path === undefined) continue;
+        if (!touched.has(f.path)) continue;
+        try {
+          await ctx.adapters.review.resolveComment(obs.pr, f.id);
+          resolvedCommentIds.push(f.id);
+        } catch {
+          // Per spec §5: log + skip. The fix landed; the thread state
+          // is recoverable manually. Audit recording happens via the
+          // review adapter's own logging; do not surface here as a
+          // hard fail.
+        }
+      }
+
+      return {
+        kind: 'fix-pushed',
+        commitSha,
+        resolvedCommentIds,
+        sessionAtomId: agentResult.sessionAtomId,
+      };
+    } finally {
+      // Release runs even when the agent-loop adapter throws or the
+      // SHA check fails. Errors are swallowed: a release failure must
+      // not mask the upstream result. Idempotent by contract.
+      await ctx.adapters.workspaceProvider.release(workspace).catch(() => undefined);
+    }
   }
 
   async reflect(

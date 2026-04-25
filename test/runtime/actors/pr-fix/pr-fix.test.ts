@@ -19,6 +19,16 @@ import type {
   GhExecResult,
   GhRestArgs,
 } from '../../../../src/external/github/index.js';
+import type {
+  AgentLoopAdapter,
+  AgentLoopInput,
+  AgentLoopResult,
+  AdapterCapabilities,
+} from '../../../../src/substrate/agent-loop.js';
+import { defaultClassifyFailure } from '../../../../src/substrate/agent-loop.js';
+import type { Workspace, WorkspaceProvider, AcquireInput } from '../../../../src/substrate/workspace-provider.js';
+import type { BlobStore } from '../../../../src/substrate/blob-store.js';
+import type { Redactor } from '../../../../src/substrate/redactor.js';
 import { createMemoryHost } from '../../../../src/adapters/memory/index.js';
 import { samplePrincipal } from '../../../fixtures.js';
 
@@ -575,5 +585,472 @@ describe('PrFixActor.propose', () => {
     };
     const actions = await actor.propose(classified, makeProposeCtx());
     expect(actions).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PrFixActor.apply (agent-loop-dispatch)
+//
+// The injectable readWorkspaceHeadSha / readTouchedPaths PrFixOptions
+// fields keep these tests off real `execa`; the production path falls
+// back to git rev-parse / git diff via execa when the overrides are
+// absent.
+// ---------------------------------------------------------------------------
+
+const NOOP_CAPS: AdapterCapabilities = {
+  tracks_cost: false,
+  supports_signal: false,
+  classify_failure: defaultClassifyFailure,
+};
+
+const NOOP_REDACTOR: Redactor = { redact: (s: string) => s };
+const EMPTY_BLOB_STORE = {} as BlobStore;
+
+class StubResolveAdapter implements PrReviewAdapter {
+  readonly name = 'stub-review-resolve';
+  readonly version = '0';
+  readonly resolveCalls: Array<{ pr: PrIdentifier; commentId: string }> = [];
+  constructor(private readonly resolveBehavior: (commentId: string) => Promise<void> = async () => {}) {}
+  async listUnresolvedComments() { return []; }
+  async listReviewBodyNits() { return []; }
+  async replyToComment() { return { commentId: 'x', posted: true }; }
+  async resolveComment(pr: PrIdentifier, commentId: string): Promise<void> {
+    this.resolveCalls.push({ pr, commentId });
+    return this.resolveBehavior(commentId);
+  }
+  async hasReviewerEngaged() { return false; }
+  async postPrComment() { return { posted: true }; }
+  async getPrReviewStatus(pr: PrIdentifier): Promise<PrReviewStatus> {
+    return {
+      pr,
+      mergeable: null,
+      mergeStateStatus: null,
+      lineComments: [],
+      bodyNits: [],
+      submittedReviews: [],
+      checkRuns: [],
+      legacyStatuses: [],
+      partial: false,
+      partialSurfaces: [],
+    };
+  }
+}
+
+interface RecordingAgentLoop extends AgentLoopAdapter {
+  readonly captured: { input?: AgentLoopInput };
+}
+
+function recordingAgentLoop(result: AgentLoopResult, options?: { capsOverride?: AdapterCapabilities }): RecordingAgentLoop {
+  const captured: { input?: AgentLoopInput } = {};
+  return {
+    capabilities: options?.capsOverride ?? NOOP_CAPS,
+    captured,
+    run: async (input: AgentLoopInput): Promise<AgentLoopResult> => {
+      captured.input = input;
+      return result;
+    },
+  };
+}
+
+interface RecordingWorkspaceProvider extends WorkspaceProvider {
+  readonly captured: { acquire: AcquireInput[]; releaseCount: number };
+}
+
+function recordingWorkspaceProvider(opts?: {
+  acquireBehavior?: (input: AcquireInput) => Promise<Workspace>;
+  releaseBehavior?: (workspace: Workspace) => Promise<void>;
+}): RecordingWorkspaceProvider {
+  const captured: { acquire: AcquireInput[]; releaseCount: number } = { acquire: [], releaseCount: 0 };
+  const provider = {
+    captured,
+    acquire: async (input: AcquireInput): Promise<Workspace> => {
+      captured.acquire.push(input);
+      if (opts?.acquireBehavior !== undefined) return opts.acquireBehavior(input);
+      return { id: `ws-${captured.acquire.length}`, path: `/tmp/ws-${captured.acquire.length}`, baseRef: input.baseRef };
+    },
+    release: async (workspace: Workspace): Promise<void> => {
+      captured.releaseCount += 1;
+      if (opts?.releaseBehavior !== undefined) return opts.releaseBehavior(workspace);
+      return;
+    },
+  };
+  return provider;
+}
+
+function mkApplyCtx(adapters: PrFixAdapters): ActorContext<PrFixAdapters> {
+  const host = createMemoryHost();
+  return makeStubCtx({ host, adapters });
+}
+
+function applyDispatchAction(
+  findings: ReadonlyArray<ReviewComment>,
+  headBranch = 'feat/x',
+): ProposedAction<PrFixAction> {
+  return {
+    tool: 'agent-loop-dispatch',
+    description: `Dispatch agent loop to address ${findings.length} unresolved finding(s)`,
+    payload: {
+      kind: 'agent-loop-dispatch',
+      findings,
+      planAtomId: 'pr-fix-plan-test' as AtomId,
+      headBranch,
+    },
+  };
+}
+
+const APPLY_PR: PrIdentifier = PR;
+
+const APPLY_OBS: PrFixObservation = {
+  pr: APPLY_PR,
+  headBranch: 'feat/x',
+  headSha: 'abc1234',
+  baseRef: 'main',
+  lineComments: [],
+  bodyNits: [],
+  submittedReviews: [],
+  checkRuns: [],
+  legacyStatuses: [],
+  mergeStateStatus: 'BLOCKED',
+  mergeable: true,
+  partial: false,
+  observationAtomId: 'pr-fix-obs-apply' as AtomId,
+};
+
+function makeApplyAdapters(args: {
+  agentLoop: AgentLoopAdapter;
+  workspaceProvider: WorkspaceProvider;
+  review: PrReviewAdapter;
+}): PrFixAdapters {
+  // Non-substrate adapters that the apply path does not touch are
+  // deliberately empty stubs typed as the labelled adapter shape.
+  const ghClient = makeStubGhClient(undefined);
+  const adapters = {
+    review: args.review,
+    agentLoop: { ...args.agentLoop, name: 'stub-agent-loop', version: '0' },
+    workspaceProvider: { ...args.workspaceProvider, name: 'stub-workspace', version: '0' },
+    blobStore: { ...EMPTY_BLOB_STORE, name: 'stub-blob', version: '0' },
+    redactor: { ...NOOP_REDACTOR, name: 'stub-redactor', version: '0' },
+    ghClient: { ...(ghClient as object), name: 'stub-gh', version: '0' } as unknown as GhClient & { readonly name: string; readonly version: string },
+  } as unknown as PrFixAdapters;
+  return adapters;
+}
+
+async function primeObservation(actor: PrFixActor, adapters: PrFixAdapters): Promise<void> {
+  // The apply path reads the actor's lastObservation to recover
+  // baseRef / observation pr metadata. In production this is set by
+  // observe(); here we drive observe() against a stub ghClient + review
+  // adapter to mirror the real call sequence.
+  const review = new StubReviewAdapter({
+    pr: APPLY_PR,
+    mergeable: APPLY_OBS.mergeable,
+    mergeStateStatus: APPLY_OBS.mergeStateStatus,
+    lineComments: [],
+    bodyNits: [],
+    submittedReviews: [],
+    checkRuns: [],
+    legacyStatuses: [],
+    partial: false,
+    partialSurfaces: [],
+  });
+  const ghClient = makeStubGhClient({
+    head: { ref: APPLY_OBS.headBranch, sha: APPLY_OBS.headSha },
+    base: { ref: APPLY_OBS.baseRef },
+  });
+  const primingAdapters = {
+    ...(adapters as unknown as Record<string, unknown>),
+    review,
+    ghClient,
+  } as unknown as PrFixAdapters;
+  const host = createMemoryHost();
+  await actor.observe(makeStubCtx({ host, adapters: primingAdapters }));
+}
+
+function mkLineCommentForApply(overrides: Partial<ReviewComment> = {}): ReviewComment {
+  return {
+    id: overrides.id ?? 'c1',
+    author: overrides.author ?? 'coderabbitai',
+    path: overrides.path ?? 'src/foo.ts',
+    line: overrides.line ?? 10,
+    body: overrides.body ?? 'nit: rename',
+    createdAt: overrides.createdAt ?? '2026-04-25T00:00:00.000Z',
+    resolved: overrides.resolved ?? false,
+    kind: overrides.kind ?? 'line',
+    ...overrides,
+  };
+}
+
+describe('PrFixActor.apply (agent-loop-dispatch)', () => {
+  it("happy path: completed + matching SHA + touched-paths covers findings -> 'fix-pushed' with resolvedCommentIds", async () => {
+    const findings: ReadonlyArray<ReviewComment> = [
+      mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts' }),
+      mkLineCommentForApply({ id: 'l2', path: 'src/bar.ts' }),
+    ];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'sess-ok' as AtomId,
+      turnAtomIds: ['t-1' as AtomId],
+      artifacts: { commitSha: 'sha-deadbeef', branchName: 'feat/x', touchedPaths: ['src/foo.ts', 'src/bar.ts'] },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({
+      pr: APPLY_PR,
+      readWorkspaceHeadSha: async () => 'sha-deadbeef',
+      readTouchedPaths: async () => new Set<string>(['src/foo.ts', 'src/bar.ts']),
+    });
+    await primeObservation(actor, adapters);
+
+    const outcome = await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    expect(outcome.kind).toBe('fix-pushed');
+    if (outcome.kind !== 'fix-pushed') throw new Error('unreachable');
+    expect(outcome.commitSha).toBe('sha-deadbeef');
+    expect(outcome.resolvedCommentIds.slice().sort()).toEqual(['l1', 'l2']);
+    expect(outcome.sessionAtomId).toBe('sess-ok');
+    expect(review.resolveCalls.map((c) => c.commentId).sort()).toEqual(['l1', 'l2']);
+    expect(workspaceProvider.captured.acquire).toHaveLength(1);
+    expect(workspaceProvider.captured.acquire[0]?.checkoutBranch).toBe('feat/x');
+    expect(workspaceProvider.captured.acquire[0]?.baseRef).toBe('main');
+    expect(workspaceProvider.captured.releaseCount).toBe(1);
+    // Layer-B floor is enforced regardless of operator extension.
+    const dt = agentLoop.captured.input?.toolPolicy.disallowedTools ?? [];
+    for (const t of ['WebFetch', 'WebSearch', 'NotebookEdit']) {
+      expect(dt).toContain(t);
+    }
+    // The headBranch from the action drives the workspace pin.
+    expect(agentLoop.captured.input?.workspace.path).toBeDefined();
+  });
+
+  it("SHA mismatch -> fix-failed with stage 'verify-commit-sha'; releases workspace", async () => {
+    const findings = [mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts' })];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'sess-mismatch' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'abc', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({
+      pr: APPLY_PR,
+      readWorkspaceHeadSha: async () => 'def',
+      readTouchedPaths: async () => new Set<string>(),
+    });
+    await primeObservation(actor, adapters);
+
+    const outcome = await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    expect(outcome.kind).toBe('fix-failed');
+    if (outcome.kind !== 'fix-failed') throw new Error('unreachable');
+    expect(outcome.stage).toBe('verify-commit-sha');
+    expect(outcome.reason).toMatch(/abc/);
+    expect(outcome.reason).toMatch(/def/);
+    expect(outcome.sessionAtomId).toBe('sess-mismatch');
+    expect(review.resolveCalls).toHaveLength(0);
+    // finally{} releases workspace even on failure.
+    expect(workspaceProvider.captured.releaseCount).toBe(1);
+  });
+
+  it("completed result without commitSha -> fix-failed with stage 'agent-no-commit'", async () => {
+    const findings = [mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts' })];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'sess-no-commit' as AtomId,
+      turnAtomIds: [],
+      // artifacts intentionally missing
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({ pr: APPLY_PR });
+    await primeObservation(actor, adapters);
+
+    const outcome = await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    expect(outcome.kind).toBe('fix-failed');
+    if (outcome.kind !== 'fix-failed') throw new Error('unreachable');
+    expect(outcome.stage).toBe('agent-no-commit');
+    expect(outcome.sessionAtomId).toBe('sess-no-commit');
+    expect(review.resolveCalls).toHaveLength(0);
+    expect(workspaceProvider.captured.releaseCount).toBe(1);
+  });
+
+  it("agent-loop kind:'error' -> fix-failed with stage 'agent-loop/error/<failure-kind>'", async () => {
+    const findings = [mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts' })];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'error',
+      sessionAtomId: 'sess-err' as AtomId,
+      turnAtomIds: [],
+      failure: { kind: 'transient', reason: 'rate limited', stage: 'turn-2' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({ pr: APPLY_PR });
+    await primeObservation(actor, adapters);
+
+    const outcome = await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    expect(outcome.kind).toBe('fix-failed');
+    if (outcome.kind !== 'fix-failed') throw new Error('unreachable');
+    expect(outcome.stage).toBe('agent-loop/error/transient');
+    expect(outcome.reason).toContain('rate limited');
+    expect(outcome.sessionAtomId).toBe('sess-err');
+    expect(review.resolveCalls).toHaveLength(0);
+    expect(workspaceProvider.captured.releaseCount).toBe(1);
+  });
+
+  it("agent-loop kind:'budget-exhausted' (no failure record) -> fix-failed with stage 'agent-loop/budget-exhausted'", async () => {
+    const findings = [mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts' })];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'budget-exhausted',
+      sessionAtomId: 'sess-budget' as AtomId,
+      turnAtomIds: [],
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({ pr: APPLY_PR });
+    await primeObservation(actor, adapters);
+
+    const outcome = await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    expect(outcome.kind).toBe('fix-failed');
+    if (outcome.kind !== 'fix-failed') throw new Error('unreachable');
+    expect(outcome.stage).toBe('agent-loop/budget-exhausted');
+    expect(outcome.sessionAtomId).toBe('sess-budget');
+  });
+
+  it("workspace acquire throws -> fix-failed with stage 'workspace-acquire'; release NOT called", async () => {
+    const findings = [mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts' })];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'never-reached' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'sha', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider({
+      acquireBehavior: async () => { throw new Error('disk full'); },
+    });
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({ pr: APPLY_PR });
+    await primeObservation(actor, adapters);
+
+    const outcome = await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    expect(outcome.kind).toBe('fix-failed');
+    if (outcome.kind !== 'fix-failed') throw new Error('unreachable');
+    expect(outcome.stage).toBe('workspace-acquire');
+    expect(outcome.reason).toContain('disk full');
+    expect(outcome.sessionAtomId).toBeNull();
+    expect(workspaceProvider.captured.releaseCount).toBe(0);
+  });
+
+  it("body-nit findings are NOT individually resolved (no thread)", async () => {
+    const findings: ReadonlyArray<ReviewComment> = [
+      mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts', kind: 'line' }),
+      mkLineCommentForApply({ id: 'b1', path: 'src/foo.ts', kind: 'body-nit' }),
+    ];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'sess-nit' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'sha-1', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({
+      pr: APPLY_PR,
+      readWorkspaceHeadSha: async () => 'sha-1',
+      readTouchedPaths: async () => new Set<string>(['src/foo.ts']),
+    });
+    await primeObservation(actor, adapters);
+
+    const outcome = await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    expect(outcome.kind).toBe('fix-pushed');
+    if (outcome.kind !== 'fix-pushed') throw new Error('unreachable');
+    // l1 (line) on touched path -> resolved. b1 (body-nit) -> NOT resolved.
+    expect(outcome.resolvedCommentIds).toEqual(['l1']);
+    expect(review.resolveCalls.map((c) => c.commentId)).toEqual(['l1']);
+  });
+
+  it("findings whose path is NOT in touched-paths are NOT resolved", async () => {
+    const findings: ReadonlyArray<ReviewComment> = [
+      mkLineCommentForApply({ id: 'on-touched', path: 'src/foo.ts' }),
+      mkLineCommentForApply({ id: 'off-touched', path: 'src/untouched.ts' }),
+    ];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'sess-2' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'sha-2', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({
+      pr: APPLY_PR,
+      readWorkspaceHeadSha: async () => 'sha-2',
+      readTouchedPaths: async () => new Set<string>(['src/foo.ts']),
+    });
+    await primeObservation(actor, adapters);
+
+    const outcome = await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    expect(outcome.kind).toBe('fix-pushed');
+    if (outcome.kind !== 'fix-pushed') throw new Error('unreachable');
+    expect(outcome.resolvedCommentIds).toEqual(['on-touched']);
+    expect(review.resolveCalls.map((c) => c.commentId)).toEqual(['on-touched']);
+  });
+
+  it("operator-supplied additionalDisallowedTools merges with the floor", async () => {
+    const findings = [mkLineCommentForApply({ id: 'l1', path: 'src/foo.ts' })];
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'sess-tools' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'sha-tools', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({
+      pr: APPLY_PR,
+      readWorkspaceHeadSha: async () => 'sha-tools',
+      readTouchedPaths: async () => new Set<string>(),
+      additionalDisallowedTools: ['Bash'],
+    });
+    await primeObservation(actor, adapters);
+
+    await actor.apply(applyDispatchAction(findings), mkApplyCtx(adapters));
+
+    const dt = agentLoop.captured.input?.toolPolicy.disallowedTools ?? [];
+    for (const t of ['WebFetch', 'WebSearch', 'NotebookEdit', 'Bash']) {
+      expect(dt).toContain(t);
+    }
+  });
+
+  it("pr-escalate branch throws (Task 10 placeholder)", async () => {
+    const review = new StubResolveAdapter();
+    const agentLoop = recordingAgentLoop({
+      kind: 'completed',
+      sessionAtomId: 'never' as AtomId,
+      turnAtomIds: [],
+      artifacts: { commitSha: 'x', branchName: 'feat/x' },
+    });
+    const workspaceProvider = recordingWorkspaceProvider();
+    const adapters = makeApplyAdapters({ agentLoop, workspaceProvider, review });
+    const actor = new PrFixActor({ pr: APPLY_PR });
+    const action: ProposedAction<PrFixAction> = {
+      tool: 'pr-escalate',
+      description: 'escalate',
+      payload: { kind: 'pr-escalate', reason: 'CI failure: lint' },
+    };
+    await expect(actor.apply(action, mkApplyCtx(adapters))).rejects.toThrow(/Task 10/);
   });
 });
