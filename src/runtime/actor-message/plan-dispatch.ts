@@ -66,14 +66,21 @@ export async function runDispatchTick(
     if (atom.superseded_by.length > 0) return false;
     if (atom.taint !== 'clean') return false;
     if (atom.plan_state !== 'approved') return false;
-    return extractDelegation(atom) !== null;
+    return hasDelegationDescriptor(atom);
   });
 
   let dispatched = 0;
   let failed = 0;
 
   for (const plan of candidates) {
-    const envelope = extractDelegation(plan);
+    // resolveDelegationEnvelope fills correlation_id / payload /
+    // escalate_to from the plan atom when the descriptor on
+    // metadata.delegation does not carry them. PLAN_DRAFT only requires
+    // sub_actor_principal_id + reason + implied_blast_radius; the
+    // dispatch-side fields are mechanism, not LLM judgment, so we
+    // derive them deterministically here instead of forcing every
+    // planner to author them.
+    const envelope = await resolveDelegationEnvelope(host, plan);
     if (envelope === null) continue;
 
     // Claim the plan BEFORE calling the invoker. Without this, two
@@ -162,19 +169,104 @@ export async function runDispatchTick(
   return { scanned: candidates.length, dispatched, failed };
 }
 
-function extractDelegation(atom: Atom): DelegationEnvelope | null {
+/**
+ * Synchronous predicate the candidate filter uses to keep dispatch
+ * scanning fast. PLAN_DRAFT requires sub_actor_principal_id, so a
+ * plan that lacks even that has no chance of becoming a valid
+ * dispatch and is not worth the resolveDelegationEnvelope round-trip.
+ */
+function hasDelegationDescriptor(atom: Atom): boolean {
+  const raw = (atom.metadata as Record<string, unknown>)?.delegation;
+  if (raw === undefined || raw === null || typeof raw !== 'object') return false;
+  const obj = raw as Record<string, unknown>;
+  return typeof obj.sub_actor_principal_id === 'string'
+    && obj.sub_actor_principal_id.length > 0;
+}
+
+/**
+ * Build the full DelegationEnvelope the dispatcher hands to the
+ * SubActorRegistry. Reads the descriptor from `metadata.delegation`
+ * and fills mechanism-side fields the planner cannot reasonably
+ * author:
+ *   - correlation_id: deterministic per plan id; stable across
+ *     retries so observation atoms thread back to the same logical
+ *     dispatch.
+ *   - payload: { plan_id } so a generic invoker can locate the plan
+ *     atom without re-deriving the correlation id.
+ *   - escalate_to: walks plan.provenance.derived_from for the first
+ *     atom whose principal authored an authorizing operator-intent.
+ *     Falls back to plan.principal_id when no upstream intent is
+ *     reachable, which is correct behaviour for plans seeded by the
+ *     orchestrator itself (e.g. multi-reviewer-approved plans whose
+ *     escalation routing is owned by that flow, not this dispatcher):
+ *     the planner is the highest authority in scope and absorbs the
+ *     escalation by writing it to its own inbox.
+ *
+ * A descriptor that already carries any of these fields takes
+ * precedence over the default; a future consumer that wants
+ * non-default routing (e.g., escalating to an SRE rotation instead
+ * of the originating operator) can override per-plan without
+ * teaching the dispatcher about that consumer.
+ */
+async function resolveDelegationEnvelope(
+  host: Host,
+  atom: Atom,
+): Promise<DelegationEnvelope | null> {
   const raw = (atom.metadata as Record<string, unknown>)?.delegation;
   if (raw === undefined || raw === null || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
-  if (typeof obj.sub_actor_principal_id !== 'string') return null;
-  if (typeof obj.correlation_id !== 'string') return null;
-  if (typeof obj.escalate_to !== 'string') return null;
+  const sub_actor_principal_id = typeof obj.sub_actor_principal_id === 'string'
+    ? obj.sub_actor_principal_id
+    : null;
+  if (sub_actor_principal_id === null || sub_actor_principal_id.length === 0) return null;
+
+  const declaredCorrId = typeof obj.correlation_id === 'string' && obj.correlation_id.length > 0
+    ? obj.correlation_id
+    : null;
+  const declaredEscalate = typeof obj.escalate_to === 'string' && obj.escalate_to.length > 0
+    ? obj.escalate_to
+    : null;
+  // Treat null payload like undefined: PLAN_DRAFT does not author this
+  // field, so the only way an explicit null arrives is through a
+  // hand-edit or a future schema regression. Falling back to the
+  // default { plan_id } in that case keeps the invoker contract intact
+  // (the standard invokers all expect at least a plan_id).
+  const declaredPayload = obj.payload !== undefined && obj.payload !== null
+    ? obj.payload
+    : null;
+
+  const correlation_id = declaredCorrId ?? `dispatch-${String(atom.id)}`;
+  const payload = declaredPayload !== null
+    ? declaredPayload
+    : { plan_id: String(atom.id) };
+  const escalate_to = declaredEscalate ?? await deriveEscalateTo(host, atom);
+
   return {
-    sub_actor_principal_id: obj.sub_actor_principal_id,
-    payload: obj.payload,
-    correlation_id: obj.correlation_id,
-    escalate_to: obj.escalate_to,
+    sub_actor_principal_id,
+    payload,
+    correlation_id,
+    escalate_to,
   };
+}
+
+/**
+ * Walk plan.provenance.derived_from looking for the first atom whose
+ * principal_id can serve as the escalation target. Operator-intent
+ * atoms come first because they encode the explicit authorization
+ * the plan derived from; if none are found we fall back to the plan's
+ * own principal_id (orchestrator-seeded plans).
+ */
+async function deriveEscalateTo(host: Host, atom: Atom): Promise<string> {
+  for (const id of atom.provenance.derived_from) {
+    const upstream = await host.atoms.get(id as AtomId);
+    if (upstream === null) continue;
+    if (upstream.type !== 'operator-intent') continue;
+    const principalId = upstream.principal_id;
+    if (typeof principalId === 'string' && principalId.length > 0) {
+      return principalId;
+    }
+  }
+  return String(atom.principal_id);
 }
 
 async function writeEscalationMessage(
