@@ -78,13 +78,38 @@ export type {
   CodeAuthorExecutorFailure,
 } from './code-author-invoker.js';
 
-// The default executor (drafter + git-ops + pr-creation composition)
-// is a concrete, GitHub-backed implementation of CodeAuthorExecutor.
-// Intentionally NOT re-exported from this barrel so the primitive
-// surface stays seam-only: consumers importing `actor-message`
-// receive the invoker and the executor interface; consumers who want
-// the default chain opt in via the `/actor-message/executor-default`
-// subpath (see package.json exports + src/actor-message/executor-default.ts).
+// Agentic CodeAuthorExecutor: composes the agentic-actor-loop substrate
+// (AgentLoopAdapter + WorkspaceProvider + BlobStore + Redactor +
+// per-actor policy resolvers) into a CodeAuthorExecutor implementation.
+// Operators choose between the diff-based and agentic flavors by which
+// factory they wire into their executor config.
+export {
+  buildAgenticCodeAuthorExecutor,
+} from './agentic-code-author-executor.js';
+export type {
+  AgenticExecutorConfig,
+} from './agentic-code-author-executor.js';
+
+// Diff-based CodeAuthorExecutor: composes drafter + git-ops + pr-creation
+// in a single LLM call. Preferred name for new code; the deprecated
+// `buildDefaultCodeAuthorExecutor` alias below resolves to the same
+// factory for one minor release.
+export {
+  buildDiffBasedCodeAuthorExecutor,
+} from './diff-based-code-author-executor.js';
+export type {
+  DiffBasedExecutorConfig,
+} from './diff-based-code-author-executor.js';
+
+// Deprecated back-compat alias: imports via the old name continue to
+// resolve to the same factory while consumers migrate. Will be removed
+// in the release after.
+export {
+  buildDefaultCodeAuthorExecutor,
+} from './code-author-executor-default.js';
+export type {
+  DefaultExecutorConfig,
+} from './code-author-executor-default.js';
 
 export { runDispatchTick } from './plan-dispatch.js';
 export type { DelegationEnvelope, DispatchTickResult } from './plan-dispatch.js';
