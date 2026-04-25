@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { SameMachineCliResumeStrategy } from '../../../../../examples/agent-loops/resume-author/strategies/same-machine.js';
 import type { CandidateSession, ResumeContext } from '../../../../../examples/agent-loops/resume-author/types.js';
+import type { Workspace } from '../../../../../src/substrate/workspace-provider.js';
+import type { Host } from '../../../../../src/substrate/interface.js';
 import type { AtomId } from '../../../../../src/substrate/types.js';
 
-const stubWs: any = { id: 'ws-1', path: '/tmp/ws', baseRef: 'main' };
-const stubHost: any = {};
+const stubWs = { id: 'ws-1', path: '/tmp/ws', baseRef: 'main' } as Workspace;
+const stubHost = {} as unknown as Host;
 
 function makeCtx(candidates: ReadonlyArray<Partial<CandidateSession>>): ResumeContext {
   return {

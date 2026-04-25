@@ -5,6 +5,8 @@ import type {
   ResolvedSession,
   ResumeContext,
 } from '../../../../examples/agent-loops/resume-author/types.js';
+import type { Workspace } from '../../../../src/substrate/workspace-provider.js';
+import type { Host } from '../../../../src/substrate/interface.js';
 import type { AtomId } from '../../../../src/substrate/types.js';
 
 describe('SessionResumeStrategy types', () => {
@@ -38,7 +40,7 @@ describe('SessionResumeStrategy types', () => {
     // Pure type-shape test: the type must NOT have prObservationAtomId or any PR-specific field.
     // Compile-time check via @ts-expect-error.
     // @ts-expect-error -- ResumeContext should not have prObservationAtomId
-    const _: ResumeContext = { candidateSessions: [], workspace: {} as any, host: {} as any, prObservationAtomId: 'x' };
+    const _: ResumeContext = { candidateSessions: [], workspace: {} as Workspace, host: {} as unknown as Host, prObservationAtomId: 'x' };
     void _;
   });
 });
