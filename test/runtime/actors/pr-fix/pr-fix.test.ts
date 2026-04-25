@@ -1175,3 +1175,105 @@ describe('PrFixActor.apply (pr-escalate)', () => {
     expect(outcome.reason).toBe(reason);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PrFixActor.reflect
+// ---------------------------------------------------------------------------
+
+function makeReflectCtx(): ActorContext<PrFixAdapters> {
+  const host = createMemoryHost();
+  const adapters = {} as unknown as PrFixAdapters;
+  return makeStubCtx({ host, adapters });
+}
+
+function classifiedWith(classification: PrFixClassification): Classified<PrFixObservation> {
+  return {
+    observation: baseObs,
+    key: `pr-fix:test=${classification}`,
+    metadata: { classification, ciFailures: 0, arch: 0 },
+  };
+}
+
+describe('PrFixActor.reflect', () => {
+  it("returns {done:true, progress:false, note:'all clean; nothing to fix'} for 'all-clean' classification", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const reflection = await actor.reflect([], classifiedWith('all-clean'), makeReflectCtx());
+    expect(reflection.done).toBe(true);
+    expect(reflection.progress).toBe(false);
+    expect(reflection.note).toBe('all clean; nothing to fix');
+  });
+
+  it("returns {done:false, progress:false, note:'partial observation; retrying'} for 'partial' classification", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const reflection = await actor.reflect([], classifiedWith('partial'), makeReflectCtx());
+    expect(reflection.done).toBe(false);
+    expect(reflection.progress).toBe(false);
+    expect(reflection.note).toBe('partial observation; retrying');
+  });
+
+  it("returns {done:true, progress:false, note:<reason>} when an 'escalated' outcome is present", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const outcomes: ReadonlyArray<PrFixOutcome> = [
+      { kind: 'escalated', reason: 'CI failure: lint' },
+    ];
+    const reflection = await actor.reflect(outcomes, classifiedWith('ci-failure'), makeReflectCtx());
+    expect(reflection.done).toBe(true);
+    expect(reflection.progress).toBe(false);
+    expect(reflection.note).toBe('CI failure: lint');
+  });
+
+  it("returns {done:false, progress:false, note:<reason>} for a 'fix-failed' outcome (no escalated, no fix-pushed)", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const outcomes: ReadonlyArray<PrFixOutcome> = [
+      { kind: 'fix-failed', stage: 'verify-commit-sha', reason: 'sha mismatch', sessionAtomId: 's1' as AtomId },
+    ];
+    const reflection = await actor.reflect(outcomes, classifiedWith('has-findings'), makeReflectCtx());
+    expect(reflection.done).toBe(false);
+    expect(reflection.progress).toBe(false);
+    expect(reflection.note).toBe('sha mismatch');
+  });
+
+  it("returns {done:false, progress:true, note:'fix pushed; reobserving'} for a 'fix-pushed' outcome (no escalated, no failed)", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const outcomes: ReadonlyArray<PrFixOutcome> = [
+      { kind: 'fix-pushed', commitSha: 'abc', resolvedCommentIds: ['c1'], sessionAtomId: 's1' as AtomId },
+    ];
+    const reflection = await actor.reflect(outcomes, classifiedWith('has-findings'), makeReflectCtx());
+    expect(reflection.done).toBe(false);
+    expect(reflection.progress).toBe(true);
+    expect(reflection.note).toBe('fix pushed; reobserving');
+  });
+
+  it("returns {done:false, progress:false, note:'no progress'} for empty outcomes with 'has-findings' classification (defensive)", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const reflection = await actor.reflect([], classifiedWith('has-findings'), makeReflectCtx());
+    expect(reflection.done).toBe(false);
+    expect(reflection.progress).toBe(false);
+    expect(reflection.note).toBe('no progress');
+  });
+
+  it("'escalated' outcome takes priority over 'fix-failed' and 'fix-pushed' in the same iteration", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const outcomes: ReadonlyArray<PrFixOutcome> = [
+      { kind: 'fix-pushed', commitSha: 'abc', resolvedCommentIds: [], sessionAtomId: 's1' as AtomId },
+      { kind: 'fix-failed', stage: 'verify-commit-sha', reason: 'mismatch', sessionAtomId: 's2' as AtomId },
+      { kind: 'escalated', reason: 'Architectural concern: rework needed' },
+    ];
+    const reflection = await actor.reflect(outcomes, classifiedWith('architectural'), makeReflectCtx());
+    expect(reflection.done).toBe(true);
+    expect(reflection.progress).toBe(false);
+    expect(reflection.note).toBe('Architectural concern: rework needed');
+  });
+
+  it("'fix-failed' outcome takes priority over 'fix-pushed' when no 'escalated' present", async () => {
+    const actor = new PrFixActor({ pr: PR });
+    const outcomes: ReadonlyArray<PrFixOutcome> = [
+      { kind: 'fix-pushed', commitSha: 'abc', resolvedCommentIds: [], sessionAtomId: 's1' as AtomId },
+      { kind: 'fix-failed', stage: 'agent-no-commit', reason: 'agent loop completed but did not commit', sessionAtomId: 's2' as AtomId },
+    ];
+    const reflection = await actor.reflect(outcomes, classifiedWith('has-findings'), makeReflectCtx());
+    expect(reflection.done).toBe(false);
+    expect(reflection.progress).toBe(false);
+    expect(reflection.note).toBe('agent loop completed but did not commit');
+  });
+});

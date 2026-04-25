@@ -654,12 +654,57 @@ export class PrFixActor implements Actor<
     }
   }
 
+  /**
+   * Map an iteration's outcomes + classification to a `Reflection`.
+   *
+   * Classification short-circuits drive the no-action branches first;
+   * outcome inspection drives the post-apply branches. The outcome
+   * priority chain is `escalated` > `fix-failed` > `fix-pushed`: a
+   * single escalated outcome halts the loop regardless of any sibling
+   * fix-pushed in the same iteration (defense in depth -- a misbehaving
+   * propose path could theoretically emit both, and escalation wins).
+   *
+   * Outcome -> Reflection table:
+   *   - classification 'all-clean'      -> {done:true,  progress:false, note:'all clean; nothing to fix'}
+   *   - classification 'partial'        -> {done:false, progress:false, note:'partial observation; retrying'}
+   *   - any outcome.kind === 'escalated' -> {done:true,  progress:false, note: outcome.reason}
+   *   - any outcome.kind === 'fix-failed' (no escalated) -> {done:false, progress:false, note: outcome.reason}
+   *   - any outcome.kind === 'fix-pushed' (no escalated, no failed)
+   *                                       -> {done:false, progress:true,  note:'fix pushed; reobserving'}
+   *   - empty outcomes + non-terminal classification (defensive)
+   *                                       -> {done:false, progress:false, note:'no progress'}
+   *
+   * The `progress: false` flag on the `no progress` and `fix-failed`
+   * branches feeds runActor's convergence detector: two consecutive
+   * iterations with the same classification key + `progress: false`
+   * triggers the convergence-loop halt path.
+   */
   async reflect(
-    _outcomes: ReadonlyArray<PrFixOutcome>,
-    _classified: Classified<PrFixObservation>,
+    outcomes: ReadonlyArray<PrFixOutcome>,
+    classified: Classified<PrFixObservation>,
     _ctx: ActorContext<PrFixAdapters>,
   ): Promise<Reflection> {
-    throw new Error('PrFixActor.reflect: not implemented (Task 11)');
+    const meta = (classified.metadata ?? {}) as { classification?: PrFixClassification };
+    const cls = meta.classification ?? 'has-findings';
+    if (cls === 'all-clean') {
+      return { done: true, progress: false, note: 'all clean; nothing to fix' };
+    }
+    if (cls === 'partial') {
+      return { done: false, progress: false, note: 'partial observation; retrying' };
+    }
+    const escalated = outcomes.find(o => o.kind === 'escalated');
+    if (escalated !== undefined) {
+      return { done: true, progress: false, note: escalated.reason };
+    }
+    const failed = outcomes.find(o => o.kind === 'fix-failed');
+    if (failed !== undefined) {
+      return { done: false, progress: false, note: failed.reason };
+    }
+    const fixPushed = outcomes.some(o => o.kind === 'fix-pushed');
+    if (fixPushed) {
+      return { done: false, progress: true, note: 'fix pushed; reobserving' };
+    }
+    return { done: false, progress: false, note: 'no progress' };
   }
 }
 
