@@ -110,7 +110,16 @@ export type AtomType =
   // for projection-scoped queries (the two pointers are required
   // to agree; a future validator may enforce this).
   | 'agent-session'
-  | 'agent-turn';
+  | 'agent-turn'
+  // PR-fix observation atoms; one per `PrFixActor.observe` pass. The
+  // metadata holds the GitHub PR snapshot (head SHA + branch, CR review
+  // states, finding/CI counts) that the actor classified on. Each
+  // observation atom may later be patched with
+  // `dispatched_session_atom_id` pointing at the agent-session this
+  // observation triggered, so the audit trail chains observation ->
+  // session -> turn atoms; the initial atom written in `observe()` does
+  // not have the pointer set.
+  | 'pr-fix-observation';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
@@ -593,5 +602,35 @@ export interface AgentTurnMeta {
    * Open extension slot, namespaced by adapter. Same rationale as
    * `AgentSessionMeta.extra`.
    */
+  readonly extra?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Stored on atoms with `type: 'pr-fix-observation'` under
+ * `metadata.pr_fix_observation`. One per `PrFixActor.observe()` pass; carries
+ * the GitHub PR snapshot the actor classified on. The actor patches
+ * `dispatched_session_atom_id` onto the atom AFTER `apply()` runs (via
+ * `host.atoms.update`); the initial atom written in `observe()` does not have
+ * it set.
+ *
+ * `extra` is the open extension slot for adapter-specific signals (e.g. CR
+ * comment IDs, thread refs); namespace keys to avoid collision.
+ */
+export interface PrFixObservationMeta {
+  readonly pr_owner: string;
+  readonly pr_repo: string;
+  readonly pr_number: number;
+  readonly head_branch: string;
+  readonly head_sha: string;
+  readonly cr_review_states: ReadonlyArray<{ readonly author: string; readonly state: string; readonly submitted_at: string }>;
+  readonly merge_state_status: string | null;
+  readonly mergeable: boolean | null;
+  readonly line_comment_count: number;
+  readonly body_nit_count: number;
+  readonly check_run_failure_count: number;
+  readonly legacy_status_failure_count: number;
+  readonly partial: boolean;
+  readonly classification: 'all-clean' | 'has-findings' | 'ci-failure' | 'architectural' | 'partial';
+  readonly dispatched_session_atom_id?: AtomId;
   readonly extra?: Readonly<Record<string, unknown>>;
 }

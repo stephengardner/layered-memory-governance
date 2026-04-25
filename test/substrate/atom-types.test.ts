@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { Atom, AtomId, PrincipalId } from '../../src/substrate/types.js';
-import type { AgentSessionMeta, AgentTurnMeta, BlobRef } from '../../src/substrate/types.js';
+import type { Atom, AtomId, AtomType, PrincipalId } from '../../src/substrate/types.js';
+import type { AgentSessionMeta, AgentTurnMeta, BlobRef, PrFixObservationMeta } from '../../src/substrate/types.js';
 
 describe('AtomType union: agent-session + agent-turn', () => {
   it('accepts agent-session as a type', () => {
@@ -52,5 +52,25 @@ describe('AtomType union: agent-session + agent-turn', () => {
   it('BlobRef is a branded type that requires the brand', () => {
     const b: BlobRef = 'sha256:abc' as BlobRef;
     expect(typeof b).toBe('string');
+  });
+});
+
+describe('pr-fix-observation atom type', () => {
+  it('appears in AtomType union', () => {
+    const t: AtomType = 'pr-fix-observation';
+    expect(t).toBe('pr-fix-observation');
+  });
+
+  it('PrFixObservationMeta has the expected shape', () => {
+    const meta: PrFixObservationMeta = {
+      pr_owner: 'o', pr_repo: 'r', pr_number: 1,
+      head_branch: 'feat/x', head_sha: 'abc',
+      cr_review_states: [],
+      merge_state_status: null, mergeable: null,
+      line_comment_count: 0, body_nit_count: 0,
+      check_run_failure_count: 0, legacy_status_failure_count: 0,
+      partial: false, classification: 'all-clean',
+    };
+    expect(meta.classification).toBe('all-clean');
   });
 });
