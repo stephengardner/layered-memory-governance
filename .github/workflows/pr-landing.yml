@@ -16,6 +16,15 @@ on:
       - synchronize
       - ready_for_review
       - reopened
+      # Re-fire on label transitions so noop / real auditor flip
+      # the LAG-auditor signal as the autonomous-intent label is
+      # added or removed. Without this, a PR that opens without
+      # the label posts a SUCCESS noop on its head SHA, and a
+      # later label-add never re-evaluates -- the stale SUCCESS
+      # would let an autonomous-intent PR merge under a check
+      # posted while it was unlabeled.
+      - labeled
+      - unlabeled
   pull_request_review:
     types: [submitted]
   pull_request_review_comment:
