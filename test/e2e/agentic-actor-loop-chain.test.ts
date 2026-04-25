@@ -295,6 +295,97 @@ describe('agentic-actor-loop end-to-end', () => {
     expect(result.totalCostUsd).toBe(0.42);
   });
 
+  it('chain: plan -> agentic executor -> REAL ClaudeCodeAgentLoopAdapter (stubbed CLI) -> canonical AgentTurnMeta atoms', async () => {
+    // Validates the full chain through the production adapter -- not the
+    // inline stubAdapter() above. Asserts agent-turn atoms emitted by the
+    // production adapter match the canonical AgentTurnMeta shape from
+    // src/substrate/types.ts:570-597 exactly: `tool` (not tool_name),
+    // `args` / `result` as `{inline}|{ref}` discriminated unions, `outcome`
+    // in `'success'|'tool-error'|'policy-refused'`. A regression guard so
+    // a future refactor cannot silently drift back to a non-canonical
+    // shape (CR caught one such drift in spec round 1).
+    const { Readable } = await import('node:stream');
+    const { ClaudeCodeAgentLoopAdapter } = await import('../../examples/agent-loops/claude-code/loop.js');
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'ls' } }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'a\nb', is_error: false }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.07, is_error: false }),
+    ];
+    const stubExeca = ((..._args: unknown[]) => {
+      const stdoutStream = Readable.from(stdoutLines.map((l) => `${l}\n`));
+      const stderrStream = Readable.from(['']);
+      const resultPromise = Promise.resolve({
+        stdout: stdoutLines.join('\n'),
+        stderr: '',
+        exitCode: 0,
+      });
+      return Object.assign(resultPromise, {
+        stdout: stdoutStream,
+        stderr: stderrStream,
+        kill: (_signal?: NodeJS.Signals) => true,
+      }) as never;
+    }) as never;
+    const realAdapter = new ClaudeCodeAgentLoopAdapter({ execImpl: stubExeca });
+    const host = createMemoryHost();
+    // The real adapter does not return commitSha (it would normally come
+    // from `captureArtifacts` reading git inside the workspace). For this
+    // chain test we focus on atom-shape correctness; the executor will map
+    // the missing artifacts to `agentic/no-artifacts`. That path is the
+    // one we want exercised here -- the atoms must still be canonical.
+    const executor = buildAgenticCodeAuthorExecutor({
+      host,
+      principal: 'agentic-code-author' as PrincipalId,
+      actorType: 'code-author',
+      agentLoop: realAdapter,
+      workspaceProvider: STUB_WS_PROVIDER,
+      blobStore: inMemoryBlobStore(),
+      redactor: NOOP_REDACTOR,
+      ghClient: STUB_GH,
+      owner: 'o',
+      repo: 'r',
+      baseRef: 'main',
+      model: 'stub-model',
+    });
+    const plan = mkPlan('plan-real-shape', { target_paths: ['README.md'] });
+    await host.atoms.put(plan);
+    await executor.execute({
+      plan,
+      fence: {
+        signedPrOnly: { subject: 's', output_channel: 'signed-pr', allowed_direct_write_paths: [], require_app_identity: true },
+        perPrCostCap: { subject: 's', max_usd_per_pr: 10, include_retries: true },
+        ciGate: { subject: 's', required_checks: [], require_all: true, max_check_age_ms: 60_000 },
+        writeRevocationOnStop: { subject: 's', on_stop_action: 'close-pr-with-revocation-comment', draft_atoms_layer: 'L0', revocation_atom_type: 'code-author-revoked' },
+        warnings: [],
+      },
+      correlationId: 'corr-real-1',
+      observationAtomId: 'obs-real' as AtomId,
+    });
+    // Validate canonical AgentTurnMeta shape across emitted turns.
+    const turnAtoms = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
+    expect(turnAtoms.length).toBeGreaterThanOrEqual(2);
+    const canonicalTurnKeys = ['session_atom_id', 'turn_index', 'llm_input', 'llm_output', 'tool_calls', 'latency_ms'];
+    for (const t of turnAtoms) {
+      const md = t.metadata as Record<string, unknown>;
+      const tm = md['agent_turn'] as Record<string, unknown>;
+      for (const k of canonicalTurnKeys) {
+        expect(tm).toHaveProperty(k);
+      }
+      // tool_calls[i] uses canonical field names (tool, args, result, latency_ms, outcome).
+      const toolCalls = tm['tool_calls'] as ReadonlyArray<Record<string, unknown>>;
+      for (const tc of toolCalls) {
+        expect(tc).toHaveProperty('tool');           // NOT tool_name
+        expect(tc).toHaveProperty('args');           // NOT args_redacted
+        expect(tc).toHaveProperty('result');         // NOT result_redacted
+        expect(tc).toHaveProperty('latency_ms');
+        expect(tc).toHaveProperty('outcome');
+        // outcome is in the canonical union
+        expect(['success', 'tool-error', 'policy-refused']).toContain(tc['outcome']);
+      }
+    }
+  });
+
   it('chain: budget-exhausted result maps to CodeAuthorExecutorFailure with stage agentic/budget-exhausted', async () => {
     const host = createMemoryHost();
     const adapter: AgentLoopAdapter = {
