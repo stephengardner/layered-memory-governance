@@ -223,17 +223,22 @@ export function buildDefaultCodeAuthorExecutor(
               : {}),
           });
         } catch (err) {
+          // Drafter errors are not retried (the catch returns
+          // immediately); appending the attempt counter would be
+          // semantically inconsistent for callers reading
+          // result.reason. The attempt loop only retries on
+          // diff-apply failures (the GitOpsError branch below).
           if (err instanceof DrafterError) {
             return {
               kind: 'error',
               stage: `drafter/${err.reason}`,
-              reason: `${err.message} (attempt ${attempt}/${MAX_DRAFT_ATTEMPTS})`,
+              reason: err.message,
             };
           }
           return {
             kind: 'error',
             stage: 'drafter/unexpected',
-            reason: `${err instanceof Error ? err.message : String(err)} (attempt ${attempt}/${MAX_DRAFT_ATTEMPTS})`,
+            reason: err instanceof Error ? err.message : String(err),
           };
         }
 
