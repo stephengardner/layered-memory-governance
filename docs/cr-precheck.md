@@ -23,7 +23,7 @@ CR_PRECHECK_DRY_RUN=1 node scripts/cr-precheck.mjs
 
 - Default base is `origin/main`. Override with `--base <ref>` when stacking off another branch.
 - Default gate fires on critical and major findings only. `--strict` adds minor findings to the block list.
-- Exit codes: `0` clean (or skipped on not-found, or empty diff), `1` findings present (or CR CLI errored), `2` bad arguments.
+- Exit codes: `0` clean (or skipped on not-found, or empty diff), `1` findings present (or CR CLI errored), `2` bad arguments OR an uncaught exception bubbled out of `main()` in `scripts/cr-precheck.mjs` (e.g., unexpected runtime error, atom-write crash before the gate decision).
 
 ## What "skip" means
 
@@ -67,9 +67,9 @@ Output is one row per atom:
 3. Installs CR CLI via the official `install.sh`.
 4. Runs `node scripts/cr-precheck.mjs --base "origin/${{ github.base_ref }}"`.
 
-Operator setup: add `CODERABBIT_API_KEY` to the repo secrets. Without it, CR CLI errors on the API call, the helper writes a `cli-error` skip atom in the runner, and the workflow fails (blocking the merge). Anonymous mode is not assumed available; if CR ships OSS-anonymous later, the secret requirement can be relaxed.
+Operator setup: add `CODERABBIT_API_KEY` to the repo secrets. Without it, the workflow emits a loud `::warning::` and skips the install/verify/review steps (exit success), so the gate is inert-but-honest until the secret lands. Anonymous mode is not assumed available; if CR ships OSS-anonymous later, the secret requirement can be relaxed.
 
-The `cr-precheck` job is required-status-check eligible. Add it to branch protection to make the gate the merge-time floor.
+Once the secret is configured, the `cr-precheck` job is required-status-check eligible. Add it to branch protection AFTER the secret lands; adding it earlier turns the gate into a green-by-default no-op (the silent-skip antipattern this helper is meant to prevent).
 
 ## Troubleshooting
 

@@ -124,6 +124,35 @@ export function parseCrCliAgentFindings(output) {
 }
 
 /**
+ * Classify a `spawnSync` result as cli-error or runnable.
+ *
+ * A CR CLI run is treated as a cli-error when ANY of:
+ *   - `result.error` is set (spawn-level failure: ENOENT, EACCES,
+ *     explicit timeout via `spawnSync` opts, etc).
+ *   - `result.signal` is non-null (SIGTERM, SIGKILL, SIGINT, ...). A
+ *     signal-terminated child returns `{status: null, signal: 'SIG*'}`
+ *     and `result.error` is NOT populated for that case, so the
+ *     status-only check would silently fall through to the parser.
+ *     The parser would then read a truncated NDJSON stream as zero
+ *     findings, write a clean `cr-precheck-run` atom, and exit 0:
+ *     the exact silent-skip vector the spec is built to close.
+ *   - `result.status` is a non-zero numeric exit code. Note that
+ *     `status === null` alone is NOT a cli-error (e.g., spawn failures
+ *     are caught via `result.error`); the signal check above handles
+ *     the signal-termination case explicitly.
+ *
+ * Pure helper so tests can drive every classification branch via a
+ * fake `result` shape without spawning a real process.
+ */
+export function isCliErrorResult(result) {
+  if (result === null || typeof result !== 'object') return false;
+  if (result.error) return true;
+  if (result.signal !== null && result.signal !== undefined) return true;
+  if (typeof result.status === 'number' && result.status !== 0) return true;
+  return false;
+}
+
+/**
  * Map findings to exit code + human-readable reason. The default gate
  * fires on critical+major; --strict additionally blocks on minor.
  */
@@ -293,10 +322,16 @@ async function main() {
   });
   const duration = Date.now() - start;
 
-  // Treat spawn errors and non-zero exits as cli-error. Note: a
-  // findings-bearing successful run typically exits 0 in agent mode;
-  // the gate logic is downstream of parsing, not the exit code.
-  if (result.error || (result.status !== 0 && result.status !== null)) {
+  // Treat spawn errors, signal-termination, and non-zero exits as
+  // cli-error. Note: a findings-bearing successful run typically exits
+  // 0 in agent mode; the gate logic is downstream of parsing, not the
+  // exit code. Signal-termination is included explicitly because a
+  // SIGTERM/SIGKILL'd child returns `{status: null, signal: 'SIG*'}`
+  // with `result.error` unset; without the signal check, control would
+  // flow to the parser, read a truncated stream as 0 findings, and
+  // write a clean atom (the silent-skip vector). isCliErrorResult is
+  // a pure helper so the classification is unit-testable.
+  if (isCliErrorResult(result)) {
     const stderrSlice = (result.stderr ?? '').slice(0, 500);
     console.error(`[cr-precheck] coderabbit exited ${result.status} (signal=${result.signal ?? 'none'}); treating as cli-error.`);
     if (stderrSlice.length > 0) console.error(stderrSlice);
