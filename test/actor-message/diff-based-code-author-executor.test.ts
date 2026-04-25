@@ -1,5 +1,5 @@
 /**
- * Unit tests for buildDefaultCodeAuthorExecutor.
+ * Unit tests for buildDiffBasedCodeAuthorExecutor.
  *
  * Exercises the composition of drafter + git-ops + pr-creation with
  * every external system stubbed:
@@ -21,9 +21,9 @@ import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/ind
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
 import {
-  buildDefaultCodeAuthorExecutor,
+  buildDiffBasedCodeAuthorExecutor,
   buildSelfCorrectingPrompt,
-} from '../../src/runtime/actor-message/code-author-executor-default.js';
+} from '../../src/runtime/actor-message/diff-based-code-author-executor.js';
 import {
   DRAFT_SCHEMA,
   DRAFT_SYSTEM_PROMPT,
@@ -157,7 +157,7 @@ function registerDrafterResponse(
   host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, data, response);
 }
 
-describe('buildDefaultCodeAuthorExecutor', () => {
+describe('buildDiffBasedCodeAuthorExecutor', () => {
   let host: MemoryHost;
 
   beforeEach(() => {
@@ -189,7 +189,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       };
     }) as GhClient['rest']);
 
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient,
       owner: 'o',
@@ -233,7 +233,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const plan = mkPlan('plan-no-response', 'unregistered', { target_paths: ['README.md'] });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 1, html_url: '', url: '', node_id: '', state: 'open',
@@ -261,7 +261,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const { impl: execImpl } = stubGitExeca([
       { exitCode: 0, stdout: ' M src/foo.ts\n' }, // dirty
     ]);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 1, html_url: '', url: '', node_id: '', state: 'open',
@@ -287,7 +287,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => { throw new Error('gh boom'); }) as GhClient['rest']),
       owner: 'o', repo: 'r', repoDir: '/tmp/x',
@@ -317,7 +317,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       confidence: 0.9,
     }, '');
     const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({ number: 1, html_url: '', url: '', node_id: '', state: 'open' })) as GhClient['rest']),
       owner: 'o', repo: 'r', repoDir: '/tmp/x',
@@ -349,7 +349,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     }, '');
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
     const prFields: Array<Record<string, unknown>> = [];
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async (args: Record<string, unknown>) => {
         prFields.push(args);
@@ -413,7 +413,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 9, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -466,7 +466,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 10, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -528,7 +528,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const readFileFn = async () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     };
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 11, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -558,7 +558,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 7, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -636,7 +636,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 42, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -708,7 +708,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const readFileFn = async () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     };
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 99, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -766,7 +766,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const readFileFn = async () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     };
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 100, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -814,7 +814,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       { exitCode: 0 },                                        // fetch
       { exitCode: 0 },                                        // checkout
     ]);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 43, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -873,7 +873,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const readFileFn = async () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     };
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 200, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -956,7 +956,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       confidence: 0.92,
     });
 
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 42, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -1011,7 +1011,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     ];
     const { impl: execImpl } = stubGitExeca(replies);
 
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 1, html_url: '', url: '', node_id: '', state: 'open',
@@ -1050,7 +1050,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const { impl: execImpl, calls } = stubGitExeca([
       { exitCode: 0, stdout: ' M src/foo.ts\n' },
     ]);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 1, html_url: '', url: '', node_id: '', state: 'open',

@@ -324,7 +324,7 @@ const cases: readonly SubpathCase[] = [
     subpath: '/actor-message/executor-default',
     mod: executorDefaultShim,
     real: executorDefaultReal,
-    expected: ['buildDefaultCodeAuthorExecutor'],
+    expected: ['buildDefaultCodeAuthorExecutor', 'buildDiffBasedCodeAuthorExecutor'],
   },
 
   // /adapters family (no shim)

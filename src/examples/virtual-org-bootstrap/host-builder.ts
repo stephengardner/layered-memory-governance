@@ -19,8 +19,8 @@ import type { Principal, PrincipalId } from '../../substrate/types.js';
 import { seedFenceAtoms } from './fence-seed.js';
 
 /**
- * Git author identity threaded into the default code-author executor
- * via `DefaultExecutorConfig.gitIdentity`. Re-exported from the same
+ * Git author identity threaded into the diff-based code-author executor
+ * via `DiffBasedExecutorConfig.gitIdentity`. Re-exported from the same
  * subpath other example wiring already imports (host + executor live
  * together at the example-bootstrap layer).
  */

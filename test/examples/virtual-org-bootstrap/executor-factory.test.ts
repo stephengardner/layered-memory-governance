@@ -1,12 +1,12 @@
 /**
  * executor-factory composition tests.
  *
- * `createVirtualOrgCodeAuthorFn` wraps `buildDefaultCodeAuthorExecutor`
+ * `createVirtualOrgCodeAuthorFn` wraps `buildDiffBasedCodeAuthorExecutor`
  * + `runCodeAuthor` behind a signature the agent-sdk executor seam
  * accepts as `codeAuthorFn`. These tests pin the wiring:
  *   - the returned fn forwards (host, payload, correlationId, options)
  *     to runCodeAuthor
- *   - the injected executor is what buildDefaultCodeAuthorExecutor
+ *   - the injected executor is what buildDiffBasedCodeAuthorExecutor
  *     returns (not a fresh stub synthesized inside the fn)
  *   - caller-supplied options (signal, principalId) are preserved.
  */
@@ -14,7 +14,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { afterEach } from 'vitest';
 
-import * as execDefault from '../../../src/runtime/actor-message/code-author-executor-default.js';
+import * as execDiffBased from '../../../src/runtime/actor-message/diff-based-code-author-executor.js';
 import * as invoker from '../../../src/runtime/actor-message/code-author-invoker.js';
 import type { Host } from '../../../src/substrate/interface.js';
 
@@ -34,9 +34,9 @@ afterEach(() => {
 
 describe('createVirtualOrgCodeAuthorFn', () => {
   it('builds the default executor once and forwards it to runCodeAuthor on each invocation', async () => {
-    const fakeExecutor = { execute: vi.fn() } as unknown as ReturnType<typeof execDefault.buildDefaultCodeAuthorExecutor>;
+    const fakeExecutor = { execute: vi.fn() } as unknown as ReturnType<typeof execDiffBased.buildDiffBasedCodeAuthorExecutor>;
     const buildSpy = vi
-      .spyOn(execDefault, 'buildDefaultCodeAuthorExecutor')
+      .spyOn(execDiffBased, 'buildDiffBasedCodeAuthorExecutor')
       .mockReturnValue(fakeExecutor);
     const runSpy = vi
       .spyOn(invoker, 'runCodeAuthor')
@@ -75,8 +75,8 @@ describe('createVirtualOrgCodeAuthorFn', () => {
   });
 
   it('merges caller-supplied options (signal, principalId) into the runCodeAuthor options bag', async () => {
-    const fakeExecutor = { execute: vi.fn() } as unknown as ReturnType<typeof execDefault.buildDefaultCodeAuthorExecutor>;
-    vi.spyOn(execDefault, 'buildDefaultCodeAuthorExecutor').mockReturnValue(fakeExecutor);
+    const fakeExecutor = { execute: vi.fn() } as unknown as ReturnType<typeof execDiffBased.buildDiffBasedCodeAuthorExecutor>;
+    vi.spyOn(execDiffBased, 'buildDiffBasedCodeAuthorExecutor').mockReturnValue(fakeExecutor);
     const runSpy = vi
       .spyOn(invoker, 'runCodeAuthor')
       .mockResolvedValue({ kind: 'completed', producedAtomIds: [], summary: 'ok' });
