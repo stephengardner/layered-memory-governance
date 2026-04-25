@@ -297,6 +297,9 @@ const cases: readonly SubpathCase[] = [
       'ResetAuthorityError',
       'ResetShapeError',
       'SubActorRegistry',
+      'buildAgenticCodeAuthorExecutor',
+      'buildDefaultCodeAuthorExecutor',
+      'buildDiffBasedCodeAuthorExecutor',
       'defaultOrdering',
       'emitAck',
       'escalationAtomId',
@@ -321,6 +324,10 @@ const cases: readonly SubpathCase[] = [
     classes: ['ActorMessageRateLimiter', 'SubActorRegistry'],
   },
   {
+    // Deprecated subpath: re-exports the legacy alias only. New code
+    // should pull `buildDiffBasedCodeAuthorExecutor` from the
+    // /actor-message barrel; widening this shim would blunt the
+    // deprecation.
     subpath: '/actor-message/executor-default',
     mod: executorDefaultShim,
     real: executorDefaultReal,

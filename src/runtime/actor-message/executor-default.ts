@@ -1,18 +1,23 @@
 /**
- * Subpath export for the default CodeAuthorExecutor.
+ * Deprecated subpath shim for the diff-based CodeAuthorExecutor.
  *
- *   import { buildDefaultCodeAuthorExecutor }
- *     from 'layered-autonomous-governance/actor-message/executor-default';
+ * @deprecated Import from `layered-autonomous-governance/actor-message`
+ *   for the new public names (`buildDiffBasedCodeAuthorExecutor`,
+ *   `DiffBasedExecutorConfig`). This subpath only re-exports the
+ *   legacy aliases (`buildDefaultCodeAuthorExecutor`,
+ *   `DefaultExecutorConfig`) so existing consumers keep compiling
+ *   while migrating; new code should not use this path. The deprecated
+ *   surface is preserved for one minor release and removed in the
+ *   release after.
  *
- * Keeps the GitHub/git-backed concrete chain OUT of the primitive
- * `actor-message` barrel. Consumers who want the default wiring opt
- * in at this subpath; consumers who want a different backend
- * implement `CodeAuthorExecutor` against the seam exported from
- * `actor-message` without pulling this concrete implementation.
+ * The subpath is deliberately NOT a superset of the new public path:
+ * exposing the new symbols here would let consumers adopt them
+ * through the deprecated entrypoint, blunting the deprecation. New
+ * names live only at `actor-message`; this file is migration-only.
  */
 export {
-  buildDefaultCodeAuthorExecutor,
-} from './code-author-executor-default.js';
+  buildDiffBasedCodeAuthorExecutor as buildDefaultCodeAuthorExecutor,
+} from './diff-based-code-author-executor.js';
 export type {
-  DefaultExecutorConfig,
-} from './code-author-executor-default.js';
+  DiffBasedExecutorConfig as DefaultExecutorConfig,
+} from './diff-based-code-author-executor.js';

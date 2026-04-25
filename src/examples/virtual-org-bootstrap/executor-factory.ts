@@ -1,18 +1,18 @@
 /**
  * Executor factory for the virtual-org example.
  *
- * Composes `buildDefaultCodeAuthorExecutor` (the concrete chain of
+ * Composes `buildDiffBasedCodeAuthorExecutor` (the concrete chain of
  * drafter + git-ops + pr-creation) with `runCodeAuthor` (the
  * governance-invariant invoker) and returns a function shaped like
  * the `CodeAuthorFn` the agent-sdk executor seam consumes.
  *
- * The default executor is built once at factory time so the
+ * The diff-based executor is built once at factory time so the
  * subprocess-adjacent configuration (repoDir, gitIdentity, model,
  * ghClient) is captured up front; every invocation reuses the same
  * executor with a fresh host + payload.
  */
 
-import { buildDefaultCodeAuthorExecutor } from '../../runtime/actor-message/code-author-executor-default.js';
+import { buildDiffBasedCodeAuthorExecutor } from '../../runtime/actor-message/diff-based-code-author-executor.js';
 import { runCodeAuthor } from '../../runtime/actor-message/code-author-invoker.js';
 import type { CodeAuthorFn } from '../../integrations/agent-sdk/executor.js';
 import type { GhClient } from '../../external/github/index.js';
@@ -39,7 +39,7 @@ export interface ExecutorFactoryOptions {
 export function createVirtualOrgCodeAuthorFn(
   opts: ExecutorFactoryOptions,
 ): CodeAuthorFn {
-  const executor = buildDefaultCodeAuthorExecutor({
+  const executor = buildDiffBasedCodeAuthorExecutor({
     host: opts.host,
     ghClient: opts.ghClient,
     owner: opts.owner,

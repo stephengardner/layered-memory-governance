@@ -1,5 +1,5 @@
 /**
- * Unit tests for buildDefaultCodeAuthorExecutor.
+ * Unit tests for buildDiffBasedCodeAuthorExecutor.
  *
  * Exercises the composition of drafter + git-ops + pr-creation with
  * every external system stubbed:
@@ -21,9 +21,9 @@ import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/ind
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
 import {
-  buildDefaultCodeAuthorExecutor,
+  buildDiffBasedCodeAuthorExecutor,
   buildSelfCorrectingPrompt,
-} from '../../src/runtime/actor-message/code-author-executor-default.js';
+} from '../../src/runtime/actor-message/diff-based-code-author-executor.js';
 import {
   DRAFT_SCHEMA,
   DRAFT_SYSTEM_PROMPT,
@@ -157,7 +157,7 @@ function registerDrafterResponse(
   host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, data, response);
 }
 
-describe('buildDefaultCodeAuthorExecutor', () => {
+describe('buildDiffBasedCodeAuthorExecutor', () => {
   let host: MemoryHost;
 
   beforeEach(() => {
@@ -189,7 +189,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       };
     }) as GhClient['rest']);
 
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient,
       owner: 'o',
@@ -233,7 +233,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const plan = mkPlan('plan-no-response', 'unregistered', { target_paths: ['README.md'] });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 1, html_url: '', url: '', node_id: '', state: 'open',
@@ -261,7 +261,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const { impl: execImpl } = stubGitExeca([
       { exitCode: 0, stdout: ' M src/foo.ts\n' }, // dirty
     ]);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 1, html_url: '', url: '', node_id: '', state: 'open',
@@ -287,7 +287,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => { throw new Error('gh boom'); }) as GhClient['rest']),
       owner: 'o', repo: 'r', repoDir: '/tmp/x',
@@ -317,7 +317,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       confidence: 0.9,
     }, '');
     const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({ number: 1, html_url: '', url: '', node_id: '', state: 'open' })) as GhClient['rest']),
       owner: 'o', repo: 'r', repoDir: '/tmp/x',
@@ -338,6 +338,41 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     expect(checkoutCall!.args).toContain(result.branchName);
   });
 
+  it('sanitizer collapses long disallowed-char runs without polynomial backtracking', async () => {
+    // Adversarial plan id mixes 60 chars of `?` (each disallowed) with
+    // 60 chars of `-` (kept literal in the old impl, still collapses
+    // in the new one). The CodeQL polynomial-redos heuristic flagged
+    // the previous regex-based sanitizer; this regression test pins
+    // output shape so a future revert cannot silently re-introduce
+    // the unsafe form. Linearity is guaranteed by the impl (single
+    // pass, length-bounded); we assert correctness here.
+    const adversarial = 'a' + '?'.repeat(60) + '-'.repeat(60) + 'b';
+    const plan = mkPlan(adversarial, '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    }, '');
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({ number: 1, html_url: '', url: '', node_id: '', state: 'open' })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'nonce1',
+      execImpl,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-id-1' as AtomId });
+    if (result.kind !== 'dispatched') throw new Error('expected dispatched');
+    // The runs of `?` and `-` collapse to a single `-` between the
+    // bookend letters; the surrounding `code-author/` and `-nonce1`
+    // segments come from the executor wrapping.
+    expect(result.branchName).toBe('code-author/a-b-nonce1');
+  });
+
   it('observationAtomId from invoker is threaded into PR body footer (not a placeholder)', async () => {
     const plan = mkPlan('plan-threaded', '# plan\n\ncontent', {
       target_paths: ['README.md'],
@@ -349,7 +384,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     }, '');
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
     const prFields: Array<Record<string, unknown>> = [];
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async (args: Record<string, unknown>) => {
         prFields.push(args);
@@ -362,7 +397,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       execImpl,
     });
     // The caller (invoker) passes the REAL atom id, which includes
-    // timestamp + nonce components. Previously the default executor
+    // timestamp + nonce components. Previously the diff-based executor
     // synthesized a placeholder `code-author-invoked-<plan.id>` that
     // did not match any real atom; now it must use the caller id.
     const realAtomId = 'code-author-invoked-plan-threaded-2026-04-21T00:00:00Z-ff00aa' as AtomId;
@@ -375,7 +410,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
   it('fileContents: pre-reads target_paths via readFileFn and passes to drafter', async () => {
     // Closes the APPEND/MODIFY gap: the drafter has no repo access
     // and needs byte-exact file content to compute valid hunk
-    // headers. The default executor owns the fs seam (it already
+    // headers. The diff-based executor owns the fs seam (it already
     // knows repoDir) and pre-loads each target before the LLM call.
     // Tests inject a readFileFn so no real disk I/O happens.
     const plan = mkPlan('plan-filecontent', '# Append line', {
@@ -413,7 +448,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 9, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -466,7 +501,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 10, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -528,7 +563,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const readFileFn = async () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     };
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 11, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -558,7 +593,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 7, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -636,7 +671,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     });
 
     const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 42, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -666,6 +701,77 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       // leaf: the only touched file is docs/ok.md.
       expect(normalized.endsWith('/repo/docs/ok.md')).toBe(true);
     }
+  });
+
+  it('heuristic: extracts top-level filenames from prose when no target_paths metadata exists', async () => {
+    // Regression: the prior regex required at least one `/` segment
+    // and silently dropped top-level paths like `README.md` or
+    // `package.json`. Plans whose prose mentions only top-level files
+    // should now yield those as the resolved target set so the drafter
+    // reads + diffs them correctly.
+    const plan = mkPlan(
+      'plan-toplevel',
+      'Update README.md to mention the new feature.',
+      {}, // no target_paths -> heuristic runs
+    );
+    const reads: string[] = [];
+    const readFileFn = async (abs: string): Promise<string> => {
+      reads.push(abs);
+      const normalized = abs.replace(/\\/g, '/');
+      if (normalized.endsWith('/repo/README.md')) return 'old-body\n';
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+    const data = {
+      plan_id: 'plan-toplevel',
+      plan_title: 'Bump README',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      file_contents: [{ path: 'README.md', content: 'old-body\n' }],
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, data, {
+      diff: [
+        '--- a/README.md',
+        '+++ b/README.md',
+        '@@ -1,1 +1,2 @@',
+        ' old-body',
+        '+new-line',
+        '',
+      ].join('\n'),
+      notes: 'ok',
+      confidence: 0.9,
+    });
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/repo',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'nonce1',
+      execImpl,
+      readFileFn,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-1' as AtomId });
+    if (result.kind !== 'dispatched') {
+      throw new Error(`expected dispatched, got ${result.kind}; stage=${(result as { stage?: string }).stage ?? '-'} reason=${(result as { reason?: string }).reason ?? '-'}`);
+    }
+    // The drafter call only matches when target_paths === ['README.md'];
+    // the registered response covers exactly that key, so a successful
+    // dispatched result confirms the heuristic extracted the top-level
+    // filename. Read tracking provides defense-in-depth: only README.md
+    // should be touched.
+    for (const r of reads) {
+      const normalized = r.replace(/\\/g, '/');
+      expect(normalized.endsWith('/repo/README.md')).toBe(true);
+    }
+    expect(reads.length).toBeGreaterThan(0);
   });
 
   it('heuristic: strips unified-diff `a/` and `b/` prefixes when Decision echoes a diff block', async () => {
@@ -708,7 +814,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const readFileFn = async () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     };
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 99, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -766,7 +872,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const readFileFn = async () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     };
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 100, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -814,7 +920,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       { exitCode: 0 },                                        // fetch
       { exitCode: 0 },                                        // checkout
     ]);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 43, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -873,7 +979,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const readFileFn = async () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     };
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 200, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -956,7 +1062,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
       confidence: 0.92,
     });
 
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 42, html_url: 'h', url: 'u', node_id: 'n', state: 'open',
@@ -1011,7 +1117,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     ];
     const { impl: execImpl } = stubGitExeca(replies);
 
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 1, html_url: '', url: '', node_id: '', state: 'open',
@@ -1050,7 +1156,7 @@ describe('buildDefaultCodeAuthorExecutor', () => {
     const { impl: execImpl, calls } = stubGitExeca([
       { exitCode: 0, stdout: ' M src/foo.ts\n' },
     ]);
-    const executor = buildDefaultCodeAuthorExecutor({
+    const executor = buildDiffBasedCodeAuthorExecutor({
       host,
       ghClient: ghClientStub((async () => ({
         number: 1, html_url: '', url: '', node_id: '', state: 'open',

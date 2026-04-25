@@ -87,7 +87,7 @@ export interface DraftCodeChangeInputs {
    * which git apply --check rejects if the hunk header or context
    * lines disagree with the tree. Callers that can read the repo
    * filesystem populate this before calling; the default executor
-   * chain does so from `repoDir` in buildDefaultCodeAuthorExecutor.
+   * chain does so from `repoDir` in buildDiffBasedCodeAuthorExecutor.
    *
    * Shape discipline:
    *   - `path` is the repo-relative path the LLM sees in the diff's
