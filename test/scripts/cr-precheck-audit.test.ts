@@ -25,7 +25,7 @@ import {
   parseAuditArgs,
   parseDuration,
   queryAuditAtoms,
-} from '../../scripts/cr-precheck-audit.mjs';
+} from '../../scripts/lib/cr-precheck-audit.mjs';
 import { createFileHost } from '../../src/adapters/file/index.js';
 
 // Build a project-scope observation atom matching the Task 1 shape.

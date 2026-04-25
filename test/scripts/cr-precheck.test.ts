@@ -20,7 +20,7 @@ import {
   findCoderabbitOnPath,
   isCliErrorResult,
   parseCrCliAgentFindings,
-} from '../../scripts/cr-precheck.mjs';
+} from '../../scripts/lib/cr-precheck.mjs';
 
 describe('findCoderabbitOnPath', () => {
   it('returns a string path when stub finds the binary', () => {
