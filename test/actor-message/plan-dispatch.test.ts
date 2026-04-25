@@ -289,6 +289,36 @@ describe('runDispatchTick', () => {
     expect(updated!.plan_state).toBe('succeeded');
   });
 
+  it('null payload on the descriptor falls back to the default { plan_id }', async () => {
+    // Regression for the PR-#160 review finding: an explicit `null`
+    // on obj.payload would slip past `!== undefined` and propagate
+    // null into the invoker contract, which standard invokers (e.g.
+    // code-author) crash on with "cannot read properties of null
+    // (reading 'plan_id')". Treat null like undefined so the default
+    // fallback engages and the invoker always sees a dispatchable
+    // shape.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    let receivedPayload: unknown;
+    registry.register('code-author' as PrincipalId, async (payload): Promise<InvokeResult> => {
+      receivedPayload = payload;
+      return { kind: 'completed', producedAtomIds: [], summary: 'ok' };
+    });
+
+    await host.atoms.put(planAtom('p-null-payload', {
+      delegation: {
+        sub_actor_principal_id: 'code-author',
+        reason: 'descriptor with explicit null payload',
+        implied_blast_radius: 'tooling',
+        payload: null,
+      },
+    }));
+
+    const result = await runDispatchTick(host, registry);
+    expect(result.dispatched).toBe(1);
+    expect(receivedPayload).toEqual({ plan_id: 'p-null-payload' });
+  });
+
   it('escalate_to defaults to the originating intent principal when the plan derives from one', async () => {
     const host = createMemoryHost();
     const registry = new SubActorRegistry();
@@ -422,7 +452,10 @@ describe('runDispatchTick', () => {
     registry.register('code-author' as PrincipalId, async (payload, corr): Promise<InvokeResult> => {
       receivedCorrId = corr;
       receivedPayload = payload;
-      return { kind: 'completed', producedAtomIds: [], summary: 'ok' };
+      // Throw so the dispatcher writes an escalation actor-message;
+      // that lets us pin escalate_to precedence in the same case
+      // without doubling the test surface.
+      throw new Error('force escalation so we can observe escalate_to');
     });
 
     // A descriptor that overrides every default. The dispatcher must
@@ -442,6 +475,16 @@ describe('runDispatchTick', () => {
     await runDispatchTick(host, registry);
     expect(receivedCorrId).toBe('caller-defined-corr');
     expect(receivedPayload).toEqual({ custom: 'shape' });
+    // escalate_to precedence: the explicit 'sre-rotation' must route
+    // the dispatch-failed actor-message there, not to the plan
+    // principal (cto-actor) the deriveEscalateTo fallback would pick.
+    const replies = await host.atoms.query({ type: ['actor-message'] }, 100);
+    const escalation = replies.atoms.find(
+      (a) => (a.metadata as { actor_message?: { correlation_id?: string } })?.actor_message?.correlation_id === 'caller-defined-corr',
+    );
+    expect(escalation).toBeDefined();
+    const msg = (escalation!.metadata as { actor_message: { to: string } }).actor_message;
+    expect(msg.to).toBe('sre-rotation');
   });
 
   it('ignores superseded and tainted plans', async () => {

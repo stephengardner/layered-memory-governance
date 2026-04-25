@@ -194,11 +194,12 @@ function hasDelegationDescriptor(atom: Atom): boolean {
  *   - payload: { plan_id } so a generic invoker can locate the plan
  *     atom without re-deriving the correlation id.
  *   - escalate_to: walks plan.provenance.derived_from for the first
- *     atom whose principal authored an authorizing intent (operator-
- *     intent or plan-approval-vote). Falls back to plan.principal_id
- *     when no upstream principal is reachable, which is correct
- *     behaviour for plans seeded by the orchestrator itself: the
- *     planner is the highest authority in scope and absorbs the
+ *     atom whose principal authored an authorizing operator-intent.
+ *     Falls back to plan.principal_id when no upstream intent is
+ *     reachable, which is correct behaviour for plans seeded by the
+ *     orchestrator itself (e.g. multi-reviewer-approved plans whose
+ *     escalation routing is owned by that flow, not this dispatcher):
+ *     the planner is the highest authority in scope and absorbs the
  *     escalation by writing it to its own inbox.
  *
  * A descriptor that already carries any of these fields takes
@@ -225,10 +226,17 @@ async function resolveDelegationEnvelope(
   const declaredEscalate = typeof obj.escalate_to === 'string' && obj.escalate_to.length > 0
     ? obj.escalate_to
     : null;
-  const declaredPayload = obj.payload;
+  // Treat null payload like undefined: PLAN_DRAFT does not author this
+  // field, so the only way an explicit null arrives is through a
+  // hand-edit or a future schema regression. Falling back to the
+  // default { plan_id } in that case keeps the invoker contract intact
+  // (the standard invokers all expect at least a plan_id).
+  const declaredPayload = obj.payload !== undefined && obj.payload !== null
+    ? obj.payload
+    : null;
 
   const correlation_id = declaredCorrId ?? `dispatch-${String(atom.id)}`;
-  const payload = declaredPayload !== undefined
+  const payload = declaredPayload !== null
     ? declaredPayload
     : { plan_id: String(atom.id) };
   const escalate_to = declaredEscalate ?? await deriveEscalateTo(host, atom);
