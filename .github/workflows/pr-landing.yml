@@ -183,6 +183,15 @@ jobs:
   # under the same `LAG-auditor` context, which is intentional during the
   # migration but can confuse a reader of branch-protection logs who sees
   # one PR with a "check" and another with a "status" under the same name.
+  #
+  # Identity note: this job posts as the machine user via LAG_OPS_PAT
+  # (rather than the default GITHUB_TOKEN, which would attribute the
+  # check-run to `github-actions[bot]`). Using LAG_OPS_PAT keeps the
+  # autonomous-intent surface attributed to a provisioned bot identity
+  # consistent with the rest of the flow (CR triggers, ReviewTriggerAdapter,
+  # etc.). The fork-PR `if:` guard above ensures LAG_OPS_PAT is never
+  # injected into a fork-controlled checkout (it would be empty there
+  # because the gate fails before this step runs).
   lag-auditor-noop:
     name: LAG-auditor (noop)
     runs-on: ubuntu-latest
@@ -205,13 +214,17 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.fork == false &&
       !contains(github.event.pull_request.labels.*.name, 'autonomous-intent')
+    # The PAT-authenticated check-run does not need the workflow's
+    # `permissions:` block to grant checks:write -- the PAT carries
+    # its own scopes -- but we leave the declaration as defensive
+    # documentation so a reader sees what scope the call requires.
     permissions:
       checks: write
     steps:
       - name: Post LAG-auditor success check-run
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.LAG_OPS_PAT }}
           script: |
             await github.rest.checks.create({
               owner: context.repo.owner,
