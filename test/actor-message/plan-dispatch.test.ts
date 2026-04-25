@@ -246,6 +246,204 @@ describe('runDispatchTick', () => {
     expect((final!.metadata.dispatch_result as { kind: string }).kind).toBe('completed');
   });
 
+  it('defaults correlation_id, payload, and escalate_to when only sub_actor_principal_id is declared', async () => {
+    // Regression guard for the substrate gap caught while dogfooding
+    // the autonomous-intent flow: PLAN_DRAFT only requires
+    // sub_actor_principal_id + reason + implied_blast_radius, so a
+    // CTO-drafted plan never carries correlation_id / escalate_to /
+    // payload. Pre-fix the dispatch tick rejected such plans at the
+    // candidate filter and they never invoked, even though policy +
+    // approval succeeded.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    let invokerCalls = 0;
+    let receivedPayload: unknown;
+    let receivedCorrId: string | undefined;
+    registry.register('code-author' as PrincipalId, async (payload, corr): Promise<InvokeResult> => {
+      invokerCalls += 1;
+      receivedPayload = payload;
+      receivedCorrId = corr;
+      return { kind: 'completed', producedAtomIds: [], summary: 'ok' };
+    });
+
+    // Descriptor-only delegation: matches what PLAN_DRAFT emits and
+    // nothing more. correlation_id, escalate_to, and payload are all
+    // omitted on purpose.
+    await host.atoms.put(planAtom('p-defaults', {
+      delegation: {
+        sub_actor_principal_id: 'code-author',
+        reason: 'Touches CI YAML.',
+        implied_blast_radius: 'tooling',
+      },
+    }));
+
+    const result = await runDispatchTick(host, registry);
+    expect(result).toEqual({ scanned: 1, dispatched: 1, failed: 0 });
+    expect(invokerCalls).toBe(1);
+    // Defaults are deterministic per plan id so observation atoms
+    // thread back to the same logical dispatch on a retry.
+    expect(receivedCorrId).toBe('dispatch-p-defaults');
+    expect(receivedPayload).toEqual({ plan_id: 'p-defaults' });
+
+    const updated = await host.atoms.get('p-defaults' as AtomId);
+    expect(updated!.plan_state).toBe('succeeded');
+  });
+
+  it('escalate_to defaults to the originating intent principal when the plan derives from one', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('ghost-actor' as PrincipalId, async (): Promise<InvokeResult> => {
+      throw new Error('intentional dispatch failure');
+    });
+
+    // Seed an operator-intent atom so deriveEscalateTo can find it
+    // via plan.provenance.derived_from.
+    const intentAtom: Atom = {
+      schema_version: 1,
+      id: 'intent-alice-2026-04-24' as AtomId,
+      content: 'authorize the autonomous run',
+      type: 'operator-intent',
+      layer: 'L1',
+      provenance: {
+        kind: 'operator-seeded',
+        source: { agent_id: 'alice-operator' },
+        derived_from: [],
+      },
+      confidence: 1.0,
+      created_at: '2026-04-24T00:00:00.000Z' as Time,
+      last_reinforced_at: '2026-04-24T00:00:00.000Z' as Time,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+      principal_id: 'alice-operator' as PrincipalId,
+      taint: 'clean',
+      metadata: {},
+    };
+    await host.atoms.put(intentAtom);
+
+    const plan = planAtom('p-intent-derived', {
+      delegation: {
+        sub_actor_principal_id: 'ghost-actor',
+        reason: 'will fail; we want to see the escalation',
+        implied_blast_radius: 'tooling',
+      },
+    });
+    // Cite the intent on the plan provenance so deriveEscalateTo can
+    // walk it.
+    const planWithIntent: Atom = {
+      ...plan,
+      provenance: {
+        ...plan.provenance,
+        derived_from: ['intent-alice-2026-04-24' as AtomId],
+      },
+    };
+    await host.atoms.put(planWithIntent);
+
+    const result = await runDispatchTick(host, registry);
+    expect(result.failed).toBe(1);
+
+    // The escalation actor-message should be addressed to the intent
+    // principal, not the plan author (cto-actor).
+    const replies = await host.atoms.query({ type: ['actor-message'] }, 100);
+    const escalation = replies.atoms.find(
+      (a) => (a.metadata as { actor_message?: { correlation_id?: string } })?.actor_message?.correlation_id === 'dispatch-p-intent-derived',
+    );
+    expect(escalation).toBeDefined();
+    const msg = (escalation!.metadata as { actor_message: { to: string } }).actor_message;
+    expect(msg.to).toBe('alice-operator');
+  });
+
+  it('escalate_to falls back to plan.principal_id when no intent is in provenance', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('ghost-actor' as PrincipalId, async (): Promise<InvokeResult> => {
+      throw new Error('intentional dispatch failure');
+    });
+
+    // Plan derived from a non-intent atom: deriveEscalateTo skips
+    // it and falls back to the plan's principal_id (cto-actor in
+    // planAtom).
+    const plan = planAtom('p-no-intent', {
+      delegation: {
+        sub_actor_principal_id: 'ghost-actor',
+        reason: 'will fail',
+        implied_blast_radius: 'tooling',
+      },
+    });
+    const dirAtom: Atom = {
+      schema_version: 1,
+      id: 'inv-test' as AtomId,
+      content: 'directive',
+      type: 'directive',
+      layer: 'L3',
+      provenance: { kind: 'operator-seeded', source: {}, derived_from: [] },
+      confidence: 1.0,
+      created_at: '2026-04-24T00:00:00.000Z' as Time,
+      last_reinforced_at: '2026-04-24T00:00:00.000Z' as Time,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+      principal_id: 'operator' as PrincipalId,
+      taint: 'clean',
+      metadata: {},
+    };
+    await host.atoms.put(dirAtom);
+    const planWithDir: Atom = {
+      ...plan,
+      provenance: {
+        ...plan.provenance,
+        derived_from: ['inv-test' as AtomId],
+      },
+    };
+    await host.atoms.put(planWithDir);
+
+    const result = await runDispatchTick(host, registry);
+    expect(result.failed).toBe(1);
+
+    const replies = await host.atoms.query({ type: ['actor-message'] }, 100);
+    const escalation = replies.atoms.find(
+      (a) => (a.metadata as { actor_message?: { correlation_id?: string } })?.actor_message?.correlation_id === 'dispatch-p-no-intent',
+    );
+    expect(escalation).toBeDefined();
+    const msg = (escalation!.metadata as { actor_message: { to: string } }).actor_message;
+    // Fallback: plan author (cto-actor in planAtom helper).
+    expect(msg.to).toBe('cto-actor');
+  });
+
+  it('explicit envelope fields take precedence over the defaults', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    let receivedCorrId: string | undefined;
+    let receivedPayload: unknown;
+    registry.register('code-author' as PrincipalId, async (payload, corr): Promise<InvokeResult> => {
+      receivedCorrId = corr;
+      receivedPayload = payload;
+      return { kind: 'completed', producedAtomIds: [], summary: 'ok' };
+    });
+
+    // A descriptor that overrides every default. The dispatcher must
+    // honor the explicit values; future consumers that want non-
+    // default routing rely on this.
+    await host.atoms.put(planAtom('p-explicit', {
+      delegation: {
+        sub_actor_principal_id: 'code-author',
+        reason: 'standard',
+        implied_blast_radius: 'tooling',
+        correlation_id: 'caller-defined-corr',
+        escalate_to: 'sre-rotation',
+        payload: { custom: 'shape' },
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+    expect(receivedCorrId).toBe('caller-defined-corr');
+    expect(receivedPayload).toEqual({ custom: 'shape' });
+  });
+
   it('ignores superseded and tainted plans', async () => {
     const host = createMemoryHost();
     const registry = new SubActorRegistry();
