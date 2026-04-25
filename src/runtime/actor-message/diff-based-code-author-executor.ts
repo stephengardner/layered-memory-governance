@@ -561,6 +561,21 @@ async function readTargetContents(
     // diff would target the declared path (inside scope), and the
     // executor's downstream path-scope check + git apply would
     // reject any attempt to stage paths outside the repo tree.
+    //
+    // Symlink trust assumption: the lexical `resolve()` does NOT
+    // follow symlinks. A symlink whose target points outside repoDir
+    // (e.g., `repoDir/link-to-etc/passwd.md` -> `/etc/passwd.md`)
+    // would pass this boundary check. The executor accepts that
+    // surface because repoDir is operator-controlled in every
+    // supported deployment shape: the diff-based path operates on
+    // the operator's checked-out repo, and the agentic path runs
+    // against a `WorkspaceProvider`-acquired worktree provisioned
+    // by trusted infrastructure. If untrusted plan content can land
+    // symlinks into the repo *before* execute() runs, multiple
+    // other invariants break (git pre-commit hooks, CI, branch
+    // protection); a symlink check here would not close the actual
+    // hole. A hardened deployment that wants `realpath`-based
+    // checking layers it at the workspace boundary instead.
     const candidateAbs = isAbsolute(p) ? p : join(repoDir, p);
     const resolvedAbs = resolve(candidateAbs);
     if (!resolvedAbs.startsWith(repoAbsWithSep)) {

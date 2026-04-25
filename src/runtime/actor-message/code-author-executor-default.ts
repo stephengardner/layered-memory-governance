@@ -10,8 +10,12 @@
  *   note will recommend the public package path consumers can resolve.
  */
 
+// Re-export ONLY the deprecated aliases. New utilities exported from
+// `diff-based-code-author-executor.js` (e.g. `buildSelfCorrectingPrompt`)
+// are not surfaced here: the shim is migration-only, and exposing
+// new symbols through it would let consumers reach for them via the
+// deprecated path and resist migration.
 export {
   buildDiffBasedCodeAuthorExecutor as buildDefaultCodeAuthorExecutor,
-  buildSelfCorrectingPrompt,
   type DiffBasedExecutorConfig as DefaultExecutorConfig,
 } from './diff-based-code-author-executor.js';

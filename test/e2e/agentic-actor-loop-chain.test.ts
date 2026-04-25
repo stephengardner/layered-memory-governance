@@ -50,9 +50,11 @@ function inMemoryBlobStore(): BlobStore {
 const NOOP_REDACTOR: Redactor = { redact: (s) => s };
 
 // Stub adapter that emits one session + N turns + returns a commit SHA.
-function stubAdapter(turnCount: number): AgentLoopAdapter {
+// `costUsd` (optional) seeds budget_consumed.usd on the session atom so
+// tests can verify the executor reads cost off the session atom.
+function stubAdapter(turnCount: number, costUsd?: number): AgentLoopAdapter {
   return {
-    capabilities: { tracks_cost: false, supports_signal: true, classify_failure: defaultClassifyFailure },
+    capabilities: { tracks_cost: costUsd !== undefined, supports_signal: true, classify_failure: defaultClassifyFailure },
     run: async (input) => {
       const sessionId = `agent-session-${randomBytes(6).toString('hex')}` as AtomId;
       const turnIds: AtomId[] = [];
@@ -86,7 +88,11 @@ function stubAdapter(turnCount: number): AgentLoopAdapter {
             started_at: now,
             terminal_state: 'completed',
             replay_tier: input.replayTier,
-            budget_consumed: { turns: turnCount, wall_clock_ms: 1 },
+            budget_consumed: {
+              turns: turnCount,
+              wall_clock_ms: 1,
+              ...(costUsd !== undefined ? { usd: costUsd } : {}),
+            },
           },
         },
       };
@@ -249,6 +255,44 @@ describe('agentic-actor-loop end-to-end', () => {
     expect(idx(tree.turns[0]!)).toBe(0);
     expect(idx(tree.turns[1]!)).toBe(1);
     expect(idx(tree.turns[2]!)).toBe(2);
+  });
+
+  it('reads totalCostUsd from session atom budget_consumed.usd written by adapter', async () => {
+    const host = createMemoryHost();
+    const executor = buildAgenticCodeAuthorExecutor({
+      host,
+      principal: 'agentic-code-author' as PrincipalId,
+      actorType: 'code-author',
+      // Adapter writes budget_consumed.usd = 0.42 on the session atom;
+      // the executor must read that off the session and surface it as
+      // dispatched.totalCostUsd. Hardcoding 0 was the prior behavior.
+      agentLoop: stubAdapter(1, 0.42),
+      workspaceProvider: STUB_WS_PROVIDER,
+      blobStore: inMemoryBlobStore(),
+      redactor: NOOP_REDACTOR,
+      ghClient: STUB_GH,
+      owner: 'o',
+      repo: 'r',
+      baseRef: 'main',
+      model: 'stub-model',
+    });
+    const plan = mkPlan('plan-cost', { target_paths: ['README.md'] });
+    await host.atoms.put(plan);
+    const result = await executor.execute({
+      plan,
+      fence: {
+        signedPrOnly: { subject: 's', output_channel: 'signed-pr', allowed_direct_write_paths: [], require_app_identity: true },
+        perPrCostCap: { subject: 's', max_usd_per_pr: 10, include_retries: true },
+        ciGate: { subject: 's', required_checks: [], require_all: true, max_check_age_ms: 60_000 },
+        writeRevocationOnStop: { subject: 's', on_stop_action: 'close-pr-with-revocation-comment', draft_atoms_layer: 'L0', revocation_atom_type: 'code-author-revoked' },
+        warnings: [],
+      },
+      correlationId: 'corr-cost-1',
+      observationAtomId: 'obs-cost' as AtomId,
+    });
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') throw new Error('unreachable');
+    expect(result.totalCostUsd).toBe(0.42);
   });
 
   it('chain: budget-exhausted result maps to CodeAuthorExecutorFailure with stage agentic/budget-exhausted', async () => {

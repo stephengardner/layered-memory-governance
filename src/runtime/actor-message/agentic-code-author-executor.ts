@@ -38,9 +38,9 @@
  * - The workspace inherits whatever credentials the WorkspaceProvider
  *   provisioned. Cred scope is the provider's responsibility.
  * - The `AgentLoopResult.artifacts.commitSha` is adapter-supplied; a
- *   misbehaving adapter could fabricate a SHA. PR2 ships the seam
- *   without a verification step; a future hardening pass enforces
- *   commit-existence verification before PR creation.
+ *   misbehaving adapter could fabricate a SHA. This seam currently
+ *   ships without a verification step; a future hardening pass
+ *   enforces commit-existence verification before PR creation.
  * - Workspace cleanup-on-error is non-negotiable: the try/finally in
  *   execute() ALWAYS calls release(), even if the adapter throws.
  *   Tests pin this; a leak here would burn disk + leave bot creds
@@ -146,11 +146,10 @@ export function buildAgenticCodeAuthorExecutor(
             workspace,
             task: extractAgentTask(plan),
             budget: deriveBudget(fence),
-            // PR2 wires the substrate composition with an empty
+            // The substrate composition currently uses an empty
             // disallowed-tools list. Per-principal LLM tool policy is
-            // a separate substrate concern resolved in a follow-up
-            // (the resolver landed in PR1 but is not yet threaded
-            // through this seam).
+            // a separate substrate concern resolved by a follow-up
+            // that threads the existing resolver through this seam.
             toolPolicy: { disallowedTools: [] },
             redactor: config.redactor,
             blobStore: config.blobStore,
@@ -181,7 +180,19 @@ export function buildAgenticCodeAuthorExecutor(
           };
         }
 
-        // 5. Create PR via existing GhClient.
+        // 5. Read budget_consumed.usd off the session atom. The
+        // adapter writes the session atom (with the budget figure
+        // it tracked) before run() returns; we read it back so the
+        // dispatched result carries real cost numbers when the
+        // adapter reports them. A missing atom or missing usd field
+        // both default to 0 (adapters whose
+        // `capabilities.tracks_cost === false` simply do not write
+        // it). Failure to read the atom is non-fatal -- the PR has
+        // already landed; surfacing a cost-read error here would
+        // mask a successful execute result.
+        const totalCostUsd = await readBudgetConsumedUsd(host, agentResult.sessionAtomId);
+
+        // 6. Create PR via existing GhClient.
         try {
           const pr = await createPrViaGhClient({
             config,
@@ -198,11 +209,14 @@ export function buildAgenticCodeAuthorExecutor(
             prHtmlUrl: pr.htmlUrl,
             commitSha,
             branchName,
-            // Adapter-tracked cost is opt-in. Default 0 when adapter
-            // does not report; future cost wiring threads through
-            // capabilities.tracks_cost + a session-meta read.
-            totalCostUsd: 0,
+            totalCostUsd,
             modelUsed: config.model,
+            // AgentSessionMeta has no `confidence` field today: the
+            // adapter does not (yet) report a probabilistic measure
+            // for a multi-turn run. Pinned to 1 as a placeholder
+            // until the substrate gains a confidence channel; using
+            // anything else here would invent signal the adapter
+            // never produced.
             confidence: 1,
             touchedPaths: agentResult.artifacts?.touchedPaths ?? [],
           };
@@ -403,11 +417,40 @@ async function createPrViaGhClient(
   } catch (err) {
     if (err instanceof PrCreationError) {
       // Preserve the typed-error message + stage in the surfaced
-      // string so the upstream wrapper can see the gh-client cause.
-      throw new Error(`${err.message} (stage=${err.stage})`);
+      // string AND keep the gh-client error reachable via `cause`
+      // so upstream logging can walk to the underlying exit code,
+      // stderr, and request args (`createDraftPr` attaches those
+      // via `Error.cause` and the dashboard relies on the chain).
+      throw new Error(`${err.message} (stage=${err.stage})`, { cause: err.cause ?? err });
     }
     throw err;
   }
+}
+
+/**
+ * Read `metadata.agent_session.budget_consumed.usd` off the session
+ * atom written by the adapter. Returns 0 when the atom is missing,
+ * the metadata shape is wrong, or the field is absent (adapters with
+ * `capabilities.tracks_cost === false` deliberately do not write
+ * usd). Any retrieval error is swallowed -- a cost read failing is
+ * not worth flipping a successful execute result into an error.
+ */
+async function readBudgetConsumedUsd(host: Host, sessionAtomId: AtomId): Promise<number> {
+  let session: Atom | null;
+  try {
+    session = await host.atoms.get(sessionAtomId);
+  } catch {
+    return 0;
+  }
+  if (session === null) return 0;
+  const meta = session.metadata as Record<string, unknown> | null | undefined;
+  if (meta === null || meta === undefined) return 0;
+  const agentSession = meta['agent_session'];
+  if (agentSession === null || typeof agentSession !== 'object') return 0;
+  const budget = (agentSession as Record<string, unknown>)['budget_consumed'];
+  if (budget === null || typeof budget !== 'object') return 0;
+  const usd = (budget as Record<string, unknown>)['usd'];
+  return typeof usd === 'number' && Number.isFinite(usd) ? usd : 0;
 }
 
 function errorMessage(err: unknown): string {
