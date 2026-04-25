@@ -1,0 +1,106 @@
+name: CR Precheck
+
+# CI backstop running CodeRabbit CLI on the PR diff in a Linux runner.
+#
+# This is the merge-gate floor for the dev-coderabbit-cli-pre-push canon:
+# even contributors whose local environment can't run CR CLI (Windows
+# without the third-party package, sub-agents in clean workers) go
+# through this. The pre-push helper at scripts/cr-precheck.mjs is the
+# write-time gate; this workflow is the safety net.
+#
+# Auth: CR CLI requires CODERABBIT_API_KEY for review calls. The key
+# lives in repo secrets and is injected via env var to the helper.
+# When the secret is NOT set, the workflow logs LOUD and skips the
+# review step (exits success, does NOT block merge). This is the
+# same progressive-enhancement pattern the local helper uses: the
+# CI backstop activates when the secret lands, and stays inert but
+# loud-about-it until then. Operator follow-up: add the secret to
+# activate the backstop. Local cr-precheck remains the gate in the
+# meantime for contributors with CR CLI installed.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  cr-precheck:
+    name: cr-precheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the helper's `git diff origin/<base>...HEAD`
+          # can resolve both endpoints. The default shallow checkout
+          # would fail the merge-base computation on any non-trivial
+          # branch.
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        # --ignore-scripts skips onnxruntime-node's post-install that
+        # fetches a ~90MB nuget package from api.nuget.org. That fetch
+        # is flaky on the runner (ETIMEDOUT) and the cr-precheck helper
+        # only needs the file-host adapter from dist/, which builds
+        # without ONNX.
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        # The helper imports from dist/adapters/file/index.js to write
+        # the audit atom via createFileHost. A missing build means the
+        # atom-write path crashes and the gate becomes invisible.
+        run: npm run build
+
+      - name: Check CODERABBIT_API_KEY presence
+        # Progressive-enhancement gate: when the secret is missing,
+        # log loud and skip the review steps below. Workflow exits
+        # success so the gate is inert-but-honest, not a hard block
+        # on every PR until the operator gets around to adding the
+        # secret. Same pattern the local helper uses for missing CLI.
+        id: check_secret
+        env:
+          CODERABBIT_API_KEY: ${{ secrets.CODERABBIT_API_KEY }}
+        run: |
+          if [ -z "$CODERABBIT_API_KEY" ]; then
+            echo "::warning ::CODERABBIT_API_KEY repo secret is not set; CI cr-precheck backstop is inert. Local cr-precheck remains the gate. Operator: add the secret to activate the backstop."
+            echo "secret_present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "[cr-precheck-ci] CODERABBIT_API_KEY present; will run CR CLI review."
+            echo "secret_present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install CodeRabbit CLI
+        # Official install script drops the binary at ~/.local/bin/coderabbit
+        # plus a `cr` alias. The script also tries to update shell rc
+        # files for PATH; on a non-interactive runner that's a no-op,
+        # so we add the bin dir to GITHUB_PATH explicitly below.
+        if: steps.check_secret.outputs.secret_present == 'true'
+        run: |
+          curl -fsSL https://cli.coderabbit.ai/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify CR CLI on PATH
+        # Loud signal that the install succeeded and the helper will
+        # find the binary. If this step fails, the cr-precheck step
+        # below would skip-with-atom rather than run the review,
+        # which is the exact silent-skip we are trying to avoid in CI.
+        if: steps.check_secret.outputs.secret_present == 'true'
+        run: |
+          which coderabbit
+          coderabbit --version
+
+      - name: Run cr-precheck against PR base
+        if: steps.check_secret.outputs.secret_present == 'true'
+        env:
+          CODERABBIT_API_KEY: ${{ secrets.CODERABBIT_API_KEY }}
+        run: |
+          node scripts/cr-precheck.mjs --base "origin/${{ github.base_ref }}"
