@@ -262,6 +262,7 @@ Driver script mirroring `run-pr-landing.mjs`:
 
 - `test/examples/workspace-providers/git-worktree-provider.test.ts` extension:
   - One new test for `acquire({checkoutBranch: 'existing-branch'})`. Sets up a real git repo in tmp dir, creates `existing-branch`, calls `acquire`, asserts the workspace's HEAD points at `existing-branch` and `git status` is clean.
+  - Regression assertion: spy on the underlying execa helper (or read git's reflog) and assert that the `git worktree add` invocation did NOT include the `-b` flag when `checkoutBranch` was supplied. This pins the §3.1 substrate semantics so a future revert that re-introduces `-b` fails the test loud (would otherwise create a NEW branch off the checked-out branch and break PR-fix's "commit on the PR's HEAD" requirement).
 
 ---
 
@@ -277,21 +278,23 @@ If `PrReviewStatus.partial === true`: the classifier returns `'partial'`, propos
 
 ### 4.2 Classify
 
+`Actor.classify` returns `Classified<PrFixObservation>` per `src/runtime/actors/types.ts:86-92` -- `{observation, key, metadata?}`. The classification literal + counts go into `metadata` so `propose` and `reflect` can read them downstream. The `Reflection.progress` flag is computed in `reflect`, not on `classify` (per the type's own contract: `progress` is a Reflection field, not a Classified field).
+
 ```ts
-classify(obs: PrFixObservation): Classified<PrFixClassification> {
+async classify(obs: PrFixObservation, _ctx): Promise<Classified<PrFixObservation>> {
   if (obs.partial) {
     return {
-      key: `pr-fix:partial=true`,
-      classification: 'partial',
-      progress: false,
+      observation: obs,
+      key: 'pr-fix:partial=true',
+      metadata: { classification: 'partial' as PrFixClassification, ciFailures: 0, arch: 0 },
     };
   }
   const ciFailures = countCiFailures(obs);  // §4.2.1
-  const arch = countArchitectural(obs);      // §4.2.2
+  const arch = countArchitectural(obs);     // §4.2.2
   const totalFindings = obs.lineComments.length + obs.bodyNits.length;
   // Convergence key uses concrete numeric counts (interpolation, NOT
   // literal "N"). PrLandingActor uses the same pattern. Same key
-  // twice with progress=false halts the loop via runActor.
+  // twice with progress=false on the Reflection halts the loop via runActor.
   const key = `pr-fix:lineN=${obs.lineComments.length}:bodyN=${obs.bodyNits.length}:cr=${summarizeReviewState(obs.submittedReviews)}:ci=${ciFailures}:arch=${arch}`;
   let classification: PrFixClassification;
   if (totalFindings === 0 && ciFailures === 0 && obs.mergeStateStatus !== 'BEHIND') {
@@ -303,9 +306,15 @@ classify(obs: PrFixObservation): Classified<PrFixClassification> {
   } else {
     classification = 'has-findings';
   }
-  return { key, classification, progress: classification === 'all-clean' };
+  return {
+    observation: obs,
+    key,
+    metadata: { classification, ciFailures, arch },
+  };
 }
 ```
+
+Mirrors `PrLandingActor.classify`'s shape (which returns `{observation, key, metadata: {nit, suggestion, architectural, reviewerPending}}`).
 
 #### 4.2.1 `countCiFailures`
 
@@ -313,7 +322,7 @@ A `CheckRun` counts as failure when `status === 'completed' && conclusion === 'f
 
 #### 4.2.2 `countArchitectural`
 
-A `ReviewComment` is "architectural" when its body contains the case-insensitive marker `🟠 Major` AND the substring `architectural` OR `large refactor` OR `redesign`. Both must match, to avoid misclassifying minor "this is a major usability issue" comments. Heuristic; falls back to `'has-findings'` when uncertain.
+A `ReviewComment` is "architectural" when its body contains the case-insensitive marker `<orange-circle> Major` (CR's literal emoji marker for major-severity findings, byte sequence `\u{1F7E0} Major`) AND the substring `architectural` OR `large refactor` OR `redesign`. Both must match, to avoid misclassifying minor "this is a major usability issue" comments. Heuristic; falls back to `'has-findings'` when uncertain. The classifier's regex uses the emoji byte sequence in code; this prose paragraph names it as `<orange-circle>` to keep the spec file CI-grep-friendly.
 
 ### 4.3 Propose
 
@@ -356,8 +365,8 @@ For `agent-loop-dispatch`:
 6. **Verify the commit SHA per substrate contract.** After `run()` returns:
    - If `result.kind !== 'completed'`: skip resolve, return `{kind: 'fix-failed', stage: 'agent-loop/<failure.kind>', reason: ...}`.
    - If `result.artifacts?.commitSha` is undefined: return `{kind: 'fix-failed', stage: 'agent-no-commit', reason: 'agent loop completed but did not commit'}`.
-   - Run `git rev-parse HEAD` in `workspace.path` (via `ghClient.git.execa` or a small helper). If the result does NOT equal `result.artifacts.commitSha`: return `{kind: 'fix-failed', stage: 'verify-commit-sha', reason: 'adapter-supplied SHA does not match HEAD'}`.
-   - Run `git diff --name-only <baseRef>..HEAD` in `workspace.path`. The set of touched paths is the basis for thread-resolution (§4.4.1).
+   - Run `git rev-parse HEAD` in `workspace.path` (via a small helper that wraps `execa('git', ['rev-parse', 'HEAD'], {cwd: workspace.path})` -- this is local git, NOT `ghClient`, which is a GitHub API surface). If the result does NOT equal `result.artifacts.commitSha`: return `{kind: 'fix-failed', stage: 'verify-commit-sha', reason: 'adapter-supplied SHA does not match HEAD'}`.
+   - Run `git diff --name-only <baseRef>..HEAD` in `workspace.path` (same execa-helper). The set of touched paths is the basis for thread-resolution (§4.4.1).
 7. **Resolve threads addressed by the fix** (§4.4.1).
 8. **Always release the workspace** in a `finally`: `await ctx.adapters.workspaceProvider.release(workspace).catch(() => undefined)`.
 
@@ -376,28 +385,45 @@ Trade-off documented: the actor MAY resolve a comment that's only partially fixe
 
 ### 4.5 Reflect
 
+`Actor.reflect` per `src/runtime/actors/actor.ts:109-113` is `reflect(outcomes, classified, ctx)` -- three parameters. The `classified` arg is load-bearing because reflect reads `classified.observation` to compare against post-apply state when the actor needs the prior observation snapshot for diff. We use it to make the `'all-clean'` -> `done: true` decision.
+
 ```ts
-reflect(outcomes: ReadonlyArray<PrFixOutcome>, ctx): Promise<Reflection> {
-  // Standard Actor.reflect contract: returns Reflection {done, progress, note}.
-  // We map outcomes onto that shape.
-  if (outcomes.length === 0) {
-    // No actions proposed (all-clean or partial). Done if all-clean.
-    return { done: true, progress: false, note: 'no actions proposed' };
+async reflect(
+  outcomes: ReadonlyArray<PrFixOutcome>,
+  classified: Classified<PrFixObservation>,
+  _ctx: ActorContext<PrFixAdapters>,
+): Promise<Reflection> {
+  const meta = (classified.metadata ?? {}) as { classification?: PrFixClassification };
+  const cls = meta.classification ?? 'has-findings';
+  if (cls === 'all-clean') {
+    return { done: true, progress: false, note: 'all clean; nothing to fix' };
+  }
+  if (cls === 'partial') {
+    // Do-not-decide signal: PrReviewStatus snapshot was incomplete.
+    // Allow runActor's outer loop to retry observe on the next iteration.
+    return { done: false, progress: false, note: 'partial observation; retrying' };
   }
   const fixPushed = outcomes.some(o => o.kind === 'fix-pushed');
   const escalated = outcomes.some(o => o.kind === 'escalated');
   const failed = outcomes.some(o => o.kind === 'fix-failed');
   if (escalated) {
-    // Escalation halts the actor; operator handles the rest.
-    return { done: true, progress: false, note: outcomes.find(o => o.kind === 'escalated')?.reason ?? '' };
+    return {
+      done: true,
+      progress: false,
+      note: outcomes.find(o => o.kind === 'escalated')?.reason ?? '',
+    };
   }
   if (failed) {
-    return { done: false, progress: false, note: outcomes.find(o => o.kind === 'fix-failed')?.reason ?? '' };
+    return {
+      done: false,
+      progress: false,
+      note: outcomes.find(o => o.kind === 'fix-failed')?.reason ?? '',
+    };
   }
   if (fixPushed) {
     // Some fix landed. Outer loop's next observe will check whether
-    // findings were actually reduced; runActor's convergence-key
-    // guard halts on no-progress same-count repeats.
+    // findings were actually reduced; runActor's convergence-key guard
+    // halts on no-progress same-count repeats.
     return { done: false, progress: true, note: 'fix pushed; reobserving' };
   }
   return { done: false, progress: false, note: 'no progress' };
