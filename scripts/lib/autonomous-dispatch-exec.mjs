@@ -5,7 +5,6 @@
 
 import {
   buildPushEnv,
-  buildPushSpawnArgs,
   buildReadOnlyEnv,
 } from './git-as-push-auth.mjs';
 
@@ -79,19 +78,29 @@ function findGitVerb(args) {
 }
 
 /**
- * Build the (file, args, options) tuple a token-authed git invocation
- * should spawn. Pure: callers compose the tuple with execa themselves.
+ * Build the (args, env) overrides a token-authed git invocation
+ * should spawn with. Pure: callers compose the tuple with execa
+ * themselves and spread `process.env` so tests can inject a clean
+ * env without leaking real credentials.
  *
- *   - Push verbs: rewrite the remote arg to a transient
- *     x-access-token URL via buildPushSpawnArgs, then merge the env
- *     overrides from buildPushEnv (clears the ambient credential
- *     helper so git does not prompt).
- *   - Read verbs: keep argv intact, merge the GIT_CONFIG_* env from
- *     buildReadOnlyEnv (Authorization: Bearer extraheader).
+ *   - Remote-touching verbs (push, fetch, pull, clone, ls-remote):
+ *     rewrite the remote-arg position to a transient
+ *     x-access-token URL via the in-file rewriteGitRemoteArg, then
+ *     merge env overrides from buildPushEnv (clears the ambient
+ *     credential helper so git does not prompt for a username).
+ *     The Bearer http.extraHeader path used for `gh api` does NOT
+ *     authenticate git's smart-http on Windows; the URL-embedded
+ *     x-access-token form is the only auth method that works
+ *     uniformly for receive-pack AND upload-pack across platforms.
+ *   - Local-only verbs (status, log, rev-parse, config, ...): keep
+ *     argv intact, merge the GIT_CONFIG_* env from buildReadOnlyEnv
+ *     (Authorization: Bearer extraheader for the few local
+ *     operations that may still hit a remote, plus credential
+ *     helper clear). The remote-rewrite branch returns null for
+ *     these, falling through to this path.
  *
- * The returned shape mirrors what execa's first three positional
- * params consume; spreading `process.env` is the caller's job so
- * tests can inject a clean env without leaking real credentials.
+ * The returned shape (args, env) is what execa's positional args
+ * consume after the file argument.
  */
 export function buildAuthedGitInvocation({
   args,
@@ -194,6 +203,26 @@ function rewriteGitRemoteArg(args, token, repoOwner, repoName) {
     break;
   }
   if (remoteIndex < 0) return null;
+
+  // Validate the remote points at the dispatch-configured repo
+  // before rewriting. Accepting only:
+  //   - 'origin' (the conventional remote, set by the dispatcher
+  //     during clone), or
+  //   - https://github.com/<owner>/<repo>(.git)? where (owner, repo)
+  //     match the configured (repoOwner, repoName).
+  // Anything else (a different GitHub repo, a non-GitHub host, an
+  // arbitrary upstream remote name like 'upstream') falls through
+  // and the caller treats the invocation as local-only. The
+  // dispatch flow never legitimately addresses a non-target remote;
+  // silently rewriting one would erase user intent and could
+  // exfiltrate the access token to the wrong host.
+  const remoteArg = args[remoteIndex];
+  if (remoteArg !== 'origin') {
+    const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteArg);
+    if (!match || match[1] !== repoOwner || match[2] !== repoName) {
+      return null;
+    }
+  }
 
   const transient = `https://x-access-token:${token}@github.com/${repoOwner}/${repoName}.git`;
   const next = args.slice();

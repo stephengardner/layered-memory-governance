@@ -291,12 +291,14 @@ describe('buildAuthedGitInvocation', () => {
     expect(out.env.GIT_CONFIG_VALUE_0).toBe('');
   });
 
-  it('clone verb: rewrites the URL positional', () => {
+  it('clone verb: rewrites the URL positional when it matches the configured repo', () => {
     // For clone the positional after the verb is the remote URL,
-    // not a remote name; the rewriter still replaces it because the
-    // x-access-token URL embeds the same owner/repo.
+    // not a remote name. The rewriter validates the URL points at
+    // the dispatch-configured (owner, repo) before substituting the
+    // transient x-access-token form; a matching URL is rewritten
+    // to embed the token.
     const out = buildAuthedGitInvocation({
-      args: ['clone', 'https://github.com/foo/bar.git'],
+      args: ['clone', `https://github.com/${OWNER}/${REPO}.git`],
       token: TOKEN,
       repoOwner: OWNER,
       repoName: REPO,
@@ -305,6 +307,40 @@ describe('buildAuthedGitInvocation', () => {
     expect(out.args[1]).toBe(
       `https://x-access-token:${TOKEN}@github.com/${OWNER}/${REPO}.git`,
     );
+  });
+
+  it('clone verb: leaves a non-target URL alone (no token leak to wrong repo)', () => {
+    // A clone URL that does NOT match the configured (owner, repo)
+    // falls through to the local-only branch (no rewrite, no
+    // transient URL). This prevents the dispatch flow from
+    // exfiltrating the access token to an arbitrary GitHub repo or
+    // a non-GitHub host if a misconfigured caller smuggled in a
+    // different URL.
+    const out = buildAuthedGitInvocation({
+      args: ['clone', 'https://github.com/foo/bar.git'],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    expect(out.args).toEqual(['clone', 'https://github.com/foo/bar.git']);
+    // Read-only env still applied so any incidental remote call
+    // does not pop askpass.
+    expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
+  });
+
+  it('fetch verb: leaves a non-origin remote name alone', () => {
+    // `git fetch upstream main` should NOT silently retarget
+    // OWNER/REPO; the rewrite is gated to 'origin' or matching
+    // URL. The local-only path is the safer default.
+    const out = buildAuthedGitInvocation({
+      args: ['fetch', 'upstream', 'main'],
+      token: TOKEN,
+      repoOwner: OWNER,
+      repoName: REPO,
+      inheritedEnv: {},
+    });
+    expect(out.args).toEqual(['fetch', 'upstream', 'main']);
   });
 
   it('ls-remote: rewrites the remote arg', () => {
