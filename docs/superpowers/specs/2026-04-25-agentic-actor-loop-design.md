@@ -11,7 +11,7 @@
 
 Replace the single-shot `CodeAuthorExecutor` (LLM emits a unified diff, framework runs `git apply`) with a constrained sub-agent in an isolated workspace. The agent uses real tools (Read / Edit / Bash / Grep) inside a fresh worktree, sees compile and test errors, fixes them itself, and surrenders a commit + PR.
 
-Capture the agent's reasoning + tool-call ledger as atoms so the entire chain — operator-intent → CTO plan → dispatch → agent reasoning → commit → PR → merge → outcome — is queryable, traceable, and replayable.
+Capture the agent's reasoning + tool-call ledger as atoms so the entire chain - operator-intent → CTO plan → dispatch → agent reasoning → commit → PR → merge → outcome - is queryable, traceable, and replayable.
 
 The substrate is the value. `CodeAuthorExecutor` is the first migration; `PlanningActor`, `AuditorActor`, `PrLandingActor`, and any future actor that wants multi-turn reasoning compose the same seam without the framework changing shape.
 
@@ -33,24 +33,24 @@ Interfaces live in `src/substrate/`. Reference adapters live in `examples/`. Ind
 
 | Seam | Purpose | Reference adapter (in `examples/`) |
 |---|---|---|
-| `AgentLoopAdapter` | Drive an agent run: LLM + tool use + turn-level atom emission. | `ClaudeCodeAgentLoop` — spawns a Claude Code sub-agent in the provided workspace with a curated tool whitelist. |
-| `WorkspaceProvider` | Provision an isolated workspace per dispatch. | `GitWorktreeProvider` — creates `.worktrees/<correlation_id>` off the configured base ref; cleans up on release. Org-side swap → docker / k8s / ephemeral FS. |
-| `BlobStore` | Content-addressed storage for turn payloads above the inline threshold. | `FileBlobStore` — writes to `.lag/blobs/<sha256>` with content-hash deduplication. |
-| `Redactor` | At-write content filter applied to LLM IO + tool args + tool results before atom write. | `RegexRedactor` — common secret-format patterns (AWS keys, GitHub PATs, JWTs, generic high-entropy strings). |
+| `AgentLoopAdapter` | Drive an agent run: LLM + tool use + turn-level atom emission. | `ClaudeCodeAgentLoop` - spawns a Claude Code sub-agent in the provided workspace with a curated tool whitelist. |
+| `WorkspaceProvider` | Provision an isolated workspace per dispatch. | `GitWorktreeProvider` - creates `.worktrees/<correlation_id>` off the configured base ref; cleans up on release. Org-side swap → docker / k8s / ephemeral FS. |
+| `BlobStore` | Content-addressed storage for turn payloads above the inline threshold. | `FileBlobStore` - writes to `.lag/blobs/<sha256>` with content-hash deduplication. |
+| `Redactor` | At-write content filter applied to LLM IO + tool args + tool results before atom write. | `RegexRedactor` - common secret-format patterns (AWS keys, GitHub PATs, JWTs, generic high-entropy strings). |
 
 ### 2.2 Two new atom types
 
 The existing `AtomType` union (`src/substrate/types.ts`) gets two additive entries:
 
-- **`agent-session`** — one per agent run. Principal-bound. `metadata.agent_session` carries `model_id`, `adapter_id`, `workspace_id`, `started_at`, `completed_at`, `terminal_state`, `replay_tier`, optional `canon_snapshot_blob_ref` (strict tier only), `budget_consumed`, optional `failure`.
-- **`agent-turn`** — one per LLM call. `derived_from` includes parent `agent-session`. `metadata.agent_turn` carries `session_atom_id`, `turn_index`, `llm_input` (inline-or-`BlobRef`), `llm_output` (inline-or-`BlobRef`), `tool_calls[]` (each with `tool`, `args`, `result`, `latency_ms`, `outcome`), `latency_ms`, optional `failure`.
+- **`agent-session`** - one per agent run. Principal-bound. `metadata.agent_session` carries `model_id`, `adapter_id`, `workspace_id`, `started_at`, `completed_at`, `terminal_state`, `replay_tier`, optional `canon_snapshot_blob_ref` (strict tier only), `budget_consumed`, optional `failure`.
+- **`agent-turn`** - one per LLM call. `derived_from` includes parent `agent-session`. `metadata.agent_turn` carries `session_atom_id`, `turn_index`, `llm_input` (inline-or-`BlobRef`), `llm_output` (inline-or-`BlobRef`), `tool_calls[]` (each with `tool`, `args`, `result`, `latency_ms`, `outcome`), `latency_ms`, optional `failure`.
 
 ### 2.3 Two new policy atom types
 
 Stored as `type='preference'` per the existing pattern, with a `kind` discriminator in metadata:
 
-- **`pol-replay-tier`** — per-principal or per-actor-type. Values: `best-effort | content-addressed | strict`. Default: `content-addressed`.
-- **`pol-blob-threshold`** — per-principal or per-actor-type. Threshold in bytes. Validator clamps to `[256, 1_048_576]`. Default: `4096`.
+- **`pol-replay-tier`** - per-principal or per-actor-type. Values: `best-effort | content-addressed | strict`. Default: `content-addressed`.
+- **`pol-blob-threshold`** - per-principal or per-actor-type. Threshold in bytes. Validator clamps to `[256, 1_048_576]`. Default: `4096`.
 
 ### 2.4 Substrate purity
 
@@ -353,7 +353,7 @@ Replay walks this tree depth-first. The projection itself is read-only; it deriv
 
 ### 5.3 No retry-policy atom
 
-The taxonomy + hardcoded defaults serve indie + org from day one. Orgs needing different behavior (5 retries instead of 3, or escalate-on-transient) swap `AgentLoopAdapter` itself — already pluggable per Section 2. We avoid policy proliferation (we already have `pol-replay-tier`, `pol-blob-threshold`).
+The taxonomy + hardcoded defaults serve indie + org from day one. Orgs needing different behavior (5 retries instead of 3, or escalate-on-transient) swap `AgentLoopAdapter` itself - already pluggable per Section 2. We avoid policy proliferation (we already have `pol-replay-tier`, `pol-blob-threshold`).
 
 ### 5.4 Cooperative cancellation
 
@@ -380,7 +380,7 @@ For each interface, the JSDoc names:
 
 Specific notes per seam:
 - **`AgentLoopAdapter`**: the agent process inherits whatever credentials are in the workspace. Caller MUST set up creds with the minimum scope needed (typically: copy `lag-ceo` only, not `lag-cto` or other bot identities the agent shouldn't act as).
-- **`WorkspaceProvider`**: the isolation boundary is implementation-defined. The reference `GitWorktreeProvider` is process-local — same OS user, same disk. Stronger isolation (docker, k8s) is opt-in via swap.
+- **`WorkspaceProvider`**: the isolation boundary is implementation-defined. The reference `GitWorktreeProvider` is process-local - same OS user, same disk. Stronger isolation (docker, k8s) is opt-in via swap.
 - **`BlobStore`**: blobs are unencrypted at rest by default (per #5 brainstorming). Encryption is a deferred follow-up; until then, treat blob storage as having the same trust boundary as the rest of `.lag/`.
 - **`Redactor`**: pattern coverage is the operator's responsibility for org-specific secrets; the default `RegexRedactor` covers common third-party formats but NOT org-specific (customer IDs, internal API tokens). Document the exact patterns covered; encourage org override.
 
@@ -409,9 +409,9 @@ The seam composes `Redactor` unconditionally. Adapters that bypass it (e.g., wri
 ### 6.6 Adapter capability declarations
 
 `AdapterCapabilities` flags prevent silent misuse:
-- `tracks_cost: boolean` — executor only enforces `max_usd` if true.
-- `supports_signal: boolean` — executor falls back to budget-cap-only termination if false.
-- Adapters that lack a capability are first-class, not second-class — their constraints are visible in the type system.
+- `tracks_cost: boolean` - executor only enforces `max_usd` if true.
+- `supports_signal: boolean` - executor falls back to budget-cap-only termination if false.
+- Adapters that lack a capability are first-class, not second-class - their constraints are visible in the type system.
 
 ---
 
@@ -447,22 +447,22 @@ The seam composes `Redactor` unconditionally. Adapters that bypass it (e.g., wri
 
 ## 8. Phasing (per brainstorming Q-Phasing = B)
 
-### 8.1 PR1 — Substrate foundations
+### 8.1 PR1 - Substrate foundations
 
 **`src/`:**
-- `src/substrate/agent-loop.ts` — `AgentLoopAdapter`, `AdapterCapabilities`, `AgentLoopInput`, `AgentLoopResult`, `FailureKind`, `FailureRecord` interfaces. Default failure-kind classifier.
-- `src/substrate/workspace-provider.ts` — `WorkspaceProvider`, `Workspace` interfaces.
-- `src/substrate/blob-store.ts` — `BlobStore`, `BlobRef` interfaces.
-- `src/substrate/redactor.ts` — `Redactor`, `RedactContext` interfaces.
-- `src/substrate/types.ts` — additive entries in `AtomType` union; `AgentSessionMeta`, `AgentTurnMeta` shapes.
-- `src/substrate/policies.ts` — `PolReplayTier`, `PolBlobThreshold` parsers + validators (clamp threshold).
-- `src/projections/session-tree.ts` — projection helper.
+- `src/substrate/agent-loop.ts` - `AgentLoopAdapter`, `AdapterCapabilities`, `AgentLoopInput`, `AgentLoopResult`, `FailureKind`, `FailureRecord` interfaces. Default failure-kind classifier.
+- `src/substrate/workspace-provider.ts` - `WorkspaceProvider`, `Workspace` interfaces.
+- `src/substrate/blob-store.ts` - `BlobStore`, `BlobRef` interfaces.
+- `src/substrate/redactor.ts` - `Redactor`, `RedactContext` interfaces.
+- `src/substrate/types.ts` - additive entries in `AtomType` union; `AgentSessionMeta`, `AgentTurnMeta` shapes.
+- `src/substrate/policies.ts` - `PolReplayTier`, `PolBlobThreshold` parsers + validators (clamp threshold).
+- `src/projections/session-tree.ts` - projection helper.
 
 **`examples/`:**
-- `examples/agent-loops/claude-code/` — `ClaudeCodeAgentLoop` reference adapter.
-- `examples/workspace-providers/git-worktree/` — `GitWorktreeProvider` reference.
-- `examples/blob-stores/file/` — `FileBlobStore` reference.
-- `examples/redactors/regex-default/` — `RegexRedactor` reference + default pattern set.
+- `examples/agent-loops/claude-code/` - `ClaudeCodeAgentLoop` reference adapter.
+- `examples/workspace-providers/git-worktree/` - `GitWorktreeProvider` reference.
+- `examples/blob-stores/file/` - `FileBlobStore` reference.
+- `examples/redactors/regex-default/` - `RegexRedactor` reference + default pattern set.
 
 **`test/`:**
 - Full unit + contract test coverage per Section 7.
@@ -472,11 +472,11 @@ The seam composes `Redactor` unconditionally. Adapters that bypass it (e.g., wri
 
 **Out of scope for PR1:** `AgenticCodeAuthorExecutor`. PR1 ships the substrate; nothing consumes it yet (the substrate dogfoods via tests only).
 
-### 8.2 PR2 — `AgenticCodeAuthorExecutor` migration
+### 8.2 PR2 - `AgenticCodeAuthorExecutor` migration
 
 **`src/`:**
-- `src/runtime/actor-message/agentic-code-author-executor.ts` — composes the seam.
-- `src/runtime/actor-message/code-author-executor-default.ts` — renamed to `diff-based-code-author-executor.ts` for clarity. The diff path stays available for adapters that prefer it.
+- `src/runtime/actor-message/agentic-code-author-executor.ts` - composes the seam.
+- `src/runtime/actor-message/code-author-executor-default.ts` - renamed to `diff-based-code-author-executor.ts` for clarity. The diff path stays available for adapters that prefer it.
 - Config flag in `DefaultExecutorConfig` to choose `diff-based` vs `agentic`.
 
 **`test/e2e/`:**
@@ -490,8 +490,8 @@ The seam composes `Redactor` unconditionally. Adapters that bypass it (e.g., wri
 - **`PlanningActor` migration** to the agent-loop seam (replaces today's `HostLlmPlanningJudgment` two-shot draft).
 - **`AuditorActor` migration** when the auditor ships.
 - **`PrLandingActor` migration** to the agent-loop seam (replaces today's hand-rolled CR-fix loop).
-- **Replay UI** — a console view that walks the session tree, shows turn-by-turn IO, links to the produced PR.
-- **Cross-actor session-tree projection / dashboard** — `console/` view of the chain.
+- **Replay UI** - a console view that walks the session tree, shows turn-by-turn IO, links to the produced PR.
+- **Cross-actor session-tree projection / dashboard** - `console/` view of the chain.
 
 ---
 
@@ -508,17 +508,17 @@ The seam composes `Redactor` unconditionally. Adapters that bypass it (e.g., wri
 This design derives from:
 
 **Canon directives:**
-- `dev-substrate-not-prescription` — framework code stays mechanism-focused; adapters live in `examples/`.
-- `simple-surface-deep-architecture` — pluggable seam keeps the surface simple while enabling org-scale architecture.
-- `dev-flag-structural-concerns-proactively` — surfaced during brainstorming: per-tool atoms would inflate volume 5–10x; per-session-only loses turn-level provenance; turn-level is the right cut.
-- `inv-provenance-every-write` — every new atom (`agent-session`, `agent-turn`) carries `derived_from` linking back through the chain.
-- `inv-governance-before-autonomy` — failure taxonomy + Notifier escalation keeps a human in the loop on structural failures by default.
-- `dev-extreme-rigor-and-research` — the brainstorming session worked through 8 design questions sequentially, each with multiple alternatives weighed.
-- `dev-no-hacks-without-approval` — the at-write redaction mandate is a hard substrate contract; bypass requires explicit operator override.
-- `dev-forward-thinking-no-regrets` — atom schemas are additive (new types in the union); existing atoms unaffected; future encryption layer composes without schema change.
+- `dev-substrate-not-prescription` - framework code stays mechanism-focused; adapters live in `examples/`.
+- `simple-surface-deep-architecture` - pluggable seam keeps the surface simple while enabling org-scale architecture.
+- `dev-flag-structural-concerns-proactively` - surfaced during brainstorming: per-tool atoms would inflate volume 5–10x; per-session-only loses turn-level provenance; turn-level is the right cut.
+- `inv-provenance-every-write` - every new atom (`agent-session`, `agent-turn`) carries `derived_from` linking back through the chain.
+- `inv-governance-before-autonomy` - failure taxonomy + Notifier escalation keeps a human in the loop on structural failures by default.
+- `dev-extreme-rigor-and-research` - the brainstorming session worked through 8 design questions sequentially, each with multiple alternatives weighed.
+- `dev-no-hacks-without-approval` - the at-write redaction mandate is a hard substrate contract; bypass requires explicit operator override.
+- `dev-forward-thinking-no-regrets` - atom schemas are additive (new types in the union); existing atoms unaffected; future encryption layer composes without schema change.
 
 **Atoms:**
-- `intent-253cf493b08f-2026-04-24T22-54-13-895Z` — operator-intent that drove PRs #157–#165 substrate work.
+- `intent-253cf493b08f-2026-04-24T22-54-13-895Z` - operator-intent that drove PRs #157–#165 substrate work.
 - Memories: `project_agentic_executor_session_log_direction.md`, `project_autonomous_intent_e2e_complete.md`, `feedback_security_correctness_at_write_time.md`, `feedback_pull_main_after_pr_merge.md`, `feedback_canon_strategic_not_tactical.md`.
 
 **Prior work this builds on:**

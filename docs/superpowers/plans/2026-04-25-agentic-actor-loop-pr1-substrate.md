@@ -1,4 +1,4 @@
-# Agentic Actor Loop PR1 Implementation Plan — Substrate Foundations
+# Agentic Actor Loop PR1 Implementation Plan - Substrate Foundations
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -6,7 +6,7 @@
 
 **Architecture:** Per spec at `docs/superpowers/specs/2026-04-25-agentic-actor-loop-design.md`. The seam interfaces live in `src/substrate/`. Concrete adapters (Claude Code, git-worktree, file blob, regex redactor) live in `examples/` so the substrate stays mechanism-only. Atom additions are purely additive (new entries in the existing `AtomType` union). Policies extend the existing pol-* pattern.
 
-**Tech stack:** TypeScript (strict), vitest, Node 22, existing LAG primitives (Host, AtomStore, Auditor). Tests use `MemoryHost` from `src/adapters/memory/`. Reference adapters in `examples/` are import-paths only — they ship as TypeScript source the indie copy-pastes; no separate npm package.
+**Tech stack:** TypeScript (strict), vitest, Node 22, existing LAG primitives (Host, AtomStore, Auditor). Tests use `MemoryHost` from `src/adapters/memory/`. Reference adapters in `examples/` are import-paths only - they ship as TypeScript source the indie copy-pastes; no separate npm package.
 
 **Cross-cutting discipline:** Every task carries a "Security + correctness considerations" subsection. The implementer subagent walks through these BEFORE writing code, not after CR flags it. Memory: `feedback_security_correctness_at_write_time`.
 
@@ -85,7 +85,7 @@ Tasks ordered to minimize cross-task blocking. Each task is self-contained: a fr
 
 **Security + correctness considerations:**
 - Additive only: must NOT remove or rename existing `AtomType` entries. Existing atom-store reads must continue to round-trip.
-- The metadata shapes are interfaces, not enums or literal-string unions — operators can extend `metadata.agent_session.extra` later. Confirm the metadata types use `interface` not `type` (so declaration-merging is possible if later needed; though we don't intend it now, the option is preserved).
+- The metadata shapes are interfaces, not enums or literal-string unions - operators can extend `metadata.agent_session.extra` later. Confirm the metadata types use `interface` not `type` (so declaration-merging is possible if later needed; though we don't intend it now, the option is preserved).
 - `BlobRef` is a branded type to prevent accidental mixing with raw `string`. Confirm the brand isn't accessible at runtime (only at type-check time).
 - New entries must NOT break the existing zod / runtime-validation layer if any (`MemoryAtomStore` uses no runtime validation, but `FileAtomStore` may; verify both paths accept the new types).
 - Edge case: an atom with `type: 'agent-session'` written by a future version + read by an older version: ensure the reader doesn't crash. Check `src/adapters/file/atom-store.ts`, `src/adapters/memory/atom-store.ts`, AND `src/runtime/`, `src/substrate/promotion/` for switch-on-type code paths (broaden the grep scope so we don't miss a hidden exhaustive switch).
@@ -323,7 +323,7 @@ node scripts/git-as.mjs lag-ceo commit -m "feat(substrate): add agent-session + 
 - The `BlobStore` interface MUST NOT expose internal storage paths. Adapters that use file paths internally are an implementation detail; the interface is content-addressed.
 - `put()` MUST be idempotent: putting the same content twice returns the same `BlobRef`. The contract test pins this.
 - Concurrency: two `put()`s of the same content racing should not corrupt storage. The interface contract names this; adapter implementations are responsible for atomic write.
-- No `delete()` method — content-addressed blobs are immutable. Garbage collection is a separate concern (out of scope for PR1).
+- No `delete()` method - content-addressed blobs are immutable. Garbage collection is a separate concern (out of scope for PR1).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -526,7 +526,7 @@ export function parseBlobRef(ref: BlobRef): { readonly algorithm: 'sha256'; read
 npx vitest run test/substrate/blob-store-contract.test.ts 2>&1 | tail -10
 ```
 
-Expected: 5 tests pass (the constructor + parser tests). The `runBlobStoreContract` helper is exported but no impl runs it yet — that comes in Task 9.
+Expected: 5 tests pass (the constructor + parser tests). The `runBlobStoreContract` helper is exported but no impl runs it yet - that comes in Task 9.
 
 - [ ] **Step 5: Commit**
 
@@ -546,7 +546,7 @@ node scripts/git-as.mjs lag-ceo commit -m "feat(substrate): BlobStore interface 
 **Security + correctness considerations:**
 - The `Redactor` interface MUST be pure. Same input → same output. No file IO, no network. The contract test asserts purity.
 - `redact()` MUST be idempotent: redacting twice yields the same string. This matters because retry paths may redact already-redacted content; double-redaction must not corrupt.
-- Failure mode: if a Redactor implementation throws, the caller treats this as a `catastrophic` failure (per spec Section 5.1). The interface contract names this expectation; adapters MUST throw — not silently fail-open — when they cannot redact.
+- Failure mode: if a Redactor implementation throws, the caller treats this as a `catastrophic` failure (per spec Section 5.1). The interface contract names this expectation; adapters MUST throw - not silently fail-open - when they cannot redact.
 - Default-deny posture: a custom Redactor that crashes is safer than one that returns the input unchanged on error. This is the opposite of most error-handling discipline; it is intentional for secrets.
 - Threat model: a malicious LLM output could try to bypass redaction patterns (e.g., split a key across a newline). The interface contract names this risk; the reference adapter (Task 10) addresses it via pattern coverage; pattern completeness is the operator's responsibility for org-specific secrets.
 
@@ -1257,7 +1257,7 @@ node scripts/git-as.mjs lag-ceo commit -m "feat(substrate): AgentLoopAdapter int
 **Security + correctness considerations:**
 - Mirror the fail-closed discipline of `loadLlmToolPolicy` (memory-substrate pattern): missing atom → `null` → caller uses default; tainted/superseded → `null`; malformed → throw. Never silently widen replay tier (e.g., infer `strict` from a malformed atom).
 - Resolution order: `target_principal` (most specific) → `target_actor_type` → framework default. The default constant lives in this file; do NOT re-derive it elsewhere.
-- The default tier is `content-addressed` per spec — make sure the constant matches exactly.
+- The default tier is `content-addressed` per spec - make sure the constant matches exactly.
 - A policy atom for the wrong principal (mismatched id) MUST NOT apply. The resolver MUST verify the atom's metadata matches the requested principal id.
 
 - [ ] **Step 1: Write failing test**
@@ -1855,7 +1855,7 @@ node scripts/git-as.mjs lag-ceo commit -m "feat(substrate): session-tree project
 - Patterns MUST be anchored to non-word boundaries (`\b`) so partial matches in larger strings still hit. Pattern test against "see token AKIA... in logs".
 - Replacement string MUST be `[REDACTED:<pattern_name>]` so audits can identify which pattern matched. Do NOT replace with empty string (loses provenance of redaction).
 - Idempotence: redacting `[REDACTED:foo]` MUST produce `[REDACTED:foo]` (the redaction marker itself is not a secret pattern).
-- Pattern set is exported as a constant — operators can wrap and add more without forking the module.
+- Pattern set is exported as a constant - operators can wrap and add more without forking the module.
 
 - [ ] **Step 1: Write failing test**
 
@@ -2006,7 +2006,7 @@ export { DEFAULT_PATTERNS, type RedactionPattern } from './patterns.js';
 
 A regex-pattern Redactor for the agentic actor loop. Covers common
 third-party secret formats (AWS, GitHub PAT/App, JWT). Org-specific
-patterns are the operator's responsibility — extend or replace.
+patterns are the operator's responsibility - extend or replace.
 
 ## Indie path
 
@@ -2831,7 +2831,7 @@ export { ClaudeCodeAgentLoopSkeleton, type ClaudeCodeAgentLoopSkeletonOptions } 
 - [ ] **Step 5: Implement `examples/agent-loops/claude-code/README.md`**
 
 ```markdown
-# ClaudeCodeAgentLoopSkeleton (PR1 — substrate-validation skeleton)
+# ClaudeCodeAgentLoopSkeleton (PR1 - substrate-validation skeleton)
 
 This is a SKELETON. It validates the `AgentLoopAdapter` seam shape +
 atom emission discipline. **It is not the production agentic Claude
@@ -2875,7 +2875,7 @@ Expected: 2 specifics + 1 contract test pass.
 
 ```bash
 node scripts/git-as.mjs lag-ceo add examples/agent-loops/ test/examples/claude-code-agent-loop.test.ts
-node scripts/git-as.mjs lag-ceo commit -m "feat(examples): ClaudeCodeAgentLoopSkeleton — PR1 seam-validation skeleton"
+node scripts/git-as.mjs lag-ceo commit -m "feat(examples): ClaudeCodeAgentLoopSkeleton - PR1 seam-validation skeleton"
 ```
 
 ---
@@ -2915,7 +2915,7 @@ export * as taint from './taint/index.js';
 
 // Agentic actor loop substrate (PR1 of agentic-actor-loop spec).
 // camelCase namespace exports to match the existing barrel style
-// (canonMd, killSwitch). Do NOT use snake_case — CR will flag it.
+// (canonMd, killSwitch). Do NOT use snake_case - CR will flag it.
 export * as agentLoop from './agent-loop.js';
 export * as workspaceProvider from './workspace-provider.js';
 export * as blobStore from './blob-store.js';
@@ -2986,7 +2986,7 @@ node scripts/git-as.mjs lag-ceo commit -m "feat(substrate): export new agentic-a
 **Security + correctness considerations:**
 - The pre-push grep checklist is mandatory per `feedback_pre_push_grep_checklist`. Misses here become CR findings.
 - CR's `package hygiene` check enforces emdashes + private-term policy; mirror its scope locally.
-- Build cache — fresh build before pushing to confirm types compile cleanly without stale artifacts.
+- Build cache - fresh build before pushing to confirm types compile cleanly without stale artifacts.
 
 - [ ] **Step 1: Run full test suite + build**
 
@@ -2998,7 +2998,7 @@ npx tsc --noEmit 2>&1 | tail -10
 
 Expected: green across all three.
 
-- [ ] **Step 2: Pre-push grep — emdashes, private terms, design refs in src/, canon ids in src/**
+- [ ] **Step 2: Pre-push grep - emdashes, private terms, design refs in src/, canon ids in src/**
 
 ```bash
 # Emdashes anywhere in tracked files
