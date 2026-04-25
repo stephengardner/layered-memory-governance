@@ -406,7 +406,7 @@ Shipping this content into framework-managed blob storage is a privilege escalat
 
 `ResumeAuthorAgentLoopAdapter.run(input)` needs the candidate session list to pass to strategies. Two options:
 
-**Option I: Caller supplies an `assembleCandidates` callback at wrapper construction; wrapper invokes it per `run(input)` call.** The callback closes over whatever per-iteration context the actor needs (PR observation atom id for PR-fix; audit-event chain head for an auditor; etc.). Pro: keeps `AgentLoopInput` substrate-clean (no actor-specific fields); future actors with different walks compose naturally without changing the wrapper or the substrate; wrapper is built ONCE per driver run and invoked many times — no per-iteration construction. Con: callback indirection is one extra layer to reason about, but the closure is the natural place to thread per-iteration context.
+**Option I: Caller supplies an `assembleCandidates` callback at wrapper construction; wrapper invokes it per `run(input)` call.** The callback closes over whatever per-iteration context the actor needs (PR observation atom id for PR-fix; audit-event chain head for an auditor; etc.). Pro: keeps `AgentLoopInput` substrate-clean (no actor-specific fields); future actors with different walks compose naturally without changing the wrapper or the substrate; wrapper is built ONCE per driver run and invoked many times -- no per-iteration construction. Con: callback indirection is one extra layer to reason about, but the closure is the natural place to thread per-iteration context.
 
 **Option II: Extend `AgentLoopInput` with optional `priorObservationAtomId?: AtomId`.** Substrate-additive (optional field). Wrapper walks the chain itself. Pro: stateless wrapper. Con: substrate gains a field whose semantic ("walk dispatched_session_atom_id") is actor-specific even though the field is optional.
 
@@ -416,7 +416,7 @@ Shipping this content into framework-managed blob storage is a privilege escalat
 
 When the org runs 50+ concurrent actors across different PRs:
 
-1. **Candidate-walk MUST be PR-scoped.** Different PRs share an atom store; the actor's walk-fn (Option I above) is responsible for stopping at PR boundaries. Don't accidentally pick up a sibling PR's session as a "fresh candidate" — wrong author, wrong context.
+1. **Candidate-walk MUST be PR-scoped.** Different PRs share an atom store; the actor's walk-fn (Option I above) is responsible for stopping at PR boundaries. Don't accidentally pick up a sibling PR's session as a "fresh candidate" -- wrong author, wrong context.
 2. **Concurrent fix-iterations on the same PR.** Today's PrFixActor is sequential per PR by construction (single actor instance per PR), so this is invariant. If a future actor runs parallel iterations against the same PR, the resume strategy needs locking. PR6 does NOT introduce locking; documented as a future-maintainer note for parallelism work.
 3. **Strategy enumeration cost.** The wrapper iterates strategies per iteration. With ~3 strategies (same-machine, blob-shipped, future-X), this is O(strategies). At 50+ actors x 8 hour fix-cycles, total is well below any meaningful overhead. Documented for completeness; no optimization needed.
 4. **Atom-store walk cost.** Walking `dispatched_session_atom_id` is O(prior-iterations). At 10x more PRs and 10x more actors, cap fix-iterations per PR via existing budget caps (`maxIterations`); walk depth stays bounded.
@@ -429,7 +429,7 @@ Note: today's `ClaudeCodeAgentLoopAdapter` does NOT capture the .jsonl by defaul
 
 ### 6.4 What if the wrapper is misconfigured (no fallback)?
 
-If `opts.fallback` is undefined: the TypeScript `readonly fallback: AgentLoopAdapter` enforces presence at compile time. The runtime constructor adds a defensive `if (!opts.fallback) throw` so JS callers get a clear error rather than a delayed `TypeError` mid-`run`. If the fallback's `run()` throws synchronously (rare; constructor-stage misconfig usually): the wrapper does NOT catch — the synchronous throw propagates as the wrapper's throw. Consumer's responsibility to construct a working fallback. No additional fallback chain (would compound failure modes).
+If `opts.fallback` is undefined: the TypeScript `readonly fallback: AgentLoopAdapter` enforces presence at compile time. The runtime constructor adds a defensive `if (!opts.fallback) throw` so JS callers get a clear error rather than a delayed `TypeError` mid-`run`. If the fallback's `run()` throws synchronously (rare; constructor-stage misconfig usually): the wrapper does NOT catch -- the synchronous throw propagates as the wrapper's throw. Consumer's responsibility to construct a working fallback. No additional fallback chain (would compound failure modes).
 
 ### 6.5 Indie-floor + org-ceiling fit
 
