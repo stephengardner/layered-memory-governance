@@ -1,0 +1,147 @@
+import { describe, it, expect } from 'vitest';
+import { Readable } from 'node:stream';
+import { createMemoryHost } from '../../../src/adapters/memory/index.js';
+import { ClaudeCodeAgentLoopAdapter } from '../../../examples/agent-loops/claude-code/loop.js';
+import type { AgentLoopInput } from '../../../src/substrate/agent-loop.js';
+import type { Workspace } from '../../../src/substrate/workspace-provider.js';
+import type { BlobStore, BlobRef } from '../../../src/substrate/blob-store.js';
+import type { Redactor } from '../../../src/substrate/redactor.js';
+import type { AtomId, PrincipalId } from '../../../src/substrate/types.js';
+import { randomBytes } from 'node:crypto';
+
+const NOOP_REDACTOR: Redactor = { redact: (s) => s };
+const PRINCIPAL = 'agentic-code-author' as PrincipalId;
+const WS: Workspace = { id: 'ws-1', path: '/tmp/stub-ws', baseRef: 'main' };
+
+function inMemBlob(): BlobStore {
+  const m = new Map<string, Buffer>();
+  return {
+    put: async (c) => {
+      const buf = typeof c === 'string' ? Buffer.from(c) : c;
+      const ref = `sha256:${randomBytes(32).toString('hex')}` as BlobRef;
+      m.set(ref, buf);
+      return ref;
+    },
+    get: async (r) => m.get(r as string)!,
+    has: async (r) => m.has(r as string),
+  };
+}
+
+function makeStubExeca(stdoutLines: string[], opts: { exitCode?: number; stderr?: string } = {}) {
+  // Real `execa()` returns a `ResultPromise` -- a Promise that ALSO
+  // exposes `.stdout` / `.stderr` (Readables) AND a `.kill()` method
+  // synchronously, before the promise resolves. The adapter does
+  // `proc.stdout!` BEFORE `await proc`, so the stub MUST expose
+  // `.stdout` on the synchronously-returned promise.
+  return ((..._args: unknown[]) => {
+    const stdoutStream = Readable.from(stdoutLines.map((l) => `${l}\n`));
+    const stderrText = opts.stderr ?? '';
+    const stderrStream = Readable.from([stderrText]);
+    const resultPromise = Promise.resolve({
+      stdout: stdoutLines.join('\n'),
+      stderr: stderrText,
+      exitCode: opts.exitCode ?? 0,
+    });
+    return Object.assign(resultPromise, {
+      stdout: stdoutStream,
+      stderr: stderrStream,
+      kill: (_signal?: NodeJS.Signals) => true,
+    }) as never;
+  }) as never;
+}
+
+function mkInput(host: ReturnType<typeof createMemoryHost>, signal?: AbortSignal): AgentLoopInput {
+  return {
+    host,
+    principal: PRINCIPAL,
+    workspace: WS,
+    task: { planAtomId: 'plan-1' as AtomId, questionPrompt: 'do X' },
+    budget: { max_turns: 10, max_wall_clock_ms: 60_000, max_usd: 1 },
+    toolPolicy: { disallowedTools: [] },
+    redactor: NOOP_REDACTOR,
+    blobStore: inMemBlob(),
+    replayTier: 'content-addressed',
+    blobThreshold: 4096,
+    correlationId: 'corr-1',
+    ...(signal !== undefined ? { signal } : {}),
+  };
+}
+
+describe('ClaudeCodeAgentLoopAdapter -- happy path lifecycle', () => {
+  it('writes session atom on entry, updates terminal_state + completed_at on exit', async () => {
+    const host = createMemoryHost();
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    const result = await adapter.run(mkInput(host));
+    expect(result.kind).toBe('completed');
+    const sessions = (await host.atoms.query({ type: ['agent-session'] }, 100)).atoms;
+    expect(sessions).toHaveLength(1);
+    const session = sessions[0]!;
+    const meta = session.metadata as Record<string, unknown>;
+    const agentSession = meta['agent_session'] as Record<string, unknown>;
+    expect(agentSession['terminal_state']).toBe('completed');
+    expect(agentSession['completed_at']).toBeDefined();
+    const budget = agentSession['budget_consumed'] as Record<string, unknown>;
+    expect(budget['usd']).toBe(0.01);
+    expect(budget['turns']).toBe(1);
+  });
+
+  it('emits exactly one agent-turn atom for a single-turn run', async () => {
+    const host = createMemoryHost();
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    await adapter.run(mkInput(host));
+    const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
+    expect(turns).toHaveLength(1);
+    const turnMeta = (turns[0]!.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>;
+    expect(turnMeta['turn_index']).toBe(0);
+    const llmOutput = turnMeta['llm_output'] as Record<string, unknown>;
+    expect(llmOutput).toHaveProperty('inline');
+    expect(llmOutput['inline']).toBe('done');
+  });
+
+  it('redactor is applied to llm_input + llm_output before atom write', async () => {
+    const host = createMemoryHost();
+    let redactCalls = 0;
+    const counting: Redactor = { redact: (s) => { redactCalls += 1; return s.replace('secret', '<redacted>'); } };
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'output with secret' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    const input = { ...mkInput(host), redactor: counting };
+    await adapter.run(input);
+    const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
+    const turnMeta = (turns[0]!.metadata as Record<string, unknown>)['agent_turn'] as Record<string, unknown>;
+    const llmOutput = turnMeta['llm_output'] as Record<string, unknown>;
+    expect(llmOutput['inline']).toContain('<redacted>');
+    expect(llmOutput['inline']).not.toContain('secret');
+    expect(redactCalls).toBeGreaterThan(0);
+  });
+
+  it('returns error result with failure: catastrophic when redactor throws', async () => {
+    const host = createMemoryHost();
+    const explodingRedactor: Redactor = {
+      redact: () => { throw new Error('redactor went boom'); },
+    };
+    const stdoutLines = [
+      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'anything' }] } }),
+      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+    ];
+    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
+    const input = { ...mkInput(host), redactor: explodingRedactor };
+    const result = await adapter.run(input);
+    expect(result.kind).toBe('error');
+    expect(result.failure?.kind).toBe('catastrophic');
+  });
+});

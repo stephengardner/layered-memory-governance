@@ -1,122 +1,223 @@
 /**
- * SKELETON reference AgentLoopAdapter.
+ * Production AgentLoopAdapter that spawns the Claude Code CLI in
+ * agentic-headless mode (`claude -p --output-format stream-json
+ * --verbose ...`), parses the streamed NDJSON, writes session +
+ * placeholder turn atoms BEFORE each LLM call (per substrate
+ * contract `src/substrate/agent-loop.ts:46-47`), and updates them
+ * as content streams in.
  *
- * IMPORTANT: this is a substrate-validation skeleton, NOT the
- * production agentic Claude Code path. Full Claude Code CLI
- * integration (subprocess spawn, real tool whitelist, real budget
- * enforcement, signal handling, multi-turn iteration) is a separate
- * follow-up that consumes this seam.
- *
- * What this skeleton DOES
- * -----------------------
- *   - Emits one `agent-session` atom on entry.
- *   - Emits one `agent-turn` atom for the LLM call.
- *   - Applies `input.redactor` to LLM input + output before atom
- *     write.
- *   - Honors `AbortSignal` early-cancellation.
- *   - Optional `stubResponse` for deterministic tests.
- *
- * What this skeleton does NOT do
- * ------------------------------
- *   - Spawn the Claude Code CLI subprocess (a real production
- *     adapter would).
- *   - Iterate multiple turns.
- *   - Emit real tool-call records.
- *   - Compute canon snapshots for strict replay tier.
- *
- * The seam shape is what this skeleton ships. The behaviour grows
- * once a production adapter consumes the same interface.
+ * Composes the helpers in this directory:
+ *   - parseStreamJsonLine (./stream-json-parser.ts)
+ *   - buildPromptText     (./prompt-builder.ts)
+ *   - classifyClaudeCliFailure (./classifier.ts)
+ *   - captureArtifacts    (./artifacts.ts)
+ *   - spawnClaudeCli      (./spawn.ts)
  */
 
 import { randomBytes } from 'node:crypto';
+import { createInterface } from 'node:readline';
+import type { execa as ExecaType } from 'execa';
 import type {
+  AdapterCapabilities,
   AgentLoopAdapter,
   AgentLoopInput,
   AgentLoopResult,
-  AdapterCapabilities,
 } from '../../../src/substrate/agent-loop.js';
-import { defaultClassifyFailure } from '../../../src/substrate/agent-loop.js';
 import type {
-  Atom,
-  AtomId,
   AgentSessionMeta,
   AgentTurnMeta,
+  Atom,
+  AtomId,
   PrincipalId,
 } from '../../../src/substrate/types.js';
+import { parseStreamJsonLine } from './stream-json-parser.js';
+import { buildPromptText } from './prompt-builder.js';
+import { classifyClaudeCliFailure } from './classifier.js';
+import { spawnClaudeCli } from './spawn.js';
 
-export interface ClaudeCodeAgentLoopSkeletonOptions {
-  /** For tests: stubbed LLM output. Production path calls `host.llm.judge()`. */
-  readonly stubResponse?: string;
+export interface ClaudeCodeAgentLoopOptions {
+  readonly claudePath?: string;
+  readonly extraArgs?: ReadonlyArray<string>;
+  readonly verbose?: boolean;
+  readonly execImpl?: typeof ExecaType;
+  readonly killGracePeriodMs?: number;
 }
 
-export class ClaudeCodeAgentLoopSkeleton implements AgentLoopAdapter {
+export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
   readonly capabilities: AdapterCapabilities = {
-    tracks_cost: false,
-    // The skeleton checks the signal once at entry; real adapters that
-    // loop should set this true and re-check between turns. We declare
-    // false here so consumers don't expect mid-run cancellation we
-    // don't actually implement.
-    supports_signal: false,
-    classify_failure: defaultClassifyFailure,
+    tracks_cost: true,
+    supports_signal: true,
+    classify_failure: classifyClaudeCliFailure,
   };
 
-  constructor(private readonly opts: ClaudeCodeAgentLoopSkeletonOptions = {}) {}
+  constructor(private readonly opts: ClaudeCodeAgentLoopOptions = {}) {}
 
   async run(input: AgentLoopInput): Promise<AgentLoopResult> {
-    if (input.signal?.aborted) {
-      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-    }
     const startedAt = new Date().toISOString();
+    const startedAtMs = Date.now();
     const sessionId = `agent-session-${randomBytes(6).toString('hex')}` as AtomId;
-    const sessionMetaInitial: AgentSessionMeta = {
-      model_id: 'claude-opus-4-7',
-      adapter_id: 'claude-code-agent-loop-skeleton',
-      workspace_id: input.workspace.id,
-      started_at: startedAt,
-      terminal_state: 'completed',
-      replay_tier: input.replayTier,
-      budget_consumed: { turns: 0, wall_clock_ms: 0 },
-    };
-    const sessionAtom: Atom = mkAtom(sessionId, 'agent-session', input.principal, [], { agent_session: sessionMetaInitial });
+    const sessionAtom: Atom = mkAtom(sessionId, 'agent-session', input.principal, [], {
+      agent_session: {
+        model_id: 'claude-opus-4-7',
+        adapter_id: 'claude-code-agent-loop',
+        workspace_id: input.workspace.id,
+        started_at: startedAt,
+        terminal_state: 'completed',
+        replay_tier: input.replayTier,
+        budget_consumed: { turns: 0, wall_clock_ms: 0 },
+      } satisfies AgentSessionMeta,
+    });
     await input.host.atoms.put(sessionAtom);
 
-    const promptText = input.task.questionPrompt ?? '';
-    const redactedInput = input.redactor.redact(promptText, { kind: 'llm-input', principal: input.principal });
-    const responseText = this.opts.stubResponse ?? `(skeleton response to: ${promptText.slice(0, 40)})`;
-    const redactedOutput = input.redactor.redact(responseText, { kind: 'llm-output', principal: input.principal });
+    const turnAtomIds: AtomId[] = [];
+    let costUsd: number | undefined;
+    let kind: AgentLoopResult['kind'] = 'completed';
+    let failure: AgentLoopResult['failure'] | undefined;
 
-    const turnId = `agent-turn-${randomBytes(6).toString('hex')}` as AtomId;
-    const turnMeta: AgentTurnMeta = {
-      session_atom_id: sessionId,
-      turn_index: 0,
-      llm_input: { inline: redactedInput },
-      llm_output: { inline: redactedOutput },
-      tool_calls: [],
-      latency_ms: 0,
-    };
-    const turnAtom: Atom = mkAtom(turnId, 'agent-turn', input.principal, [sessionId], { agent_turn: turnMeta });
-    await input.host.atoms.put(turnAtom);
+    try {
+      const prompt = buildPromptText(input.task);
+      const proc = spawnClaudeCli({
+        prompt,
+        workspaceDir: input.workspace.path,
+        budget: input.budget,
+        disallowedTools: input.toolPolicy.disallowedTools,
+        ...(this.opts.claudePath !== undefined ? { claudePath: this.opts.claudePath } : {}),
+        ...(this.opts.extraArgs !== undefined ? { extraArgs: this.opts.extraArgs } : {}),
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        ...(this.opts.execImpl !== undefined ? { execImpl: this.opts.execImpl } : {}),
+      });
 
-    // Update session terminal state. AtomStore.update performs a
-    // SHALLOW merge at the top of metadata; the agent_session value
-    // is REPLACED in full. Build the full replacement here rather
-    // than relying on a (non-existent) deep merge.
-    const completedAt = new Date().toISOString();
-    await input.host.atoms.update(sessionId, {
-      metadata: {
-        agent_session: {
-          ...sessionMetaInitial,
-          completed_at: completedAt,
-          terminal_state: 'completed',
-          budget_consumed: { turns: 1, wall_clock_ms: 0 },
-        },
-      },
-    });
+      // The adapter does not override stdio, so execa always exposes
+      // `proc.stdout` as a Readable; the non-null assertion is justified.
+      const rl = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
+
+      let currentTurnAtomId: AtomId | null = null;
+      let currentTurnIndex = 0;
+      let pendingFirstTurnOpened = false;
+
+      const openPlaceholderTurn = async (turnIndex: number, llmInputText: string): Promise<AtomId> => {
+        const turnId = `agent-turn-${randomBytes(6).toString('hex')}` as AtomId;
+        let redactedInput: string;
+        try {
+          redactedInput = input.redactor.redact(llmInputText, { kind: 'llm-input', principal: input.principal });
+        } catch (e) {
+          throw Object.assign(new Error('redactor crashed on llm-input'), { name: 'RedactorError', cause: e });
+        }
+        const turnMeta: AgentTurnMeta = {
+          session_atom_id: sessionId,
+          turn_index: turnIndex,
+          llm_input: { inline: redactedInput },
+          llm_output: { inline: '' },
+          tool_calls: [],
+          latency_ms: 0,
+        };
+        const turnAtom: Atom = mkAtom(turnId, 'agent-turn', input.principal, [sessionId], { agent_turn: turnMeta });
+        await input.host.atoms.put(turnAtom);
+        turnAtomIds.push(turnId);
+        return turnId;
+      };
+
+      for await (const rawLine of rl) {
+        // Parser returns ReadonlyArray<StreamJsonEvent>: zero-or-many
+        // events per line so multi-block assistant messages (text +
+        // tool_use, parallel tool_use) and parallel tool_result blocks
+        // are not lost. Iterate per-line.
+        const events = parseStreamJsonLine(rawLine);
+        for (const ev of events) {
+          if (ev.kind === 'system') {
+            if (!pendingFirstTurnOpened) {
+              currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, prompt);
+              pendingFirstTurnOpened = true;
+            }
+          } else if (ev.kind === 'assistant-text') {
+            if (currentTurnAtomId === null) {
+              currentTurnAtomId = await openPlaceholderTurn(currentTurnIndex, prompt);
+              pendingFirstTurnOpened = true;
+            }
+            let redactedOut: string;
+            try {
+              redactedOut = input.redactor.redact(ev.text, { kind: 'llm-output', principal: input.principal });
+            } catch (e) {
+              throw Object.assign(new Error('redactor crashed on llm-output'), { name: 'RedactorError', cause: e });
+            }
+            // Read existing turn atom; preserve llm_input + tool_calls;
+            // update llm_output + latency_ms only. Avoids re-redacting
+            // the prompt on every assistant-text event.
+            const existing = await input.host.atoms.get(currentTurnAtomId);
+            const existingMeta = existing !== null
+              ? ((existing.metadata as Record<string, unknown>)['agent_turn'] as AgentTurnMeta)
+              : undefined;
+            await input.host.atoms.update(currentTurnAtomId, {
+              metadata: {
+                agent_turn: {
+                  session_atom_id: sessionId,
+                  turn_index: currentTurnIndex,
+                  llm_input: existingMeta?.llm_input ?? { inline: '' },
+                  llm_output: { inline: redactedOut },
+                  tool_calls: existingMeta?.tool_calls ?? [],
+                  latency_ms: Date.now() - startedAtMs,
+                } satisfies AgentTurnMeta,
+              },
+            });
+          } else if (ev.kind === 'result') {
+            if (typeof ev.costUsd === 'number') costUsd = ev.costUsd;
+          }
+          // tool-use / tool-result handled in Task 7
+          // parse-error: log + skip (no-op)
+        }
+      }
+
+      const procResult = await proc;
+      if (procResult.exitCode !== 0) {
+        const failureKind = classifyClaudeCliFailure(null, procResult.exitCode, String(procResult.stderr ?? ''));
+        kind = 'error';
+        failure = {
+          kind: failureKind,
+          reason: String(procResult.stderr ?? '').slice(0, 1000),
+          stage: 'claude-cli',
+        };
+      }
+    } catch (err) {
+      kind = 'error';
+      const isRedactorErr = err instanceof Error && err.name === 'RedactorError';
+      failure = {
+        kind: isRedactorErr ? 'catastrophic' : classifyClaudeCliFailure(err, null, ''),
+        reason: err instanceof Error ? err.message : String(err),
+        stage: isRedactorErr ? 'redactor' : 'claude-cli',
+      };
+    } finally {
+      const completedAt = new Date().toISOString();
+      try {
+        await input.host.atoms.update(sessionId, {
+          metadata: {
+            agent_session: {
+              model_id: 'claude-opus-4-7',
+              adapter_id: 'claude-code-agent-loop',
+              workspace_id: input.workspace.id,
+              started_at: startedAt,
+              completed_at: completedAt,
+              terminal_state: kind === 'completed' ? 'completed' : kind,
+              replay_tier: input.replayTier,
+              budget_consumed: {
+                turns: turnAtomIds.length,
+                wall_clock_ms: Date.now() - startedAtMs,
+                ...(costUsd !== undefined ? { usd: costUsd } : {}),
+              },
+              ...(failure !== undefined ? { failure } : {}),
+            } satisfies AgentSessionMeta,
+          },
+        });
+      } catch {
+        // Atom-store update failure on session close is non-fatal;
+        // we do not let it overwrite the upstream `kind`.
+      }
+    }
 
     return {
-      kind: 'completed',
+      kind,
       sessionAtomId: sessionId,
-      turnAtomIds: [turnId],
+      turnAtomIds,
+      ...(failure !== undefined ? { failure } : {}),
     };
   }
 }
@@ -130,12 +231,22 @@ function mkAtom(
 ): Atom {
   const now = new Date().toISOString();
   return {
-    schema_version: 1, id, content: '', type, layer: 'L1',
+    schema_version: 1,
+    id,
+    content: '',
+    type,
+    layer: 'L1',
     provenance: { kind: 'agent-observed', source: { agent_id: principal as unknown as string }, derived_from: derived as AtomId[] },
-    confidence: 1, created_at: now, last_reinforced_at: now, expires_at: null,
-    supersedes: [], superseded_by: [], scope: 'project',
+    confidence: 1,
+    created_at: now,
+    last_reinforced_at: now,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
     signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
-    principal_id: principal, taint: 'clean',
+    principal_id: principal,
+    taint: 'clean',
     metadata,
   };
 }
