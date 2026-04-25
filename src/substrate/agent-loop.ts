@@ -37,14 +37,19 @@
  * Contract
  * --------
  * The adapter MUST:
- *   1. Write an `agent-session` atom on entry (state: 'started').
+ *   1. Write an `agent-session` atom on entry, populating
+ *      `started_at`, `replay_tier`, `workspace_id`, and an optimistic
+ *      `terminal_state` (typically `'completed'`). `AgentSessionMeta`
+ *      has no `state` field; lifecycle is captured via `started_at`,
+ *      optional `completed_at`, and `terminal_state`. The same atom
+ *      is updated on exit.
  *   2. Write an `agent-turn` atom for each LLM call BEFORE issuing
  *      the call (so the audit trail captures even mid-turn crashes).
  *   3. Apply `input.redactor` to all content before atom write.
  *   4. Honor `input.budget` (turns + wall_clock_ms; usd if capable).
  *   5. Honor `input.signal` if `capabilities.supports_signal === true`.
  *   6. Update the session atom on exit (terminal_state, failure,
- *      budget_consumed).
+ *      budget_consumed, completed_at).
  *
  * The adapter MAY:
  *   - Persist large turn payloads via `input.blobStore` according to
@@ -121,10 +126,9 @@ export interface AgentLoopResult {
    * adapter return value and the persisted session atom share one
    * vocabulary. `'aborted'` is reserved for adapters that honor an
    * `AbortSignal` and want to return cooperatively rather than throw
-   * `AbortError`; the skeleton in `examples/agent-loops/claude-code`
-   * declares `supports_signal: false` and currently throws on
-   * pre-entry signal aborts, so production adapters that loop are
-   * the natural producers of `kind: 'aborted'`.
+   * `AbortError`; adapters that declare
+   * `capabilities.supports_signal === false` will not produce this
+   * kind.
    */
   readonly kind: 'completed' | 'budget-exhausted' | 'error' | 'aborted';
   readonly sessionAtomId: AtomId;

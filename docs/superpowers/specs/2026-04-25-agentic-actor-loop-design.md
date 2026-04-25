@@ -487,6 +487,8 @@ A future validator can enforce this at write-time by re-running the principal's 
 - `src/runtime/actor-message/code-author-executor-default.ts` - renamed to `diff-based-code-author-executor.ts` for clarity. The diff path stays available for adapters that prefer it.
 - Config flag in `DefaultExecutorConfig` to choose `diff-based` vs `agentic`.
 
+**Back-compat alias for the rename**: PR2 ships a deprecated re-export named `buildDefaultCodeAuthorExecutor` from `src/runtime/actor-message/code-author-executor-default.ts` (or a thin shim file at the old path) that forwards to `buildDiffBasedCodeAuthorExecutor` for one minor release. The old import path keeps working for any consumer (or `examples/`) that hasn't migrated; a deprecation note in the JSDoc points at the new symbol. Removed in the release after.
+
 **`test/e2e/`:**
 - End-to-end on `MemoryHost` with stub agent loop emitting deterministic turns + a stub git client. Validates the full chain produces a PR.
 
