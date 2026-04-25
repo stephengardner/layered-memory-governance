@@ -142,7 +142,7 @@ Constructs argv (mirrors `src/daemon/cli-renderer/claude-streaming.ts:120-135`):
  ...(toolPolicy.disallowedTools.length
     ? ['--disallowedTools', toolPolicy.disallowedTools.join(' ')]
     : []),
- ...(budget.max_usd
+ ...(budget.max_usd !== undefined
     ? ['--max-budget-usd', String(budget.max_usd)]
     : []),
  ...(opts.extraArgs ?? [])]
@@ -198,6 +198,8 @@ The adapter satisfies this by writing a **placeholder** turn atom on the boundar
 | `result` envelope (final, contains `cost_usd`, `usage`, `is_error`) | Update the SESSION atom: `terminal_state` per `is_error` + adapter's classification, `budget_consumed.usd = cost_usd`, `budget_consumed.turns = <count of opened turns>`, `budget_consumed.wall_clock_ms = <Date.now() - startedAt>`, `completed_at = <now>`. |
 
 The **stream-json envelope's cost field is `cost_usd`, not `total_cost_usd`** (validated against `src/daemon/cli-renderer/claude-stream-parser.ts:159`). The JSON-format envelope (used by the existing single-shot `ClaudeCliLLM`) reports `total_cost_usd`; the streaming envelope renames it. The adapter reads `cost_usd` and maps it onto `AgentSessionMeta.budget_consumed.usd`.
+
+**Turn-index source.** `turn_index` is the adapter's local counter (0, 1, 2, ...), not derived from any CLI session-state field. It increments on each placeholder open. Decoupling this from CLI internals means a future CLI behavior change cannot silently desync the substrate's turn ordering.
 
 ### 4.1 Turn-write atomicity guarantee
 
@@ -320,11 +322,11 @@ Single PR. The work decomposes into ~10 plan tasks (parser, prompt builder, clas
 **Canon directives this design respects:**
 - `dev-substrate-not-prescription`: the adapter lives in `examples/`; framework code in `src/` stays mechanism-only.
 - `simple-surface-deep-architecture`: the adapter is one file; the substrate's pluggability is unchanged.
-- `dev-flag-structural-concerns-proactively`: §4.1 documents the deliberate deviation from the strictest reading of "write atom before LLM call" and the reasoning.
-- `inv-provenance-every-write`: every atom carries `derived_from` linking session → turn → atoms.
+- `dev-flag-structural-concerns-proactively`: §4.0 documents how the placeholder-then-enrich pattern satisfies the strict "write atom before LLM call" contract under stream-json's event ordering, and explicitly traces each LLM-call boundary signal.
+- `inv-provenance-every-write`: every atom carries `derived_from` linking session -> turn -> atoms.
 - `inv-governance-before-autonomy`: budget caps + signal forwarding + tool-policy plumbing all enforce caller-controlled bounds.
 - `dev-extreme-rigor-and-research`: this design covers 6 stream-json event types, 9 failure-mapping rows, and 4 test categories.
-- `dev-no-hacks-without-approval`: §4.1's deviation from strict atom-before-LLM-call is surfaced explicitly with rationale.
+- `dev-no-hacks-without-approval`: the placeholder pattern in §4.0 satisfies the strict substrate contract directly; no operator-approved deviation is required.
 - `dev-forward-thinking-no-regrets`: strict replay tier is reserved (computed-at-session-start hash) without breaking content-addressed today.
 
 **Atoms / memory / prior PRs:**
