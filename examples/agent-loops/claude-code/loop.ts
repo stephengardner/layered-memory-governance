@@ -49,7 +49,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
   readonly capabilities: AdapterCapabilities = {
     tracks_cost: true,
     supports_signal: true,
-    classify_failure: classifyClaudeCliFailure,
+    classify_failure: (err: unknown) => classifyClaudeCliFailure(err, null, ''),
   };
 
   constructor(private readonly opts: ClaudeCodeAgentLoopOptions = {}) {}
@@ -410,7 +410,7 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
           stage: 'max-turns-cap',
         };
       } else if (procResult.exitCode !== 0) {
-        const failureKind = classifyClaudeCliFailure(null, procResult.exitCode, String(procResult.stderr ?? ''));
+        const failureKind = classifyClaudeCliFailure(null, procResult.exitCode ?? null, String(procResult.stderr ?? ''));
         kind = 'error';
         failure = {
           kind: failureKind,

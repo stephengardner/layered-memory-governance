@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./examples",
+    "outDir": "./dist/examples",
+    "tsBuildInfoFile": "./.tsbuildinfo-examples",
+    "composite": true
+  },
+  "include": ["examples/**/*"],
+  "exclude": ["node_modules", "dist", "test"],
+  "references": [
+    { "path": "./tsconfig.json" }
+  ]
+}

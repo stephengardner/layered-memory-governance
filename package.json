@@ -109,8 +109,10 @@
     "human-in-the-loop"
   ],
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc -b tsconfig.examples.json",
+    "build:src": "tsc -b tsconfig.json",
+    "build:examples": "tsc -b tsconfig.examples.json",
+    "typecheck": "tsc -b --noEmit tsconfig.examples.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
