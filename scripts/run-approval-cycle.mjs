@@ -64,6 +64,7 @@
 import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { createFileHost } from '../dist/adapters/file/index.js';
+import { ClaudeCliLLM } from '../dist/adapters/claude-cli/index.js';
 import {
   SubActorRegistry,
   runAuditor,
@@ -73,12 +74,19 @@ import {
   runPlanApprovalTick,
 } from '../dist/actor-message/index.js';
 import { runPlanStateReconcileTick } from '../dist/runtime/plans/pr-merge-reconcile.js';
+import {
+  LLM_REQUIRING_SUB_ACTORS,
+  checkLlmCompatibility,
+} from './lib/approval-cycle-gate.mjs';
+
+const SUPPORTED_LLMS = new Set(['claude-cli', 'memory']);
 
 function parseArgs(argv) {
   const args = {
     rootDir: null,
     principalId: null,
     invokersPath: null,
+    llm: 'claude-cli',
     once: true,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -86,10 +94,11 @@ function parseArgs(argv) {
     if (a === '--root-dir' && i + 1 < argv.length) args.rootDir = argv[++i];
     else if (a === '--principal-id' && i + 1 < argv.length) args.principalId = argv[++i];
     else if (a === '--invokers' && i + 1 < argv.length) args.invokersPath = argv[++i];
+    else if (a === '--llm' && i + 1 < argv.length) args.llm = argv[++i];
     else if (a === '--once') args.once = true;
     else if (a === '--help' || a === '-h') {
       console.log([
-        'Usage: node scripts/run-approval-cycle.mjs --root-dir <path> [--principal-id <id>] [--invokers <path>] [--once]',
+        'Usage: node scripts/run-approval-cycle.mjs --root-dir <path> [--principal-id <id>] [--invokers <path>] [--llm <adapter>] [--once]',
         '',
         'Runs one pass of the approval cycle, in order:',
         '  0. runIntentAutoApprovePass    (intent-backed single-principal)',
@@ -113,6 +122,16 @@ function parseArgs(argv) {
         '                         seam, plans that delegate to an unregistered',
         '                         sub-actor will be marked failed by',
         '                         runDispatchTick.',
+        "  --llm <adapter>        Optional. Which LLM adapter to wire onto the",
+        "                         host. 'claude-cli' (default) reuses the user's",
+        "                         existing Claude Code OAuth (no API key needed)",
+        "                         and is what dispatched sub-actors with their",
+        "                         own LLM-backed steps -- e.g. code-author's",
+        "                         drafter -- need to function. 'memory' wires",
+        "                         the deterministic stub used by unit tests; the",
+        "                         daemon refuses to start if 'memory' is selected",
+        "                         AND the registry contains a sub-actor that",
+        "                         requires a real LLM (today: code-author).",
         '  --once                 Run one pass and exit (default).',
         '',
         'Exit codes:',
@@ -128,6 +147,10 @@ function parseArgs(argv) {
   }
   if (args.rootDir === null) {
     console.error('ERROR: --root-dir <path> is required.');
+    process.exit(2);
+  }
+  if (!SUPPORTED_LLMS.has(args.llm)) {
+    console.error(`ERROR: --llm must be one of [${Array.from(SUPPORTED_LLMS).join(', ')}]; got '${args.llm}'.`);
     process.exit(2);
   }
   // --principal-id is intentionally optional: the ticks read principal
@@ -147,7 +170,17 @@ async function main() {
     process.exit(2);
   }
 
-  const host = await createFileHost({ rootDir });
+  // LLM seam: dispatched sub-actors that have their own LLM-backed
+  // step (e.g. code-author's drafter calls `host.llm.judge`) need a
+  // real adapter on the host. The default 'claude-cli' path reuses
+  // the user's existing Claude Code OAuth -- zero-config for an
+  // indie developer; a deployment that wants a different adapter
+  // forks this script (the seam is the param, not the constructor).
+  // 'memory' is the test stub; selecting it on a daemon that will
+  // dispatch code-author would crash the drafter at runtime, so we
+  // gate on the registered set after invokers load (below).
+  const llm = args.llm === 'claude-cli' ? new ClaudeCliLLM({}) : undefined;
+  const host = await createFileHost({ rootDir, llm });
 
   // Register invokers. V0 ships with the auditor (read-only, always
   // safe). Deployments with additional sub-actors pass --invokers
@@ -178,9 +211,24 @@ async function main() {
     await mod.default(host, registry);
   }
 
+  // Loud-fail when the operator opts into the test stub but the
+  // registry contains a sub-actor whose drafter / judgment step
+  // calls host.llm. Fail at startup with an actionable hint rather
+  // than at dispatch-time with a cryptic "MemoryLLM has no
+  // registered response for key <hash>" thrown deep inside the
+  // executor chain. Gate logic + sub-actor list live in
+  // scripts/lib/approval-cycle-gate.mjs so the test suite can
+  // exercise the decision without spawning the CLI.
+  const registeredIds = LLM_REQUIRING_SUB_ACTORS.filter((id) => registry.has(id));
+  const incompat = checkLlmCompatibility({ llm: args.llm, registeredIds });
+  if (incompat !== null) {
+    console.error(`ERROR: ${incompat.message}`);
+    process.exit(2);
+  }
+
   const startedAt = new Date().toISOString();
   const principalTag = args.principalId === null ? 'unset' : args.principalId;
-  console.log(`[approval-cycle] started at ${startedAt} root=${rootDir} principal=${principalTag}`);
+  console.log(`[approval-cycle] started at ${startedAt} root=${rootDir} principal=${principalTag} llm=${args.llm}`);
 
   // Track whether any tick threw; non-zero exit on the first throw
   // preserves "exit 0 iff clean". We STILL try each tick so a failure
