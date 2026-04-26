@@ -29,6 +29,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Plans',
     subtitle: 'Planning atoms with state — proposals, approvals, in-flight work',
   },
+  'plan-lifecycle': {
+    title: 'Plan Lifecycle',
+    subtitle: 'End-to-end view of every plan\'s autonomous-loop chain — intent through merge',
+  },
   graph: {
     title: 'Graph',
     subtitle: 'The whole substrate as a force-directed map of derived_from relationships',

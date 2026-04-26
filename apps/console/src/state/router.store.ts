@@ -27,10 +27,10 @@ import { useSyncExternalStore } from 'react';
  * routes by default, so `/canon/my-atom-id` resolves to the SPA bundle.
  */
 
-export type Route = 'canon' | 'principals' | 'activities' | 'plans' | 'graph' | 'timeline';
+export type Route = 'canon' | 'principals' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle';
 
 const DEFAULT: Route = 'canon';
-const VALID: ReadonlyArray<Route> = ['canon', 'principals', 'activities', 'plans', 'graph', 'timeline'];
+const VALID: ReadonlyArray<Route> = ['canon', 'principals', 'activities', 'plans', 'graph', 'timeline', 'plan-lifecycle'];
 const NAV_EVENT = 'lag-console:navigate';
 
 export interface Location {
@@ -126,13 +126,20 @@ export function routeHref(r: Route, id?: string): string {
  * domain prefixes (arch/dev/inv/pol), so the default is 'canon'. Only
  * atoms we KNOW live elsewhere get routed away — plans and
  * activity-like atoms (operator-action, actor-messages, audit replies).
+ *
+ * `plan-merge-settled-*` atoms are settlement records emitted by
+ * pr-landing-agent; they're activity-shaped, not plan documents, so
+ * route them with the other activity atoms. The check is order-
+ * sensitive — must precede the generic `plan-` prefix.
  */
 export function routeForAtomId(id: string): Route {
+  if (id.startsWith('plan-merge-settled-')) return 'activities';
   if (id.startsWith('plan-')) return 'plans';
   if (
     id.startsWith('op-action-')
     || id.startsWith('ama-')
     || id.startsWith('pr-observation-')
+    || id.startsWith('intent-')
   ) return 'activities';
   return 'canon';
 }

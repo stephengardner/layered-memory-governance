@@ -865,6 +865,333 @@ async function handlePlansList(): Promise<Atom[]> {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Plan lifecycle: end-to-end timeline of a single plan's autonomous-loop
+// chain. Stitches together the five (sometimes six) state-transition
+// atoms that a `plan` traverses from operator-intent through to merged:
+//
+//   intent (operator-intent)
+//     ↓ provenance.derived_from
+//   plan (proposed → approved → executing → succeeded)
+//     ↓ metadata.dispatch_result + a `code-author-invoked` observation
+//   dispatch (PR opened)
+//     ↓ pr-observation atoms (each new HEAD/review cycle)
+//   merge (final pr-observation with pr_state=MERGED)
+//     ↓ plan-merge-settled atom
+//   settled
+//
+// All projections come straight from the AtomStore, no separate index.
+// `readAllAtoms()` is already an O(1) in-memory map populated by the
+// file-watcher; this handler does at most one full scan of that map and
+// returns the structured `lifecycle` envelope the timeline UI consumes.
+// ---------------------------------------------------------------------------
+
+interface PlanLifecyclePhase {
+  readonly phase:
+    | 'deliberation'
+    | 'approval'
+    | 'dispatch'
+    | 'observation'
+    | 'merge'
+    | 'settled';
+  readonly label: string;
+  readonly at: string;
+  readonly by: string;
+  readonly atom_id: string;
+}
+
+interface PlanLifecycle {
+  readonly plan: {
+    readonly id: string;
+    readonly content: string;
+    readonly plan_state: string | null;
+    readonly principal_id: string;
+    readonly created_at: string;
+    readonly layer: string;
+  } | null;
+  readonly intent: {
+    readonly id: string;
+    readonly content: string;
+    readonly principal_id: string;
+    readonly created_at: string;
+  } | null;
+  readonly approval: {
+    readonly policy_atom_id: string | null;
+    readonly approved_at: string;
+    readonly approved_intent_id: string | null;
+  } | null;
+  readonly dispatch: {
+    readonly atom_id: string | null;
+    readonly pr_number: number | null;
+    readonly pr_html_url: string | null;
+    readonly branch_name: string | null;
+    readonly commit_sha: string | null;
+    readonly model: string | null;
+    readonly total_cost_usd: number | null;
+    readonly confidence: number | null;
+    readonly dispatched_at: string;
+    readonly principal_id: string;
+  } | null;
+  readonly observation: {
+    readonly atom_id: string;
+    readonly head_sha: string | null;
+    readonly mergeable: string | null;
+    readonly merge_state_status: string | null;
+    readonly pr_state: string | null;
+    readonly observed_at: string;
+  } | null;
+  readonly settled: {
+    readonly atom_id: string;
+    readonly target_plan_state: string | null;
+    readonly settled_at: string;
+    readonly pr_state: string | null;
+  } | null;
+  readonly transitions: ReadonlyArray<PlanLifecyclePhase>;
+}
+
+async function handlePlanLifecycle(planId: string): Promise<PlanLifecycle> {
+  const all = await readAllAtoms();
+  const byId = new Map(all.map((a) => [a.id, a]));
+  const plan = byId.get(planId) ?? null;
+
+  // Plan summary block.
+  const planAny = plan as unknown as Record<string, unknown> | null;
+  const planBlock: PlanLifecycle['plan'] = plan
+    ? {
+      id: plan.id,
+      content: plan.content,
+      plan_state: typeof planAny?.['plan_state'] === 'string'
+        ? (planAny['plan_state'] as string)
+        : null,
+      principal_id: plan.principal_id,
+      created_at: plan.created_at,
+      layer: plan.layer,
+    }
+    : null;
+
+  // Intent: the operator-intent atom in the plan's derived_from. Plans
+  // can cite many ancestors (canon, prior plans). Pick the first
+  // ancestor whose `type === 'operator-intent'` so we get the
+  // governance-relevant trigger, not a canon citation.
+  const planDerived = (plan?.provenance as { derived_from?: string[] } | undefined)?.derived_from ?? [];
+  const intentAtom = planDerived
+    .map((id) => byId.get(id))
+    .find((a): a is Atom => Boolean(a) && a!.type === 'operator-intent') ?? null;
+  const intentBlock: PlanLifecycle['intent'] = intentAtom
+    ? {
+      id: intentAtom.id,
+      content: intentAtom.content,
+      principal_id: intentAtom.principal_id,
+      created_at: intentAtom.created_at,
+    }
+    : null;
+
+  // Approval: read straight from plan.metadata.approved_at + approved_via.
+  // The approval is encoded inline on the plan rather than as a
+  // separate atom, but it's still a discrete state transition the
+  // operator wants visible.
+  const meta = (plan?.metadata ?? {}) as Record<string, unknown>;
+  const approvedAt = typeof meta['approved_at'] === 'string' ? meta['approved_at'] as string : null;
+  const approvedVia = typeof meta['approved_via'] === 'string' ? meta['approved_via'] as string : null;
+  const approvedIntent = typeof meta['approved_intent_id'] === 'string' ? meta['approved_intent_id'] as string : null;
+  const approvalBlock: PlanLifecycle['approval'] = approvedAt
+    ? {
+      policy_atom_id: approvedVia,
+      approved_at: approvedAt,
+      approved_intent_id: approvedIntent,
+    }
+    : null;
+
+  // Dispatch: derived from BOTH the inline `dispatch_result` summary on
+  // the plan AND the corresponding `<actor>-invoked-...` observation
+  // atom that carries the rich payload (pr_number, branch_name,
+  // commit_sha, model, cost). Inline `dispatch_result` is intentionally
+  // a thin pointer; the observation is the source of truth for fields.
+  // We prefer the observation when present and fall back to whatever
+  // the inline summary carries.
+  const inlineDispatch = (meta['dispatch_result'] as Record<string, unknown> | undefined) ?? null;
+  const inlineDispatchedAt = typeof inlineDispatch?.['at'] === 'string'
+    ? (inlineDispatch['at'] as string)
+    : null;
+
+  // Find the `*-invoked-<plan-id>-...` observation atom whose metadata
+  // points at this plan via plan_id. Every executor (code-author,
+  // pr-fix, etc.) writes one of these on dispatch.
+  let invokedObservation: Atom | null = null;
+  for (const a of all) {
+    if (a.type !== 'observation') continue;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    if (m['kind'] !== 'code-author-invoked' && !String(m['kind'] ?? '').endsWith('-invoked')) continue;
+    if (m['plan_id'] !== planId) continue;
+    if (!invokedObservation || (a.created_at ?? '') < (invokedObservation.created_at ?? '')) {
+      invokedObservation = a;
+    }
+  }
+  const executorResult = invokedObservation
+    ? ((invokedObservation.metadata as Record<string, unknown>)['executor_result'] as Record<string, unknown> | undefined) ?? null
+    : null;
+  const dispatchBlock: PlanLifecycle['dispatch'] = (invokedObservation || inlineDispatch)
+    ? {
+      atom_id: invokedObservation?.id ?? null,
+      pr_number: typeof executorResult?.['pr_number'] === 'number'
+        ? (executorResult['pr_number'] as number)
+        : null,
+      pr_html_url: typeof executorResult?.['pr_html_url'] === 'string'
+        ? (executorResult['pr_html_url'] as string)
+        : null,
+      branch_name: typeof executorResult?.['branch_name'] === 'string'
+        ? (executorResult['branch_name'] as string)
+        : null,
+      commit_sha: typeof executorResult?.['commit_sha'] === 'string'
+        ? (executorResult['commit_sha'] as string)
+        : null,
+      model: typeof executorResult?.['model_used'] === 'string'
+        ? (executorResult['model_used'] as string)
+        : null,
+      total_cost_usd: typeof executorResult?.['total_cost_usd'] === 'number'
+        ? (executorResult['total_cost_usd'] as number)
+        : null,
+      confidence: typeof executorResult?.['confidence'] === 'number'
+        ? (executorResult['confidence'] as number)
+        : null,
+      dispatched_at: invokedObservation?.created_at ?? inlineDispatchedAt ?? '',
+      principal_id: invokedObservation?.principal_id ?? 'unknown',
+    }
+    : null;
+
+  // Observation: the most recent pr-observation atom that derives from
+  // this plan. The PR observation runner emits one per HEAD update;
+  // we surface the latest as the canonical "current state of PR" view.
+  let latestPrObservation: Atom | null = null;
+  for (const a of all) {
+    if (a.type !== 'observation') continue;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    if (m['kind'] !== 'pr-observation') continue;
+    if (m['plan_id'] !== planId) continue;
+    if (!latestPrObservation || (a.created_at ?? '') > (latestPrObservation.created_at ?? '')) {
+      latestPrObservation = a;
+    }
+  }
+  const observationBlock: PlanLifecycle['observation'] = latestPrObservation
+    ? {
+      atom_id: latestPrObservation.id,
+      head_sha: typeof (latestPrObservation.metadata as Record<string, unknown>)['head_sha'] === 'string'
+        ? (latestPrObservation.metadata as Record<string, unknown>)['head_sha'] as string
+        : null,
+      mergeable: typeof (latestPrObservation.metadata as Record<string, unknown>)['mergeable'] === 'string'
+        ? (latestPrObservation.metadata as Record<string, unknown>)['mergeable'] as string
+        : null,
+      merge_state_status: typeof (latestPrObservation.metadata as Record<string, unknown>)['merge_state_status'] === 'string'
+        ? (latestPrObservation.metadata as Record<string, unknown>)['merge_state_status'] as string
+        : null,
+      pr_state: typeof (latestPrObservation.metadata as Record<string, unknown>)['pr_state'] === 'string'
+        ? (latestPrObservation.metadata as Record<string, unknown>)['pr_state'] as string
+        : null,
+      observed_at: latestPrObservation.created_at,
+    }
+    : null;
+
+  // Settled: the plan-merge-settled atom referencing this plan.
+  let settledAtom: Atom | null = null;
+  for (const a of all) {
+    if (a.type !== 'plan-merge-settled') continue;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    if (m['plan_id'] !== planId) continue;
+    if (!settledAtom || (a.created_at ?? '') > (settledAtom.created_at ?? '')) {
+      settledAtom = a;
+    }
+  }
+  const settledBlock: PlanLifecycle['settled'] = settledAtom
+    ? {
+      atom_id: settledAtom.id,
+      target_plan_state: typeof (settledAtom.metadata as Record<string, unknown>)['target_plan_state'] === 'string'
+        ? (settledAtom.metadata as Record<string, unknown>)['target_plan_state'] as string
+        : null,
+      settled_at: settledAtom.created_at,
+      pr_state: typeof (settledAtom.metadata as Record<string, unknown>)['pr_state'] === 'string'
+        ? (settledAtom.metadata as Record<string, unknown>)['pr_state'] as string
+        : null,
+    }
+    : null;
+
+  // Compose the chronological transitions list. Each present block
+  // contributes one phase entry; absent phases are simply omitted.
+  // The frontend renders this as a vertical timeline with stagger
+  // animation, so order is load-bearing.
+  const transitions: PlanLifecyclePhase[] = [];
+  if (intentBlock) {
+    transitions.push({
+      phase: 'deliberation',
+      label: 'Operator intent',
+      at: intentBlock.created_at,
+      by: intentBlock.principal_id,
+      atom_id: intentBlock.id,
+    });
+  }
+  if (planBlock) {
+    transitions.push({
+      phase: 'deliberation',
+      label: 'Plan proposed',
+      at: planBlock.created_at,
+      by: planBlock.principal_id,
+      atom_id: planBlock.id,
+    });
+  }
+  if (approvalBlock) {
+    transitions.push({
+      phase: 'approval',
+      label: 'Plan approved',
+      at: approvalBlock.approved_at,
+      by: approvalBlock.policy_atom_id ?? 'policy',
+      atom_id: planBlock?.id ?? planId,
+    });
+  }
+  if (dispatchBlock && dispatchBlock.dispatched_at) {
+    transitions.push({
+      phase: 'dispatch',
+      label: dispatchBlock.pr_number
+        ? `Dispatched (PR #${dispatchBlock.pr_number})`
+        : 'Dispatched',
+      at: dispatchBlock.dispatched_at,
+      by: dispatchBlock.principal_id,
+      atom_id: dispatchBlock.atom_id ?? planId,
+    });
+  }
+  if (observationBlock) {
+    transitions.push({
+      phase: 'observation',
+      label: observationBlock.pr_state
+        ? `PR observed (${observationBlock.pr_state})`
+        : 'PR observed',
+      at: observationBlock.observed_at,
+      by: 'pr-landing-agent',
+      atom_id: observationBlock.atom_id,
+    });
+  }
+  if (settledBlock) {
+    transitions.push({
+      phase: settledBlock.pr_state === 'MERGED' ? 'merge' : 'settled',
+      label: `Plan settled${settledBlock.target_plan_state ? ` → ${settledBlock.target_plan_state}` : ''}`,
+      at: settledBlock.settled_at,
+      by: 'pr-landing-agent',
+      atom_id: settledBlock.atom_id,
+    });
+  }
+  // Stable chronological sort. Ties keep insertion order, which is
+  // already domain-meaningful (plan-proposed before approval, etc.).
+  transitions.sort((a, b) => a.at.localeCompare(b.at));
+
+  return {
+    plan: planBlock,
+    intent: intentBlock,
+    approval: approvalBlock,
+    dispatch: dispatchBlock,
+    observation: observationBlock,
+    settled: settledBlock,
+    transitions,
+  };
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
 
@@ -1204,6 +1531,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'plans-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/plan.lifecycle' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const planId = typeof body['plan_id'] === 'string' ? (body['plan_id'] as string) : '';
+    if (!planId) {
+      sendErr(req, res, 400, 'missing-plan-id', 'plan.lifecycle requires { plan_id: string }');
+      return;
+    }
+    try {
+      const data = await handlePlanLifecycle(planId);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'plan-lifecycle-failed', (err as Error).message);
     }
     return;
   }
