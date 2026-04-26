@@ -1,4 +1,4 @@
-import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow } from 'lucide-react';
+import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Radio } from 'lucide-react';
 import { routeHref, setRoute, type Route } from '@/state/router.store';
 import logoUrl from '@/assets/lag-logo.png';
 import styles from './Sidebar.module.css';
@@ -12,6 +12,7 @@ interface NavItem {
 const items: ReadonlyArray<NavItem> = [
   { id: 'canon', label: 'Canon', icon: Book },
   { id: 'principals', label: 'Principals', icon: Users },
+  { id: 'actor-activity', label: 'Live Activity', icon: Radio },
   { id: 'activities', label: 'Activities', icon: Activity },
   { id: 'plans', label: 'Plans', icon: GitBranch },
   { id: 'plan-lifecycle', label: 'Lifecycle', icon: Workflow },
