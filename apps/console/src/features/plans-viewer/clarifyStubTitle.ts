@@ -30,8 +30,11 @@ const SUBTYPE_LABELS: Readonly<Record<string, string>> = {
 export interface ClarifyStubTitle {
   /**
    * Short canonical label safe to render in a card title slot.
-   * Always begins with `Clarify: LLM draft failed`; an em-dashed suffix
-   * may follow when a known error subtype is recognised.
+   * Always begins with `Clarify: LLM draft failed`; a parenthesised
+   * suffix may follow when a known error subtype is recognised
+   * (e.g. `Clarify: LLM draft failed (budget exceeded)`). Parens
+   * over emdash to keep the surface ASCII-clean for
+   * `scripts/pre-push-lint.mjs`.
    */
   readonly label: string;
   /**
