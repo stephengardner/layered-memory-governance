@@ -144,9 +144,22 @@ function stubJudgment() {
   return {
     async classify(context) {
       const directiveIds = context.directives.slice(0, 8).map((a) => a.id);
+      /*
+       * Stub mode picks the 'research' classification for parity with
+       * the CTO mirror (scripts/run-cto-actor.mjs:181). The CPO lens
+       * (surface-complexity, onboarding-feel, demo-readiness,
+       * narrative-coherence per the cpo-actor soul) lives in the
+       * rationale, not the kind: kind must be a member of the
+       * PlanningClassificationKind union (greenfield, modification,
+       * reversal, research, emergency, ambiguous) defined in
+       * src/runtime/actors/planning/types.ts. A future LLM-judgment
+       * phase may add a CPO-specific kind to that union, but until
+       * then 'surface-complexity' is not a valid value and would fail
+       * downstream validation when a stub plan is serialized.
+       */
       return {
-        kind: 'surface-complexity',
-        rationale: 'Stub CPO judgment: real LLM-backed classification ships next phase. Default kind biases toward the CPO lens (surface-complexity, onboarding-feel, demo-readiness, narrative-coherence) per the cpo-actor soul.',
+        kind: 'research',
+        rationale: 'Stub CPO judgment: real LLM-backed classification ships next phase. Default biases the CPO lens (surface-complexity, onboarding-feel, demo-readiness, narrative-coherence) per the cpo-actor soul; classification kind is research for parity with the CTO mirror.',
         applicableDirectives: directiveIds,
       };
     },
@@ -222,15 +235,25 @@ async function main() {
     process.exit(1);
   }
 
+  /*
+   * Derive log tag + asked_via from the resolved principal so the
+   * --principal override is not a footgun. If an operator passes
+   * --principal something-else, logs and the question atom's
+   * asked_via metadata reflect the actual identity instead of lying
+   * about it. Provenance is the substrate's whole point; mislabelled
+   * audit lines are exactly what we cannot ship.
+   */
+  const logTag = `[${principal.id}]`;
+
   const toolPolicy = await loadLlmToolPolicy(host.atoms, principal.id);
   if (toolPolicy) {
     console.log(
-      `[cpo-actor] llm-tool-policy loaded for ${principal.id}: `
+      `${logTag} llm-tool-policy loaded for ${principal.id}: `
       + `disallowed=[${toolPolicy.disallowedTools.join(', ')}]`,
     );
   } else {
     console.log(
-      `[cpo-actor] no llm-tool-policy atom for ${principal.id}; using adapter default (deny-all).`,
+      `${logTag} no llm-tool-policy atom for ${principal.id}; using adapter default (deny-all).`,
     );
   }
 
@@ -249,10 +272,10 @@ async function main() {
     content: args.request,
     asker: principal.id,
     metadata: {
-      asked_via: 'run-cpo-actor',
+      asked_via: `run-${principal.id}`,
     },
   });
-  console.log(`[cpo-actor] seeded question atom ${questionAtom.id}`);
+  console.log(`${logTag} seeded question atom ${questionAtom.id}`);
 
   const actor = new PlanningActor({
     request: args.request,
@@ -272,9 +295,9 @@ async function main() {
   const deadlineMs = args.stub ? 60_000 : Math.max(600_000, llmBudgetMs);
   const deadline = new Date(Date.now() + deadlineMs).toISOString();
   const mode = args.stub ? 'STUB' : 'LLM (thinking)';
-  console.log(`[cpo-actor] ${mode} run as ${args.principalId}`);
-  console.log(`[cpo-actor] request: ${args.request}`);
-  console.log(`[cpo-actor] budget: maxIterations=${args.maxIterations}, deadline=${deadline}`);
+  console.log(`${logTag} ${mode} run as ${args.principalId}`);
+  console.log(`${logTag} request: ${args.request}`);
+  console.log(`${logTag} budget: maxIterations=${args.maxIterations}, deadline=${deadline}`);
 
   const report = await runActor(actor, {
     host,
@@ -299,7 +322,7 @@ async function main() {
     },
   });
 
-  console.log('[cpo-actor] --- REPORT ---');
+  console.log(`${logTag} --- REPORT ---`);
   console.log(JSON.stringify({
     actor: report.actor,
     principal: report.principal,
@@ -314,12 +337,12 @@ async function main() {
   try {
     const approvalResult = await runPlanApprovalTick(host);
     console.log(
-      '[cpo-actor] end-of-run plan-approval tick: '
+      `${logTag} end-of-run plan-approval tick: `
       + `scanned=${approvalResult.scanned} eligible=${approvalResult.eligible} `
       + `approved=${approvalResult.approved} rejected=${approvalResult.rejected} stale=${approvalResult.stale}`,
     );
   } catch (err) {
-    console.warn(`[cpo-actor] end-of-run plan-approval tick FAILED (non-fatal): ${err?.message ?? err}`);
+    console.warn(`${logTag} end-of-run plan-approval tick FAILED (non-fatal): ${err?.message ?? err}`);
   }
 
   if (report.haltReason === 'converged') process.exit(0);
