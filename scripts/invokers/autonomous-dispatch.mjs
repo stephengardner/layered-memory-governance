@@ -18,6 +18,15 @@
  *                  instance; consumers can swap to a dedicated
  *                  'lag-code-author' role by provisioning it + setting
  *                  the env var).
+ *   - dispatchPrincipal: LAG_DISPATCH_PRINCIPAL_ID env, defaults to
+ *                  `role` for backward-compat. Distinct from the role:
+ *                  `role` drives cred provisioning in
+ *                  GitWorktreeProvider.copyCredsForRoles; principal
+ *                  is the executor-side identity for workspace
+ *                  isolation and downstream attribution. Decoupling
+ *                  these lets a deployment run principal
+ *                  `vo-code-author` under role `lag-ceo` without
+ *                  conflating cred-copy and ownership.
  *   - workspaceProvider: GitWorktreeProvider rooted at `repoDir`.
  *                  Each dispatch acquires an isolated worktree off
  *                  `baseBranch`, runs the drafter + git-ops + PR-create
@@ -148,6 +157,20 @@ export default async function register(host, registry) {
     ? new GitWorktreeProvider({ repoDir, copyCredsForRoles: [role] })
     : undefined;
 
+  // Decouple role from principal at the WorkspaceProvider boundary.
+  // GitWorktreeProvider's `copyCredsForRoles` is role-scoped (cred
+  // provisioning), while the executor's `principal` parameter answers
+  // "whose work is this for" -- workspace isolation + downstream
+  // attribution. Most deployments collapse the two (role==principal),
+  // so default to the bot role to preserve current behaviour; orgs
+  // that distinguish them (e.g. principal `vo-code-author` running
+  // under role `lag-ceo`) override LAG_DISPATCH_PRINCIPAL_ID without
+  // touching the role wiring.
+  const principalRaw = process.env.LAG_DISPATCH_PRINCIPAL_ID;
+  const dispatchPrincipal = typeof principalRaw === 'string' && principalRaw.trim().length > 0
+    ? principalRaw.trim()
+    : role;
+
   const defaultExecutor = buildDefaultCodeAuthorExecutor({
     host,
     ghClient,
@@ -159,7 +182,7 @@ export default async function register(host, registry) {
     remote,
     baseBranch,
     execImpl,
-    ...(workspaceProvider !== undefined ? { workspaceProvider, principal: role } : {}),
+    ...(workspaceProvider !== undefined ? { workspaceProvider, principal: dispatchPrincipal } : {}),
   });
 
   registry.register('code-author', async (payload, correlationId) => {
