@@ -11,6 +11,7 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/state-display
 import { listPlans, type PlanAtom } from '@/services/plans.service';
 import { planStateTone } from '@/features/plan-state/tones';
 import { useRouteId, setRoute, routeHref } from '@/state/router.store';
+import { formatClarifyStubTitle } from './clarifyStubTitle';
 import styles from './PlansView.module.css';
 
 const FAILURE_SUMMARY_MAX = 80;
@@ -156,6 +157,18 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
   const state = plan.plan_state ?? 'unknown';
   const { title, body } = splitTitleAndBody(plan.content);
   const failure = summarizePlanFailure(plan);
+  /*
+   * Clarify-stub plan titles include a stringified Claude CLI envelope
+   * inside parentheses (hundreds of chars of raw JSON). Render-time
+   * normalization swaps in a short canonical label while keeping the
+   * raw original accessible: native `title` tooltip on the heading +
+   * a `<details>` panel under the heading for click-to-expand triage.
+   * Returns null for non-clarify titles, so the render path is
+   * unchanged for ordinary plans.
+   */
+  const clarify = title ? formatClarifyStubTitle(title) : null;
+  const displayTitle = clarify?.label ?? title;
+  const titleTooltip = clarify ? clarify.raw : undefined;
 
   /*
    * Delegated click: clicking whitespace/text in the card navigates to
@@ -215,25 +228,58 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
       )}
 
       {title && (
-        focused ? (
-          <h3 className={styles.title}>{title}</h3>
-        ) : (
-          <h3 className={styles.title}>
-            <a
-              className={styles.titleLink}
-              href={routeHref('plans', plan.id)}
-              data-testid="plan-card-link"
+        <>
+          {focused ? (
+            <h3
+              className={styles.title}
+              data-testid="plan-card-title"
+              {...(clarify ? { 'data-clarify-stub': 'true' } : {})}
+              {...(titleTooltip ? { title: titleTooltip } : {})}
+            >
+              {displayTitle}
+            </h3>
+          ) : (
+            <h3
+              className={styles.title}
+              data-testid="plan-card-title"
+              {...(clarify ? { 'data-clarify-stub': 'true' } : {})}
+              {...(titleTooltip ? { title: titleTooltip } : {})}
+            >
+              <a
+                className={styles.titleLink}
+                href={routeHref('plans', plan.id)}
+                data-testid="plan-card-link"
+                onClick={(e) => {
+                  if (e.defaultPrevented || e.button !== 0) return;
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  setRoute('plans', plan.id);
+                }}
+              >
+                {displayTitle}
+              </a>
+            </h3>
+          )}
+          {clarify && (
+            <details
+              className={styles.clarifyDetails}
+              data-testid="plan-card-clarify-details"
               onClick={(e) => {
-                if (e.defaultPrevented || e.button !== 0) return;
-                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-                e.preventDefault();
-                setRoute('plans', plan.id);
+                /*
+                 * Stop the event from bubbling to the card-level
+                 * delegated click handler (which would navigate to
+                 * focus mode on every disclosure-toggle). The native
+                 * `<details>` toggle still works because we don't
+                 * preventDefault — only stopPropagation.
+                 */
+                e.stopPropagation();
               }}
             >
-              {title}
-            </a>
-          </h3>
-        )
+              <summary className={styles.clarifySummary}>Show raw error</summary>
+              <pre className={styles.clarifyRaw}>{clarify.raw}</pre>
+            </details>
+          )}
+        </>
       )}
 
       {/*
