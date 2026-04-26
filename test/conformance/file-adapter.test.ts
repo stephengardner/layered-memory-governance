@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFileHost, type FileHost } from '../../src/adapters/file/index.js';
+import { ConflictError } from '../../src/substrate/errors.js';
 import type { AtomId, PrincipalId, Time } from '../../src/types.js';
 import { sampleAtom } from '../fixtures.js';
 import { runAtomsSpec } from './shared/atoms-spec.js';
@@ -139,5 +140,122 @@ describe('Cross-session persistence (Q-γ answer)', () => {
     const out = await hostB.auditor.query({ kind: ['test.cross-session'] }, 10);
     expect(out.length).toBe(1);
     expect(out[0]?.details['marker']).toBe('hello-from-A');
+  });
+});
+
+// --- Adapter-specific: same-id put race (TOCTOU regression) ----------------
+
+describe('FileAtomStore concurrent put with same id', () => {
+  let rootDir: string;
+  let host: FileHost;
+
+  beforeEach(async () => {
+    rootDir = await mkdtemp(join(tmpdir(), 'lag-file-race-'));
+    host = await createFileHost({ rootDir });
+  });
+
+  afterEach(async () => {
+    try { await host.cleanup(); } catch { /* ignore */ }
+    try { await rm(rootDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  /**
+   * Regression: two `put` calls for the same id, dispatched in the same
+   * microtask, must produce exactly one persisted atom. The loser MUST
+   * surface a ConflictError; "succeeded but data lost" is the audit-grade
+   * dishonesty the substrate forbids.
+   *
+   * Pre-fix behavior: both calls observed `existing === null`, both wrote
+   * tmp files, both renamed; rename overwrote silently and the loser still
+   * resolved with the atom id, lying to the caller.
+   */
+  it('two concurrent puts with the same id: exactly one wins, the other throws ConflictError', async () => {
+    const id = 'race-target' as AtomId;
+    const a = sampleAtom({ id, content: 'writer-A' });
+    const b = sampleAtom({ id, content: 'writer-B' });
+
+    const results = await Promise.allSettled([host.atoms.put(a), host.atoms.put(b)]);
+
+    const fulfilled = results.filter((r): r is PromiseFulfilledResult<AtomId> => r.status === 'fulfilled');
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(ConflictError);
+
+    // The persisted atom is whichever winner got there first; both writers
+    // agree on the id, so the test is "exactly one stored, content matches
+    // exactly one of the two writers" -- not a coin-flip on which.
+    const stored = await host.atoms.get(id);
+    expect(stored).not.toBeNull();
+    expect(['writer-A', 'writer-B']).toContain(stored?.content);
+  });
+
+  /**
+   * Stress variant: many concurrent writers on the same id. At 50 actors
+   * scale, this is the realistic failure shape. Exactly one must win,
+   * the other 49 must each get ConflictError.
+   */
+  it('N concurrent puts with the same id: exactly one wins, N-1 throw ConflictError', async () => {
+    const N = 50;
+    const id = 'race-target-N' as AtomId;
+    const writers = Array.from({ length: N }, (_, i) =>
+      host.atoms.put(sampleAtom({ id, content: `writer-${i}` })),
+    );
+    const results = await Promise.allSettled(writers);
+
+    const fulfilled = results.filter(r => r.status === 'fulfilled');
+    const rejected = results.filter(r => r.status === 'rejected');
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(N - 1);
+    for (const r of rejected) {
+      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(ConflictError);
+    }
+
+    const stored = await host.atoms.get(id);
+    expect(stored).not.toBeNull();
+    expect(stored?.content).toMatch(/^writer-\d+$/);
+  });
+
+  /**
+   * After a successful put, a follow-up put with the same id MUST throw
+   * ConflictError (sequential case; sanity check for the contract).
+   */
+  it('sequential put after successful put throws ConflictError and does not overwrite', async () => {
+    const id = 'race-sequential' as AtomId;
+    await host.atoms.put(sampleAtom({ id, content: 'first' }));
+    await expect(host.atoms.put(sampleAtom({ id, content: 'second' })))
+      .rejects.toBeInstanceOf(ConflictError);
+    const stored = await host.atoms.get(id);
+    expect(stored?.content).toBe('first');
+  });
+
+  /**
+   * Orphan-cleanup invariant: the create-or-fail primitive writes to a
+   * temp path then promotes it. A failed promotion (target exists) MUST
+   * remove the temp; otherwise concurrent retries leak `.tmp` files into
+   * `atoms/` and `listAtomFiles` could pick up half-written stragglers.
+   *
+   * We exercise this by running the N-concurrent test and asserting the
+   * atoms directory contains exactly one `.json` file and zero `.tmp`
+   * residue.
+   */
+  it('N concurrent puts leave no .tmp orphans behind', async () => {
+    const { readdir } = await import('node:fs/promises');
+    const N = 25;
+    const id = 'race-orphans' as AtomId;
+    const writers = Array.from({ length: N }, (_, i) =>
+      host.atoms.put(sampleAtom({ id, content: `w-${i}` })),
+    );
+    await Promise.allSettled(writers);
+
+    const atomsDir = join(rootDir, 'atoms');
+    const entries = await readdir(atomsDir);
+    const tmpResidue = entries.filter(name => name.includes('.tmp'));
+    const jsonFiles = entries.filter(name => name.endsWith('.json'));
+
+    expect(tmpResidue).toEqual([]);
+    expect(jsonFiles).toEqual([`${String(id)}.json`]);
   });
 });

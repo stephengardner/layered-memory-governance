@@ -30,11 +30,12 @@ import { contentHash as computeContentHash } from '../_common/content-hash.js';
 import { cosineToScore } from '../_common/similarity.js';
 import { TrigramEmbedder } from '../_common/trigram-embedder.js';
 import {
+  atomicCreateFile,
   atomicWriteFile,
+  isEexist,
   isEnoent,
   p,
   readJsonOrNull,
-  writeJson,
 } from './util.js';
 
 export class FileAtomStore implements AtomStore {
@@ -48,11 +49,21 @@ export class FileAtomStore implements AtomStore {
 
   async put(atom: Atom): Promise<AtomId> {
     const path = this.pathFor(atom.id);
-    const existing = await readJsonOrNull<Atom>(path);
-    if (existing) {
-      throw new ConflictError(`Atom ${String(atom.id)} already exists`);
+    // Single-step atomic create-or-fail. The previous read-then-write
+    // shape had a TOCTOU window: two concurrent callers could both
+    // observe `existing === null`, both write tmp files, and both
+    // rename onto the target; the loser still resolved with `atom.id`
+    // while its data was overwritten. The link-based primitive closes
+    // that window: exactly one writer per id wins, the rest get
+    // EEXIST which we translate into the contract's ConflictError.
+    try {
+      await atomicCreateFile(path, JSON.stringify(atom, null, 2));
+    } catch (err) {
+      if (isEexist(err)) {
+        throw new ConflictError(`Atom ${String(atom.id)} already exists`);
+      }
+      throw err;
     }
-    await writeJson(path, atom);
     return atom.id;
   }
 
