@@ -1,43 +1,38 @@
 /**
  * Plan staleness reaper.
  *
- * The substrate writes a plan atom whenever an actor proposes work
- * (CTO drafts a plan, CPO drafts a plan, code-author proposes a fix
- * cycle). Without an automated terminal-state path those proposed
- * atoms accumulate forever - operators see a Plans view of "everything
- * that was ever drafted" instead of "the in-flight slate to triage."
- * The reaper closes that gap by transitioning proposed plans older
- * than a TTL to `abandoned`, with an audit trail and a chained
- * actor-message-shaped reason. Content is preserved (atoms are never
- * deleted); the label is the change.
+ * Any actor that proposes work writes a plan atom. Without an automated
+ * terminal-state path those proposed atoms accumulate forever - the
+ * Plans projection ends up showing "everything that was ever drafted"
+ * instead of "the in-flight slate to triage." The reaper closes that
+ * gap by transitioning proposed plans older than a TTL to `abandoned`,
+ * with an audit trail. Content is preserved (atoms are never deleted);
+ * the label is the change.
  *
- * Composition with the existing plan state machine:
- *   `transitionPlanState(plan, 'abandoned', host, principal, reason)`
- *   already exists for explicit operator transitions - the reaper
- *   reuses it so every reaped transition flows through the same
- *   validation + audit path. The reaper is a *driver* over the
- *   existing transition primitive, not a parallel mutation surface.
+ * Composition with the existing plan state machine: the reaper calls
+ * the existing `transitionPlanState` primitive for every transition,
+ * which validates against the state machine and emits an audit event.
+ * The reaper is a driver over the transition primitive, not a parallel
+ * mutation surface.
  *
  * Default TTLs are conservative (24h warn / 72h auto-abandon). They
- * live as constructor params, not module constants, so the canon
- * policy `pol-plan-staleness` can override per deployment without a
- * code change. Keeping thresholds out of the framework code is
- * `dev-substrate-not-prescription` - the framework defines the
- * mechanism, the canon defines the values.
+ * are passed as parameters, not module constants, so deployment policy
+ * can override per-instance without a code change. Keeping thresholds
+ * out of the framework is substrate-not-prescription: the framework
+ * defines the mechanism, deployment configuration defines the values.
  *
  * What the reaper does NOT do (deferred to follow-ups):
- *   - Auto-approve. The reaper only labels; approval is operator-only
- *     per `inv-l3-requires-human`.
+ *   - Auto-approve. The reaper only labels; approval remains a
+ *     deliberate human-in-the-loop step.
  *   - Resurrect superseded plans. If a stale plan was superseded by a
- *     newer plan that already shipped (e.g., the work landed via a
- *     different PR), the reaper still abandons it - operators get the
- *     "this work was completed elsewhere" signal from the supersession
- *     chain, not from a state flip. A future PR may add a
- *     `succeeded_via_pr` resolution path.
+ *     newer plan that already shipped (the work landed via a different
+ *     PR), the reaper still abandons it. Operators get the "this work
+ *     was completed elsewhere" signal from the supersession chain, not
+ *     from a state flip. A follow-up may add a `succeeded_via_pr`
+ *     resolution path.
  *   - Per-plan inbox spam. The driver script collapses the sweep into
- *     a single audit-side message (or stdout summary in V0). The CTO
- *     plan `plan-sweep-stale-proposed-plans-via-auto-expi-...` argues
- *     for digest-style and is the spec this is converging toward.
+ *     a single stdout summary in V0; a digest-style actor-message is
+ *     the next refinement.
  */
 
 import type { Host } from '../../substrate/interface.js';
