@@ -6,6 +6,7 @@ import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { ActivityHeatmap } from '@/components/heatmap/ActivityHeatmap';
+import { principalLabel } from '@/lib/principal-display';
 import styles from './ActivitiesView.module.css';
 
 const TYPE_DOT_COLORS: Record<string, string> = {
@@ -92,7 +93,7 @@ export function ActivitiesView() {
                       </div>
                       <p className={styles.itemContent}>{truncate(a.content, 220)}</p>
                       <div className={styles.itemMeta}>
-                        <span>by {a.principal_id}</span>
+                        <span>by {principalLabel(a.principal_id)}</span>
                         <span>•</span>
                         <span>layer {a.layer}</span>
                         {typeof a.confidence === 'number' && (

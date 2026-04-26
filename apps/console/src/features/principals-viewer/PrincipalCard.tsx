@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, Shield, AlertOctagon } from 'lucide-react';
 import type { Principal } from '@/services/principals.service';
+import { describePrincipal } from '@/lib/principal-display';
 import styles from './PrincipalCard.module.css';
 
 interface Props {
@@ -12,7 +13,13 @@ export function PrincipalCard({ principal }: Props) {
   const [expanded, setExpanded] = useState(false);
   const compromised = Boolean(principal.compromised_at);
   const root = !principal.signed_by;
-  const initials = initialsOf(principal.name || principal.id);
+  const display = describePrincipal(principal.id);
+  // Display label takes precedence over the principal's stored name when the
+  // id is in the rewrite map, so the "stephen-human" id never surfaces in the
+  // UI even when the underlying principal record has a different display name.
+  const headingName = display.masked ? display.label : (principal.name || principal.id);
+  const subtitle = display.masked ? display.label : principal.id;
+  const initials = initialsOf(headingName);
 
   return (
     <article
@@ -23,8 +30,8 @@ export function PrincipalCard({ principal }: Props) {
       <header className={styles.header}>
         <div className={styles.avatar} aria-hidden="true">{initials}</div>
         <div className={styles.headerText}>
-          <h3 className={styles.name}>{principal.name}</h3>
-          <code className={styles.id}>{principal.id}</code>
+          <h3 className={styles.name}>{headingName}</h3>
+          <code className={styles.id}>{subtitle}</code>
         </div>
         {root && (
           <span className={styles.statusPill} data-variant="root" title="Root principal">

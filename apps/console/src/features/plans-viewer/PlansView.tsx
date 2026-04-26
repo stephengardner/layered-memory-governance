@@ -10,6 +10,7 @@ import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { listPlans, type PlanAtom } from '@/services/plans.service';
 import { useRouteId, setRoute, routeHref } from '@/state/router.store';
+import { principalLabel } from '@/lib/principal-display';
 import styles from './PlansView.module.css';
 
 const STATE_TONE: Record<string, string> = {
@@ -226,7 +227,7 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <span>by {plan.principal_id}</span>
+            <span>by {principalLabel(plan.principal_id)}</span>
             <span>•</span>
             <span>layer {plan.layer}</span>
             <span>•</span>

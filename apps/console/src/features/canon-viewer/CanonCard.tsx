@@ -13,6 +13,7 @@ import { AttributionAuditDialog } from '@/components/attribution-audit/Attributi
 import { asAlternative, listReferencers, listAtomChain, listAtomCascade, reinforceAtom, markAtomStale, type CanonAtom } from '@/services/canon.service';
 import { requireActorId } from '@/services/session.service';
 import { useCurrentActorId } from '@/hooks/useCurrentActorId';
+import { principalLabel } from '@/lib/principal-display';
 import { routeForAtomId, routeHref } from '@/state/router.store';
 import styles from './CanonCard.module.css';
 
@@ -55,7 +56,7 @@ export function CanonCard({ atom }: Props) {
 
       <footer className={styles.footer}>
         <span className={styles.meta}>
-          <span className={styles.metaLabel}>by</span> {atom.principal_id}
+          <span className={styles.metaLabel}>by</span> {principalLabel(atom.principal_id)}
         </span>
         <span className={styles.metaDot} aria-hidden="true">•</span>
         <span className={styles.meta}>

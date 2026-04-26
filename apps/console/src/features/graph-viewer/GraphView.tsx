@@ -13,6 +13,7 @@ import {
 import { select } from 'd3-selection';
 import { listCanonAtoms } from '@/services/canon.service';
 import { listActivities } from '@/services/activities.service';
+import { principalLabel } from '@/lib/principal-display';
 import { listPlans } from '@/services/plans.service';
 import { routeForAtomId, setRoute } from '@/state/router.store';
 import { LoadingState, ErrorState } from '@/components/state-display/StateDisplay';
@@ -441,7 +442,7 @@ function GraphDetailPanel({ node, onClose }: { node: GraphNode; onClose: () => v
       <code className={styles.detailId}>{node.id}</code>
       <p className={styles.detailContent}>{node.content}</p>
       <dl className={styles.detailAttrs}>
-        <dt>Principal</dt><dd>{node.principal_id}</dd>
+        <dt>Principal</dt><dd>{principalLabel(node.principal_id)}</dd>
         <dt>Layer</dt><dd>{node.layer}</dd>
         <dt>Confidence</dt><dd>{node.confidence.toFixed(2)}</dd>
       </dl>

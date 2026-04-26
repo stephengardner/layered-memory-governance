@@ -1,5 +1,6 @@
 import type { CanonAtom } from '@/services/canon.service';
 import { TimeAgo } from '@/components/time-ago/TimeAgo';
+import { principalLabel } from '@/lib/principal-display';
 import styles from './AtomHoverCard.module.css';
 
 /**
@@ -35,7 +36,7 @@ export function AtomHoverCard({
       </div>
       <p className={styles.content}>{truncate(atom.content, 240)}</p>
       <div className={styles.meta}>
-        <span>by {atom.principal_id}</span>
+        <span>by {principalLabel(atom.principal_id)}</span>
         <span className={styles.dot} aria-hidden="true">·</span>
         <span>layer {atom.layer}</span>
         <span className={styles.dot} aria-hidden="true">·</span>

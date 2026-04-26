@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { AlertOctagon, Shield, User } from 'lucide-react';
 import type { Principal } from '@/services/principals.service';
 import { routeHref, setRoute } from '@/state/router.store';
+import { describePrincipal } from '@/lib/principal-display';
 import styles from './PrincipalTree.module.css';
 
 interface Props {
@@ -40,6 +41,10 @@ function Branch({
   const kids = childrenOf.get(principal.id) ?? [];
   const compromised = Boolean(principal.compromised_at);
   const root = !principal.signed_by;
+  const display = describePrincipal(principal.id);
+  // For masked principals (e.g., the human operator slot) the display label
+  // wins over principal.name so the rewrite is consistent across the tree.
+  const treeName = display.masked ? display.label : (principal.name ?? principal.id);
 
   return (
     <div className={styles.branch} data-depth={depth}>
@@ -62,7 +67,7 @@ function Branch({
               : <User size={14} strokeWidth={1.75} />}
         </span>
         <div className={styles.body}>
-          <span className={styles.name}>{principal.name ?? principal.id}</span>
+          <span className={styles.name}>{treeName}</span>
           <span className={styles.meta}>{principal.role}{root ? ' · root' : ''}</span>
         </div>
       </a>

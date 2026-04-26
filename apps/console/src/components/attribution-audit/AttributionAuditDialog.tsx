@@ -6,6 +6,7 @@ import { listPrincipals, type Principal } from '@/services/principals.service';
 import { listAtomChain, type CanonAtom } from '@/services/canon.service';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { TimeAgo } from '@/components/time-ago/TimeAgo';
+import { principalLabel } from '@/lib/principal-display';
 import styles from './AttributionAuditDialog.module.css';
 
 interface Props {
@@ -84,7 +85,7 @@ export function AttributionAuditDialog({ atom, onClose }: Props) {
               <div className={styles.target}>
                 <AtomRef id={atom.id} />
                 <span className={styles.targetMeta}>
-                  authored <TimeAgo iso={atom.created_at} /> by <code>{atom.principal_id}</code>
+                  authored <TimeAgo iso={atom.created_at} /> by <code>{principalLabel(atom.principal_id)}</code>
                 </span>
               </div>
 
@@ -241,7 +242,7 @@ function ProvenanceChainSection({
                   {superseded && <span className={`${styles.tag} ${styles.tagWarn}`}>superseded</span>}
                 </div>
                 <div className={styles.chainSub}>
-                  by <code>{a.principal_id}</code> · conf {a.confidence.toFixed(2)} · <TimeAgo iso={a.created_at} />
+                  by <code>{principalLabel(a.principal_id)}</code> · conf {a.confidence.toFixed(2)} · <TimeAgo iso={a.created_at} />
                 </div>
               </div>
             </li>
