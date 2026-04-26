@@ -37,6 +37,15 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const CANON_FILE = resolve(REPO_ROOT, 'CLAUDE.md');
 
+const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR_ID) {
+  console.error(
+    '[bootstrap] ERROR: LAG_OPERATOR_ID is not set. Export it and re-run.\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n',
+  );
+  process.exit(2);
+}
+
 /**
  * Frozen timestamp for bootstrap atoms. Bumping this date is how we
  * signal "the canon is being refreshed" (the generator's header picks
@@ -264,7 +273,7 @@ async function main() {
   // Two principals: human operator (root) and the agent (signed_by operator).
   // This repo IS its own first LAG-governed organization (see DECISIONS.md D12).
   // Changing the operator id is a one-line override per-install.
-  const operatorId = process.env.LAG_OPERATOR_ID || 'apex-agent';
+  const operatorId = OPERATOR_ID;
   const agentId = process.env.LAG_AGENT_ID || 'claude-agent';
   const principalId = operatorId; // L3 canon is operator-signed by default.
 

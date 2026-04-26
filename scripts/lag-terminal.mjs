@@ -32,7 +32,7 @@
  * Env:
  *   TELEGRAM_BOT_TOKEN      Required.
  *   TELEGRAM_CHAT_ID        Required. Operator's chat id.
- *   LAG_OPERATOR_ID         Optional; defaults to 'apex-agent'.
+ *   LAG_OPERATOR_ID         Optional; the deployment's operator principal id.
  *
  * Prereqs:
  *   - Claude CLI installed and authenticated (claude /login).

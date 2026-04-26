@@ -30,6 +30,15 @@ import { LAGDaemon, StubTranscriber, WhisperLocalTranscriber } from '../dist/dae
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR_ID) {
+  console.error(
+    '[daemon] ERROR: LAG_OPERATOR_ID is not set. Export it and re-run.\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n',
+  );
+  process.exit(2);
+}
+
 async function loadDotEnv() {
   try {
     const text = await readFile(resolve(REPO_ROOT, '.env'), 'utf8');
@@ -206,7 +215,7 @@ async function main() {
     // Two-principal default: Telegram-origin messages are attributed to
     // the human operator; the daemon writes the agent's responses
     // under the agent principal. Override via env for multi-user.
-    principalResolver: () => process.env.LAG_OPERATOR_ID || 'apex-agent',
+    principalResolver: () => OPERATOR_ID,
     onCallback: async (handle, disposition, responder) => {
       try {
         await host.notifier.respond(handle, disposition, responder);

@@ -31,6 +31,15 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const OUTBOX_DIR = join(STATE_DIR, 'tg-queue', 'outbox');
 
+const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
+if (!OPERATOR_ID) {
+  console.error(
+    '[tg-ask] ERROR: LAG_OPERATOR_ID is not set. Export it and re-run.\n'
+    + '  export LAG_OPERATOR_ID=<your-operator-id>\n',
+  );
+  process.exit(2);
+}
+
 function parseArgs(argv) {
   const args = {
     content: '',
@@ -80,7 +89,7 @@ async function main() {
     relatedAtoms: args.related,
     metadata: {
       asked_via: 'telegram',
-      expected_responder: process.env.LAG_OPERATOR_ID || 'apex-agent',
+      expected_responder: OPERATOR_ID,
     },
   });
 
