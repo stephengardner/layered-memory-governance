@@ -105,6 +105,16 @@
     --stroke-emphasis: 1.5px; /* timeline node icon ring */
     --stroke-rail: 2px;       /* timeline vertical rail, focus outlines */
     --hover-lift: 1px;        /* magnitude of translateY on row hover */
+
+    /*
+     * Ring widths for box-shadow halos around dots / pills (e.g. the
+     * timeline entry-dot ring that punches through the rail). Kept as
+     * tokens so a future high-contrast theme can dial up the ring
+     * weight wholesale, and so stylelint cannot miss raw px operands
+     * inside `0 0 0 Npx` shadow declarations.
+     */
+    --ring-width-sm: 3px;
+    --ring-width-md: 6px;
   }
 
   /* ===== DARK THEME (default) ===== */

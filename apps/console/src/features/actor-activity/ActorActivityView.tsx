@@ -41,7 +41,7 @@ export function ActorActivityView() {
   return (
     <section className={styles.view} data-testid="actor-activity-view">
       {query.isPending && (
-        <LoadingState label="Loading actor activity\u2026" testId="actor-activity-loading" />
+        <LoadingState label="Loading actor activity…" testId="actor-activity-loading" />
       )}
       {query.isError && (
         <ErrorState
@@ -174,11 +174,16 @@ function ActivityEntry({ entry }: { entry: ActorActivityEntry }) {
 }
 
 function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return '';
-  }
+  // `new Date(...)` and `toLocaleTimeString()` do not throw on bad input
+  // (the Date is just `Invalid Date` with NaN getTime), so the only
+  // guard we need is the NaN check. Second resolution matters here
+  // because the feed refreshes every 5s and minute-precision timestamps
+  // collapse multiple bursts into a single visible row.
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }

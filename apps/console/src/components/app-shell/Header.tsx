@@ -54,8 +54,8 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     subtitle: 'Who wrote what, when — atoms laid out across the principal hierarchy',
   },
   'actor-activity': {
-    title: 'Live Activity',
-    subtitle: 'Real-time control-tower view of which principals are writing atoms right now',
+    title: 'Control Tower',
+    subtitle: 'Real-time view of which principals are writing atoms right now',
   },
 };
 

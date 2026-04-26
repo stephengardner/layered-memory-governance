@@ -43,6 +43,18 @@
   animation: pulse 1.4s var(--easing-emphasized) infinite;
 }
 
+/*
+ * Respect prefers-reduced-motion: the live indicator stays visible
+ * (color from .liveDot is preserved) but the pulse animation is
+ * disabled so users with vestibular sensitivity don't see a
+ * continuously oscillating dot in the corner of every page render.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .liveDotPulse {
+    animation: none;
+  }
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 0.55; transform: scale(0.96); }
   50%      { opacity: 1; transform: scale(1.05); }
@@ -160,10 +172,10 @@
 .entries::before {
   content: "";
   position: absolute;
-  left: calc(var(--space-2) + 1px);
+  left: calc(var(--space-2) + var(--stroke-hairline));
   top: var(--space-3);
   bottom: var(--space-3);
-  width: 1px;
+  width: var(--stroke-hairline);
   background: var(--border-subtle);
 }
 
@@ -186,7 +198,7 @@
   border-radius: var(--radius-pill);
   background: var(--text-tertiary);
   margin-top: var(--space-2);
-  box-shadow: 0 0 0 3px var(--surface-base);
+  box-shadow: 0 0 0 var(--ring-width-sm) var(--surface-base);
   z-index: 1;
 }
 

@@ -17,9 +17,13 @@ import { test, expect } from '@playwright/test';
 
 test.describe('actor activity stream', () => {
   test('renders a feed grouped by principal with required pieces', async ({ page, request }) => {
-    // Sanity-check the backend before driving the UI: if the handler
-    // is wired wrong, the failure mode is much clearer here than in a
-    // dangling Playwright timeout 10s later.
+    // Sanity-check the backend health (envelope shape) so a wiring
+    // bug fails loudly here rather than as a dangling Playwright
+    // timeout. We do NOT use the API sample to decide whether to
+    // assert on rendered data — the store is mutating live (that's
+    // the whole point of this view), so the entry_count we sample
+    // here is not necessarily the entry_count the page renders. Skip
+    // gating happens later, against the rendered DOM.
     const apiResponse = await request.post('/api/actor-activity.stream', {
       data: { limit: 100 },
       headers: { 'Content-Type': 'application/json' },
@@ -33,15 +37,27 @@ test.describe('actor activity stream', () => {
     expect(typeof data.principal_count, 'data.principal_count must be a number').toBe('number');
     expect(typeof data.generated_at, 'data.generated_at must be an ISO string').toBe('string');
 
-    if (data.entry_count === 0) {
-      test.skip(true, 'no atoms in store; cannot assert rendered timeline shape');
-    }
-
     await page.goto('/actor-activity');
 
     // Sidebar reflects the current route.
     const navLink = page.getByTestId('nav-actor-activity');
     await expect(navLink).toHaveAttribute('aria-current', 'page');
+
+    // Wait for either the rendered feed or the empty-state shell so
+    // we know the first fetch resolved before we make a skip
+    // decision. Skipping based on a pre-flight API sample is racy:
+    // the store can mutate between the probe and the render.
+    await Promise.race([
+      page.getByTestId('actor-activity-feed').waitFor({ state: 'visible', timeout: 10_000 }),
+      page.getByTestId('actor-activity-empty').waitFor({ state: 'visible', timeout: 10_000 }),
+    ]);
+
+    // If the rendered state is the empty-state, there is no feed
+    // shape to assert; skip with a clear reason.
+    const emptyVisible = await page.getByTestId('actor-activity-empty').isVisible();
+    if (emptyVisible) {
+      test.skip(true, 'rendered empty state; cannot assert timeline shape');
+    }
 
     // Live indicator is visible.
     await expect(page.getByTestId('actor-activity-live')).toBeVisible({ timeout: 10_000 });
@@ -101,6 +117,13 @@ test.describe('actor activity stream', () => {
       page.getByTestId('actor-activity-feed').waitFor({ state: 'visible', timeout: 10_000 }),
       page.getByTestId('actor-activity-empty').waitFor({ state: 'visible', timeout: 10_000 }),
     ]);
+
+    // TanStack Query v5 pauses refetchInterval when the page loses
+    // focus (default refetchIntervalInBackground=false). Headless CI
+    // runners with virtual displays sometimes drop focus and stall
+    // the poll, which would flake this test. bringToFront is a cheap
+    // guard that keeps the page focused for the assertion window.
+    await page.bringToFront();
 
     const baseline = callCount;
     expect(baseline, 'mount must trigger at least one fetch').toBeGreaterThanOrEqual(1);
