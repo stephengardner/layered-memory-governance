@@ -18,6 +18,18 @@
   flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
+  /*
+   * `flex: 1 1 0` so the title column claims the leftover row space
+   * after the actions cluster takes its natural width. Without this,
+   * with `flex: 0 1 auto` the title shrinks to its longest unbroken
+   * character ("O", "C", "P") and the heading wraps one-letter-per-
+   * line on viewports where the actions tray is dense (kill-switch
+   * pill + daemon pill + density toggle + theme toggle + propose).
+   * `min-width: 0` is still required so the title can ellipsize
+   * inside the flex item rather than forcing the row to grow past
+   * the viewport.
+   */
+  flex: 1 1 0;
 }
 
 .title {
@@ -99,8 +111,26 @@
   }
   .title {
     font-size: var(--font-size-lg);
+    /*
+     * Mobile titlebar is a single row. Long route titles ("Operator
+     * Control Panel", "Plan Lifecycle") would otherwise wrap and
+     * push the actions cluster off-screen. Single-line + ellipsis
+     * keeps the bar exactly --header-height tall and the actions
+     * stay visible.
+     */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .subtitle {
     display: none;
+  }
+  /*
+   * Actions tray cannot shrink below its content; otherwise the
+   * kill-switch pill + daemon pill clip to icon-only at random.
+   * The title flex item absorbs all the leftover space instead.
+   */
+  .actions {
+    flex-shrink: 0;
   }
 }

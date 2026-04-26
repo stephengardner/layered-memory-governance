@@ -36,6 +36,23 @@
   width: 100%;
 }
 
+/*
+ * Mobile breakpoint follows the rest of the console (48rem). The
+ * outer padding here was tuned for desktop -- on a 390px viewport
+ * the same 24px+24px horizontal padding eats nearly 50px of the
+ * already-narrow content column and squeezes the hero/tile/tier-
+ * banner contents below readable widths. We trim to var(--space-4)
+ * (12px), which preserves a clear viewport edge without strangling
+ * the cards. Vertical padding stays generous so the page still
+ * feels like a panel, not a spreadsheet.
+ */
+@media (max-width: 48rem) {
+  .viewer {
+    gap: var(--space-5);
+    padding: var(--space-5) var(--space-4) var(--space-6);
+  }
+}
+
 .pageHeader {
   display: flex;
   flex-direction: column;
@@ -58,6 +75,20 @@
 }
 
 /*
+ * Page header mobile: the in-page H1 duplicates the AppHeader title
+ * already shown in the topbar. On mobile we tone the in-page title
+ * down so it doesn't dwarf the hero card below it.
+ */
+@media (max-width: 48rem) {
+  .pageTitle {
+    font-size: var(--font-size-xl);
+  }
+  .pageSubtitle {
+    font-size: var(--font-size-xs);
+  }
+}
+
+/*
  * Hero card. data-tone routes through one of three tinted gradients:
  *   neutral  -> calm accent (the healthy default; what you see most
  *               of the time on a well-running org)
@@ -74,6 +105,15 @@
   align-items: center;
   gap: var(--space-6);
   padding: var(--space-7) var(--space-7);
+  /*
+   * iOS Safari respects safe-area-inset-* on padding properties
+   * once a viewport-fit=cover meta is set (see index.html). The
+   * env() fallback to 0 keeps non-iOS browsers unaffected while
+   * iPhone-13 + notch devices avoid the right-edge collision when
+   * the hero is the first card the operator lands on.
+   */
+  padding-right: max(var(--space-7), env(safe-area-inset-right));
+  padding-left: max(var(--space-7), env(safe-area-inset-left));
   background-color: var(--surface-base);
   background-image: linear-gradient(
     180deg,
@@ -136,6 +176,12 @@
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised));
   color: var(--accent);
+  /*
+   * Inner SVG inherits the hero icon size via lucide-react's
+   * `size` prop on the React side. We constrain the outer chip via
+   * tokens so density-compact scales it; on mobile we override the
+   * outer chip to a more thumb-friendly tile (see media query).
+   */
 }
 
 .hero[data-tone="warning"] .heroIcon {
@@ -231,6 +277,53 @@
 }
 
 /*
+ * Hero mobile layout. The desktop 3-column grid (icon | body | CTA)
+ * breaks below ~440px because the right-side button needs ~120px
+ * minimum to keep "Engage Kill Switch" on a single line, leaving the
+ * middle column with too little room to set the heroTitle ("Not
+ * engaged") without character-level wrapping ("Not engag\ned"). The
+ * mobile layout stacks: icon-row + caption-block + full-width CTA.
+ *
+ * Icon shrinks from 64x64 (desktop) to 48x48 with a 36px glyph so
+ * the chip reads as a status badge, not a hero portrait, on a 358px
+ * card width.
+ */
+@media (max-width: 48rem) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+    padding: var(--space-6) var(--space-5);
+    padding-right: max(var(--space-5), env(safe-area-inset-right));
+    padding-left: max(var(--space-5), env(safe-area-inset-left));
+  }
+  .heroIcon {
+    width: var(--space-8);
+    height: var(--space-8);
+  }
+  .heroIcon > svg {
+    width: 60%;
+    height: 60%;
+  }
+  .heroTitle {
+    font-size: var(--font-size-xl);
+  }
+  .heroDetail {
+    font-size: var(--font-size-sm);
+    line-height: var(--line-height-normal);
+  }
+  .heroEngage {
+    /*
+     * Full-width CTA at the bottom of the stack. justify-content
+     * centers the icon+label so the disabled "Sentinel present"
+     * state reads as a status, not an off-axis label.
+     */
+    width: 100%;
+    justify-content: center;
+    padding: var(--space-4) var(--space-5);
+  }
+}
+
+/*
  * Tier banner. Distinct from the hero so the operator can read
  * "halted right now" (hero) and "what tier was active" (banner) as
  * two answers, not one. data-tier varies the accent.
@@ -305,6 +398,22 @@
   line-height: var(--line-height-normal);
   color: var(--text-secondary);
   max-width: 80ch;
+}
+
+/*
+ * Tier banner mobile. Match the hero's tighter padding so the
+ * banner feels like a continuation of the same card stack, not a
+ * separate desktop component dropped into a narrower viewport.
+ */
+@media (max-width: 48rem) {
+  .tierBanner {
+    padding: var(--space-4) var(--space-5);
+    gap: var(--space-2);
+  }
+  .tierLabel {
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
 }
 
 /*
@@ -588,6 +697,25 @@
     width: 100%;
     text-align: left;
     justify-content: flex-start;
+  }
+}
+
+/*
+ * Metric tile mobile padding. The 4-tile-per-row default at desktop
+ * uses generous --space-5 padding (16px) which crowds the icon +
+ * label + value when the same tile renders 2-up at iPhone width
+ * (~165px columns). Drop to --space-4 (12px) so the operator can
+ * still scan the values without horizontal cramping. Declared AFTER
+ * the base .tile/.tileValue rules so the mobile selectors win on
+ * source-order tiebreak (media queries do not add specificity).
+ */
+@media (max-width: 48rem) {
+  .tile {
+    padding: var(--space-4) var(--space-4);
+    gap: var(--space-2);
+  }
+  .tileValue {
+    font-size: var(--font-size-lg);
   }
 }
 
