@@ -2,26 +2,25 @@
 
 ## Purpose
 
-The adapter Actor that bridges agent-loop runs back into the substrate: it transcribes the agent's session, classifies actions, and emits the `plan`, `pull-request`, and `actor-message` atoms the rest of the Actors consume. It does not mutate tracked files directly; its outputs are atoms.
+A reference `AgentLoopAdapter` wrapper that resumes the original code-author session when an existing PR needs fixes, so the fix-time agent inherits the prior context (research, file reads, design rationale). On unrecoverable sessions (token cap, cleaned workspace, model-side context overflow, > N hours stale) it falls back to a fresh-spawn `ClaudeCodeAgentLoopAdapter`. Both attempts are logged via cross-referenced `agent-session` atoms.
 
 ## Signed by
 
-Principal: `resume-author-agent-loop-adapter`. See `arch-principal-hierarchy-signed-by` for the principal chain and `arch-bot-identity-per-actor` for the App identity that signs its outputs.
+The wrapper is a substrate-level adapter, not an Actor with its own principal. PRs it produces are signed by whichever bot identity the consuming Actor configures (in the autonomous flow, `lag-ceo` via `bootstrap-code-author-canon.mjs`). See `arch-bot-identity-per-actor`.
 
 ## Inbox / Outbox
 
-- Inbox: agent-loop session events, `intent` atoms scoping a run.
-- Outbox: `plan` atoms, `actor-message` atoms targeted at downstream Actors, `audit-finding` atoms when classification is ambiguous.
+- Inbox: an `AcquireInput` from the consuming Actor (e.g. PrFixActor) carrying the PR HEAD branch and the prior `agent-session` atom id reachable via `dispatched_session_atom_id` on the corresponding PR observation atom.
+- Outbox: `agent-session` atoms (one per attempt), `agent-turn` atoms, plus the resume-or-fresh outcome atoms the consuming Actor emits downstream.
 
 Anchored on `arch-actor-message-inbox-primitive`.
 
 ## Canon it must obey
 
-- `arch-actor-message-inbox-primitive`: outputs route through the actor-message inbox primitive.
-- `arch-atomstore-source-of-truth`: every output is an atom in the AtomStore.
-- `arch-host-interface-boundary`: the adapter operates inside the Host boundary; external effects flow through ActorAdapters.
-- `dev-flag-structural-concerns`: halt and surface when a session event cannot be classified.
+- `arch-atomstore-source-of-truth`: every session record is an atom in the AtomStore.
+- `arch-host-interface-boundary`: operates behind the `AgentLoopAdapter` substrate seam; external effects flow through `WorkspaceProvider` and `BlobStore`.
+- `dev-flag-structural-concerns`: surfaces unresumable-session conditions explicitly rather than silently degrading.
 
 ## Source
 
-`src/runtime/actors/resume-author-agent-loop-adapter/` on `main`.
+`examples/agent-loops/resume-author/` on `main`.
