@@ -48,6 +48,13 @@ export interface KillSwitchTransitionSummary {
   readonly at: string;
   readonly transitioned_by: string | null;
   readonly reason: string | null;
+  /*
+   * Source atom id when the row came from a kill-switch-transition-*
+   * atom, null when it reflects the live state-file snapshot. Mirrors
+   * the backend type. Used as the React key in the transitions list
+   * so colliding (at, tier) tuples do not deduplicate DOM nodes.
+   */
+  readonly atom_id: string | null;
 }
 
 export interface ActiveElevationSummary {

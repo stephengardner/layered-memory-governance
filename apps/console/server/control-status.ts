@@ -86,6 +86,15 @@ export interface KillSwitchTransitionSummary {
   readonly at: string;
   readonly transitioned_by: string | null;
   readonly reason: string | null;
+  /*
+   * Stable identity per row. Set to the source atom id when the row
+   * was emitted from a kill-switch-transition-* atom, null when the
+   * row reflects the live state-file snapshot (which has no atom of
+   * record). The frontend keys React rows on this so two transitions
+   * sharing the same (at, tier) tuple do not collide once the
+   * per-transition atom writer ships.
+   */
+  readonly atom_id: string | null;
 }
 
 /*
@@ -410,6 +419,7 @@ export function pickRecentKillSwitchTransitions(
       at: currentState.since,
       transitioned_by: currentState.transitioned_by ?? null,
       reason: currentState.reason ?? null,
+      atom_id: null,
     });
   }
   for (const a of atoms) {
@@ -427,6 +437,7 @@ export function pickRecentKillSwitchTransitions(
       at: a.created_at,
       transitioned_by: a.principal_id ?? null,
       reason: typeof meta.reason === 'string' ? meta.reason : null,
+      atom_id: a.id,
     });
   }
   out.sort((x, y) => (y.at < x.at ? -1 : y.at > x.at ? 1 : 0));

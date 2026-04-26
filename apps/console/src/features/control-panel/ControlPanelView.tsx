@@ -364,7 +364,15 @@ function KillSwitchHistorySection({
       ) : (
         <ul className={styles.list} role="list">
           {transitions.map((t) => (
-            <li key={`${t.at}-${t.tier}`} className={styles.row} data-testid="control-history-row">
+            /*
+             * Key off atom_id when present (per-transition atom row);
+             * fall back to a 'live-' prefix on (at, tier) for the
+             * live-state snapshot row, which has no atom of record.
+             * Avoids React key collisions once the per-transition
+             * atom writer ships and emits a row at the same ms as
+             * the state-file `since` field.
+             */
+            <li key={t.atom_id ?? `live-${t.at}-${t.tier}`} className={styles.row} data-testid="control-history-row">
               <div className={styles.rowMain}>
                 <span className={styles.tierBadge} data-tier={t.tier === 'off' ? 'soft' : t.tier}>
                   {t.tier.toUpperCase()}

@@ -345,6 +345,34 @@ describe('pickRecentKillSwitchTransitions', () => {
     expect(got.length).toBe(MAX_LIST_ITEMS);
   });
 
+  it('emits atom_id on per-transition rows and null on the live-state row', () => {
+    /*
+     * The frontend keys React rows on atom_id ?? `live-${at}-${tier}`.
+     * If atom_id leaks the live snapshot or is missing on the historical
+     * atom, two transitions sharing the same (at, tier) tuple will
+     * collide once the per-transition writer ships and React will reuse
+     * DOM nodes incorrectly. This test pins the contract.
+     */
+    const got = pickRecentKillSwitchTransitions(
+      { tier: 'soft', since: '2026-04-26T11:00:00Z', transitioned_by: 'lag-ceo', reason: null },
+      [
+        {
+          id: 'kill-switch-transition-2026-04-25T08:00:00Z',
+          created_at: '2026-04-25T08:00:00Z',
+          principal_id: 'lag-ceo',
+          metadata: { tier: 'off' },
+        },
+      ],
+    );
+    expect(got.length).toBe(2);
+    // Live-state snapshot row: no atom of record.
+    expect(got[0]!.at).toBe('2026-04-26T11:00:00Z');
+    expect(got[0]!.atom_id).toBeNull();
+    // Per-transition atom row: atom_id mirrors the source atom id.
+    expect(got[1]!.at).toBe('2026-04-25T08:00:00Z');
+    expect(got[1]!.atom_id).toBe('kill-switch-transition-2026-04-25T08:00:00Z');
+  });
+
   it('skips superseded and tainted transition atoms', () => {
     const got = pickRecentKillSwitchTransitions(null, [
       {
