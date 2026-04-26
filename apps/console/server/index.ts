@@ -25,6 +25,7 @@ import { dirname, join, resolve } from 'node:path';
 import {
   atomFilenameFromId,
   isAllowedOrigin as isAllowedOriginPure,
+  isConsoleWritesAllowed,
   makeAllowedOriginSet,
 } from './security';
 import { parseAutonomyDial } from './kill-switch-state';
@@ -263,6 +264,37 @@ const ALLOWED_ORIGINS = makeAllowedOriginSet(process.env['LAG_CONSOLE_ALLOWED_OR
 function isAllowedOrigin(origin: string | undefined): boolean {
   return isAllowedOriginPure(ALLOWED_ORIGINS, origin);
 }
+
+/*
+ * Console v1 is read-only by contract (apps/console/CLAUDE.md "Scope
+ * boundaries"). The `/api/atoms.propose` route is an explicit dev-only
+ * escape hatch: it lets a developer feed the propose-atom UX without
+ * dropping to the CLI, but the v1 invariant requires writes to flow
+ * through `node scripts/decide.mjs` (or equivalent) by default.
+ *
+ * Gating: the route is disabled unless `LAG_CONSOLE_ALLOW_WRITES=1` is
+ * set in the server environment. When unset, the handler returns 403
+ * with `code: 'console-read-only'` so a misconfigured client surfaces
+ * a loud error pointing at the CLI alternative rather than silently
+ * minting an L0 atom.
+ *
+ * Why an env-gate (not removal): the propose UI ships a real path
+ * (L0 + `validation_status: pending_review`, `prop-` id prefix, the
+ * file-watcher picks it up) and removing it would drop an in-flight
+ * developer affordance. Env-gating keeps the contract airtight (an
+ * out-of-the-box install is read-only) while preserving the workflow
+ * for developers who explicitly opt in.
+ *
+ * This gate does NOT replace the existing origin-allowlist + CSRF
+ * defense; the origin check still runs on every state-changing
+ * request before the route handler is reached.
+ *
+ * The kill-switch transition route stays gated by tier (off|soft only)
+ * rather than this flag, because it is canon-required (the soft-tier
+ * `STOP` sentinel is part of the kill-switch design and the operator
+ * needs a one-click halt from the dashboard regardless of dev mode).
+ */
+const ALLOW_CONSOLE_WRITES = isConsoleWritesAllowed(process.env['LAG_CONSOLE_ALLOW_WRITES']);
 
 function corsHeadersFor(req: IncomingMessage | undefined): Record<string, string> {
   const origin = req?.headers.origin;
@@ -2014,6 +2046,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   if (path === '/api/atoms.propose' && req.method === 'POST') {
+    /*
+     * Read-only contract: the console is a projection over the atom
+     * store by default. Atom proposals are an opt-in dev affordance.
+     * See `ALLOW_CONSOLE_WRITES` declaration for the full rationale +
+     * apps/console/CLAUDE.md for the operator-facing documentation.
+     */
+    if (!ALLOW_CONSOLE_WRITES) {
+      sendErr(
+        req,
+        res,
+        403,
+        'console-read-only',
+        'Console v1 is read-only. Set LAG_CONSOLE_ALLOW_WRITES=1 to enable atoms.propose, or use `node scripts/decide.mjs` for canon proposals.',
+      );
+      return;
+    }
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const content = typeof body['content'] === 'string' ? (body['content'] as string).trim() : '';
     const type = typeof body['type'] === 'string' ? (body['type'] as string) : '';

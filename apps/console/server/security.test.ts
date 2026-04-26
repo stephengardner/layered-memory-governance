@@ -3,6 +3,7 @@ import {
   atomFilenameFromId,
   DEFAULT_ALLOWED_ORIGINS,
   isAllowedOrigin,
+  isConsoleWritesAllowed,
   makeAllowedOriginSet,
 } from './security';
 
@@ -111,5 +112,47 @@ describe('isAllowedOrigin', () => {
     expect(isAllowedOrigin(allowed, 'https://localhost:9080')).toBe(false);
     // Same host+scheme, different port — not auto-allowed.
     expect(isAllowedOrigin(allowed, 'http://localhost:9999')).toBe(false);
+  });
+});
+
+/*
+ * Regression tests for the v1-read-only contract gate
+ * (apps/console/CLAUDE.md "Scope boundaries"). The audit doc
+ * `docs/audits/2026-04-26-production-readiness-audit.md` Finding 4
+ * flagged `/api/atoms.propose` as a contract violation; the route is
+ * now disabled by default and only enabled when
+ * `LAG_CONSOLE_ALLOW_WRITES=1` is set explicitly.
+ *
+ * If any of these expectations regress, the route either silently
+ * starts minting L0 atoms (wrong) or refuses to enable behind the
+ * flag (also wrong).
+ */
+describe('isConsoleWritesAllowed', () => {
+  it('returns false when env value is undefined (default install)', () => {
+    expect(isConsoleWritesAllowed(undefined)).toBe(false);
+  });
+
+  it('returns false for the empty string and other falsy-but-set values', () => {
+    expect(isConsoleWritesAllowed('')).toBe(false);
+    expect(isConsoleWritesAllowed('0')).toBe(false);
+    expect(isConsoleWritesAllowed('false')).toBe(false);
+    expect(isConsoleWritesAllowed('no')).toBe(false);
+  });
+
+  it('returns true ONLY for the literal string "1"', () => {
+    /*
+     * Strict-equality on '1' is intentional: it forces an opt-in to be
+     * a deliberate, documented choice rather than a "set this var to
+     * anything truthy" foot-gun. A future opt-in needs an explicit
+     * code change here, which the test contract surfaces.
+     */
+    expect(isConsoleWritesAllowed('1')).toBe(true);
+    // Adjacent shapes are NOT equivalent (they remain disabled).
+    expect(isConsoleWritesAllowed('true')).toBe(false);
+    expect(isConsoleWritesAllowed('yes')).toBe(false);
+    expect(isConsoleWritesAllowed('on')).toBe(false);
+    expect(isConsoleWritesAllowed(' 1')).toBe(false);
+    expect(isConsoleWritesAllowed('1 ')).toBe(false);
+    expect(isConsoleWritesAllowed('11')).toBe(false);
   });
 });

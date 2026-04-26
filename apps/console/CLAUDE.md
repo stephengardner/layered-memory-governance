@@ -43,6 +43,19 @@ Vite proxies `/api/*` to 9081 so the frontend sees one origin.
 - Stays on `feat/console-foundation` branch in the `../memory-governance-apps` worktree. The main `memory-governance/` checkout is for other work.
 - Does NOT touch `src/actors/`, `src/adapters/`, canon schemas, or any file outside `apps/console/` except in explicit integration PRs (which will be rare).
 
+### Read-only invariant: how it is enforced today
+
+Two narrow exceptions to the no-write rule live in `server/index.ts` and are gated explicitly so the default install stays read-only:
+
+| Route | Default | Gating |
+|---|---|---|
+| `/api/kill-switch.transition` | enabled | UI may transition to `off` or `soft` only; medium/hard remain CLI-gated (canon `dec-kill-switch-design-first`). Origin-allowlist enforced. |
+| `/api/atoms.propose` | **disabled** | Returns 403 `console-read-only` unless `LAG_CONSOLE_ALLOW_WRITES=1` is set. When enabled, writes at `layer: L0` with `validation_status: pending_review` (intake, not auto-canonization). Origin-allowlist enforced. |
+
+The `LAG_CONSOLE_ALLOW_WRITES` env var is the dev-only escape hatch for the propose flow. An out-of-the-box install does not mint atoms from the UI; developers who want the proposer flow flip the flag deliberately. Production deployments leave it unset.
+
+Other write-shaped routes (`/api/atoms.reinforce`, `/api/atoms.mark-stale`) are not yet gated by this flag and remain operator-tracked debt; see PR follow-up for `dev-substrate-not-prescription` alignment.
+
 ## Future port to Tauri
 
 Not now. The transport abstraction (principle #9) is the ONE piece that keeps this cheap later. If Tauri happens, it's a 1-2 day swap: add Rust backend + `TauriTransport` impl; zero component code changes.

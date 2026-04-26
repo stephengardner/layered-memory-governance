@@ -68,6 +68,24 @@ export function isAllowedOrigin(allowed: ReadonlySet<string>, origin: string | u
  * because a broader accept set means more surface for encoding
  * tricks (url-encoded slashes, null bytes, windows drive letters).
  */
+/*
+ * Decide whether the console may serve write-shaped routes (currently
+ * `/api/atoms.propose`). The console is read-only by contract per
+ * apps/console/CLAUDE.md "Scope boundaries"; opt-in writes require an
+ * explicit `LAG_CONSOLE_ALLOW_WRITES=1` env var.
+ *
+ * Strict equality with `'1'` rather than truthiness: `'0'`, `'false'`,
+ * `'no'`, `''` and `undefined` all stay disabled. Future opt-in values
+ * can be added here without callers learning new shapes.
+ *
+ * Pure helper: takes the raw env value, returns a boolean. The env
+ * read itself happens at the call site so tests can pass any value
+ * directly without process.env mutation.
+ */
+export function isConsoleWritesAllowed(envValue: string | undefined): boolean {
+  return envValue === '1';
+}
+
 export function atomFilenameFromId(id: string): string {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) {
     const err = Object.assign(new Error(`invalid atom id: ${id}`), { code: 'invalid-atom-id' });

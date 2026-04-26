@@ -76,6 +76,8 @@ Severity: MAJOR for posture, MINOR for actual security.
 
 Fix shape: align the v1 contract (README + Console CLAUDE.md) with the surface that actually ships -- either remove `/api/atom.propose` or keep it and document the trust model.
 
+**Status: RESOLVED via PR fix/atom-propose-readonly (branch).** The route at `/api/atoms.propose` (the actual path; the audit cited `/api/atom.propose` but the code uses the plural form) is now disabled by default and only enabled when `LAG_CONSOLE_ALLOW_WRITES=1` is set in the server environment. When unset, the handler returns 403 with `code: 'console-read-only'` and a body pointing the caller at `node scripts/decide.mjs`. The kill-switch transition stays as the canon-required exception and is now explicitly documented in `apps/console/CLAUDE.md` as the only enabled-by-default write path. Regression test in `apps/console/server/security.test.ts` (`isConsoleWritesAllowed`) covers the gate's strict-equality semantics. Two related write-shaped routes (`/api/atoms.reinforce`, `/api/atoms.mark-stale`) are surfaced in the updated CLAUDE.md as operator-tracked debt for a follow-up that brings them under the same gate.
+
 ### 5. MINOR (with footprint): Framework-code-mechanism-only is mostly enforced, with two real cases of vendor-specific logic in src/
 
 Where:
