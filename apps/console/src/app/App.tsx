@@ -10,6 +10,7 @@ import { PlansView } from '@/features/plans-viewer/PlansView';
 import { PlanLifecycleView } from '@/features/plan-lifecycle-viewer/PlanLifecycleView';
 import { GraphView } from '@/features/graph-viewer/GraphView';
 import { TimelineView } from '@/features/timeline-viewer/TimelineView';
+import { MetricsRollupView } from '@/features/metrics-rollup/MetricsRollupView';
 import { PageTransition } from '@/components/page-transition/PageTransition';
 import { useRoute, type Route } from '@/state/router.store';
 import { useThemeStore } from '@/state/theme.store';
@@ -68,6 +69,7 @@ export function App() {
 
 function renderRoute(r: Route) {
   switch (r) {
+    case 'dashboard': return <MetricsRollupView />;
     case 'canon': return <CanonViewer />;
     case 'principals': return <PrincipalsView />;
     case 'activities': return <ActivitiesView />;
