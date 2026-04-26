@@ -31,8 +31,12 @@ import { parseAutonomyDial } from './kill-switch-state';
 import { median, extractFailureStage } from './metrics-rollup';
 import {
   countActivePolicies,
+  pickActiveElevations,
   pickLastCanonApply,
   pickOperatorPrincipalId,
+  pickRecentEscalations,
+  pickRecentKillSwitchTransitions,
+  pickRecentOperatorActions,
   readSentinelState,
   resolveSentinelInside,
   tierFromKillSwitch,
@@ -829,6 +833,7 @@ async function readKillSwitchState(): Promise<{
   since: string | null;
   reason: string | null;
   autonomyDial: number;
+  transitioned_by: string | null;
 }> {
   try {
     const raw = await readFile(join(LAG_DIR, 'kill-switch', 'state.json'), 'utf8');
@@ -837,6 +842,7 @@ async function readKillSwitchState(): Promise<{
       since?: string | null;
       reason?: string | null;
       autonomyDial?: number;
+      transitioned_by?: string | null;
     };
     /*
      * Three-way fallback for autonomyDial, per the kill-switch safety
@@ -855,10 +861,11 @@ async function readKillSwitchState(): Promise<{
       since: parsed.since ?? null,
       reason: parsed.reason ?? null,
       autonomyDial: sanitized === null ? 0 : sanitized,
+      transitioned_by: parsed.transitioned_by ?? null,
     };
   } catch {
     // Absent state file = fully autonomous, no tier active.
-    return { tier: 'off', since: null, reason: null, autonomyDial: 1 };
+    return { tier: 'off', since: null, reason: null, autonomyDial: 1, transitioned_by: null };
   }
 }
 
@@ -897,6 +904,17 @@ async function handleControlStatus(): Promise<ControlStatus> {
    * matches how the principal hierarchy actually composes in the org.
    */
   const actors_governed = principals.filter((p) => p.role !== 'apex' && p.active !== false).length;
+  /*
+   * The four richer lists are pure projections over the atom set
+   * (per the v1 read-only contract; no new auth surfaces). The
+   * helpers themselves enforce safe-field shaping (operator-action
+   * atoms drop full args/content) and per-list caps (MAX_LIST_ITEMS
+   * keeps any one list from dominating the payload).
+   */
+  const recent_kill_switch_transitions = pickRecentKillSwitchTransitions(killSwitchState, atoms);
+  const active_elevations = pickActiveElevations(atoms, Date.now());
+  const recent_operator_actions = pickRecentOperatorActions(atoms);
+  const recent_escalations = pickRecentEscalations(atoms);
   return {
     kill_switch,
     autonomy_tier,
@@ -904,6 +922,10 @@ async function handleControlStatus(): Promise<ControlStatus> {
     policies_active: countActivePolicies(atoms),
     last_canon_apply: pickLastCanonApply(atoms),
     operator_principal_id: pickOperatorPrincipalId(principals),
+    recent_kill_switch_transitions,
+    active_elevations,
+    recent_operator_actions,
+    recent_escalations,
   };
 }
 
