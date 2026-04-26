@@ -51,6 +51,16 @@ import {
   buildPrincipalTree,
   type PrincipalTreeResult,
 } from './principal-tree';
+import {
+  computeHeartbeat as computeLiveOpsHeartbeat,
+  listActiveSessions as listLiveOpsActiveSessions,
+  listLiveDeliberations as listLiveOpsDeliberations,
+  listInFlightExecutions as listLiveOpsInFlightExecutions,
+  listRecentTransitions as listLiveOpsRecentTransitions,
+  computeDaemonPosture as computeLiveOpsDaemonPosture,
+  listPrActivity as listLiveOpsPrActivity,
+} from './live-ops';
+import type { LiveOpsAtom, LiveOpsSnapshot } from './live-ops-types';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -1277,6 +1287,52 @@ async function handleMetricsRollup(params: { window_hours?: number }): Promise<M
 }
 
 // ---------------------------------------------------------------------------
+// Live Ops snapshot: aggregated "what is the org doing right now" digest.
+//
+// One handler returns every section the Live Ops dashboard renders so
+// the UI's 2s refresh cadence hits a single endpoint instead of seven.
+// Pure projection over readAllAtoms() + the kill-switch state file —
+// read-only by construction, every list capped at MAX_LIST_ITEMS.
+//
+// Helpers live in ./live-ops.ts so the time-window math is unit-tested
+// without standing up the HTTP server (mirrors the security.ts +
+// kill-switch-state.ts + metrics-rollup.ts pattern).
+// ---------------------------------------------------------------------------
+
+async function handleLiveOpsSnapshot(): Promise<LiveOpsSnapshot> {
+  const all = await readAllAtoms();
+  // The helpers consume a narrower atom shape; cast through unknown
+  // because the helper-side type elides fields the helpers do not
+  // touch (provenance, supersedes), keeping the public-surface
+  // contract focused.
+  const atomsForLiveOps = all as unknown as ReadonlyArray<LiveOpsAtom>;
+  const now = Date.now();
+
+  // Kill-switch posture stitches in via the existing reader so the
+  // Live Ops + Control Panel views agree by construction. Reading the
+  // state file synchronously here would block the event loop on slow
+  // disks; we already read it via `readKillSwitchState` for
+  // /api/kill-switch.state and rely on the same async path.
+  const killSwitch = await readKillSwitchState();
+
+  return {
+    computed_at: new Date(now).toISOString(),
+    heartbeat: computeLiveOpsHeartbeat(atomsForLiveOps, now),
+    active_sessions: listLiveOpsActiveSessions(atomsForLiveOps, now),
+    live_deliberations: listLiveOpsDeliberations(atomsForLiveOps, now),
+    in_flight_executions: listLiveOpsInFlightExecutions(atomsForLiveOps, now),
+    recent_transitions: listLiveOpsRecentTransitions(atomsForLiveOps, now),
+    daemon_posture: computeLiveOpsDaemonPosture(
+      atomsForLiveOps,
+      now,
+      killSwitch.tier,
+      killSwitch.autonomyDial,
+    ),
+    pr_activity: listLiveOpsPrActivity(atomsForLiveOps, now),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Plan lifecycle: end-to-end timeline of a single plan's autonomous-loop
 // chain. Stitches together the five (sometimes six) state-transition
 // atoms that a `plan` traverses from operator-intent through to merged:
@@ -2146,6 +2202,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'metrics-rollup-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/live-ops.snapshot' && req.method === 'POST') {
+    /*
+     * Read-only aggregate digest. Takes no parameters today; the time
+     * windows (60s, 5m, 1h, 15m, 24h) are encoded in the helpers.
+     * Future extensions (custom windows, per-section toggles) would
+     * accept a body, but v1 keeps the wire shape minimal so the UI
+     * can pin a single TanStack Query key + 2s refetchInterval.
+     */
+    try {
+      const data = await handleLiveOpsSnapshot();
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'live-ops-snapshot-failed', (err as Error).message);
     }
     return;
   }

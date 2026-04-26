@@ -13,6 +13,10 @@ interface RouteMeta {
 }
 
 const ROUTE_META: Record<Route, RouteMeta> = {
+  'live-ops': {
+    title: 'Pulse',
+    subtitle: 'Everything happening right now — daemons, sessions, deliberations, transitions',
+  },
   dashboard: {
     title: 'Dashboard',
     subtitle: 'Autonomous-loop health at a glance: atom volume, plan outcomes, drafter economics',
