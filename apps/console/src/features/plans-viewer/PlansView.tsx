@@ -9,36 +9,9 @@ import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { listPlans, type PlanAtom } from '@/services/plans.service';
+import { planStateTone } from '@/features/plan-state/tones';
 import { useRouteId, setRoute, routeHref } from '@/state/router.store';
 import styles from './PlansView.module.css';
-
-/*
- * Semantic tone for every plan_state the runtime can produce. The full
- * vocabulary comes from the autonomous-loop reconciler:
- *
- *   draft / proposed -> approved / rejected -> executing -> succeeded
- *                                                        -> failed
- *                                                        -> abandoned
- *   pending = a transient await-decision marker some flows emit.
- *
- * Every value gets an explicit tone: silently falling through to a
- * muted gray for terminal states like `succeeded` / `failed` was the
- * UX bug this map fixes (operator-flagged 2026-04-26). The fallback
- * branches on the pill at render time still exist for forward
- * compatibility with future states the runtime might add, but the
- * intent is "every shipped state has a deliberate semantic color".
- */
-const STATE_TONE: Record<string, string> = {
-  proposed: 'var(--accent)',
-  draft: 'var(--text-tertiary)',
-  pending: 'var(--status-warning)',
-  approved: 'var(--status-success)',
-  rejected: 'var(--status-danger)',
-  executing: 'var(--status-info)',
-  succeeded: 'var(--status-success)',
-  failed: 'var(--status-danger)',
-  abandoned: 'var(--text-tertiary)',
-};
 
 const FAILURE_SUMMARY_MAX = 80;
 
@@ -215,7 +188,7 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
           className={styles.statePill}
           data-testid="plan-card-state"
           data-plan-state={state}
-          style={{ borderColor: STATE_TONE[state] ?? 'var(--border-subtle)', color: STATE_TONE[state] ?? 'var(--text-secondary)' }}
+          style={{ borderColor: planStateTone(state), color: planStateTone(state) }}
         >
           {state}
         </span>

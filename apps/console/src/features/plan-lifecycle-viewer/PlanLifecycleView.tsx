@@ -18,6 +18,7 @@ import {
   EmptyState,
 } from '@/components/state-display/StateDisplay';
 import { listPlans, type PlanAtom } from '@/services/plans.service';
+import { planStateTone } from '@/features/plan-state/tones';
 import {
   getPlanLifecycle,
   type PlanLifecycle,
@@ -82,27 +83,8 @@ const PHASE_TONE: Record<PlanLifecyclePhase, string> = {
   failure: 'var(--status-danger)',
 };
 
-/*
- * Semantic tone for every plan_state the runtime can produce. Mirrors
- * STATE_TONE in PlansView.tsx exactly; both views render the same
- * state pill, so the maps must agree. `executing` uses --status-info
- * (sky-blue) to signal "in flight" distinctly from --accent (which
- * already paints clickable links and the proposed-state pill).
- * `failed` and `abandoned` were missing here too and silently fell
- * through to muted gray; explicit entries fix the operator-flagged
- * UX bug across both surfaces (2026-04-26).
- */
-const STATE_TONE: Record<string, string> = {
-  proposed: 'var(--accent)',
-  draft: 'var(--text-tertiary)',
-  pending: 'var(--status-warning)',
-  approved: 'var(--status-success)',
-  rejected: 'var(--status-danger)',
-  executing: 'var(--status-info)',
-  succeeded: 'var(--status-success)',
-  failed: 'var(--status-danger)',
-  abandoned: 'var(--text-tertiary)',
-};
+// Plan-state tones live in `@/features/plan-state/tones.ts`: single
+// source of truth across PlansView, this view, and the e2e specs.
 
 export function PlanLifecycleView() {
   const focusId = useRouteId();
@@ -195,8 +177,8 @@ function PlanRow({ plan, index }: { plan: PlanAtom; index: number }) {
           data-testid="plan-lifecycle-row-state"
           data-plan-state={state}
           style={{
-            borderColor: STATE_TONE[state] ?? 'var(--border-subtle)',
-            color: STATE_TONE[state] ?? 'var(--text-secondary)',
+            borderColor: planStateTone(state),
+            color: planStateTone(state),
           }}
         >
           {state}
@@ -273,8 +255,8 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
         <span
           className={styles.statePill}
           style={{
-            borderColor: STATE_TONE[state] ?? 'var(--border-subtle)',
-            color: STATE_TONE[state] ?? 'var(--text-secondary)',
+            borderColor: planStateTone(state),
+            color: planStateTone(state),
           }}
           data-testid="plan-lifecycle-state"
           data-plan-state={state}

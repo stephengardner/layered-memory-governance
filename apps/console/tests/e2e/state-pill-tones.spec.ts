@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { PLAN_STATE_TONE, type PlanStateName } from '../../src/features/plan-state/tones';
 
 /**
  * State-pill-tones e2e: every plan_state value the runtime can emit
@@ -19,19 +20,22 @@ import { test, expect, type Page } from '@playwright/test';
  *   - Discover the actual states present in the atom store via
  *     /api/plans.list (avoids brittle pinning of specific atom ids).
  *   - For each state class with a deliberate color, assert the pill's
- *     computed `color` is NOT the muted-gray (`--text-tertiary`)
- *     resolved value AND IS the resolved value of the expected token.
+ *     computed `color` is the resolved value of the expected token
+ *     and is NOT the muted-gray fallback for non-muted states.
  *   - Run the same assertions on the Plans view and the Plan Lifecycle
- *     row view, since both surfaces share the STATE_TONE map.
- *   - Sanity assert via getComputedStyle on a known token element
- *     that the page's CSS custom properties resolve as expected
- *     (proves the test is reading the same color space the user sees).
+ *     row view, since both surfaces share the same tones map.
  *
  * Why computed-style readback (not snapshot images): tones are tokenized
  * and theme-dependent. A pixel snapshot would lock the test to one
  * theme and fail any palette tweak. Reading getComputedStyle().color
  * from the live element compares the token resolution end-to-end while
  * staying theme-agnostic.
+ *
+ * Why import PLAN_STATE_TONE: the spec used to maintain a third copy
+ * of the same vocabulary, which CR rightly flagged as a drift surface
+ * the DRY hoist was supposed to eliminate. Now we derive the test
+ * fixture from the source of truth so a substrate state added without
+ * a tones.ts entry would fail at compile time, not in production.
  */
 
 interface PlanShape {
@@ -39,29 +43,30 @@ interface PlanShape {
   readonly plan_state?: string;
 }
 
-const SEMANTIC_FALLBACK = 'var(--text-tertiary)';
+/*
+ * `abandoned` and `draft` deliberately resolve to --text-tertiary;
+ * their pill IS gray on purpose, so we exclude them from the
+ * "must not be gray" assertion but still verify they paint the
+ * explicit token (not a typo or fallback).
+ */
+const MUTED_BY_DESIGN: ReadonlySet<PlanStateName> = new Set(['draft', 'abandoned']);
 
 /*
- * Map test-state -> the CSS custom property the pill MUST resolve to.
- * Mirrors STATE_TONE in src/features/plans-viewer/PlansView.tsx and
- * src/features/plan-lifecycle-viewer/PlanLifecycleView.tsx. Updates here
- * must keep parity with both source files.
- *
- * `abandoned` and `draft` deliberately use --text-tertiary; their pill
- * IS gray on purpose, so we exclude them from the "must not be gray"
- * branch but still assert the color matches the explicit token.
+ * Extract the bare token name from a `var(--token)` or
+ * `var(--token, fallback)` CSS expression. Lets the spec ask the
+ * browser to resolve the same token tones.ts declared, without
+ * re-spelling the var() syntax in two places.
  */
-const EXPECTED_TONE: Record<string, { token: string; muted: boolean }> = {
-  proposed: { token: '--accent', muted: false },
-  draft: { token: '--text-tertiary', muted: true },
-  pending: { token: '--status-warning', muted: false },
-  approved: { token: '--status-success', muted: false },
-  rejected: { token: '--status-danger', muted: false },
-  executing: { token: '--status-info', muted: false },
-  succeeded: { token: '--status-success', muted: false },
-  failed: { token: '--status-danger', muted: false },
-  abandoned: { token: '--text-tertiary', muted: true },
-};
+function tokenNameFor(state: PlanStateName): string {
+  const expr = PLAN_STATE_TONE[state];
+  const match = expr.match(/var\((--[a-z0-9-]+)/i);
+  if (!match || !match[1]) {
+    throw new Error(`tones.ts entry for '${state}' is not a var() expression: ${expr}`);
+  }
+  return match[1];
+}
+
+const STATE_NAMES = Object.keys(PLAN_STATE_TONE) as PlanStateName[];
 
 /**
  * Read the resolved RGB(A) string for a CSS custom property on the
@@ -102,10 +107,10 @@ test.describe('plan_state pill tones', () => {
 
     // Group present states by name so we can pick one representative
     // pill per state class.
-    const presentStates = new Set<string>();
+    const presentStates = new Set<PlanStateName>();
     for (const p of plans) {
       const s = p.plan_state ?? 'unknown';
-      if (EXPECTED_TONE[s]) presentStates.add(s);
+      if (STATE_NAMES.includes(s as PlanStateName)) presentStates.add(s as PlanStateName);
     }
 
     test.skip(
@@ -122,8 +127,8 @@ test.describe('plan_state pill tones', () => {
     expect(mutedGray, 'muted-gray token should resolve').toMatch(/rgb/);
 
     for (const state of presentStates) {
-      const expected = EXPECTED_TONE[state]!;
-      const expectedColor = await resolveToken(page, expected.token);
+      const tokenName = tokenNameFor(state);
+      const expectedColor = await resolveToken(page, tokenName);
 
       const pillSelector = `[data-testid="plan-card-state"][data-plan-state="${state}"]`;
       const pillCount = await page.locator(pillSelector).count();
@@ -133,13 +138,13 @@ test.describe('plan_state pill tones', () => {
       const pillColor = await readPillColor(page, pillSelector);
       expect(
         pillColor,
-        `state '${state}' pill should resolve to ${expected.token}`,
+        `state '${state}' pill should resolve to ${tokenName}`,
       ).toBe(expectedColor);
 
-      if (!expected.muted) {
+      if (!MUTED_BY_DESIGN.has(state)) {
         expect(
           pillColor,
-          `state '${state}' pill must not render as muted gray (regression: STATE_TONE missing entry)`,
+          `state '${state}' pill must not render as muted gray (regression: tones map missing entry)`,
         ).not.toBe(mutedGray);
       }
     }
@@ -155,10 +160,10 @@ test.describe('plan_state pill tones', () => {
     const plans: ReadonlyArray<PlanShape> = body?.data ?? body ?? [];
     expect(plans.length).toBeGreaterThan(0);
 
-    const presentStates = new Set<string>();
+    const presentStates = new Set<PlanStateName>();
     for (const p of plans) {
       const s = p.plan_state ?? 'unknown';
-      if (EXPECTED_TONE[s]) presentStates.add(s);
+      if (STATE_NAMES.includes(s as PlanStateName)) presentStates.add(s as PlanStateName);
     }
     test.skip(presentStates.size === 0, 'no semantic states present');
 
@@ -170,8 +175,8 @@ test.describe('plan_state pill tones', () => {
     const mutedGray = await resolveToken(page, '--text-tertiary');
 
     for (const state of presentStates) {
-      const expected = EXPECTED_TONE[state]!;
-      const expectedColor = await resolveToken(page, expected.token);
+      const tokenName = tokenNameFor(state);
+      const expectedColor = await resolveToken(page, tokenName);
 
       const pillSelector = `[data-testid="plan-lifecycle-row-state"][data-plan-state="${state}"]`;
       const pillCount = await page.locator(pillSelector).count();
@@ -185,10 +190,10 @@ test.describe('plan_state pill tones', () => {
       const pillColor = await readPillColor(page, pillSelector);
       expect(
         pillColor,
-        `lifecycle row for state '${state}' should resolve to ${expected.token}`,
+        `lifecycle row for state '${state}' should resolve to ${tokenName}`,
       ).toBe(expectedColor);
 
-      if (!expected.muted) {
+      if (!MUTED_BY_DESIGN.has(state)) {
         expect(pillColor, `lifecycle row '${state}' must not be muted gray`).not.toBe(mutedGray);
       }
     }
