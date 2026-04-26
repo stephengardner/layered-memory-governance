@@ -275,6 +275,13 @@ export async function draftCodeChange(
     temperature: 0.2,
     max_budget_usd: costCap,
     sandboxed: true,
+    // The drafter produces a long schema-bound code diff. `code-author`
+    // framing tells adapters that prepend a task-class preamble (e.g.
+    // ClaudeCliLLM) to use a code-drafting frame instead of the default
+    // "pure JSON classifier" frame. Without this, extended-thinking-
+    // enabled models can burn their entire output budget on deliberating
+    // about classification semantics and emit zero structured output.
+    framingMode: 'code-author',
     ...(inputs.signal ? { signal: inputs.signal } : {}),
     ...(inputs.disallowedTools ? { disallowedTools: inputs.disallowedTools } : {}),
   };

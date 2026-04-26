@@ -179,15 +179,30 @@ async function main() {
   // 'memory' is the test stub; selecting it on a daemon that will
   // dispatch code-author would crash the drafter at runtime, so we
   // gate on the registered set after invokers load (below).
-  // Deployment-side timeout posture: dispatched drafters (code-author,
-  // pr-fix) routinely produce multi-file diffs that exceed the framework's
-  // conservative 3-minute floor. The runner sets a 30-minute envelope at
-  // construction so the adapter falls back to it when no per-call
-  // override is provided. Per-invocation options.timeout_ms still wins
-  // for callers that want a tighter envelope.
-  const INSTANCE_LLM_DEFAULT_TIMEOUT_MS = 1_800_000;
+  // Deployment-side posture for the autonomous flow:
+  //   - 60-minute spawn timeout: dispatched drafters routinely produce
+  //     multi-file diffs that exceed the framework's conservative
+  //     3-minute floor. Per-invocation options.timeout_ms still wins.
+  //   - max effort: tell Claude CLI to allocate maximum reasoning depth.
+  //     Combined with the drafter's `framingMode: 'code-author'` and the
+  //     Opus default model in scripts/invokers/autonomous-dispatch.mjs,
+  //     this gives the drafter the budget headroom to emit a complete
+  //     diff after extended thinking instead of burning the entire
+  //     output ceiling on deliberation. Per-invocation options.effort
+  //     still wins.
+  // NOTE: This posture is local to this runner. Other ClaudeCliLLM
+  // construction sites (e.g. the bridge adapter, virtual-org examples)
+  // pass through caller-supplied claudeCli opts and do NOT inherit
+  // these defaults; deployments that fork into a custom runner must
+  // re-establish the timeout + effort posture explicitly or accept
+  // the framework's conservative floors.
+  const INSTANCE_LLM_DEFAULT_TIMEOUT_MS = 3_600_000;
+  const INSTANCE_LLM_DEFAULT_EFFORT = 'max';
   const llm = args.llm === 'claude-cli'
-    ? new ClaudeCliLLM({ defaultTimeoutMs: INSTANCE_LLM_DEFAULT_TIMEOUT_MS })
+    ? new ClaudeCliLLM({
+        defaultTimeoutMs: INSTANCE_LLM_DEFAULT_TIMEOUT_MS,
+        defaultEffort: INSTANCE_LLM_DEFAULT_EFFORT,
+      })
     : undefined;
   const host = await createFileHost({ rootDir, llm });
 

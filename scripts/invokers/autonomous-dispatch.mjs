@@ -12,7 +12,7 @@
  *   - repoDir:     LAG_REPO_DIR env or process.cwd()
  *   - gitIdentity: derived from <stateDir>/apps/<role>.json (the same
  *                  noreply identity GitHub minted for the App)
- *   - model:       LAG_DRAFTER_MODEL env, defaults to claude-sonnet-4-6
+ *   - model:       LAG_DRAFTER_MODEL env, defaults to claude-opus-4-7
  *   - role:        LAG_DISPATCH_BOT_ROLE env, defaults to 'lag-ceo'
  *                  (the role that already lands code-author PRs in this
  *                  instance; consumers can swap to a dedicated
@@ -72,7 +72,12 @@ export default async function register(host, registry) {
   }
   const repoDir = resolve(process.env.LAG_REPO_DIR ?? process.cwd());
   const stateDir = resolve(process.env.LAG_STATE_DIR ?? join(repoDir, '.lag'));
-  const model = process.env.LAG_DRAFTER_MODEL ?? 'claude-sonnet-4-6';
+  // Default to Opus 4.7 for drafter calls. Opus has a 1M context window and
+  // higher max_tokens output, which matters for multi-file diffs where a
+  // tighter ceiling can starve the structured-output budget after extended
+  // thinking. The drafter test suite already pins Opus; only this env-default
+  // lagged. Override per-deployment via LAG_DRAFTER_MODEL.
+  const model = process.env.LAG_DRAFTER_MODEL ?? 'claude-opus-4-7';
   const baseBranch = process.env.GH_BASE_BRANCH ?? 'main';
   const remote = process.env.GH_REMOTE ?? 'origin';
 

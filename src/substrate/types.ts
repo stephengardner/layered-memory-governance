@@ -432,6 +432,30 @@ export interface LlmOptions {
    * adapters with an allow-list-first surface invert at the boundary.
    */
   readonly disallowedTools?: ReadonlyArray<string>;
+  /**
+   * Framing hint for adapters that prepend a task-class preamble to the
+   * caller's system prompt. `classifier` is right for short schema-bound
+   * classifications (planning judgments). `code-author` is right for
+   * long schema-bound code-generation calls where the model produces a
+   * diff. Adapters that do not implement framing MAY ignore this field.
+   *
+   * The distinction matters because some Claude models with extended
+   * thinking enabled will burn the entire output budget on deliberation
+   * when given a frame that contradicts the actual task (e.g., a
+   * "you are a classifier" frame on a code-drafting call) and emit zero
+   * structured output.
+   */
+  readonly framingMode?: 'classifier' | 'code-author';
+  /**
+   * Vendor-neutral coarse effort scale forwarded to adapters that
+   * surface a reasoning-depth knob. Adapters MAP this to their own
+   * provider-specific scale; adapters that lack the knob MAY ignore
+   * this field. Vendor-specific extensions (e.g. Anthropic's `xhigh`
+   * or `max` levels above `high`) live in adapter-level option types,
+   * never here. When omitted the adapter-level default applies, which
+   * itself MAY be omitted to defer to the underlying CLI/model default.
+   */
+  readonly effort?: 'low' | 'medium' | 'high';
 }
 
 export interface JudgeMetadata {
