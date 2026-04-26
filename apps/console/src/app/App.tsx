@@ -4,6 +4,7 @@ import { ShortcutsHelp } from '@/components/shortcuts-help/ShortcutsHelp';
 import { CommandPalette } from '@/components/command-palette/CommandPalette';
 import { ProposeAtomDialog } from '@/components/propose-atom/ProposeAtomDialog';
 import { CanonViewer } from '@/features/canon-viewer/CanonViewer';
+import { CanonSuggestionsView } from '@/features/canon-suggestions/CanonSuggestionsView';
 import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
 import { ActivitiesView } from '@/features/activities-viewer/ActivitiesView';
 import { PlansView } from '@/features/plans-viewer/PlansView';
@@ -69,6 +70,7 @@ export function App() {
 function renderRoute(r: Route) {
   switch (r) {
     case 'canon': return <CanonViewer />;
+    case 'canon-suggestions': return <CanonSuggestionsView />;
     case 'principals': return <PrincipalsView />;
     case 'activities': return <ActivitiesView />;
     case 'plans': return <PlansView />;
