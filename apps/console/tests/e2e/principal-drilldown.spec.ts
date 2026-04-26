@@ -66,6 +66,7 @@ test.describe('principal drill-down', () => {
     request,
   }) => {
     const res = await request.post('/api/principals.list');
+    expect(res.ok(), 'principals.list endpoint should return 200').toBe(true);
     const body = await res.json();
     const principals: ReadonlyArray<PrincipalRow> = body?.data ?? body ?? [];
     test.skip(principals.length === 0, 'no principals to click');
