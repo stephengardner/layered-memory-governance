@@ -53,3 +53,31 @@
   background: var(--accent);
   color: var(--text-on-accent);
 }
+
+/* Focus mode: single full-width card. Same column-template as the
+ * grid but locked to one column so the detail surface gets the full
+ * content width regardless of viewport.
+ */
+.gridFocused {
+  grid-template-columns: 1fr;
+}
+
+.clearButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard);
+}
+
+.clearButton:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-hover);
+}

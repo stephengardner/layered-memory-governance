@@ -2,28 +2,75 @@ import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, Shield, AlertOctagon } from 'lucide-react';
 import type { Principal } from '@/services/principals.service';
+import { setRoute, routeHref } from '@/state/router.store';
 import styles from './PrincipalCard.module.css';
 
 interface Props {
   readonly principal: Principal;
+  /**
+   * Focus mode: when true, the card renders full-width with
+   * permissions pre-expanded and click-navigation disabled (the user
+   * already opened this principal explicitly). When false, clicks +
+   * the title link route to /principals/<id> for the detail surface.
+   */
+  readonly focused?: boolean;
 }
 
-export function PrincipalCard({ principal }: Props) {
-  const [expanded, setExpanded] = useState(false);
+export function PrincipalCard({ principal, focused = false }: Props) {
+  // In focus mode, expand permissions automatically so the operator
+  // doesn't have to hunt for the second click.
+  const [expanded, setExpanded] = useState(focused);
   const compromised = Boolean(principal.compromised_at);
   const root = !principal.signed_by;
   const initials = initialsOf(principal.name || principal.id);
 
+  /*
+   * Delegated click: clicking whitespace/text in the card navigates to
+   * focus mode. Clicks on interactive descendants (buttons, links,
+   * code in pre, form controls) fall through. Text selection is
+   * preserved - drag-selected text skips navigation. Only fires when
+   * NOT already focused.
+   */
+  const handleCardClick = (e: React.MouseEvent<HTMLElement>) => {
+    if (focused) return;
+    if (e.defaultPrevented || e.button !== 0) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('a, button, input, textarea, select, pre')) return;
+    if (window.getSelection()?.toString()) return;
+    e.preventDefault();
+    setRoute('principals', principal.id);
+  };
+
   return (
     <article
-      className={`${styles.card} ${!principal.active ? styles.cardInactive : ''} ${compromised ? styles.cardCompromised : ''}`}
+      className={`${styles.card} ${!principal.active ? styles.cardInactive : ''} ${compromised ? styles.cardCompromised : ''} ${!focused ? styles.cardClickable : ''}`}
       data-testid="principal-card"
       data-principal-id={principal.id}
+      onClick={handleCardClick}
     >
       <header className={styles.header}>
         <div className={styles.avatar} aria-hidden="true">{initials}</div>
         <div className={styles.headerText}>
-          <h3 className={styles.name}>{principal.name}</h3>
+          {focused ? (
+            <h3 className={styles.name}>{principal.name}</h3>
+          ) : (
+            <h3 className={styles.name}>
+              <a
+                className={styles.nameLink}
+                href={routeHref('principals', principal.id)}
+                data-testid="principal-card-link"
+                onClick={(e) => {
+                  if (e.defaultPrevented || e.button !== 0) return;
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  setRoute('principals', principal.id);
+                }}
+              >
+                {principal.name}
+              </a>
+            </h3>
+          )}
           <code className={styles.id}>{principal.id}</code>
         </div>
         {root && (
@@ -40,7 +87,7 @@ export function PrincipalCard({ principal }: Props) {
         )}
       </header>
 
-      <div className={styles.chips}>
+      <div className={styles.chips} data-testid="principal-card-chips">
         <span className={styles.chip}>role: {principal.role}</span>
         <span className={styles.chip}>{principal.active ? 'active' : 'inactive'}</span>
         {principal.signed_by && (
