@@ -703,6 +703,137 @@ describe('draftCodeChange', () => {
     expect(result.notes).toBe('Appended per verbatim Question prompt.');
   });
 
+  it('citedPaths: roundtrips a declared array from the LLM into the result', async () => {
+    // The drafter exposes `cited_paths` in the schema so the LLM can
+    // declare which repository paths its prose cites as authoritative
+    // source. Callers verify each entry against the working tree
+    // before opening a PR; the drafter has no read access at draft
+    // time, so a citation that does not exist on disk is a
+    // confabulation. This regression locks the wire shape.
+    const plan = mkPlan('cite README and a docs page');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+      cited_paths: ['docs/architecture.md', 'src/runtime/actors/planning/'],
+    });
+    const result = await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    });
+    expect(result.citedPaths).toEqual(['docs/architecture.md', 'src/runtime/actors/planning/']);
+  });
+
+  it('citedPaths: defaults to empty array when LLM omits the field (back-compat)', async () => {
+    // Call sites that pre-date the field land here. The drafter must
+    // not throw; the result shape gets a frozen empty array so
+    // downstream verification reads as "nothing to verify."
+    const plan = mkPlan('no citations declared');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    });
+    const result = await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    });
+    expect(result.citedPaths).toEqual([]);
+  });
+
+  it('citedPaths: rejects non-array values with schema-validation-failed', async () => {
+    // A broken adapter or compromised LLM could return cited_paths as
+    // a string or object. The drafter must fail closed rather than
+    // hand a malformed citation list to the verifier.
+    const plan = mkPlan('malformed citation shape');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+      cited_paths: 'docs/architecture.md',
+    });
+    await expect(draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    })).rejects.toMatchObject({
+      name: 'DrafterError',
+      reason: 'schema-validation-failed',
+    });
+  });
+
+  it('citedPaths: rejects array with non-string entries', async () => {
+    const plan = mkPlan('non-string citation entry');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+      cited_paths: ['docs/architecture.md', 42, null],
+    });
+    await expect(draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    })).rejects.toMatchObject({
+      name: 'DrafterError',
+      reason: 'schema-validation-failed',
+    });
+  });
+
   it('questionPrompt: omitted from DATA when undefined or empty string (backward compat)', async () => {
     // Call sites that pre-date this field must not see their
     // registered MemoryLLM response evicted by a new key. Absent

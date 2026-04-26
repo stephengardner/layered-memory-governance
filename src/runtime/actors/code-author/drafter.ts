@@ -139,6 +139,16 @@ export interface DraftResult {
   readonly modelUsed: string;
   /** Paths the diff touches, parsed from the `+++ b/...` headers. */
   readonly touchedPaths: ReadonlyArray<string>;
+  /**
+   * Repository-relative paths the drafter cites in prose (notes,
+   * markdown bodies, JSDoc, plan references, comments) as
+   * authoritative source. Empty when the drafter declared no
+   * citations or pre-dates the schema field. Callers MAY verify
+   * each path exists on the working tree before opening a PR; the
+   * drafter has no read access to the repo at draft-time and a
+   * cited path that does not exist is a confabulation.
+   */
+  readonly citedPaths: ReadonlyArray<string>;
 }
 
 export class DrafterError extends Error {
@@ -185,6 +195,18 @@ export const DRAFT_SCHEMA: JsonSchema = Object.freeze({
         'Subjective confidence the diff applies cleanly and produces the declared behavior. '
         + 'Values below the fence confidence-gate trigger escalation rather than auto-PR.',
     },
+    cited_paths: {
+      type: 'array',
+      items: { type: 'string' },
+      description:
+        'Repository-relative paths cited in prose (notes, markdown bodies, JSDoc, plan '
+        + 'references, code comments) as authoritative source. List ONLY paths the diff or '
+        + 'its prose explicitly references; do NOT include paths that are merely modified '
+        + '(those are derived from the diff headers). The caller MAY verify each entry '
+        + 'exists on the working tree before opening a PR; an entry that does not exist '
+        + 'is treated as a confabulation and rejected. Omit the field, or emit an empty '
+        + 'array, when the prose makes no path citations.',
+    },
   },
   required: ['diff', 'notes', 'confidence'],
   additionalProperties: false,
@@ -230,12 +252,23 @@ export const DRAFT_SYSTEM_PROMPT = [
   'You may use Read/Grep/Glob if available to orient further in the codebase. Do not Write,',
   'Edit, Bash, or use any tool outside the read set. Writes route through the PR the caller',
   'creates from your diff; trying to write directly bypasses the fence and is refused.',
+  '',
+  'Citation discipline:',
+  '8. When your prose (notes, or any markdown/JSDoc/comment body inside the diff) cites a',
+  '   repository path or file location as authoritative source ("see X at `<path>`",',
+  '   "## Source: `<path>`", "implementation lives in `<path>`"), populate `cited_paths`',
+  '   with each cited path. Do NOT include paths the diff merely modifies; those are',
+  '   derived from the diff headers. Omit the field, or emit an empty array, when prose',
+  '   makes no path citations. The caller verifies each entry against the working tree;',
+  '   a citation that does not exist is treated as confabulation and rejected. If you are',
+  '   unsure a path exists, omit the citation rather than guess.',
 ].join('\n');
 
 interface JudgeDraftOutput {
   readonly diff: string;
   readonly notes: string;
   readonly confidence: number;
+  readonly citedPaths: ReadonlyArray<string>;
 }
 
 /**
@@ -376,6 +409,7 @@ export async function draftCodeChange(
     totalCostUsd: costUsdSoFar,
     modelUsed,
     touchedPaths: Object.freeze(touched.slice()),
+    citedPaths: Object.freeze(parsed.citedPaths.slice()),
   });
 }
 
@@ -451,10 +485,37 @@ function validateDraftOutput(raw: unknown, costSoFar: number): JudgeDraftOutput 
       costSoFar,
     );
   }
+  // `cited_paths` is optional. Absent = empty list (back-compat with
+  // pre-schema-v2 fixtures and adapters that strip optional fields).
+  // Present-but-wrong-shape is a schema violation: the fence relies on
+  // it being a string array to verify each entry against the working
+  // tree without first guarding every element type.
+  let citedPaths: ReadonlyArray<string> = [];
+  const rawCited = o['cited_paths'];
+  if (rawCited !== undefined) {
+    if (!Array.isArray(rawCited)) {
+      throw new DrafterError(
+        `LLM output "cited_paths" must be an array of strings when present; got ${JSON.stringify(rawCited).slice(0, 200)}`,
+        'schema-validation-failed',
+        costSoFar,
+      );
+    }
+    for (const entry of rawCited) {
+      if (typeof entry !== 'string') {
+        throw new DrafterError(
+          `LLM output "cited_paths" array contains non-string entry: ${JSON.stringify(entry)}`,
+          'schema-validation-failed',
+          costSoFar,
+        );
+      }
+    }
+    citedPaths = rawCited as ReadonlyArray<string>;
+  }
   return {
     diff: o['diff'] as string,
     notes: o['notes'] as string,
     confidence: o['confidence'] as number,
+    citedPaths,
   };
 }
 
