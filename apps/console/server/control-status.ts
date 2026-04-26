@@ -63,7 +63,94 @@ export interface ControlStatus {
   readonly policies_active: number;
   readonly last_canon_apply: string | null;
   readonly operator_principal_id: string;
+  readonly recent_kill_switch_transitions: ReadonlyArray<KillSwitchTransitionSummary>;
+  readonly active_elevations: ReadonlyArray<ActiveElevationSummary>;
+  readonly recent_operator_actions: ReadonlyArray<OperatorActionSummary>;
+  readonly recent_escalations: ReadonlyArray<EscalationSummary>;
 }
+
+/*
+ * Recent kill-switch transitions surfaced on the control panel. The
+ * canonical store today is .lag/kill-switch/state.json (current state
+ * only; one entry); future writers may persist a per-transition atom
+ * with id starting `kill-switch-transition-`. The picker accepts both
+ * shapes so the panel surfaces history once that atom type lands
+ * without breaking the v1 contract.
+ *
+ * Capped at MAX_LIST_ITEMS so a runaway history doesn't blow up the
+ * payload (per `feedback_security_correctness_at_write_time`: every
+ * new list gets a bound at write time).
+ */
+export interface KillSwitchTransitionSummary {
+  readonly tier: 'off' | 'soft' | 'medium' | 'hard';
+  readonly at: string;
+  readonly transitioned_by: string | null;
+  readonly reason: string | null;
+  /*
+   * Stable identity per row. Set to the source atom id when the row
+   * was emitted from a kill-switch-transition-* atom, null when the
+   * row reflects the live state-file snapshot (which has no atom of
+   * record). The frontend keys React rows on this so two transitions
+   * sharing the same (at, tier) tuple do not collide once the
+   * per-transition atom writer ships.
+   */
+  readonly atom_id: string | null;
+}
+
+/*
+ * Currently-elevated policy atom summary. Surfaces atoms whose
+ * `metadata.elevation.expires_at` is still in the future. Each row
+ * answers "which policy is elevated, who is the target, and how long
+ * until the elevation lapses?". Time-remaining is computed at
+ * read-time so the view doesn't need to do its own clock math.
+ */
+export interface ActiveElevationSummary {
+  readonly atom_id: string;
+  readonly policy_target: string | null;
+  readonly principal: string | null;
+  readonly started_at: string | null;
+  readonly expires_at: string;
+  readonly time_remaining_seconds: number;
+}
+
+/*
+ * Operator-action summary. Source: atoms whose id begins with
+ * `op-action-` (the lag-ceo gh-as audit atoms emitted by
+ * scripts/gh-as.mjs). Per `feedback_security_correctness_at_write_time`,
+ * we ship ONLY the safe metadata fields (atom id, principal, kind,
+ * timestamp). The atom's `content` and `metadata.operator_action.args`
+ * frequently embed full GraphQL queries and operator command lines --
+ * those stay server-side. The "kind" we surface is the first arg
+ * (e.g. "api", "pr", "auth") so the operator sees the shape of recent
+ * activity without leaking the body.
+ */
+export interface OperatorActionSummary {
+  readonly atom_id: string;
+  readonly principal_id: string;
+  readonly kind: string;
+  readonly at: string;
+}
+
+/*
+ * Escalation summary. Source: atoms whose id begins with
+ * `dispatch-escalation-` (plan-dispatcher emits these when a sub-actor
+ * dispatch fails). Surfaces the atom id + a short reason hint pulled
+ * from the content's first line so the operator sees what failed at a
+ * glance without expanding the full payload.
+ */
+export interface EscalationSummary {
+  readonly atom_id: string;
+  readonly at: string;
+  readonly headline: string;
+}
+
+/*
+ * Per-list cap. 20 keeps each list small enough to render without
+ * paginating but large enough that an operator can scan a meaningful
+ * window of recent activity. Tuning the cap per list is a follow-up
+ * if any one starts dominating the response.
+ */
+export const MAX_LIST_ITEMS = 20;
 
 /*
  * Display string the UI shows verbatim and the operator copies into a
@@ -277,4 +364,231 @@ export function pickLastCanonApply(
     }
   }
   return bestExplicit ?? bestL3;
+}
+
+/*
+ * Atom-shape candidate used by the operator-action / elevation /
+ * escalation pickers below. Defined inline so the helper module stays
+ * decoupled from the server's full `Atom` interface but the field set
+ * we depend on is documented at the type layer.
+ */
+export interface AtomCandidate {
+  readonly id: string;
+  readonly type?: string;
+  readonly layer?: string;
+  readonly principal_id?: string;
+  readonly created_at?: string;
+  readonly content?: string;
+  readonly metadata?: Record<string, unknown>;
+  readonly superseded_by?: ReadonlyArray<string>;
+  readonly taint?: string;
+}
+
+/*
+ * Recent kill-switch transitions. Two-source merge:
+ *   1. `currentState` -- the live entry from .lag/kill-switch/state.json
+ *      (reflects the active tier + when it was set). Always rendered as
+ *      the most recent transition when present.
+ *   2. atoms -- if a future writer persists per-transition atoms (id
+ *      prefix `kill-switch-transition-` OR type `kill-switch-transitioned`),
+ *      they're folded into the list.
+ *
+ * The list is sorted descending by `at` and capped at MAX_LIST_ITEMS.
+ * `transitioned_by` is the principal id from the state file (or
+ * principal_id from the atom). `reason` is whatever free-form note the
+ * writer attached (often null).
+ *
+ * Why merge instead of pick-one: today only the state file exists, so
+ * the panel surfaces a single row and the operator sees "current
+ * state, set 2 minutes ago by lag-ceo". Once a transition log atom
+ * lands, the same picker surfaces history without a second code path.
+ */
+export function pickRecentKillSwitchTransitions(
+  currentState: {
+    readonly tier?: 'off' | 'soft' | 'medium' | 'hard' | null;
+    readonly since?: string | null;
+    readonly reason?: string | null;
+    readonly transitioned_by?: string | null;
+  } | null,
+  atoms: ReadonlyArray<AtomCandidate>,
+): KillSwitchTransitionSummary[] {
+  const out: KillSwitchTransitionSummary[] = [];
+  /*
+   * Validate the live-state tier symmetrically with the per-transition atom
+   * branch below: `readKillSwitchState()` parses `.lag/kill-switch/state.json`,
+   * which can be hand-edited or carry a tier value from a future writer that
+   * this build does not recognize. Fail-closed at the picker boundary so the
+   * tier badge never receives an unexpected value.
+   */
+  const VALID_TIERS = ['off', 'soft', 'medium', 'hard'] as const;
+  if (
+    currentState
+    && currentState.tier
+    && currentState.since
+    && (VALID_TIERS as readonly string[]).includes(currentState.tier)
+  ) {
+    out.push({
+      tier: currentState.tier,
+      at: currentState.since,
+      transitioned_by: currentState.transitioned_by ?? null,
+      reason: currentState.reason ?? null,
+      atom_id: null,
+    });
+  }
+  for (const a of atoms) {
+    if (a.superseded_by && a.superseded_by.length > 0) continue;
+    if (a.taint && a.taint !== 'clean') continue;
+    const idMatch = a.id.startsWith('kill-switch-transition-');
+    const typeMatch = a.type === 'kill-switch-transitioned' || a.type === 'kill-switch.transitioned';
+    if (!idMatch && !typeMatch) continue;
+    if (!a.created_at) continue;
+    const meta = (a.metadata ?? {}) as Record<string, unknown>;
+    const tier = typeof meta.tier === 'string' ? (meta.tier as KillSwitchTransitionSummary['tier']) : null;
+    if (!tier || !['off', 'soft', 'medium', 'hard'].includes(tier)) continue;
+    out.push({
+      tier,
+      at: a.created_at,
+      transitioned_by: a.principal_id ?? null,
+      reason: typeof meta.reason === 'string' ? meta.reason : null,
+      atom_id: a.id,
+    });
+  }
+  out.sort((x, y) => (y.at < x.at ? -1 : y.at > x.at ? 1 : 0));
+  return out.slice(0, MAX_LIST_ITEMS);
+}
+
+/*
+ * Active elevations. Source: atoms whose
+ * `metadata.elevation.expires_at` is a parseable ISO timestamp in the
+ * future (vs `now`). Superseded or tainted atoms are excluded. The
+ * caller injects `nowMs` so the helper stays pure (testable without a
+ * fake clock module).
+ *
+ * `policy_target` and `principal` come from `metadata.policy.tool` and
+ * `metadata.policy.principal` when present (the canonical operator-
+ * elevation atom shape). They're null when the atom uses a different
+ * convention -- the panel just shows the atom id in that case.
+ */
+export function pickActiveElevations(
+  atoms: ReadonlyArray<AtomCandidate>,
+  nowMs: number,
+): ActiveElevationSummary[] {
+  const out: ActiveElevationSummary[] = [];
+  for (const a of atoms) {
+    if (a.superseded_by && a.superseded_by.length > 0) continue;
+    if (a.taint && a.taint !== 'clean') continue;
+    /*
+     * Symmetric id-prefix / type guard: the other three pickers in this
+     * file (`pickRecentKillSwitchTransitions`, `pickRecentOperatorActions`,
+     * `pickRecentEscalations`) gate on id-prefix or type. Match that
+     * pattern for elevations so a stray atom carrying `metadata.elevation`
+     * but not authored as a policy atom (test fixture, hand-written
+     * scratch atom, future writer using a different convention) cannot
+     * leak into the panel. Canonical operator-elevation atoms use the
+     * `pol-` prefix and `type === 'policy'` (or omit type entirely).
+     */
+    const idMatch = a.id.startsWith('pol-');
+    const typeMatch = a.type === undefined || a.type === 'policy';
+    if (!idMatch || !typeMatch) continue;
+    const meta = (a.metadata ?? {}) as Record<string, unknown>;
+    const elevation = meta.elevation as Record<string, unknown> | undefined;
+    if (!elevation || typeof elevation !== 'object') continue;
+    const expiresAt = elevation.expires_at;
+    if (typeof expiresAt !== 'string') continue;
+    const expiresMs = Date.parse(expiresAt);
+    if (!Number.isFinite(expiresMs)) continue;
+    if (expiresMs <= nowMs) continue;
+    const startedAt = typeof elevation.started_at === 'string' ? elevation.started_at : null;
+    const policy = (meta.policy as Record<string, unknown> | undefined) ?? {};
+    const tool = typeof policy.tool === 'string' ? policy.tool : null;
+    const subject = typeof policy.subject === 'string' ? policy.subject : null;
+    const principal = typeof policy.principal === 'string' ? policy.principal : null;
+    out.push({
+      atom_id: a.id,
+      policy_target: tool ?? subject ?? null,
+      principal,
+      started_at: startedAt,
+      expires_at: expiresAt,
+      time_remaining_seconds: Math.max(0, Math.floor((expiresMs - nowMs) / 1000)),
+    });
+  }
+  out.sort((x, y) => (x.expires_at < y.expires_at ? -1 : x.expires_at > y.expires_at ? 1 : 0));
+  return out.slice(0, MAX_LIST_ITEMS);
+}
+
+/*
+ * Recent operator actions. Source: atoms whose id begins with
+ * `op-action-`. Surfaces only the safe summary fields:
+ *   - atom_id    -- so the operator can drill down via the Atoms view
+ *   - principal_id -- the bot or operator that ran the action
+ *   - kind       -- the first arg from metadata.operator_action.args
+ *                   (e.g. "api", "pr", "graphql"); the rest of the
+ *                   args (which can include GraphQL queries with PII
+ *                   hints, repo paths, full operator command lines)
+ *                   stay server-side.
+ *   - at         -- created_at ISO
+ *
+ * Sorted descending by `at`, capped at MAX_LIST_ITEMS.
+ */
+export function pickRecentOperatorActions(
+  atoms: ReadonlyArray<AtomCandidate>,
+): OperatorActionSummary[] {
+  const out: OperatorActionSummary[] = [];
+  for (const a of atoms) {
+    if (!a.id.startsWith('op-action-')) continue;
+    if (a.superseded_by && a.superseded_by.length > 0) continue;
+    if (a.taint && a.taint !== 'clean') continue;
+    if (!a.created_at) continue;
+    const meta = (a.metadata ?? {}) as Record<string, unknown>;
+    const op = meta.operator_action as Record<string, unknown> | undefined;
+    let kind = 'unknown';
+    if (op && Array.isArray(op.args) && op.args.length > 0 && typeof op.args[0] === 'string') {
+      /*
+       * Cap the surfaced kind at 32 chars so a malformed first arg can't
+       * blow up the response payload size or the rendered cell width.
+       */
+      kind = (op.args[0] as string).slice(0, 32);
+    }
+    out.push({
+      atom_id: a.id,
+      principal_id: a.principal_id ?? 'unknown',
+      kind,
+      at: a.created_at,
+    });
+  }
+  out.sort((x, y) => (y.at < x.at ? -1 : y.at > x.at ? 1 : 0));
+  /*
+   * Cap at MAX_LIST_ITEMS / 2 so the operator-actions list doesn't
+   * dominate the panel when other lists are present. 10 rows mirrors
+   * the "top 10 recent operator-actions" ask in the v1 spec.
+   */
+  return out.slice(0, Math.min(10, MAX_LIST_ITEMS));
+}
+
+/*
+ * Recent escalations. Source: atoms whose id begins with
+ * `dispatch-escalation-`. Surfaces atom id + a short headline (first
+ * line of content, capped at 160 chars) so the operator sees the
+ * shape of recent failures without expanding the full payload.
+ */
+export function pickRecentEscalations(
+  atoms: ReadonlyArray<AtomCandidate>,
+): EscalationSummary[] {
+  const out: EscalationSummary[] = [];
+  for (const a of atoms) {
+    if (!a.id.startsWith('dispatch-escalation-')) continue;
+    if (a.superseded_by && a.superseded_by.length > 0) continue;
+    if (a.taint && a.taint !== 'clean') continue;
+    if (!a.created_at) continue;
+    const firstLine = typeof a.content === 'string'
+      ? (a.content.split(/\r?\n/, 1)[0] ?? '').slice(0, 160)
+      : '';
+    out.push({
+      atom_id: a.id,
+      at: a.created_at,
+      headline: firstLine,
+    });
+  }
+  out.sort((x, y) => (y.at < x.at ? -1 : y.at > x.at ? 1 : 0));
+  return out.slice(0, MAX_LIST_ITEMS);
 }
