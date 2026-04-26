@@ -1,3 +1,5 @@
+> Active in main as of PR #172: the CR CLI pre-push gate is now a hard requirement, not advisory.
+
 # cr-precheck: pre-push CodeRabbit-CLI helper
 
 ## What is cr-precheck
