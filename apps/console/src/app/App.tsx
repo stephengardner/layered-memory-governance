@@ -8,6 +8,7 @@ import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
 import { ActivitiesView } from '@/features/activities-viewer/ActivitiesView';
 import { PlansView } from '@/features/plans-viewer/PlansView';
 import { PlanLifecycleView } from '@/features/plan-lifecycle-viewer/PlanLifecycleView';
+import { DeliberationView } from '@/features/deliberation-trail/DeliberationView';
 import { GraphView } from '@/features/graph-viewer/GraphView';
 import { TimelineView } from '@/features/timeline-viewer/TimelineView';
 import { PageTransition } from '@/components/page-transition/PageTransition';
@@ -73,6 +74,7 @@ function renderRoute(r: Route) {
     case 'activities': return <ActivitiesView />;
     case 'plans': return <PlansView />;
     case 'plan-lifecycle': return <PlanLifecycleView />;
+    case 'deliberation': return <DeliberationView />;
     case 'graph': return <GraphView />;
     case 'timeline': return <TimelineView />;
   }
