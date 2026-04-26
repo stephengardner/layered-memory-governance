@@ -532,6 +532,48 @@ describe('draftCodeChange', () => {
     expect(result.totalCostUsd).toBe(0);
   });
 
+  it('forwards framingMode=code-author and effort=high on the LlmOptions', async () => {
+    // The drafter must signal to adapters that this is a long
+    // schema-bound code-generation call (framingMode='code-author')
+    // and cap the substrate-level reasoning depth at 'high' so an
+    // adapter-level higher default (set for short classifier judges)
+    // does not consume the entire output budget on extended thinking
+    // and emit zero structured output.
+    const plan = mkPlan('forward framing + effort');
+    const fence = mkFence();
+    const expectedData = {
+      plan_id: 'plan-drafter-test-1',
+      plan_title: 'Test plan',
+      plan_content: plan.content,
+      target_paths: ['README.md'],
+      success_criteria: '',
+      fence_snapshot: {
+        max_usd_per_pr: 10,
+        required_checks: ['Node 22 on ubuntu-latest'],
+      },
+    };
+    host.llm.register(DRAFT_SCHEMA, DRAFT_SYSTEM_PROMPT, expectedData, {
+      diff: SAMPLE_DIFF,
+      notes: 'ok',
+      confidence: 0.8,
+    });
+    let capturedOptions: Record<string, unknown> | null = null;
+    const realJudge = host.llm.judge.bind(host.llm);
+    host.llm.judge = (async (schema: unknown, system: unknown, data: unknown, options: unknown) => {
+      capturedOptions = options as Record<string, unknown>;
+      return realJudge(schema as Parameters<typeof realJudge>[0], system as Parameters<typeof realJudge>[1], data as Parameters<typeof realJudge>[2], options as Parameters<typeof realJudge>[3]);
+    }) as typeof host.llm.judge;
+    await draftCodeChange(host, {
+      plan,
+      fence,
+      targetPaths: ['README.md'],
+      model: 'claude-opus-4-7',
+    });
+    expect(capturedOptions).not.toBeNull();
+    expect(capturedOptions!.framingMode).toBe('code-author');
+    expect(capturedOptions!.effort).toBe('high');
+  });
+
   it('fileContents: when provided non-empty, included in DATA block under `file_contents`', async () => {
     // Closes the APPEND/MODIFY gap: the drafter has no repo access of
     // its own, so an accurate MODIFY diff needs the current file
