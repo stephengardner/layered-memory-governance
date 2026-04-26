@@ -37,7 +37,6 @@ import { runReaperSweep, DEFAULT_REAPER_TTLS } from '../dist/runtime/plans/reape
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
-const STOP_SENTINEL = resolve(REPO_ROOT, '.lag', 'STOP');
 
 const REAPER_PRINCIPAL = 'plan-reaper';
 
@@ -78,12 +77,20 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const ttls = parseEnvTtls();
 
-  if (existsSync(STOP_SENTINEL)) {
-    console.error('[plan-reaper] STOP sentinel present at .lag/STOP; halting before any sweep.');
+  const rootDir = args.rootDir ?? resolve(REPO_ROOT, '.lag');
+  /*
+   * Kill-switch sentinel lives inside the resolved store root, not
+   * REPO_ROOT, so a sweep targeting an alternate atom store (--root
+   * or LAG_ROOT) honors that store's own STOP. Per inv-kill-switch-
+   * first the gate halts before any mutation, so we check it BEFORE
+   * constructing the host.
+   */
+  const stopSentinel = resolve(rootDir, 'STOP');
+  if (existsSync(stopSentinel)) {
+    console.error(`[plan-reaper] STOP sentinel present at ${stopSentinel}; halting before any sweep.`);
     process.exit(1);
   }
 
-  const rootDir = args.rootDir ?? resolve(REPO_ROOT, '.lag');
   const host = await createFileHost({ rootDir });
 
   const warnHours = Math.round(ttls.staleWarnMs / 3600000);
