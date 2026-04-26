@@ -1,4 +1,4 @@
-import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb, ShieldAlert, Radio, GitFork, Brain } from 'lucide-react';
+import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb, ShieldAlert, Radio, GitFork, Brain, Zap } from 'lucide-react';
 import { routeHref, setRoute, type Route } from '@/state/router.store';
 import logoUrl from '@/assets/lag-logo.png';
 import styles from './Sidebar.module.css';
@@ -14,6 +14,11 @@ interface NavItem {
    * the app. Per canon `inv-kill-switch-before-autonomy`, the kill
    * switch is load-bearing; the operator should never have to hunt
    * for it.
+   *
+   * Critical entries (operator-facing live views) also sit at the head
+   * of the nav even when alphabetical ordering would push them down:
+   * `live-ops` (Pulse) answers the "what is the org doing right now?"
+   * question at a glance.
    */
   readonly priority?: 'critical';
   /*
@@ -28,6 +33,7 @@ interface NavItem {
 }
 
 const items: ReadonlyArray<NavItem> = [
+  { id: 'live-ops', label: 'Pulse', icon: Zap, priority: 'critical' },
   { id: 'dashboard', label: 'Dashboard', mobileLabel: 'Home', icon: Gauge },
   { id: 'control', label: 'Control', icon: ShieldAlert, priority: 'critical' },
   { id: 'canon', label: 'Canon', icon: Book },

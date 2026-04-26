@@ -16,6 +16,7 @@ import { GraphView } from '@/features/graph-viewer/GraphView';
 import { TimelineView } from '@/features/timeline-viewer/TimelineView';
 import { MetricsRollupView } from '@/features/metrics-rollup/MetricsRollupView';
 import { ActorActivityView } from '@/features/actor-activity/ActorActivityView';
+import { LiveOpsView } from '@/features/live-ops/LiveOpsView';
 import { PageTransition } from '@/components/page-transition/PageTransition';
 import { useRoute, type Route } from '@/state/router.store';
 import { useThemeStore } from '@/state/theme.store';
@@ -76,6 +77,7 @@ function renderRoute(r: Route) {
   switch (r) {
     case 'dashboard': return <MetricsRollupView />;
     case 'control': return <ControlPanelView />;
+    case 'live-ops': return <LiveOpsView />;
     case 'canon': return <CanonViewer />;
     case 'canon-suggestions': return <CanonSuggestionsView />;
     case 'principals': return <PrincipalsView />;
