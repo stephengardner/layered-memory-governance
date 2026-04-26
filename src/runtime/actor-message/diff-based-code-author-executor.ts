@@ -24,9 +24,10 @@ import { randomBytes } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import type { execa } from 'execa';
-import type { Atom } from '../../types.js';
+import type { Atom, PrincipalId } from '../../types.js';
 import type { Host } from '../../interface.js';
 import type { GhClient } from '../../external/github/index.js';
+import type { Workspace, WorkspaceProvider } from '../../substrate/workspace-provider.js';
 import {
   draftCodeChange,
   DrafterError,
@@ -51,6 +52,15 @@ export interface DiffBasedExecutorConfig {
   readonly ghClient: GhClient;
   readonly owner: string;
   readonly repo: string;
+  /**
+   * Repository path the executor operates against by default. When
+   * `workspaceProvider` is set, this value is unused at execute time
+   * (the workspace's path replaces it for the duration of one
+   * dispatch); a malformed `repoDir` is therefore not a runtime error
+   * for provider-backed deployments. Kept required so the back-compat
+   * code path that operates on a caller-managed checkout has a single
+   * authoritative source of truth for cwd.
+   */
   readonly repoDir: string;
   readonly gitIdentity: GitIdentity;
   readonly model: string;
@@ -72,6 +82,48 @@ export interface DiffBasedExecutorConfig {
    * stub so no git subprocess runs.
    */
   readonly execImpl?: typeof execa;
+  /**
+   * Optional isolated-workspace seam. When set, every `execute()`
+   * call acquires a fresh workspace via `workspaceProvider.acquire`
+   * BEFORE the drafter runs and releases it in a finally block,
+   * regardless of pipeline outcome. The workspace's `path` becomes
+   * the effective working directory for target-file pre-reads,
+   * cited-paths verification, and every git invocation; the
+   * `repoDir` configured at factory time is unused for the duration
+   * of that dispatch.
+   *
+   * Why this seam exists
+   * --------------------
+   * The dirty-worktree gate inside `applyDraftBranch` exists so the
+   * primitive can never silently fold an unrelated uncommitted file
+   * into a draft commit. It is load-bearing: a clean cwd is part of
+   * the primitive's contract. The autonomous-dispatch wiring needs
+   * to honour that contract WITHOUT requiring the operator's primary
+   * checkout to stay clean across an entire elevation window. An
+   * isolated workspace per dispatch satisfies both invariants: the
+   * primitive sees a clean tree by construction, and the operator's
+   * checkout is decoupled from autonomous flow state.
+   *
+   * Substrate-purity properties
+   * ---------------------------
+   * - The executor never writes to `repoDir` when a provider is set;
+   *   every git/fs invocation runs against `workspace.path`.
+   * - `workspaceProvider.release(workspace)` runs in a finally so a
+   *   crashed pipeline or a thrown drafter error cannot leak the
+   *   workspace. A release error is swallowed so it cannot mask the
+   *   upstream success/error result.
+   * - The provider is principal-aware: cred-copying decisions belong
+   *   to the provider impl, not the executor.
+   */
+  readonly workspaceProvider?: WorkspaceProvider;
+  /**
+   * Principal id forwarded to `workspaceProvider.acquire` when a
+   * provider is set. Required only for provider-backed deployments;
+   * legacy callers that manage their own checkout can leave it
+   * unset. A provider that ignores principal (e.g. a tmpfs adapter
+   * for tests) tolerates any value here.
+   */
+  readonly principal?: PrincipalId;
   /**
    * Inject a filesystem reader for the target-path pre-read step.
    * Given an absolute path, returns the file contents as UTF-8 text
@@ -119,6 +171,62 @@ export function buildDiffBasedCodeAuthorExecutor(
 
   return {
     async execute(inputs): Promise<CodeAuthorExecutorResult> {
+      // Resolve the per-dispatch effective working directory. With a
+      // workspace provider configured we acquire a fresh isolated
+      // worktree off `baseBranch` for the duration of this single
+      // execute() call; without one, fall back to the caller-managed
+      // `config.repoDir`. The acquire+release pair is symmetric and
+      // bounded: a thrown drafter or git-ops error still releases via
+      // the finally below. `workspace` stays in scope so the finally
+      // can read its handle without a sentinel mutation.
+      let workspace: Workspace | null = null;
+      if (config.workspaceProvider !== undefined) {
+        if (config.principal === undefined) {
+          return {
+            kind: 'error',
+            stage: 'workspace-acquire/missing-principal',
+            reason: 'workspaceProvider is set but principal is not configured; provider-backed dispatch requires both',
+          };
+        }
+        try {
+          workspace = await config.workspaceProvider.acquire({
+            principal: config.principal,
+            baseRef: baseBranch,
+            correlationId: inputs.correlationId,
+          });
+        } catch (err) {
+          return {
+            kind: 'error',
+            stage: 'workspace-acquire/failed',
+            reason: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+      const effectiveRepoDir = workspace !== null ? workspace.path : config.repoDir;
+      try {
+        return await runPipeline(inputs, effectiveRepoDir);
+      } finally {
+        if (workspace !== null && config.workspaceProvider !== undefined) {
+          // Swallow release errors: a release failure must not mask
+          // the upstream success/error the caller is about to
+          // observe. Orphaned worktrees surface via the provider's
+          // own auditing path (e.g. `git worktree prune`).
+          await config.workspaceProvider.release(workspace).catch(() => undefined);
+        }
+      }
+    },
+  };
+
+  /**
+   * Inner pipeline: drafter -> apply-branch (git-ops) -> pr-creation,
+   * parameterised on the effective working directory the caller resolved
+   * (either `config.repoDir` or a workspace's `path`). Extracted so the
+   * acquire+release scope around `execute` stays a thin wrapper.
+   */
+  async function runPipeline(
+    inputs: Parameters<CodeAuthorExecutor['execute']>[0],
+    repoDirArg: string,
+  ): Promise<CodeAuthorExecutorResult> {
       const { plan, fence, correlationId, signal } = inputs;
       const planId = String(plan.id);
       // Sanitize plan id for use inside a git branch name. Git
@@ -170,7 +278,7 @@ export function buildDiffBasedCodeAuthorExecutor(
       // to emit `--- /dev/null` on the old side per the system
       // prompt's rule 6. Any other fs error propagates.
       const readFn = config.readFileFn ?? ((p: string) => readFile(p, 'utf8'));
-      const fileContents = await readTargetContents(targetPaths, config.repoDir, readFn);
+      const fileContents = await readTargetContents(targetPaths, repoDirArg, readFn);
 
       // Drafter + apply-branch retry loop. The drafter (LLM) emits
       // unified diffs, which is intrinsically lossy: line-count
@@ -259,7 +367,7 @@ export function buildDiffBasedCodeAuthorExecutor(
         // declared no citations) and skips the gate.
         const citationVerifyResult = await verifyCitedPaths(
           draftResult.citedPaths,
-          config.repoDir,
+          repoDirArg,
         );
         if (citationVerifyResult.kind === 'error') {
           return {
@@ -272,7 +380,7 @@ export function buildDiffBasedCodeAuthorExecutor(
         try {
           gitResult = await applyDraftBranch({
             diff: draftResult.diff,
-            repoDir: config.repoDir,
+            repoDir: repoDirArg,
             branchName,
             baseBranch,
             commitMessage: buildCommitMessage(plan, draftResult.notes),
@@ -382,8 +490,7 @@ export function buildDiffBasedCodeAuthorExecutor(
         confidence: draftResult.confidence,
         touchedPaths: draftResult.touchedPaths,
       };
-    },
-  };
+  }
 }
 
 /**

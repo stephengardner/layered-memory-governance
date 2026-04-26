@@ -18,6 +18,26 @@
  *                  instance; consumers can swap to a dedicated
  *                  'lag-code-author' role by provisioning it + setting
  *                  the env var).
+ *   - dispatchPrincipal: LAG_DISPATCH_PRINCIPAL_ID env, defaults to
+ *                  `role` for backward-compat. Distinct from the role:
+ *                  `role` drives cred provisioning in
+ *                  GitWorktreeProvider.copyCredsForRoles; principal
+ *                  is the executor-side identity for workspace
+ *                  isolation and downstream attribution. Decoupling
+ *                  these lets a deployment run principal
+ *                  `vo-code-author` under role `lag-ceo` without
+ *                  conflating cred-copy and ownership.
+ *   - workspaceProvider: GitWorktreeProvider rooted at `repoDir`.
+ *                  Each dispatch acquires an isolated worktree off
+ *                  `baseBranch`, runs the drafter + git-ops + PR-create
+ *                  chain against THAT worktree, and releases on
+ *                  completion. The operator's primary checkout is never
+ *                  touched, so an unrelated dirty primary (untracked
+ *                  drafts, modified .gitignore, exploratory PNGs) does
+ *                  NOT block autonomous dispatch. Disable via
+ *                  LAG_DISPATCH_ISOLATE_WORKTREE=0 if a deployment has
+ *                  external isolation (docker, container) and wants
+ *                  the legacy single-checkout behaviour.
  *
  * Git push auth: code-author's apply-branch step shells out to git
  * directly, so the dispatch wrapper supplies an `execImpl` that
@@ -55,6 +75,7 @@ export default async function register(host, registry) {
   const { createVirtualOrgGhClient } = await import('../../dist/examples/virtual-org-bootstrap/gh-client-factory.js');
   const { findIntentInProvenance } = await import('../../dist/runtime/actor-message/intent-approve.js');
   const { InstallationTokenCache } = await import('../../dist/external/github-app/app-auth.js');
+  const { GitWorktreeProvider } = await import('../../dist/examples/workspace-providers/git-worktree/index.js');
 
   // LAG_DISPATCH_BOT_ROLE is required: defaulting to a specific
   // principal id (e.g. 'lag-ceo') in the canonical invoker would
@@ -122,6 +143,34 @@ export default async function register(host, registry) {
     repoName: repo,
   });
 
+  // Construct a GitWorktreeProvider rooted at the operator's primary
+  // checkout. Each dispatch acquires a fresh `<repoDir>/.worktrees/agentic/<id>`
+  // off the configured base branch, isolating autonomous flow from
+  // whatever uncommitted state lives in the primary. Cred copying is
+  // role-scoped: only the dispatch bot's credentials get copied so the
+  // workspace can authenticate its push without exposing other roles'
+  // tokens to the same disk path. LAG_DISPATCH_ISOLATE_WORKTREE=0
+  // opts a deployment out (e.g. for environments where isolation is
+  // already provided by an external sandbox / container).
+  const isolateWorktree = process.env.LAG_DISPATCH_ISOLATE_WORKTREE !== '0';
+  const workspaceProvider = isolateWorktree
+    ? new GitWorktreeProvider({ repoDir, copyCredsForRoles: [role] })
+    : undefined;
+
+  // Decouple role from principal at the WorkspaceProvider boundary.
+  // GitWorktreeProvider's `copyCredsForRoles` is role-scoped (cred
+  // provisioning), while the executor's `principal` parameter answers
+  // "whose work is this for" -- workspace isolation + downstream
+  // attribution. Most deployments collapse the two (role==principal),
+  // so default to the bot role to preserve current behaviour; orgs
+  // that distinguish them (e.g. principal `vo-code-author` running
+  // under role `lag-ceo`) override LAG_DISPATCH_PRINCIPAL_ID without
+  // touching the role wiring.
+  const principalRaw = process.env.LAG_DISPATCH_PRINCIPAL_ID;
+  const dispatchPrincipal = typeof principalRaw === 'string' && principalRaw.trim().length > 0
+    ? principalRaw.trim()
+    : role;
+
   const defaultExecutor = buildDefaultCodeAuthorExecutor({
     host,
     ghClient,
@@ -133,6 +182,7 @@ export default async function register(host, registry) {
     remote,
     baseBranch,
     execImpl,
+    ...(workspaceProvider !== undefined ? { workspaceProvider, principal: dispatchPrincipal } : {}),
   });
 
   registry.register('code-author', async (payload, correlationId) => {

@@ -117,10 +117,14 @@ function ghClientStub(restImpl: GhClient['rest']): GhClient {
 interface StubReply { exitCode: number; stdout?: string; stderr?: string }
 
 function stubGitExeca(replies: ReadonlyArray<StubReply>) {
-  const calls: Array<{ args: ReadonlyArray<string>; input?: string }> = [];
+  const calls: Array<{ args: ReadonlyArray<string>; input?: string; cwd?: string }> = [];
   let i = 0;
   const impl = (async (_bin: string, args: ReadonlyArray<string>, options: Record<string, unknown>) => {
-    calls.push({ args: args.slice(), ...(options['input'] !== undefined ? { input: options['input'] as string } : {}) });
+    calls.push({
+      args: args.slice(),
+      ...(options['input'] !== undefined ? { input: options['input'] as string } : {}),
+      ...(options['cwd'] !== undefined ? { cwd: options['cwd'] as string } : {}),
+    });
     const r = replies[i++];
     if (!r) throw new Error(`stubGitExeca: no reply for call #${i}; args=${args.join(' ')}`);
     return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', exitCode: r.exitCode };
@@ -1179,6 +1183,235 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     expect(result.stage).toBe('apply-branch/dirty-worktree');
     // Only 1 git call before the throw -- proves no retry.
     expect(calls.length).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Regression: workspace-provider isolation (dirty-primary, clean-isolated)
+  // ---------------------------------------------------------------------------
+  // The autonomous-dispatch wiring runs against the operator's primary
+  // checkout, which can carry untracked files (canonical screenshots,
+  // exploratory plan markdown, .gitignore drafts) for an entire elevation
+  // window. Without an isolation seam, every dispatch failed at
+  // apply-branch/dirty-worktree because git-ops.ts ran `git status
+  // --porcelain` against the primary's cwd. The fix is a per-execute
+  // workspace acquired off the configured baseRef; the executor
+  // pre-reads target files, verifies cited paths, AND runs every git
+  // invocation against that workspace's path. The configured `repoDir`
+  // becomes irrelevant for the duration of the dispatch -- a primary
+  // dirty enough to fail naive `git status` MUST NOT block a workspace-
+  // backed dispatch.
+  //
+  // These tests pin:
+  //   1. effective-cwd swap: every git call sees workspace.path, not config.repoDir
+  //   2. release-on-success: workspace is released after a dispatched result
+  //   3. release-on-error: workspace is released even when the inner pipeline throws
+  //   4. acquire-failure: typed stage `workspace-acquire/failed` surfaces the cause
+  //   5. principal gate: provider set without principal returns workspace-acquire/missing-principal
+
+  function fakeWorkspaceProvider(
+    workspacePath: string,
+    opts: { acquireThrows?: Error; releaseThrows?: Error } = {},
+  ) {
+    const events: string[] = [];
+    const provider = {
+      async acquire(input: { principal: string; baseRef: string; correlationId: string }) {
+        events.push(`acquire(principal=${input.principal},baseRef=${input.baseRef},correlationId=${input.correlationId})`);
+        if (opts.acquireThrows) throw opts.acquireThrows;
+        return { id: 'fake-ws-id', path: workspacePath, baseRef: input.baseRef };
+      },
+      async release(workspace: { id: string; path: string; baseRef: string }) {
+        events.push(`release(id=${workspace.id})`);
+        if (opts.releaseThrows) throw opts.releaseThrows;
+      },
+    };
+    return { provider, events };
+  }
+
+  it('regression: workspaceProvider isolates primary cwd from dispatch (dirty primary -> dispatched)', async () => {
+    // Simulate the production failure mode: the operator's primary
+    // worktree is dirty (configured `repoDir` is the dirty path), but
+    // the workspace provider mints a clean isolated path. Every git
+    // invocation runs against the workspace path, so `git status
+    // --porcelain` returns clean and dispatch proceeds.
+    const plan = mkPlan('plan-iso', '# plan\n\ncontent', { target_paths: ['README.md'] });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    });
+
+    const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const { provider, events } = fakeWorkspaceProvider('/tmp/clean-isolated');
+
+    const ghClient = ghClientStub((async () => ({
+      number: 42, html_url: 'https://github.com/o/r/pull/42', url: '', node_id: '', state: 'open',
+    })) as GhClient['rest']);
+
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient,
+      owner: 'o',
+      repo: 'r',
+      // The configured `repoDir` is the operator's dirty primary --
+      // identical to the production failure mode. The fix means every
+      // git call ignores this path in favour of `workspace.path`.
+      repoDir: '/tmp/dirty-primary',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+      workspaceProvider: provider,
+      principal: 'cto-actor' as PrincipalId,
+    });
+
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-iso-1', observationAtomId: 'obs-iso-1' as AtomId });
+    expect(result.kind).toBe('dispatched');
+
+    // Every git invocation MUST have run against workspace.path. If a
+    // single call leaks back to `/tmp/dirty-primary`, the
+    // dirty-worktree symptom returns the moment a real worktree is
+    // dirty, and the substrate-purity invariant is broken.
+    expect(gitCalls.length).toBeGreaterThan(0);
+    for (const c of gitCalls) {
+      expect(c.cwd, `every git invocation must capture cwd; missing on ${c.args.join(' ')}`).toBeDefined();
+      expect(c.cwd, `git ran against /tmp/dirty-primary instead of workspace.path on args=${c.args.join(' ')}`).not.toBe('/tmp/dirty-primary');
+      expect(c.cwd, `git ran outside the isolated workspace on args=${c.args.join(' ')}`).toBe('/tmp/clean-isolated');
+    }
+    // Acquire-then-release order is guaranteed by the try/finally.
+    expect(events).toEqual([
+      'acquire(principal=cto-actor,baseRef=main,correlationId=corr-iso-1)',
+      'release(id=fake-ws-id)',
+    ]);
+  });
+
+  it('regression: workspaceProvider releases the workspace even when the pipeline errors', async () => {
+    // Verify try/finally semantics: a thrown drafter error or a
+    // git-ops failure MUST NOT leak the workspace. The provider fakes
+    // record both events; the test asserts release fires regardless
+    // of the dispatched/error result kind.
+    const plan = mkPlan('plan-iso-err', '# plan\n\ncontent', { target_paths: ['README.md'] });
+    // No drafter response registered -> drafter throws
+    // DrafterError(llm-call-failed); pipeline returns error.
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const { provider, events } = fakeWorkspaceProvider('/tmp/clean-isolated-err');
+
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r',
+      repoDir: '/tmp/dirty-primary',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+      workspaceProvider: provider,
+      principal: 'cto-actor' as PrincipalId,
+    });
+
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'corr-iso-err', observationAtomId: 'obs-iso-err' as AtomId });
+    expect(result.kind).toBe('error');
+    expect(events).toEqual([
+      'acquire(principal=cto-actor,baseRef=main,correlationId=corr-iso-err)',
+      'release(id=fake-ws-id)',
+    ]);
+  });
+
+  it('regression: workspaceProvider.acquire throws -> workspace-acquire/failed', async () => {
+    // A provider whose underlying git/fs operation fails (e.g.
+    // baseRef not found, .worktrees disk full) MUST surface a typed
+    // stage so the dashboard + observation atom record where it
+    // stopped. The pipeline never starts; no drafter response is
+    // needed, no git stub is called.
+    const plan = mkPlan('plan-iso-acq', '# plan\n\ncontent', { target_paths: ['README.md'] });
+    const { impl: execImpl, calls } = stubGitExeca([]);
+    const { provider } = fakeWorkspaceProvider('/tmp/never-reached', {
+      acquireThrows: new Error('GitWorktreeProvider: baseRef \'main\' not found in repo'),
+    });
+
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r',
+      repoDir: '/tmp/dirty-primary',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+      workspaceProvider: provider,
+      principal: 'cto-actor' as PrincipalId,
+    });
+
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-x' as AtomId });
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.stage).toBe('workspace-acquire/failed');
+    expect(result.reason).toMatch(/baseRef 'main' not found/);
+    // Pipeline never started -> no git invocations, no drafter call.
+    expect(calls.length).toBe(0);
+  });
+
+  it('regression: workspaceProvider set without principal -> workspace-acquire/missing-principal', async () => {
+    // The provider seam is principal-aware (cred-copying decisions
+    // belong to the provider). A misconfigured deployment that wires
+    // the provider without a principal id MUST fail loud at execute
+    // time rather than acquire under an unspecified identity.
+    const plan = mkPlan('plan-iso-noprin', '# plan\n\ncontent', { target_paths: ['README.md'] });
+    const { impl: execImpl } = stubGitExeca([]);
+    const { provider, events } = fakeWorkspaceProvider('/tmp/never-reached');
+
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r',
+      repoDir: '/tmp/dirty-primary',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+      workspaceProvider: provider,
+      // principal deliberately omitted
+    });
+
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-x' as AtomId });
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.stage).toBe('workspace-acquire/missing-principal');
+    // Provider was never called -- the gate fires before acquire().
+    expect(events).toEqual([]);
+  });
+
+  it('regression: back-compat -- without workspaceProvider, repoDir is used directly (dirty primary still fails)', async () => {
+    // Pin that the back-compat path is unchanged: a dispatch with no
+    // provider configured still hits the dirty-worktree gate when the
+    // configured repoDir is dirty. The fix introduces an opt-in seam,
+    // not a behaviour change for existing callers.
+    const plan = mkPlan('plan-bc', '# plan\n\ncontent', { target_paths: ['README.md'] });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    });
+    const { impl: execImpl } = stubGitExeca([
+      { exitCode: 0, stdout: ' M src/foo.ts\n' }, // dirty
+    ]);
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+      // No workspaceProvider -> back-compat path
+    });
+
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-bc' as AtomId });
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.stage).toBe('apply-branch/dirty-worktree');
   });
 });
 
