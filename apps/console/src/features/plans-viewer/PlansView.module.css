@@ -204,6 +204,62 @@
   overflow-wrap: anywhere;
 }
 
+/*
+ * Clarify-stub disclosure block. Sits directly below a normalized
+ * clarify title and lets the operator pop open the raw Claude CLI
+ * stdout when triaging an LLM-judgment failure. Native `<details>` is
+ * deliberate: keyboard / screen-reader accessible without a custom
+ * disclosure pattern, and zero JS state to track. Visually subordinate
+ * (small mono summary, raised-surface body) so it doesn't compete with
+ * the plan body markdown.
+ */
+.clarifyDetails {
+  margin-top: calc(-1 * var(--space-2));
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.clarifySummary {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: var(--space-1) 0;
+  list-style: none;
+  user-select: none;
+  transition: color var(--duration-fast) var(--easing-standard);
+}
+
+.clarifySummary::-webkit-details-marker {
+  display: none;
+}
+
+.clarifySummary:hover {
+  color: var(--text-secondary);
+}
+
+.clarifySummary:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+.clarifyRaw {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: auto;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
 .content {
   font-size: var(--font-size-sm);
   line-height: var(--line-height-relaxed);
