@@ -70,6 +70,7 @@ function parseArgs(argv) {
     principalId: 'pr-landing-agent',
     origin: 'github-action',
     observeOnly: false,
+    planId: null,
   };
   const parseInt = (raw, flag) => {
     const n = Number(raw);
@@ -91,11 +92,28 @@ function parseArgs(argv) {
     else if (a === '--principal') args.principalId = argv[++i];
     else if (a === '--origin') args.origin = argv[++i];
     else if (a === '--observe-only') args.observeOnly = true;
+    else if (a === '--plan-id') {
+      // Guard against the last-token / next-flag failure mode CR
+      // flagged: `--plan-id` followed by nothing or by another flag
+      // would silently land `undefined`/`-...` in args.planId, the
+      // spread-guard in mkPrObservationAtom would drop the field,
+      // and the reconciler would skip the plan exactly as if the
+      // linkage was never wired. Mirror the parseInt fail-loud style.
+      const next = argv[++i];
+      if (typeof next !== 'string' || next.length === 0 || next.startsWith('-')) {
+        console.error(`ERROR: --plan-id expects a non-empty plan atom id, got "${next ?? '(missing)'}"`);
+        process.exit(2);
+      }
+      args.planId = next;
+    }
     else if (a === '--help' || a === '-h') {
       console.log(
-        'Usage: node scripts/run-pr-landing.mjs --pr <n> [--owner o --repo r] [--live|--dry-run] [--observe-only] [--max-iterations n]\n'
+        'Usage: node scripts/run-pr-landing.mjs --pr <n> [--owner o --repo r] [--live|--dry-run] [--observe-only] [--plan-id id] [--max-iterations n]\n'
         + '  --observe-only: observe + emit pr-observation atom + post PR comment, no reply/resolve/merge.\n'
-        + '                  Session agents read the atom id (via pr-status.mjs) instead of polling GitHub directly.',
+        + '                  Session agents read the atom id (via pr-status.mjs) instead of polling GitHub directly.\n'
+        + '  --plan-id <id>: attach the originating Plan atom id to the observation metadata.\n'
+        + '                  Lets the plan-merge reconciler join observation -> plan in one read.\n'
+        + '                  Pass when running observe downstream of an autonomous-flow dispatch.',
       );
       process.exit(0);
     } else {
@@ -207,6 +225,7 @@ async function main() {
       number: args.prNumber,
       live: args.live,
       origin: args.origin,
+      planId: args.planId,
     });
   }
 
@@ -503,7 +522,7 @@ function summarize(payload) {
  * atom id + fresh comment; the two atoms chain via derived_from so
  * history is traceable.
  */
-async function runObserveOnly({ host, principal, review, owner, repo, number, live, origin }) {
+async function runObserveOnly({ host, principal, review, owner, repo, number, live, origin, planId }) {
   if (existsSync(STOP_SENTINEL)) {
     console.error('[pr-landing] kill switch tripped (.lag/STOP); refusing observe-only run');
     process.exit(2);
@@ -576,6 +595,7 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
       observedAt: nowIso,
       origin,
       priorId,
+      ...(planId ? { planId } : {}),
     });
     // Race guard: two observe-only runs can both see existing===null
     // and then contend on put(). The loser's put throws ConflictError;

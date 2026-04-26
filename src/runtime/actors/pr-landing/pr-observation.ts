@@ -36,6 +36,14 @@ export interface PrObservationInputs {
   readonly observedAt: Time;
   readonly origin?: string;
   readonly priorId?: string | null;
+  /**
+   * Atom id of the Plan that dispatched this PR, when known. Lets the
+   * plan-merge reconciler join observation -> plan in one read; without
+   * it the reconciler skips because the linkage is the gate. Callers
+   * that observe an arbitrary PR (ad-hoc operator checks) omit this
+   * field; callers downstream of the dispatch tick pass it through.
+   */
+  readonly planId?: string | null;
 }
 
 /**
@@ -67,9 +75,17 @@ export function mkPrObservationAtom(inputs: PrObservationInputs): Atom {
     observedAt,
     origin,
     priorId,
+    planId,
   } = inputs;
 
-  const derivedFrom = priorId ? [priorId as AtomId] : [];
+  const derivedFrom: AtomId[] = [];
+  if (priorId) derivedFrom.push(priorId as AtomId);
+  // Adding the Plan id to provenance.derived_from chains the
+  // observation back to the deliberation that produced the PR, so
+  // an audit trace from `succeeded` plan -> dispatch -> observation
+  // -> commit reads cleanly without scanning. Reconciler still keys
+  // off metadata.plan_id; provenance is the read-friendly view.
+  if (planId && planId.length > 0) derivedFrom.push(planId as AtomId);
 
   return {
     schema_version: 1,
@@ -109,6 +125,7 @@ export function mkPrObservationAtom(inputs: PrObservationInputs): Atom {
       mergeable: status.mergeable,
       merge_state_status: status.mergeStateStatus,
       pr_state: status.prState,
+      ...(planId && planId.length > 0 ? { plan_id: planId } : {}),
       counts: {
         line_comments: status.lineComments.length,
         body_nits: status.bodyNits.length,
