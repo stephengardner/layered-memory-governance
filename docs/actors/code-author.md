@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The only Actor permitted to mutate tracked files in the repository. It receives plan atoms, drafts a unified diff, opens a signed pull request against `master`, and exits. Other Actors that need code changes route through it.
+The only Actor permitted to mutate tracked files in the repository. It receives plan atoms, drafts a unified diff, opens a signed pull request against `main`, and exits. Other Actors that need code changes route through it.
 
 ## Signed by
 

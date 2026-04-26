@@ -23,4 +23,4 @@ Anchored on `arch-actor-message-inbox-primitive`.
 
 ## Source
 
-`src/runtime/actors/cto-actor/` on `main`.
+`src/runtime/actors/planning/` on `main`.
