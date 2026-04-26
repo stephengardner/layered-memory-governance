@@ -38,6 +38,11 @@ import {
   tierFromKillSwitch,
   type ControlStatus,
 } from './control-status';
+import {
+  buildActorActivityResponse,
+  type ActorActivityAtom,
+  type ActorActivityResponse,
+} from './actor-activity';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -335,6 +340,26 @@ async function handleActivitiesList(params: { limit?: number; types?: string[] }
   out.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
   const limit = Math.max(1, Math.min(500, params.limit ?? 100));
   return out.slice(0, limit);
+}
+
+/*
+ * Actor-activity stream: a "control tower" view of which principals are
+ * currently writing atoms. Reads the live atom set, then delegates to
+ * the pure transform in actor-activity.ts (which is unit-tested
+ * independent of HTTP plumbing).
+ *
+ * Read-only by design: the handler never writes to the atom store nor
+ * mutates any in-memory cache state. The atom index is consulted via
+ * readAllAtoms() (a snapshot, not the live Map) and the resulting
+ * response is a derived projection.
+ */
+async function handleActorActivityStream(params: { limit?: number }): Promise<ActorActivityResponse> {
+  const all = await readAllAtoms();
+  // Atom -> ActorActivityAtom is a structural narrowing. The runtime
+  // shape is identical; the cast carries no risk because the consumer
+  // only reads the listed fields.
+  const projected = all as ReadonlyArray<ActorActivityAtom>;
+  return buildActorActivityResponse(projected, params, new Date());
 }
 
 /*
@@ -1764,6 +1789,27 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'activities-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  /*
+   * Actor activity stream. The endpoint name carries `.stream` to
+   * reserve the slot for an SSE/WebSocket variant in v2; v1 is a
+   * single-shot poll that the client invokes via TanStack Query's
+   * refetchInterval. Wire payload is bounded server-side regardless
+   * of caller-supplied limit (DoS defense -- ACTOR_ACTIVITY_MAX_LIMIT).
+   */
+  if (path === '/api/actor-activity.stream' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const bodyLimit = body['limit'];
+    const limit = typeof bodyLimit === 'number' ? bodyLimit : undefined;
+    const params: { limit?: number } = limit !== undefined ? { limit } : {};
+    try {
+      const data = await handleActorActivityStream(params);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'actor-activity-failed', (err as Error).message);
     }
     return;
   }
