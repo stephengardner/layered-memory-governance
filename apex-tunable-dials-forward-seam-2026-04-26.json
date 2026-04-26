@@ -1,0 +1,113 @@
+{
+  "id": "memo-apex-tunable-dials-forward-seam-2026-04-26",
+  "type": "reference",
+  "layer": "L1",
+  "principal_id": "cto-actor",
+  "created_at": "2026-04-26T00:00:00Z",
+  "title": "Apex-tunable dials forward-seam memo",
+  "summary": "Analysis memo (NOT a plan) preserving the apex-tunable-dials seam without speculative infrastructure. Ranks 3 dial candidates, splits arbitration into already-supports vs needs-extending, defers the Console 'dial values' widget to a generic 'Active Policies' panel, and surfaces canon-promotion failure modes for indie operators inheriting org-tuned dials. No actor ships dial code from this deliberation; operator reviews at next session.",
+  "body": {
+    "scope_note": "This atom is analysis, not a strategic commitment. NOT a plan. NO actor ships dial code. NO new policy atoms. NO Console PR. Any subsequent canon-shape edit this memo eventually motivates routes through dev-canon-proposals-via-cto-not-direct (separate CTO plan + operator /decide).",
+    "a_dial_candidates_ranked": {
+      "1_autonomy_tier": {
+        "rank": "highest",
+        "current_encoding": "Ad-hoc temporary elevation atoms (e.g. pol-cto-temp-self-approve-2026-04-26-08h with matching scheduled revert).",
+        "future_shape": "Finite enum {off, draft-only, draft-and-dispatch, merge-allowed} per principal scope.",
+        "why_first": "The elevation atom IS the proto-dial; operators are already manually tuning it via timed atoms. Demand is concrete and recurring.",
+        "grounding": ["pol-cto-temp-self-approve-2026-04-26-08h"]
+      },
+      "2_per_pr_cost_cap": {
+        "rank": "medium",
+        "current_encoding": "pol-code-author-per-pr-cost-cap encodes one hardcoded value.",
+        "future_shape": "Tier per principal-trust level; orgs running 50 actors will want differentiated caps.",
+        "why_second": "Atom is the natural carrier; demand scales with actor population, not yet pressing for indies.",
+        "grounding": ["pol-code-author-per-pr-cost-cap"]
+      },
+      "3_circuit_breaker_threshold_window": {
+        "rank": "lower",
+        "current_encoding": "pol-actor-message-circuit-breaker already exposes denial_count_trip_threshold and window_ms as canon-tunable.",
+        "future_shape": "Already shaped for the dial pattern; no structural change needed.",
+        "why_third": "Tuning demand is bounded by actual breaker trips; surfaces last because most deployments will not hit the breaker often enough to want differentiation.",
+        "grounding": ["pol-actor-message-circuit-breaker", "pol-circuit-breaker-reset-authority", "pol-inbox-poll-cadence"]
+      }
+    },
+    "b_arbitration_already_supports_vs_needs_extending": {
+      "already_supports": "Apex sets default at top scope; sub-scopes override with higher-priority atoms; arbitration resolves the chain via the principal hierarchy and scope/priority machinery. No new substrate primitive needed for dial values per se.",
+      "needs_extending_when_first_dial_lands": "A discoverability hint (e.g. dial_id field or is_dial: true marker) so consumers can enumerate dials without grepping policy atoms by name. NOT NEEDED today; introducing it speculatively would foreclose the seam by hardcoding dial-vs-policy as a substrate distinction.",
+      "grounding": ["arch-principal-hierarchy-signed-by", "arch-atomstore-source-of-truth", "dev-apex-tunable-dials-future-seam"]
+    },
+    "c_console_dial_values_widget_today": {
+      "recommendation": "DEFER the literal naming.",
+      "forward_compat_path": "Surface the existing active-elevations placeholder (the in-flight Console control-panel widget cited via dev-apex-tunable-dials-future-seam) as a generic 'Active Policies' read-only panel that lists priority-resolved policy atoms in scope. When dials land, dial-tagged atoms render with extra UX without inventing the dial concept speculatively.",
+      "why": "Per dev-apex-tunable-dials-future-seam (4) and dev-extreme-rigor-and-research, naming a UX before the second concrete dial exists is the over-engineering this directive prohibits.",
+      "grounding": ["dev-apex-tunable-dials-future-seam", "dev-extreme-rigor-and-research"]
+    },
+    "d_failure_modes_indie_inherits_org_tuned_dial": {
+      "surprise_strict": {
+        "failure": "Indie pulls a canon bundle whose org-scope dial overrides the bootstrap default; PR suddenly blocked.",
+        "mitigation": "Bootstrap canon writes indie-floor defaults to LOCAL scope at lag init; org canon promotion writes at HIGHER scope, but local-scope atoms always win for the local principal in arbitration order. Promotion never overwrites local atoms; it adds higher-scope atoms whose local override is one /decide away.",
+        "grounding": ["dev-indie-floor-org-ceiling", "arch-principal-hierarchy-signed-by"]
+      },
+      "silent_behavior_change_on_upgrade": {
+        "failure": "Existing deployment posture changes silently when a new dial ships.",
+        "mitigation": "Per dev-apex-tunable-dials-future-seam (5) every dial ships with a default matching pre-dial behavior; existing deployments do not change posture on upgrade.",
+        "grounding": ["dev-apex-tunable-dials-future-seam"]
+      },
+      "indie_discoverability": {
+        "failure": "Without a Console panel, an indie cannot tell why their PR is blocked ('oh no, suddenly security=strict, why am I being told my PR can't merge for 7 days').",
+        "mitigation": "The 'Active Policies' panel from (c) makes the limiting atom visible with its source scope; indie sees both the rule and where it came from.",
+        "grounding": ["dev-flag-structural-concerns"]
+      },
+      "promotion_time_canon_drift": {
+        "failure": "Org canon bundle proposes a dial change that mutates runtime posture without human ratification.",
+        "mitigation": "Per dev-canon-proposals-via-cto-not-direct, any canon-shape edit ratifies via CTO plan + operator /decide, not silent runtime injection.",
+        "grounding": ["dev-canon-proposals-via-cto-not-direct"]
+      }
+    },
+    "closing": "This memo preserves the seam without building it. If the first concrete dial lands and contradicts the ranking, this atom is superseded additively by a revision atom citing it, not reversed."
+  },
+  "derived_from": [
+    "q-4649ffb86499dd04-2026-04-26T11-54-57-032Z",
+    "dev-apex-tunable-dials-future-seam",
+    "dev-extreme-rigor-and-research",
+    "dev-indie-floor-org-ceiling",
+    "arch-principal-hierarchy-signed-by",
+    "arch-atomstore-source-of-truth",
+    "pol-actor-message-circuit-breaker",
+    "pol-inbox-poll-cadence",
+    "pol-circuit-breaker-reset-authority",
+    "pol-code-author-per-pr-cost-cap",
+    "dev-canon-proposals-via-cto-not-direct",
+    "dev-flag-structural-concerns"
+  ],
+  "provenance": {
+    "kind": "operator-seeded",
+    "source": {
+      "agent_id": "cto-actor"
+    },
+    "derived_from": [
+      "q-4649ffb86499dd04-2026-04-26T11-54-57-032Z",
+      "dev-apex-tunable-dials-future-seam",
+      "dev-extreme-rigor-and-research",
+      "dev-indie-floor-org-ceiling",
+      "arch-principal-hierarchy-signed-by",
+      "arch-atomstore-source-of-truth",
+      "pol-actor-message-circuit-breaker",
+      "pol-inbox-poll-cadence",
+      "pol-circuit-breaker-reset-authority",
+      "pol-code-author-per-pr-cost-cap",
+      "dev-canon-proposals-via-cto-not-direct",
+      "dev-flag-structural-concerns"
+    ]
+  },
+  "taint": "clean",
+  "supersedes": [],
+  "superseded_by": [],
+  "confidence": 0.9,
+  "scope": "global",
+  "metadata": {
+    "source": "cto-actor-research-memo",
+    "kind": "analysis-memo",
+    "not_a_plan": true
+  }
+}
