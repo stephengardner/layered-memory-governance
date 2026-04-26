@@ -14,6 +14,18 @@ A framework for multi-agent systems where memory has to stay true over time, aut
 
 Node 22+. TypeScript. Three host adapters, five operator surfaces (terminal, three daemon modes, hook-attached), three embedders, pluggable session sources, a canon-driven tool-use policy primitive, an Actor primitive for governed outward-acting agents, an inbox V1 for actor-to-actor messaging with sub-actor delegation, per-role GitHub App bot identities (operator-proxy + decision-bearing + CR-handling), and an operator-escalation channel so silent halts ping the operator instead of dying in a CI log. **1,363 unit tests + 30 gated integration tests** (count grows as open PRs land), GitHub Actions CI on Ubuntu + Windows.
 
+## Five newcomer questions
+
+This README and `docs/` are organized around what a newcomer asks first:
+
+1. **What is LAG?** Read on.
+2. **Why does it exist?** [`docs/why.md`](docs/why.md)
+3. **How do I try it?** [`docs/getting-started.md`](docs/getting-started.md)
+4. **How is it architected?** [`docs/architecture.md`](docs/architecture.md)
+5. **Where do I plug in my own code?** [`docs/integration.md`](docs/integration.md)
+
+Reference: [`docs/canon.md`](docs/canon.md), [`docs/loops/agentic-actor-loop.md`](docs/loops/agentic-actor-loop.md).
+
 ---
 
 ## The problem
