@@ -225,7 +225,16 @@ function TreeBranch({
             className={styles.chevron}
             aria-label={open ? `Collapse ${node.id}` : `Expand ${node.id}`}
             aria-expanded={open}
-            aria-controls={childrenId}
+            /*
+             * Only set aria-controls when the controlled element is
+             * actually mounted. AnimatePresence unmounts the children
+             * container on collapse, and a dangling aria-controls
+             * pointer to a non-existent id is silently dropped by some
+             * AT (NVDA, JAWS) and tripped by axe. Emitting it
+             * conditionally keeps the relationship valid in both
+             * states.
+             */
+            aria-controls={open ? childrenId : undefined}
             data-testid="principal-tree-toggle"
             onClick={() => onToggleOpen(node)}
           >
@@ -243,6 +252,17 @@ function TreeBranch({
         <button
           type="button"
           className={styles.bodyButton}
+          /*
+           * The body row is the larger click target operators hit most
+           * often, so on branches it MUST carry the same disclosure
+           * semantics as the chevron button. AT users otherwise hear
+           * "button" with no expansion state even though clicking it
+           * toggles the children container. aria-controls is mirrored
+           * conditionally for the same reason as the chevron above
+           * (children container only mounts when open).
+           */
+          aria-expanded={hasChildren ? open : undefined}
+          aria-controls={hasChildren && open ? childrenId : undefined}
           onClick={() => {
             // Leaf: select / toggle selection. Branch: clicking the
             // body also toggles open so the whole row is interactive.
