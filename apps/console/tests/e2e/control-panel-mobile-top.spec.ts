@@ -90,13 +90,15 @@ test.describe('control panel mobile top section', () => {
     expect(heroIconBox!.height).toBeLessThanOrEqual(HERO_ICON_MAX_HEIGHT_PX);
 
     /*
-     * Caption renders without overflow. We compute lineCount by
-     * dividing the rendered height by the line-height; with --font-
-     * size-sm + --line-height-normal that's ~21px per line. The
-     * caption is at most HERO_DETAIL_MAX_LINES lines (the not-
-     * engaged copy is ~120 chars; at ~30 chars/line on iPhone that
-     * lands at 4 lines worst case). More than that signals either a
-     * narrower-than-expected card or a font-size regression.
+     * Caption renders without overflow. `hero.locator('p').last()`
+     * resolves to .heroCaption (the supportive line below the
+     * heroDetail). We compute lineCount by dividing the rendered
+     * height by the line-height; with --font-size-xs + --line-
+     * height-normal that's ~18px per line. The caption is at most
+     * HERO_DETAIL_MAX_LINES lines (the not-engaged copy is ~120
+     * chars; at ~30 chars/line on iPhone that lands at 4 lines
+     * worst case). More than that signals either a narrower-than-
+     * expected card or a font-size regression.
      */
     const captionInfo = await hero.locator('p').last().evaluate((el) => {
       const cs = getComputedStyle(el);
@@ -211,6 +213,15 @@ test.describe('control panel mobile top section', () => {
     expect(padding.right).toBeLessThanOrEqual(14);
     expect(padding.bottom).toBeLessThanOrEqual(14);
     expect(padding.left).toBeLessThanOrEqual(14);
+    /*
+     * Mobile tileValue uses --font-size-lg (~18px) per the deliberate
+     * --xl -> --lg reduction so the 2-up iPhone columns scan cleanly.
+     * The desktop default is --font-size-xl (~20px). Asserting <= 19
+     * with 1px tolerance defends the intent: a regression that drops
+     * the override fails fast instead of silently restoring the
+     * cramped variant.
+     */
+    expect(padding.fontSize).toBeLessThanOrEqual(19);
   });
 
   test('non-mobile projects still use the desktop hero grid', async ({ page }, testInfo) => {
