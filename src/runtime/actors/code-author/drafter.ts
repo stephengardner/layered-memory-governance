@@ -282,6 +282,16 @@ export async function draftCodeChange(
     // enabled models can burn their entire output budget on deliberating
     // about classification semantics and emit zero structured output.
     framingMode: 'code-author',
+    // Cap reasoning depth at the substrate's coarse 'high' level.
+    // Adapter-level defaults (e.g. an autonomous-flow runner setting
+    // a higher provider-specific level) are appropriate for short
+    // schema-bound classifications, but on the drafter's long
+    // multi-file diff calls an unbounded thinking budget can consume
+    // the entire output ceiling before any structured output is
+    // emitted. 'high' leaves substantial reasoning room while
+    // preserving budget for the diff itself; callers that explicitly
+    // need a different level pass `effort` on the per-call options.
+    effort: 'high',
     ...(inputs.signal ? { signal: inputs.signal } : {}),
     ...(inputs.disallowedTools ? { disallowedTools: inputs.disallowedTools } : {}),
   };
