@@ -2,9 +2,28 @@
  * Operator Control Panel styling. All values come from
  * src/tokens/tokens.css; no raw px or hex appears here.
  *
- * Layout: hero card (kill-switch state, hero glow follows engaged
- * flag), tier banner (semantic tone changes per tier), 4-up metric
- * grid that collapses to 2-up on narrow viewports.
+ * Layout: hero card (kill-switch state, hero glow follows the
+ * data-tone attribute -- neutral / warning / danger), tier banner
+ * (semantic tone changes per tier), 4-up metric grid that collapses
+ * to 2-up on narrow viewports, then four richer info sections
+ * (active elevations, kill-switch history, recent operator actions,
+ * recent escalations).
+ *
+ * Color semantics (load-bearing):
+ *   - data-tone="neutral"  -> calm accent surface. The DEFAULT
+ *                             (kill-switch off + tier=soft). Read
+ *                             this as "the autonomous loop is fine".
+ *   - data-tone="warning"  -> warning surface. Tier=medium (reserved
+ *                             roadmap; surfaces here once activated).
+ *   - data-tone="danger"   -> danger surface. Either kill-switch
+ *                             engaged OR tier=hard. Operator-readable
+ *                             as "intervene now".
+ *
+ * The previous v1 rendered the hero in danger tone whenever
+ * data-engaged="false", which meant the healthy default looked like
+ * an alarm. Operator feedback 2026-04-26: "appears red just because
+ * there's no kill switch enabled" -- exactly the false-positive we
+ * are eliminating here.
  */
 
 .viewer {
@@ -39,9 +58,15 @@
 }
 
 /*
- * Hero card. data-engaged="true" routes through a danger-tinted
- * gradient + glow; the off state stays neutral so it does not
- * fatigue an operator who looks at it constantly.
+ * Hero card. data-tone routes through one of three tinted gradients:
+ *   neutral  -> calm accent (the healthy default; what you see most
+ *               of the time on a well-running org)
+ *   warning  -> warning hue (tier=medium reserved tier)
+ *   danger   -> danger hue (kill-switch engaged or tier=hard)
+ *
+ * The off-state stays neutral so it does not fatigue an operator who
+ * looks at it constantly. The danger glow + box-shadow only fire on
+ * an actual halt.
  */
 .hero {
   display: grid;
@@ -52,10 +77,10 @@
   background-color: var(--surface-base);
   background-image: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--surface-overlay) 35%, transparent) 0%,
-    transparent 55%
+    color-mix(in srgb, var(--accent) 10%, transparent) 0%,
+    transparent 60%
   );
-  border: 1px solid var(--border-subtle);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: var(--radius-lg);
   position: relative;
   overflow: hidden;
@@ -63,7 +88,33 @@
               box-shadow var(--duration-normal) var(--easing-standard);
 }
 
-.hero[data-engaged="true"] {
+.hero[data-tone="neutral"] {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 10%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 3%, transparent) 60%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent),
+    0 16px 40px -14px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.hero[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--status-warning) 55%, transparent);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--status-warning) 14%, transparent) 0%,
+    color-mix(in srgb, var(--status-warning) 4%, transparent) 60%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--status-warning) 20%, transparent),
+    0 16px 40px -10px color-mix(in srgb, var(--status-warning) 32%, transparent);
+}
+
+.hero[data-tone="danger"] {
   border-color: color-mix(in srgb, var(--status-danger) 55%, transparent);
   background-image: linear-gradient(
     180deg,
@@ -83,11 +134,16 @@
   width: var(--space-9);
   height: var(--space-9);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--status-success) 12%, var(--surface-raised));
-  color: var(--status-success);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-raised));
+  color: var(--accent);
 }
 
-.hero[data-engaged="true"] .heroIcon {
+.hero[data-tone="warning"] .heroIcon {
+  background: color-mix(in srgb, var(--status-warning) 18%, var(--surface-raised));
+  color: var(--status-warning);
+}
+
+.hero[data-tone="danger"] .heroIcon {
   background: color-mix(in srgb, var(--status-danger) 18%, var(--surface-raised));
   color: var(--status-danger);
 }
@@ -116,7 +172,7 @@
   letter-spacing: -0.01em;
 }
 
-.hero[data-engaged="true"] .heroTitle {
+.hero[data-tone="danger"] .heroTitle {
   color: var(--status-danger);
 }
 
@@ -128,6 +184,23 @@
   max-width: 60ch;
 }
 
+/*
+ * Plain-English caption answering "is anything wrong?" in one
+ * sentence. Slightly de-emphasized vs the title/detail so the eye
+ * lands on the title first; the caption is the supporting answer.
+ */
+.heroCaption {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/*
+ * Engage button. Always uses danger tone (operator intent: this is
+ * a halt action), independent of the hero tone.
+ */
 .heroEngage {
   display: inline-flex;
   align-items: center;
@@ -236,7 +309,9 @@
 
 /*
  * Metric grid. 4-up at desktop, 2-up at narrow widths so each tile
- * stays readable on a tablet.
+ * stays readable on a tablet, 1-up on phones (per
+ * dev-web-mobile-first-required + the 2026-04-26 operator feedback
+ * that the hero looked broken on iPhone-13).
  */
 .metrics {
   display: grid;
@@ -303,6 +378,217 @@
   font-weight: var(--font-weight-medium);
   color: var(--text-primary);
   word-break: break-all;
+}
+
+/*
+ * Info-density sections (active elevations, kill-switch history,
+ * recent operator actions, recent escalations). Same card chrome as
+ * the metric tiles so they read as part of the same panel.
+ */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6);
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  flex: 1 1 auto;
+}
+
+.sectionCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--space-6);
+  height: var(--space-6);
+  padding: 0 var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-tertiary);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  font-variant-numeric: tabular-nums;
+}
+
+.sectionEmpty {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--duration-fast) var(--easing-standard);
+}
+
+.row:hover {
+  border-color: var(--border-strong);
+}
+
+.rowMain {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.rowKind {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  padding: var(--space-1) var(--space-3);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.rowDetail {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: var(--line-height-normal);
+  word-break: break-word;
+}
+
+.rowMeta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.rowAtom {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  word-break: break-all;
+}
+
+.rowMono {
+  font-family: var(--font-mono);
+  font-size: inherit;
+}
+
+.rowCountdown {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-3);
+  background: color-mix(in srgb, var(--status-warning) 14%, transparent);
+  color: var(--status-warning);
+  border-radius: var(--radius-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+/*
+ * Mobile breakpoint. iPhone-13 is 390px wide; below 40rem (~640px)
+ * we:
+ *   - stack the hero vertically (icon -> body -> button) and reduce
+ *     padding so it fits without overflow;
+ *   - collapse the metric grid to one column;
+ *   - stack the info-row layout so the meta column doesn't squeeze
+ *     the main content into illegibility.
+ *
+ * Per dev-web-mobile-first-required + the 2026-04-26 operator
+ * feedback that the v1 hero was broken on iPhone-13.
+ */
+@media (max-width: 40rem) {
+  .viewer {
+    padding: var(--space-5) var(--space-4) var(--space-6);
+    gap: var(--space-5);
+  }
+
+  .hero {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+    padding: var(--space-5) var(--space-5);
+    text-align: left;
+  }
+
+  .heroIcon {
+    width: var(--space-8);
+    height: var(--space-8);
+  }
+
+  .heroIcon svg {
+    width: var(--space-7);
+    height: var(--space-7);
+  }
+
+  .heroTitle {
+    font-size: var(--font-size-xl);
+  }
+
+  .heroDetail {
+    font-size: var(--font-size-sm);
+  }
+
+  .heroEngage {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tierBanner {
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .section {
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .rowMeta {
+    width: 100%;
+    text-align: left;
+    justify-content: flex-start;
+  }
 }
 
 /*
