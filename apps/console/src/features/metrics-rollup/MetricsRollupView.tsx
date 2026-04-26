@@ -148,7 +148,7 @@ function RollupBody({ data }: { data: MetricsRollup }) {
         />
         <MetricCell
           icon={MessagesSquare}
-          label="Median CR rounds per PR"
+          label="Median CodeRabbit rounds per PR"
           value={
             autonomous_loop.median_cr_rounds_per_pr === null
               ? null
