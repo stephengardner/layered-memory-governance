@@ -22,8 +22,12 @@ const TYPE_DOT_COLORS: Record<string, string> = {
 export function ActivitiesView() {
   const query = useQuery({
     queryKey: ['activities', 20000],
-    // 20000 covers the heatmap's 12-week window comfortably. Poll every
-    // 15s so the feed and the heatmap feel live without a WebSocket.
+    // 20000 covers the heatmap's 14-week window comfortably (~238 atoms/day x
+    // 98 days = ~23,324 worst-case bursts on a high-activity day, but mean
+    // observed densities sit well below this; cap raised from 500 so the
+    // feed + heatmap reflect the full 14-week visualization without the
+    // backend silently truncating). Poll every 15s so the feed and the
+    // heatmap feel live without a WebSocket.
     queryFn: ({ signal }) => listActivities({ limit: 20000 }, signal),
     refetchInterval: 15_000,
   });
