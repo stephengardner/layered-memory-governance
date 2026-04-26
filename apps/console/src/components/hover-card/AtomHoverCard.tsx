@@ -26,6 +26,8 @@ export function AtomHoverCard({
     <div
       className={styles.card}
       role="tooltip"
+      data-testid="atom-hover-card"
+      data-loading="false"
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
     >
@@ -42,6 +44,56 @@ export function AtomHoverCard({
         <span>conf {atom.confidence.toFixed(2)}</span>
         <span className={styles.dot} aria-hidden="true">·</span>
         <TimeAgo iso={atom.created_at} />
+      </div>
+      {hint && <div className={styles.hint}>{hint}</div>}
+    </div>
+  );
+}
+
+/**
+ * Loading variant — same outer shell + id chip as <AtomHoverCard>, but
+ * the metadata strip (principal / layer / confidence / age) is replaced
+ * by skeleton bars rather than fabricated zero-values. Used while the
+ * atom is being fetched so the user sees the id they hovered without a
+ * "wrong-atom flashed first" transition when real data swaps in.
+ *
+ * Once the query resolves, the consumer renders <AtomHoverCard> with
+ * real data; the id and outer shape stay visually anchored across the
+ * swap. No fabricated principal_id / confidence / created_at appears
+ * at any point.
+ */
+export function AtomHoverCardLoading({
+  id,
+  hint,
+  onPointerEnter,
+  onPointerLeave,
+}: {
+  id: string;
+  hint?: string;
+  onPointerEnter?: () => void;
+  onPointerLeave?: () => void;
+}) {
+  return (
+    <div
+      className={styles.card}
+      role="tooltip"
+      aria-busy="true"
+      data-testid="atom-hover-card"
+      data-loading="true"
+      onMouseEnter={onPointerEnter}
+      onMouseLeave={onPointerLeave}
+    >
+      <div className={styles.head}>
+        <span className={styles.skeletonChip} aria-hidden="true" />
+        <code className={styles.id}>{id}</code>
+      </div>
+      <div className={styles.skeletonContent} aria-hidden="true">
+        <span className={styles.skeletonLine} />
+        <span className={styles.skeletonLineShort} />
+      </div>
+      <div className={styles.meta} aria-label="loading metadata">
+        <span className={styles.skeletonMeta} aria-hidden="true" />
+        <span className={styles.skeletonMetaShort} aria-hidden="true" />
       </div>
       {hint && <div className={styles.hint}>{hint}</div>}
     </div>
