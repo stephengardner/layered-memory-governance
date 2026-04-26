@@ -1,0 +1,294 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+}
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.heroTitle {
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.heroSubtitle {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  max-width: 60ch;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.orphanWarn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--status-warning) 8%, var(--surface-raised));
+  border: 1px solid color-mix(in srgb, var(--status-warning) 35%, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.orphanWarn code {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.branch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  position: relative;
+}
+
+.row {
+  display: inline-flex;
+  align-items: stretch;
+  gap: var(--space-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--duration-fast) var(--easing-standard),
+              background var(--duration-fast) var(--easing-standard),
+              transform var(--duration-fast) var(--easing-standard);
+  width: fit-content;
+  max-width: 100%;
+}
+
+.row:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-raised));
+}
+
+.rowSelected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-raised));
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.rowCompromised {
+  border-color: color-mix(in srgb, var(--status-danger) 55%, var(--border-subtle));
+  background: color-mix(in srgb, var(--status-danger) 8%, var(--surface-raised));
+}
+
+.rowInherited {
+  border-color: color-mix(in srgb, var(--status-warning) 45%, var(--border-subtle));
+}
+
+.rowInactive {
+  opacity: 0.55;
+}
+
+.chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-3);
+  border-right: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  background: transparent;
+}
+
+.chevron:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.chevron:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.chevronInner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chevronSpacer {
+  display: inline-block;
+  width: calc(var(--space-3) * 2 + var(--icon-size-sm));
+  border-right: 1px solid var(--border-subtle);
+}
+
+.bodyButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bodyButton:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+.icon {
+  display: inline-flex;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.rowCompromised .icon {
+  color: var(--status-danger);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-px);
+  min-width: 0;
+}
+
+.headRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.name {
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.id {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+}
+
+.role {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  text-transform: lowercase;
+}
+
+.dot {
+  color: var(--text-muted);
+}
+
+.depthBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-px) var(--space-2);
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+.taintBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.taintCompromised {
+  background: color-mix(in srgb, var(--status-danger) 18%, transparent);
+  color: var(--status-danger);
+  border: 1px solid color-mix(in srgb, var(--status-danger) 40%, transparent);
+}
+
+.taintInherited {
+  background: color-mix(in srgb, var(--status-warning) 18%, transparent);
+  color: var(--status-warning);
+  border: 1px solid color-mix(in srgb, var(--status-warning) 40%, transparent);
+}
+
+.inactiveBadge {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+/*
+ * Children are indented and joined to the parent with two CSS
+ * pseudo-elements: `.children::before` is a vertical line running
+ * from just below the parent to the last child; each child branch's
+ * own `::before` draws a short horizontal line from the vertical
+ * line into the child node.
+ */
+.children {
+  margin-left: var(--space-6);
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  position: relative;
+  overflow: hidden;
+}
+
+.children::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: var(--space-4);
+  width: 1px;
+  background: var(--border-strong);
+}
+
+.children > .branch::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--space-5));
+  top: var(--space-4);
+  width: var(--space-5);
+  height: 1px;
+  background: var(--border-strong);
+}

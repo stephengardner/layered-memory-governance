@@ -43,6 +43,10 @@ import {
   type ActorActivityAtom,
   type ActorActivityResponse,
 } from './actor-activity';
+import {
+  buildPrincipalTree,
+  type PrincipalTreeResult,
+} from './principal-tree';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -322,6 +326,17 @@ async function readAllPrincipals(): Promise<Principal[]> {
 
 async function handlePrincipalsList(): Promise<Principal[]> {
   return readAllPrincipals();
+}
+
+/*
+ * Principal hierarchy tree handler. The pure builder lives in
+ * ./principal-tree.ts so it can be unit-tested without standing up
+ * the HTTP server. This handler just hydrates the input from the
+ * filesystem and delegates.
+ */
+async function handlePrincipalsTree(): Promise<PrincipalTreeResult> {
+  const principals = await readAllPrincipals();
+  return buildPrincipalTree(principals);
 }
 
 /*
@@ -1770,6 +1785,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'principals-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/principals.tree' && req.method === 'POST') {
+    try {
+      const data = await handlePrincipalsTree();
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'principals-tree-failed', (err as Error).message);
     }
     return;
   }
