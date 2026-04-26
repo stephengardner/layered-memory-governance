@@ -198,6 +198,109 @@ describe('ClaudeCliLLM', () => {
       expect(mcpConfigIdx).toBeGreaterThanOrEqual(0);
       expect(calls[0]!.args[mcpConfigIdx + 1]).toBe('{"mcpServers":{}}');
     });
+
+    it('default classifier framing names the call as a JSON classifier (back-compat)', async () => {
+      // Reading the system prompt off the file is brittle in a unit test
+      // (the path is mkdtemp-named). Easier: assert the framing branch by
+      // calling judge with a system prompt sentinel and verifying the
+      // executed CLI sees an --append-system-prompt-file argument that
+      // points at a file the test doesn't need to read; the *content*
+      // assertion lives in the code-author branch test below where the
+      // sentinel content is the discriminator.
+      const { exec, calls } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm = new ClaudeCliLLM({ execImpl: exec });
+
+      await llm.judge(
+        SCHEMA,
+        'TEST_SYSTEM_PROMPT',
+        { x: 1 },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true },
+      );
+
+      expect(calls[0]!.args).toContain('--append-system-prompt-file');
+    });
+
+    it('framingMode=code-author writes a code-drafting frame (no "pure JSON classifier" wording)', async () => {
+      // Regression guard: a system prompt frame that says "you are a pure
+      // JSON classifier" while the actual task is to produce a long
+      // schema-bound code diff causes extended-thinking-enabled models
+      // to deliberate to exhaustion (Sonnet 4.6 burned its full 32K
+      // output budget on a single thinking content item with zero text
+      // output emitted). The code-author framing names the actual task
+      // so the model allocates output tokens to the diff itself.
+      //
+      // Capture the system-prompt-file content synchronously inside the
+      // exec stub: the adapter writes the file before exec, deletes the
+      // tmpdir in its finally block, so any async-after read races a
+      // cleanup that has already happened.
+      const fsSync = await import('node:fs');
+      let capturedBody = '';
+      const captureExec = ((bin: string, args: ReadonlyArray<string>, _options: ExecaOptions = {}) => {
+        const idx = args.indexOf('--append-system-prompt-file');
+        if (idx >= 0) capturedBody = fsSync.readFileSync(args[idx + 1] as string, 'utf8');
+        const r: ExecaReturnValue<string> = {
+          command: `${bin} ${args.join(' ')}`,
+          escapedCommand: '', exitCode: 0, stdout: SUCCESS_ENVELOPE, stderr: '',
+          all: undefined, failed: false, timedOut: false, isCanceled: false, killed: false,
+        } as ExecaReturnValue<string>;
+        return Object.assign(Promise.resolve(r), r);
+      }) as unknown as typeof import('execa').execa;
+      const llm = new ClaudeCliLLM({ execImpl: captureExec });
+
+      await llm.judge(
+        SCHEMA,
+        'TEST_SYSTEM_PROMPT',
+        { x: 1 },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true, framingMode: 'code-author' },
+      );
+
+      expect(capturedBody).toContain('autonomous code-drafting agent');
+      expect(capturedBody).not.toContain('pure JSON classifier');
+      // Anti-tool-use line is still present, just task-appropriate.
+      expect(capturedBody).toContain('Never call any tool');
+      // The original system prompt is still appended after the frame.
+      expect(capturedBody).toContain('TEST_SYSTEM_PROMPT');
+    });
+
+    it('honors ClaudeCliOptions.defaultEffort and is overridable per-call', async () => {
+      // The deployment posture for the autonomous flow is `defaultEffort:
+      // 'max'` (see scripts/run-approval-cycle.mjs). Per-call options.effort
+      // wins.
+      const { exec: exec1, calls: calls1 } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm1 = new ClaudeCliLLM({ execImpl: exec1, defaultEffort: 'max' });
+      await llm1.judge(
+        SCHEMA,
+        'classify',
+        { x: 1 },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true },
+      );
+      const idx1 = calls1[0]!.args.indexOf('--effort');
+      expect(idx1).toBeGreaterThanOrEqual(0);
+      expect(calls1[0]!.args[idx1 + 1]).toBe('max');
+
+      const { exec: exec2, calls: calls2 } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm2 = new ClaudeCliLLM({ execImpl: exec2, defaultEffort: 'max' });
+      await llm2.judge(
+        SCHEMA,
+        'classify',
+        { x: 1 },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true, effort: 'low' },
+      );
+      const idx2 = calls2[0]!.args.indexOf('--effort');
+      expect(calls2[0]!.args[idx2 + 1]).toBe('low');
+    });
+
+    it('omits --effort entirely when neither defaultEffort nor per-call effort is set', async () => {
+      const { exec, calls } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm = new ClaudeCliLLM({ execImpl: exec });
+      await llm.judge(
+        SCHEMA,
+        'classify',
+        { x: 1 },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true },
+      );
+      expect(calls[0]!.args).not.toContain('--effort');
+    });
   });
 
   describe('error paths', () => {

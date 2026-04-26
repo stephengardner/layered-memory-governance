@@ -432,6 +432,28 @@ export interface LlmOptions {
    * adapters with an allow-list-first surface invert at the boundary.
    */
   readonly disallowedTools?: ReadonlyArray<string>;
+  /**
+   * Framing hint for adapters that prepend a task-class preamble to the
+   * caller's system prompt. `classifier` is right for short schema-bound
+   * classifications (planning judgments). `code-author` is right for
+   * long schema-bound code-generation calls where the model produces a
+   * diff. Adapters that do not framing MAY ignore this field.
+   *
+   * The distinction matters because some Claude models with extended
+   * thinking enabled will burn the entire output budget on deliberation
+   * when given a frame that contradicts the actual task (e.g., a
+   * "you are a classifier" frame on a code-drafting call) and emit zero
+   * structured output.
+   */
+  readonly framingMode?: 'classifier' | 'code-author';
+  /**
+   * Effort level forwarded to adapters that surface a corresponding
+   * knob (e.g. Claude CLI's `--effort low|medium|high|xhigh|max`).
+   * Adapters that lack the knob MAY ignore this field. When omitted
+   * the adapter-level default applies, which itself MAY be omitted to
+   * defer to the underlying CLI/model default.
+   */
+  readonly effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 }
 
 export interface JudgeMetadata {
