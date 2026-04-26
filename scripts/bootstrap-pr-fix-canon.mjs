@@ -224,8 +224,8 @@ function diffPolicyAtom(existing, expected) {
 function operatorPrincipal() {
   return {
     id: OPERATOR_ID,
-    name: 'Operator (human)',
-    role: 'user',
+    name: 'Apex Agent',
+    role: 'apex',
     permitted_scopes: {
       read: ['session', 'project', 'user', 'global'],
       write: ['session', 'project', 'user', 'global'],

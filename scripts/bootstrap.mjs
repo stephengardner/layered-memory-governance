@@ -270,8 +270,8 @@ async function main() {
 
   await host.principals.put({
     id: operatorId,
-    name: 'Operator (human)',
-    role: 'user',
+    name: 'Apex Agent',
+    role: 'apex',
     permitted_scopes: {
       read: ['session', 'project', 'user', 'global'],
       write: ['session', 'project', 'user', 'global'],

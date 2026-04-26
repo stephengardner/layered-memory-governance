@@ -209,7 +209,7 @@ async function main() {
   let principalsWritten = 0;
   let principalsOk = 0;
   for (const [pid, name, role, signedBy, writeLayers] of [
-    [operatorId, 'Operator (human)', 'user', null, ['L0', 'L1', 'L2', 'L3']],
+    [operatorId, 'Apex Agent', 'apex', null, ['L0', 'L1', 'L2', 'L3']],
     [claudeAgentId, 'Agent (Claude Code instance)', 'agent', operatorId, ['L0', 'L1', 'L2']],
     [CTO_ACTOR, 'CTO actor (planning)', 'agent', claudeAgentId, ['L0', 'L1']],
   ]) {
