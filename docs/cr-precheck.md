@@ -1,3 +1,5 @@
+> Status (as of PR #172, on main): the CR CLI pre-push helper at `scripts/cr-precheck.mjs` is progressive-enhancement (skips with a loud warning + audit atom when the CR CLI is not on PATH); when the CLI is present, the gate blocks on critical/major findings (use `--strict` to also block on minor); the hard merge gate is the CI workflow at `.github/workflows/cr-precheck.yml` running the same checks server-side as a required status check.
+
 # cr-precheck: pre-push CodeRabbit-CLI helper
 
 ## What is cr-precheck
