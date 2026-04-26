@@ -21,10 +21,10 @@ const TYPE_DOT_COLORS: Record<string, string> = {
 
 export function ActivitiesView() {
   const query = useQuery({
-    queryKey: ['activities', 500],
-    // 500 covers the heatmap's 12-week window comfortably. Poll every
+    queryKey: ['activities', 20000],
+    // 20000 covers the heatmap's 12-week window comfortably. Poll every
     // 15s so the feed and the heatmap feel live without a WebSocket.
-    queryFn: ({ signal }) => listActivities({ limit: 500 }, signal),
+    queryFn: ({ signal }) => listActivities({ limit: 20000 }, signal),
     refetchInterval: 15_000,
   });
   const focusId = useRouteId();

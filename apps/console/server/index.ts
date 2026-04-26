@@ -353,7 +353,8 @@ async function handleActivitiesList(params: { limit?: number; types?: string[] }
     out = out.filter((a) => set.has(a.type));
   }
   out.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
-  const limit = Math.max(1, Math.min(500, params.limit ?? 100));
+  // Cap raised 500 → 20000 per plan-raise-activities-list-cap-from-500-to-20000-cto-actor-20260426104923; revisit when sustained 7-day avg atoms/day > 238 (heatmap-cells aggregation pivot).
+  const limit = Math.max(1, Math.min(20000, params.limit ?? 100));
   return out.slice(0, limit);
 }
 

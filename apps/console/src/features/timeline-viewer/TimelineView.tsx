@@ -44,8 +44,8 @@ export function TimelineView() {
     queryFn: ({ signal }) => listCanonAtoms({}, signal),
   });
   const activitiesQ = useQuery({
-    queryKey: ['activities', 500],
-    queryFn: ({ signal }) => listActivities({ limit: 500 }, signal),
+    queryKey: ['activities', 20000],
+    queryFn: ({ signal }) => listActivities({ limit: 20000 }, signal),
   });
   const principalsQ = useQuery({
     queryKey: ['principals'],
