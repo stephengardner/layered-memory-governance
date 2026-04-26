@@ -48,7 +48,18 @@ export function CanonSuggestionsView() {
         Promotion still goes through <code>scripts/decide.mjs</code>, gated by the operator.
       </p>
 
-      <div className={styles.toolbar} role="tablist" aria-label="Filter by review state">
+      {/*
+       * Filter controls. NOT a true tab pattern: there is one result
+       * region (the suggestion list) whose contents change based on
+       * `reviewState`, not four sibling tabpanels. WAI-ARIA APG's
+       * tablist pattern requires `role="tabpanel"` linkage + arrow-key
+       * navigation; half-wiring it (tablist + tab roles without a
+       * panel) misleads assistive tech into announcing "4-of-N tab
+       * group" with no panel to navigate to. A `role="toolbar"` with
+       * `aria-pressed` toggle buttons is the right shape for "filter
+       * the list below by N mutually-exclusive states".
+       */}
+      <div className={styles.toolbar} role="toolbar" aria-label="Filter suggestions by review state">
         {STATE_TABS.map((tab) => (
           <button
             key={tab.id}
@@ -57,8 +68,7 @@ export function CanonSuggestionsView() {
             data-testid={`canon-suggestions-tab-${tab.id}`}
             onClick={() => setReviewState(tab.id)}
             type="button"
-            role="tab"
-            aria-selected={tab.id === reviewState}
+            aria-pressed={tab.id === reviewState}
           >
             {tab.label}
           </button>

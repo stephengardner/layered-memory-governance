@@ -83,7 +83,19 @@ function printDecideHint(atom) {
   const meta = atom.metadata;
   const sid = String(meta.suggested_id);
   const styp = String(meta.suggested_type);
-  const content = String(meta.proposed_content).replace(/"/g, '\\"');
+  // CodeQL: incomplete-string-escaping. Escape backslashes BEFORE
+  // double-quotes so a `\` in the suggestion text does not combine
+  // with a later escaped-quote to break out of the shell-quoted
+  // string. The order matters: replacing `"` first would later double-
+  // escape any `\` we add for it. Applies the same defense to backticks
+  // (shells expand them even inside double quotes) and `$` (parameter
+  // expansion), so the printed `decide.mjs --content "..."` invocation
+  // is safe to paste into a shell verbatim.
+  const content = String(meta.proposed_content)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/`/g, '\\`')
+    .replace(/\$/g, '\\$');
   // Emit a usable shell invocation. Operator MUST fill in alternatives
   // + what_breaks per dev-extreme-rigor-and-research; we surface the
   // fields rather than auto-fabricate them.

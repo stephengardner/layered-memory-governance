@@ -19,6 +19,26 @@ export type CanonSuggestionReviewState =
   | 'dismissed'
   | 'deferred';
 
+/*
+ * Authoritative union vocabularies. The runtime type guard checks
+ * membership against these so a downstream renderer (e.g.
+ * `meta.confidence.toFixed(2)`, `data-type={meta.suggested_type}`)
+ * never receives a value the strict TS interface promised but the
+ * raw atom didn't carry. Mirrored on the lib side at
+ * `scripts/lib/canon-suggestion.mjs::CANON_SUGGESTION_VALID_TYPES`.
+ */
+const VALID_SUGGESTED_TYPES: ReadonlyArray<CanonSuggestionType> = [
+  'directive',
+  'preference',
+  'reference',
+];
+const VALID_REVIEW_STATES: ReadonlyArray<CanonSuggestionReviewState> = [
+  'pending',
+  'promoted',
+  'dismissed',
+  'deferred',
+];
+
 /**
  * Strict view of the metadata fields the canon-scout writes. Anything
  * outside this shape is ignored by the view; the underlying atom may
@@ -52,10 +72,19 @@ export function isCanonSuggestion(atom: CanonAtom): atom is CanonSuggestion {
   const meta = atom.metadata as Record<string, unknown> | undefined;
   if (!meta || meta['kind'] !== 'canon-proposal-suggestion') return false;
   if (typeof meta['suggested_id'] !== 'string') return false;
-  if (typeof meta['suggested_type'] !== 'string') return false;
   if (typeof meta['proposed_content'] !== 'string') return false;
   if (typeof meta['chat_excerpt'] !== 'string') return false;
-  if (typeof meta['review_state'] !== 'string') return false;
+  // Confidence is rendered via `.toFixed(2)` downstream; a non-numeric
+  // value (or NaN from a malformed write) would throw TypeError. The
+  // strict TS interface promises `confidence: number` but the raw atom
+  // metadata is `Record<string, unknown>`; this is the runtime gate.
+  if (typeof meta['confidence'] !== 'number' || Number.isNaN(meta['confidence'])) return false;
+  // Union-membership checks keep the narrowed type honest. `string`
+  // alone would let a malformed `suggested_type: 'decision'` slip
+  // through and break `data-type={meta.suggested_type}` styling logic
+  // that switches on the union literals.
+  if (!VALID_SUGGESTED_TYPES.includes(meta['suggested_type'] as CanonSuggestionType)) return false;
+  if (!VALID_REVIEW_STATES.includes(meta['review_state'] as CanonSuggestionReviewState)) return false;
   return true;
 }
 

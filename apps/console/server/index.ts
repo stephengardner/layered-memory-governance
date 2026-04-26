@@ -877,6 +877,18 @@ async function handleCanonSuggestionsList(params: {
   const wanted = params.review_state ?? 'pending';
   const out = all.filter((a) => {
     if (a.type !== 'observation') return false;
+    // Defense-in-depth: same taint + supersession guards `filterCanon`
+    // (line 171), `handleCanonApplicable` (line 505), and
+    // `handleDriftReport` (line 442) apply to every other read
+    // projection. A tainted suggestion (scout principal compromised
+    // post-write) MUST NOT surface in the operator's triage inbox; the
+    // operator's mental model is "these are clean candidates for
+    // promotion", and decide.mjs is the downstream gate, not the only
+    // one. Pinning to L1 is bonus rigor: `buildSuggestionAtom` always
+    // writes L1, and this read can't accidentally pick up an L3 atom
+    // that drifted to share the metadata.kind discriminator.
+    if (a.taint && a.taint !== 'clean') return false;
+    if (a.layer !== 'L1') return false;
     if (a.superseded_by && a.superseded_by.length > 0) return false;
     const meta = a.metadata as Record<string, unknown> | undefined;
     if (!meta || meta['kind'] !== CANON_SUGGESTION_KIND) return false;

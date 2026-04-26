@@ -270,6 +270,18 @@ export function buildTriagedMetadata(existingMetadata, nextState, opts) {
     review_state: nextState,
     review_state_changed_at: nowIso,
     review_state_changed_by: actorId,
+    // State-scoped fields. Clear them by default and re-supply only
+    // when the caller passes them for THIS transition. Without this:
+    //   defer --reason "not now" -> dismiss (no reason)
+    //     ==> stale "not now" attaches to the dismissed state.
+    //   promote --derived-canon-id X -> defer
+    //     ==> stale derived_canon_id X attaches to a non-promoted atom.
+    // Both lie in the audit trail. Both AtomStore.update implementations
+    // (memory + file) merge metadata by spreading existing first, so a
+    // bare `delete` here would survive into the persisted atom; explicit
+    // `null` is the patch primitive that overrides the stale value.
+    derived_canon_id: null,
+    review_reason: null,
   };
   if (nextState === 'promoted' && derivedCanonId) {
     merged.derived_canon_id = derivedCanonId;

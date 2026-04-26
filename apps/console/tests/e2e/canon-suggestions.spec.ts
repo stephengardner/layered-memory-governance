@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { writeFile, unlink } from 'node:fs/promises';
+import { writeFile, unlink, mkdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,8 +19,12 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APPS_CONSOLE = resolve(HERE, '..', '..');
 const REPO_ROOT = resolve(APPS_CONSOLE, '..', '..');
-const SIBLING_MAIN_LAG = resolve(REPO_ROOT, '..', 'memory-governance', '.lag');
-const LAG_DIR = process.env['LAG_CONSOLE_LAG_DIR'] ?? SIBLING_MAIN_LAG;
+// Default to the repo's own `.lag` dir so this test runs anywhere this
+// substrate lands: fork, CI, sibling worktree, fresh checkout. The
+// `LAG_CONSOLE_LAG_DIR` env var overrides for environments that point
+// the console at a different state directory (the dev-mode loopback).
+const DEFAULT_LAG = resolve(REPO_ROOT, '.lag');
+const LAG_DIR = process.env['LAG_CONSOLE_LAG_DIR'] ?? DEFAULT_LAG;
 const ATOMS_DIR = resolve(LAG_DIR, 'atoms');
 
 const NONCE = `e2e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -62,6 +66,11 @@ const SEED_ATOM = {
 
 test.describe('canon suggestions panel', () => {
   test.beforeAll(async () => {
+    // On a fresh checkout (or a `LAG_CONSOLE_LAG_DIR` pointing at an
+    // uninitialized path), `writeFile` would ENOENT before the suite
+    // could run. Creating the atoms dir up-front makes the e2e
+    // self-contained per the new in-repo `.lag` default.
+    await mkdir(ATOMS_DIR, { recursive: true });
     await writeFile(SEED_FILE, JSON.stringify(SEED_ATOM, null, 2), 'utf8');
   });
 
