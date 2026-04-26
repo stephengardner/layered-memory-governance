@@ -28,6 +28,7 @@ import {
   makeAllowedOriginSet,
 } from './security';
 import { parseAutonomyDial } from './kill-switch-state';
+import { median, extractFailureStage } from './metrics-rollup';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -866,6 +867,235 @@ async function handlePlansList(): Promise<Atom[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Metrics rollup: dashboard digest of autonomous-loop health.
+//
+// Single pass over the atom store derives: total atoms, atoms in window,
+// plan counts by state, autonomous-loop dispatched/succeeded/failed in
+// window, median drafter cost (from code-author-invoked observation atoms),
+// median dispatch-to-merge minutes (correlate plan invocation -> plan-merge-
+// settled), median CR rounds per PR (heuristic: count distinct
+// pr-observation atoms per plan).
+//
+// This handler is the conference-demo dashboard panel. Read-only;
+// derives everything from the existing AtomStore projection.
+// ---------------------------------------------------------------------------
+
+interface MetricsRollupFailure {
+  readonly plan_id: string;
+  readonly stage: string;
+  readonly message_preview: string;
+  readonly at: string;
+}
+
+interface MetricsRollup {
+  readonly window_hours: number;
+  readonly atoms_total: number;
+  readonly atoms_in_window: number;
+  readonly plans: {
+    readonly total: number;
+    readonly by_state: Readonly<Record<string, number>>;
+    readonly success_rate: number;
+  };
+  readonly autonomous_loop: {
+    readonly dispatched_in_window: number;
+    readonly succeeded_in_window: number;
+    readonly failed_in_window: number;
+    readonly median_drafter_cost_usd: number | null;
+    readonly median_dispatch_to_merge_minutes: number | null;
+    readonly median_cr_rounds_per_pr: number | null;
+  };
+  readonly recent_failures: ReadonlyArray<MetricsRollupFailure>;
+}
+
+async function handleMetricsRollup(params: { window_hours?: number }): Promise<MetricsRollup> {
+  const windowHours = Math.max(1, Math.min(24 * 30, params.window_hours ?? 24));
+  const all = await readAllAtoms();
+  const now = Date.now();
+  const windowStart = now - windowHours * 60 * 60 * 1000;
+
+  // Atom totals.
+  const atomsInWindow = all.filter((a) => {
+    const t = a.created_at ? Date.parse(a.created_at) : NaN;
+    return Number.isFinite(t) && t >= windowStart;
+  }).length;
+
+  // Plans (every plan atom OR atom carrying top-level plan_state).
+  const plans = all.filter((a) => {
+    if (a.superseded_by && a.superseded_by.length > 0) return false;
+    if (a.type === 'plan') return true;
+    const atomAny = a as unknown as Record<string, unknown>;
+    return atomAny['plan_state'] !== undefined;
+  });
+
+  const byState: Record<string, number> = {};
+  for (const p of plans) {
+    const state = (p as unknown as { plan_state?: string }).plan_state ?? 'unknown';
+    byState[state] = (byState[state] ?? 0) + 1;
+  }
+  const succeededCount = byState['succeeded'] ?? 0;
+  const failedCount = byState['failed'] ?? 0;
+  const successRate = succeededCount + failedCount > 0
+    ? succeededCount / (succeededCount + failedCount)
+    : 0;
+
+  // Autonomous-loop activity in window. Use code-author-invoked
+  // observation atoms (or any *-invoked) as the dispatch signal:
+  // their created_at is the dispatch timestamp and they carry
+  // executor_result.total_cost_usd for the drafter cost median.
+  const invokedInWindow: Atom[] = [];
+  const invokedAll: Atom[] = [];
+  for (const a of all) {
+    if (a.type !== 'observation') continue;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    const kind = String(m['kind'] ?? '');
+    if (kind !== 'code-author-invoked' && !kind.endsWith('-invoked')) continue;
+    invokedAll.push(a);
+    const t = a.created_at ? Date.parse(a.created_at) : NaN;
+    if (Number.isFinite(t) && t >= windowStart) invokedInWindow.push(a);
+  }
+
+  // Median drafter cost across in-window invocations (USD).
+  const costs: number[] = [];
+  for (const a of invokedInWindow) {
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    const er = m['executor_result'] as Record<string, unknown> | undefined;
+    const cost = er?.['total_cost_usd'];
+    if (typeof cost === 'number' && Number.isFinite(cost) && cost > 0) {
+      costs.push(cost);
+    }
+  }
+  const medianDrafterCost = median(costs);
+
+  // Median dispatch-to-merge minutes: correlate the latest invocation
+  // for each settled plan with the plan-merge-settled atom timestamp.
+  // Only counts plans that actually merged (we have a settled atom for).
+  const settledByPlan = new Map<string, Atom>();
+  for (const a of all) {
+    if (a.type !== 'plan-merge-settled') continue;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    const planId = typeof m['plan_id'] === 'string' ? (m['plan_id'] as string) : null;
+    if (!planId) continue;
+    // Latest settled wins.
+    const existing = settledByPlan.get(planId);
+    if (!existing || (a.created_at ?? '') > (existing.created_at ?? '')) {
+      settledByPlan.set(planId, a);
+    }
+  }
+
+  // Latest invocation per plan id from the dispatch index.
+  const invokedByPlan = new Map<string, Atom>();
+  for (const a of invokedAll) {
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    const planId = typeof m['plan_id'] === 'string' ? (m['plan_id'] as string) : null;
+    if (!planId) continue;
+    const existing = invokedByPlan.get(planId);
+    // Earliest invocation per plan represents the FIRST dispatch: the
+    // dispatch-to-merge clock starts then. A re-dispatch after a CR
+    // round is part of the same lifecycle; counting from the latest
+    // invocation would understate the operator-experienced wait.
+    if (!existing || (a.created_at ?? '') < (existing.created_at ?? '')) {
+      invokedByPlan.set(planId, a);
+    }
+  }
+
+  const dispatchToMergeMinutes: number[] = [];
+  let succeededInWindow = 0;
+  let failedInWindow = 0;
+  for (const [planId, settled] of settledByPlan) {
+    const invoked = invokedByPlan.get(planId);
+    if (!invoked) continue;
+    const dispatchedTs = invoked.created_at ? Date.parse(invoked.created_at) : NaN;
+    const settledTs = settled.created_at ? Date.parse(settled.created_at) : NaN;
+    if (!Number.isFinite(dispatchedTs) || !Number.isFinite(settledTs)) continue;
+    if (settledTs < dispatchedTs) continue; // sanity guard
+    const minutes = (settledTs - dispatchedTs) / (60 * 1000);
+    dispatchToMergeMinutes.push(minutes);
+
+    // Count succeeded-in-window from settled atoms (target_plan_state)
+    // since plan_state may flip after the original dispatch and we
+    // want this metric tied to settlement events landing in the window.
+    if (Number.isFinite(settledTs) && settledTs >= windowStart) {
+      const m = (settled.metadata ?? {}) as Record<string, unknown>;
+      const target = String(m['target_plan_state'] ?? '');
+      if (target === 'succeeded') succeededInWindow += 1;
+    }
+  }
+
+  // Failed-in-window: plans whose dispatch_result.kind === 'error'
+  // with `at` falling inside the window. This is a richer signal than
+  // settled atoms because non-merged failures (drafter LLM, dirty
+  // worktree, build) never reach the settled-atom path.
+  for (const p of plans) {
+    const meta = (p.metadata ?? {}) as Record<string, unknown>;
+    const dispatch = meta['dispatch_result'] as Record<string, unknown> | undefined;
+    if (!dispatch) continue;
+    if (dispatch['kind'] !== 'error') continue;
+    const at = typeof dispatch['at'] === 'string' ? Date.parse(dispatch['at'] as string) : NaN;
+    if (Number.isFinite(at) && at >= windowStart) failedInWindow += 1;
+  }
+
+  const medianDispatchToMerge = median(dispatchToMergeMinutes);
+
+  // Median CR rounds per PR. Heuristic: count distinct pr-observation
+  // atoms per plan_id and take the median across plans that had at
+  // least one observation. Each observation roughly maps to a CR round
+  // (pr-landing observes once per HEAD update and CR re-reviews on
+  // each push). Lower-bound proxy until a richer CR-round atom exists.
+  const observationsPerPlan = new Map<string, number>();
+  for (const a of all) {
+    if (a.type !== 'observation') continue;
+    const m = (a.metadata ?? {}) as Record<string, unknown>;
+    if (m['kind'] !== 'pr-observation') continue;
+    const planId = typeof m['plan_id'] === 'string' ? (m['plan_id'] as string) : null;
+    if (!planId) continue;
+    observationsPerPlan.set(planId, (observationsPerPlan.get(planId) ?? 0) + 1);
+  }
+  const crRounds = Array.from(observationsPerPlan.values());
+  const medianCrRounds = median(crRounds);
+
+  // Recent failures: most recent 5 plans whose dispatch_result.kind is
+  // 'error'. These are the operator's "what just broke" list.
+  const failureCandidates: MetricsRollupFailure[] = [];
+  for (const p of plans) {
+    const meta = (p.metadata ?? {}) as Record<string, unknown>;
+    const dispatch = meta['dispatch_result'] as Record<string, unknown> | undefined;
+    if (!dispatch) continue;
+    if (dispatch['kind'] !== 'error') continue;
+    const at = typeof dispatch['at'] === 'string' ? (dispatch['at'] as string) : null;
+    const message = typeof dispatch['message'] === 'string' ? (dispatch['message'] as string) : '';
+    if (!at) continue;
+    failureCandidates.push({
+      plan_id: p.id,
+      stage: extractFailureStage(message),
+      message_preview: message.slice(0, 120),
+      at,
+    });
+  }
+  failureCandidates.sort((a, b) => b.at.localeCompare(a.at));
+  const recentFailures = failureCandidates.slice(0, 5);
+
+  return {
+    window_hours: windowHours,
+    atoms_total: all.length,
+    atoms_in_window: atomsInWindow,
+    plans: {
+      total: plans.length,
+      by_state: byState,
+      success_rate: successRate,
+    },
+    autonomous_loop: {
+      dispatched_in_window: invokedInWindow.length,
+      succeeded_in_window: succeededInWindow,
+      failed_in_window: failedInWindow,
+      median_drafter_cost_usd: medianDrafterCost,
+      median_dispatch_to_merge_minutes: medianDispatchToMerge,
+      median_cr_rounds_per_pr: medianCrRounds,
+    },
+    recent_failures: recentFailures,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Plan lifecycle: end-to-end timeline of a single plan's autonomous-loop
 // chain. Stitches together the five (sometimes six) state-transition
 // atoms that a `plan` traverses from operator-intent through to merged:
@@ -1648,6 +1878,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'plans-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/metrics.rollup' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const rawWindow = body['window_hours'];
+    const windowHours = typeof rawWindow === 'number' && Number.isFinite(rawWindow) && rawWindow > 0
+      ? Math.trunc(rawWindow)
+      : undefined;
+    try {
+      const data = await handleMetricsRollup(
+        windowHours !== undefined ? { window_hours: windowHours } : {},
+      );
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'metrics-rollup-failed', (err as Error).message);
     }
     return;
   }

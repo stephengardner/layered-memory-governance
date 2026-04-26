@@ -13,6 +13,10 @@ interface RouteMeta {
 }
 
 const ROUTE_META: Record<Route, RouteMeta> = {
+  dashboard: {
+    title: 'Dashboard',
+    subtitle: 'Autonomous-loop health at a glance: atom volume, plan outcomes, drafter economics',
+  },
   canon: {
     title: 'Canon',
     subtitle: 'Governance substrate — directives, decisions, preferences, references',

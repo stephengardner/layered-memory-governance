@@ -18,7 +18,7 @@ import { test, expect } from '@playwright/test';
 
 test.describe('canon viewer', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/canon');
   });
 
   test('loads with title and renders at least one canon card', async ({ page }) => {
@@ -80,7 +80,7 @@ test.describe('canon viewer', () => {
     // Doing it via page.evaluate AFTER first load works in both
     // Chromium and WebKit — addInitScript had race conditions on
     // WebKit where the app's theme init ran before the script.
-    await page.goto('/');
+    await page.goto('/canon');
     await page.evaluate(() => localStorage.removeItem('lag-console.theme'));
     await page.reload();
     await page.locator('[data-testid="canon-card"]').first().waitFor();

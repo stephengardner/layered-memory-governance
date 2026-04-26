@@ -114,7 +114,7 @@ test.describe('views smoke', () => {
    * generous ceiling — the pre-fix flash exceeded 70.
    */
   test('/canon/:id never flashes the unfiltered grid', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/canon');
     await page.locator('[data-testid="canon-card"]').first().waitFor();
     const atomId = 'arch-atomstore-source-of-truth';
     await page.goto(`/canon/${atomId}`);
