@@ -42,7 +42,14 @@ export function PrincipalsView() {
           testId="principals-error"
         />
       )}
-      {query.isSuccess && principals.length === 0 && (
+      {/*
+       * Gate the no-principals empty state on `!focusId` so it does NOT
+       * stack with the focusMissing state when the store is empty AND
+       * the URL deep-links to a specific id. Without this gate both
+       * states render with the same testId, the UI shows duplicate
+       * empty cards, and getByTestId becomes ambiguous.
+       */}
+      {query.isSuccess && principals.length === 0 && !focusId && (
         <EmptyState
           title="No principals found"
           detail="Nothing in .lag/principals/."
