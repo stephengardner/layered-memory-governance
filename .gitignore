@@ -70,3 +70,24 @@ NUL
 # NOTES.md at repo root (or worktree root) is the agent-written handoff doc
 # for the current worktree. Ephemeral; never tracked on a branch.
 /NOTES.md
+
+# Transient operator working-tree artifacts that accumulate during long
+# sessions and otherwise trigger the executor's dirty-worktree gate.
+# Each was observed to recur in operator workflow 2026-04-26:
+#   - UI screenshots from visual-companion + manual review iterations
+#   - Bash crash dumps on Windows
+#   - tsc incremental build cache for the examples project
+#   - Subagent / brainstorm scratch directories (already isolated by tooling)
+#   - One-off CR-reply helper scripts the assistant writes during
+#     PR-review cycles; should live in /tmp but historically end up here
+#   - The .superpowers/ brainstorm directory (per-session artifacts)
+#   - The .claude/sounds + .claude/worktrees subtrees (operator-local)
+/*.png
+/*.stackdump
+/.tsbuildinfo-examples
+/.superpowers/
+/.claude/sounds/
+/.claude/worktrees/
+/scripts/reply-and-resolve-pr*.mjs
+/scripts/reply-and-resolve-cr.mjs
+/apps/console/*.png
