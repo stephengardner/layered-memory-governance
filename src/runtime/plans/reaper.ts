@@ -67,6 +67,36 @@ export const DEFAULT_REAPER_TTLS: ReaperTtls = Object.freeze({
 });
 
 /**
+ * Fail-fast guard: validate the TTL pair at the framework boundary so
+ * a programmatic caller (scheduler hook, test fixture, library
+ * consumer) can't pass an inverted or invalid pair and get every plan
+ * silently bucketed past the smaller threshold. The script driver
+ * already validates env-supplied ms; this guards programmatic calls.
+ *
+ * Throws on:
+ *   - non-integer or non-positive staleWarnMs
+ *   - non-integer or non-positive staleAbandonMs
+ *   - staleAbandonMs <= staleWarnMs (would merge the two buckets)
+ */
+export function validateReaperTtls(ttls: ReaperTtls): void {
+  if (!Number.isInteger(ttls.staleWarnMs) || ttls.staleWarnMs <= 0) {
+    throw new Error(
+      `reaper: invalid staleWarnMs (${ttls.staleWarnMs}); require positive integer ms`,
+    );
+  }
+  if (!Number.isInteger(ttls.staleAbandonMs) || ttls.staleAbandonMs <= 0) {
+    throw new Error(
+      `reaper: invalid staleAbandonMs (${ttls.staleAbandonMs}); require positive integer ms`,
+    );
+  }
+  if (ttls.staleAbandonMs <= ttls.staleWarnMs) {
+    throw new Error(
+      `reaper: staleAbandonMs (${ttls.staleAbandonMs}) must be strictly greater than staleWarnMs (${ttls.staleWarnMs})`,
+    );
+  }
+}
+
+/**
  * Result of classifying a plan against the TTLs. Exposed for unit
  * tests and the driver script's reporting.
  */
@@ -281,6 +311,11 @@ export async function runReaperSweep(
   principalId: PrincipalId,
   ttls: ReaperTtls = DEFAULT_REAPER_TTLS,
 ): Promise<RunReaperSweepResult> {
+  // Validate the TTL pair at the framework boundary so an inverted
+  // pair (warn > abandon) or non-integer ms can't silently mis-bucket
+  // every plan. Cheap to check once; impossible to recover from
+  // mid-sweep.
+  validateReaperTtls(ttls);
   // host.clock.now() returns Time (ISO8601 string). Date.parse gives
   // epoch milliseconds for arithmetic. Validate fail-fast so a broken
   // clock never silently treats every plan as fresh - that would make

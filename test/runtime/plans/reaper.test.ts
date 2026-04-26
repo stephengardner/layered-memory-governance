@@ -230,6 +230,28 @@ describe('applyReap', () => {
 });
 
 describe('runReaperSweep', () => {
+  it('returns truncated=true when pagination claims more remain past the iteration cap', async () => {
+    const host = createMemoryHost();
+    const reaper: PrincipalId = 'plan-reaper' as PrincipalId;
+    await host.atoms.put(planAtom('only-one', '2026-04-23T18:00:00.000Z'));
+    /*
+     * Stub host.atoms.query to return a synthetic non-null nextCursor
+     * so loadAllProposedPlans hits REAPER_PAGE_LIMIT (200) without ever
+     * exhausting the cursor. runReaperSweep should surface
+     * truncated=true so the caller can warn the operator that the
+     * slate they just saw is partial.
+     */
+    const realQuery = host.atoms.query.bind(host.atoms);
+    (host.atoms as { query: typeof host.atoms.query }).query = async (f, l, c) => {
+      const page = await realQuery(f, l, c);
+      return { ...page, nextCursor: 'never-exhausts' };
+    };
+    const fakeNowIso = '2026-04-26T20:00:00.000Z';
+    (host.clock as { now: () => Time }).now = () => fakeNowIso as Time;
+    const out = await runReaperSweep(host, reaper, TTLS);
+    expect(out.truncated).toBe(true);
+  });
+
   it('returns truncated=false for normal sweeps (under page-cap)', async () => {
     const host = createMemoryHost();
     const reaper: PrincipalId = 'plan-reaper' as PrincipalId;
