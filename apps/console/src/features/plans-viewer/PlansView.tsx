@@ -9,17 +9,9 @@ import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { listPlans, type PlanAtom } from '@/services/plans.service';
+import { planStateTone } from '@/features/plan-state/tones';
 import { useRouteId, setRoute, routeHref } from '@/state/router.store';
 import styles from './PlansView.module.css';
-
-const STATE_TONE: Record<string, string> = {
-  approved: 'var(--status-success)',
-  pending: 'var(--status-warning)',
-  rejected: 'var(--status-danger)',
-  failed: 'var(--status-danger)',
-  proposed: 'var(--accent)',
-  draft: 'var(--text-tertiary)',
-};
 
 const FAILURE_SUMMARY_MAX = 80;
 
@@ -188,12 +180,15 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
       className={`${styles.card} ${!focused ? styles.cardClickable : ''}`}
       data-testid="plan-card"
       data-atom-id={plan.id}
+      data-plan-state={state}
       onClick={handleCardClick}
     >
       <header className={styles.header}>
         <span
           className={styles.statePill}
-          style={{ borderColor: STATE_TONE[state] ?? 'var(--border-subtle)', color: STATE_TONE[state] ?? 'var(--text-secondary)' }}
+          data-testid="plan-card-state"
+          data-plan-state={state}
+          style={{ borderColor: planStateTone(state), color: planStateTone(state) }}
         >
           {state}
         </span>

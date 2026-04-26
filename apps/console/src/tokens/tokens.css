@@ -135,6 +135,16 @@
     --palette-success-500: #4ade80;
     --palette-warning-500: #fbbf24;
     --palette-danger-500: #f87171;
+    /*
+     * Info palette is a distinct blue shifted away from the accent
+     * track so an in-flight `executing` pill reads as "happening now"
+     * separately from "this surface is interactive". Without an
+     * info-specific palette, executing pills collapsed onto --accent
+     * and visually sat next to clickable links, a semantic miss.
+     * Sky-cyan range chosen for clear distance from --palette-accent-*
+     * (royal-blue) and --palette-success-* (green).
+     */
+    --palette-info-500: #38bdf8;
 
     --surface-canvas: var(--palette-ink-950);
     --surface-base: var(--palette-ink-900);
@@ -159,6 +169,7 @@
     --status-success: var(--palette-success-500);
     --status-warning: var(--palette-warning-500);
     --status-danger: var(--palette-danger-500);
+    --status-info: var(--palette-info-500);
 
     /*
      * Ambient background decoration: two low-opacity radial pools and
@@ -193,6 +204,8 @@
     --palette-success-500: #16a34a;
     --palette-warning-500: #d97706;
     --palette-danger-500: #dc2626;
+    /* Info: sky-cyan, slightly darker for contrast on light surfaces. */
+    --palette-info-500: #0284c7;
 
     --surface-canvas: var(--palette-ink-950);
     --surface-base: var(--palette-ink-900);
@@ -217,6 +230,7 @@
     --status-success: var(--palette-success-500);
     --status-warning: var(--palette-warning-500);
     --status-danger: var(--palette-danger-500);
+    --status-info: var(--palette-info-500);
 
     --bg-decor-primary: color-mix(in srgb, var(--palette-accent-500) 7%, transparent);
     --bg-decor-secondary: color-mix(in srgb, var(--palette-accent-600) 5%, transparent);
@@ -265,6 +279,8 @@
     --palette-success-500: #84cc16;
     --palette-warning-500: #fbbf24;
     --palette-danger-500: #f43f5e;
+    /* Info: cyan that holds against the warm-amber accent track. */
+    --palette-info-500: #22d3ee;
 
     --surface-canvas: var(--palette-ink-950);
     --surface-base: var(--palette-ink-900);
@@ -289,6 +305,7 @@
     --status-success: var(--palette-success-500);
     --status-warning: var(--palette-warning-500);
     --status-danger: var(--palette-danger-500);
+    --status-info: var(--palette-info-500);
 
     --bg-decor-primary: color-mix(in srgb, var(--palette-accent-500) 14%, transparent);
     --bg-decor-secondary: color-mix(in srgb, var(--palette-accent-400) 8%, transparent);

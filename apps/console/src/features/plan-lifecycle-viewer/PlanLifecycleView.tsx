@@ -18,6 +18,7 @@ import {
   EmptyState,
 } from '@/components/state-display/StateDisplay';
 import { listPlans, type PlanAtom } from '@/services/plans.service';
+import { planStateTone } from '@/features/plan-state/tones';
 import {
   getPlanLifecycle,
   type PlanLifecycle,
@@ -82,16 +83,8 @@ const PHASE_TONE: Record<PlanLifecyclePhase, string> = {
   failure: 'var(--status-danger)',
 };
 
-const STATE_TONE: Record<string, string> = {
-  succeeded: 'var(--status-success)',
-  approved: 'var(--status-success)',
-  pending: 'var(--status-warning)',
-  rejected: 'var(--status-danger)',
-  failed: 'var(--status-danger)',
-  proposed: 'var(--accent)',
-  executing: 'var(--accent)',
-  draft: 'var(--text-tertiary)',
-};
+// Plan-state tones live in `@/features/plan-state/tones.ts`: single
+// source of truth across PlansView, this view, and the e2e specs.
 
 export function PlanLifecycleView() {
   const focusId = useRouteId();
@@ -171,6 +164,7 @@ function PlanRow({ plan, index }: { plan: PlanAtom; index: number }) {
         href={routeHref('plan-lifecycle', plan.id)}
         data-testid="plan-lifecycle-row"
         data-plan-id={plan.id}
+        data-plan-state={state}
         onClick={(e) => {
           if (e.defaultPrevented || e.button !== 0) return;
           if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -180,9 +174,11 @@ function PlanRow({ plan, index }: { plan: PlanAtom; index: number }) {
       >
         <span
           className={styles.statePill}
+          data-testid="plan-lifecycle-row-state"
+          data-plan-state={state}
           style={{
-            borderColor: STATE_TONE[state] ?? 'var(--border-subtle)',
-            color: STATE_TONE[state] ?? 'var(--text-secondary)',
+            borderColor: planStateTone(state),
+            color: planStateTone(state),
           }}
         >
           {state}
@@ -259,10 +255,11 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
         <span
           className={styles.statePill}
           style={{
-            borderColor: STATE_TONE[state] ?? 'var(--border-subtle)',
-            color: STATE_TONE[state] ?? 'var(--text-secondary)',
+            borderColor: planStateTone(state),
+            color: planStateTone(state),
           }}
           data-testid="plan-lifecycle-state"
+          data-plan-state={state}
         >
           {state}
         </span>
