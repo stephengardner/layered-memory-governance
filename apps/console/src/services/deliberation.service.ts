@@ -1,8 +1,8 @@
 /**
  * Deliberation service.
  *
- * The CTO actor's reasoning trail is already on the plan atom -- the
- * planning-actor schema (cto-actor skill) emits plan atoms with:
+ * Plan atoms produced by any planner-shaped actor may carry a
+ * reasoning trail in standard metadata fields:
  *
  *   metadata.alternatives_rejected   ReadonlyArray<Alternative>
  *   metadata.principles_applied      ReadonlyArray<string>
@@ -19,8 +19,7 @@
  *
  * Substrate purity: we do NOT introduce a new atom type or widen
  * `src/` schemas. The view is a pure projection over what the
- * planning-actor already writes today. See the cto-actor skill for
- * the schema producer.
+ * planner already writes today.
  */
 
 import { listPlans } from './plans.service';
@@ -75,9 +74,9 @@ export interface DeliberationDetail {
 }
 
 /*
- * Plan content begins with `# <title>` on the first non-empty line in
- * the cto-actor skill output. Pull it for the card label so the row
- * surfaces a human title instead of the slugged atom id.
+ * Plan content conventionally begins with `# <title>` on the first
+ * non-empty line. Pull it for the card label so the row surfaces a
+ * human title instead of the slugged atom id.
  *
  * Returns null when the content has no leading heading; callers fall
  * back to the atom id.
@@ -122,8 +121,8 @@ function alternativesOf(atom: PlanLikeAtom): ReadonlyArray<DeliberationAlternati
 
 function citationsOf(atom: PlanLikeAtom): ReadonlyArray<DeliberationCitation> {
   const raw = atom.provenance?.derived_from ?? [];
-  // Dedupe while preserving order (the planning-actor sometimes lists
-  // the same intent twice as both an entry and a tail-anchor).
+  // Dedupe while preserving order (a planner sometimes lists the
+  // same intent twice as both an entry and a tail-anchor).
   const seen = new Set<string>();
   const out: DeliberationCitation[] = [];
   for (const id of raw) {
@@ -143,7 +142,10 @@ function principlesOf(atom: PlanLikeAtom): ReadonlyArray<string> {
 function whatBreaksOf(atom: PlanLikeAtom): string | null {
   const meta = readMeta(atom);
   // Tolerate both spellings the substrate has produced over time.
-  return meta.what_breaks_if_revisit ?? meta.what_breaks_if_revisited ?? null;
+  const raw = meta.what_breaks_if_revisit ?? meta.what_breaks_if_revisited ?? null;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function titleOf(atom: PlanLikeAtom): string {

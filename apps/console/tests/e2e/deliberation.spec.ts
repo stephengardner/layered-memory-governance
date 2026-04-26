@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 /**
- * Deliberation Trail e2e: surface the CTO actor's reasoning trail
+ * Deliberation Trail e2e: surface the planner's reasoning trail
  * (alternatives weighed, principles applied, canon cited) for every
  * plan atom that carries deliberation metadata.
  *
@@ -15,8 +15,8 @@ import { test, expect } from '@playwright/test';
  *
  * The test relies on at least one plan atom in `.lag/atoms/` carrying
  * either `metadata.alternatives_rejected`, `metadata.principles_applied`,
- * or `provenance.derived_from`. Every CTO-drafted plan in the org has
- * all three; a fresh atom store with no plans is correctly handled by
+ * or `provenance.derived_from`. Plans this org generates carry all
+ * three; a fresh atom store with no plans is correctly handled by
  * skip-on-empty.
  */
 test.describe('deliberation trail', () => {
@@ -41,7 +41,7 @@ test.describe('deliberation trail', () => {
       await empty.isVisible(),
       'no plans with deliberation metadata in atom store; this test requires at least one',
     );
-    await expect(page.getByRole('heading', { name: 'CTO Deliberation Trail' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Deliberation Trail' })).toBeVisible();
     await expect(firstCard).toBeVisible();
   });
 

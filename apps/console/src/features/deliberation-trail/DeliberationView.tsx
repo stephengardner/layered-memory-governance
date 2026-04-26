@@ -26,11 +26,11 @@ import styles from './DeliberationView.module.css';
 
 /**
  * Deliberation Trail: surface the heuristic-thinking process behind
- * every CTO-drafted plan atom. The plan atom already carries the
- * reasoning -- alternatives_rejected, principles_applied,
- * derived_from citations, what_breaks_if_revisit -- but those fields
- * are buried in the raw atom JSON. This view answers WHY the CTO
- * picked the path it did, without leaving the console.
+ * every plan atom. The plan atom already carries the reasoning --
+ * alternatives_rejected, principles_applied, derived_from citations,
+ * what_breaks_if_revisit -- but those fields are buried in the raw
+ * atom JSON. This view answers WHY a plan picked the path it did,
+ * without leaving the console.
  *
  * Two modes:
  *
@@ -49,8 +49,8 @@ import styles from './DeliberationView.module.css';
  *                                     statement.
  *
  * Substrate purity: NO new atom types. The view is a projection over
- * what the planning-actor already writes today (per cto-actor skill).
- * The substrate-side gap, if any, is surfaced by the view rather than
+ * what any planner-shaped actor already writes today. The
+ * substrate-side gap, if any, is surfaced by the view rather than
  * widened by it.
  */
 export function DeliberationView() {
@@ -75,24 +75,24 @@ function DeliberationList() {
       {query.isError && (
         <ErrorState
           title="Could not load deliberation trail"
-          message={(query.error as Error).message}
+          message={query.error instanceof Error ? query.error.message : String(query.error)}
           testId="deliberation-error"
         />
       )}
       {query.isSuccess && items.length === 0 && (
         <EmptyState
           title="No deliberation captured yet"
-          detail="Plans show up here once a CTO actor writes one with alternatives_rejected, principles_applied, or derived_from citations."
+          detail="Plans show up here once a planner writes one with alternatives_rejected, principles_applied, or derived_from citations."
           testId="deliberation-empty"
         />
       )}
       {query.isSuccess && items.length > 0 && (
         <>
           <header className={styles.intro}>
-            <h2 className={styles.heroTitle}>CTO Deliberation Trail</h2>
+            <h2 className={styles.heroTitle}>Deliberation Trail</h2>
             <p className={styles.heroSubtitle}>
               Why each plan was picked: alternatives weighed, canon cited, principles applied.
-              Every plan-authoring decision the CTO actor logged becomes auditable here.
+              Every plan-authoring decision a planner logged becomes auditable here.
             </p>
           </header>
           <StatsHeader
@@ -193,7 +193,7 @@ function DeliberationDetailView({ planId }: { planId: string }) {
     return (
       <ErrorState
         title="Could not load deliberation"
-        message={(query.error as Error).message}
+        message={query.error instanceof Error ? query.error.message : String(query.error)}
         testId="deliberation-detail-error"
       />
     );
