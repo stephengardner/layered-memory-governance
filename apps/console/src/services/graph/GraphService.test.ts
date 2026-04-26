@@ -15,7 +15,7 @@ function atom(overrides: Partial<GraphAtom> & { id: string }): GraphAtom {
     type: 'decision',
     layer: 'L3',
     content: overrides.id,
-    principal_id: 'stephen-human',
+    principal_id: 'apex-agent',
     confidence: 1,
     created_at: '2026-04-21T00:00:00.000Z',
     ...overrides,

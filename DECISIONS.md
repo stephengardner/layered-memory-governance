@@ -209,8 +209,8 @@ Both classes share the `Actor` interface (`observe -> classify -> propose -> app
 
 **Decision**: Treat the repo's development as a first-class LAG deployment. Concretely:
 
-1. Bootstrap models the real principal hierarchy: `stephen-human` (role=user, signed_by=null, root) and `claude-agent` (role=agent, signed_by=stephen-human). Hierarchy-aware source-rank (Phase 34) now means operator decisions outrank agent decisions at equal layer/provenance.
-2. The daemon's `principalResolver` maps Telegram `from.id` to `stephen-human` for the configured operator chat. Future multi-user setups expand the map.
+1. Bootstrap models the real principal hierarchy: `apex-agent` (role=user, signed_by=null, root) and `claude-agent` (role=agent, signed_by=apex-agent). Hierarchy-aware source-rank (Phase 34) now means operator decisions outrank agent decisions at equal layer/provenance.
+2. The daemon's `principalResolver` maps Telegram `from.id` to `apex-agent` for the configured operator chat. Future multi-user setups expand the map.
 3. Generated `CLAUDE.md` canon, DECISIONS.md, and commit history are the substrate LAG governs, not just static docs about LAG.
 4. Every non-trivial choice gets a DECISIONS.md entry with rationale and rejected alternatives so the trajectory is legible to future readers, including future autonomous agents.
 

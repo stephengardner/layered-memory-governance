@@ -24,7 +24,7 @@ import {
 import type { AtomId, PrincipalId, Time } from '../../src/types.js';
 
 const agent = 'agent-alice' as PrincipalId;
-const operator = 'stephen-human' as PrincipalId;
+const operator = 'apex-agent' as PrincipalId;
 
 describe('canTransitionQuestion', () => {
   it('pending -> answered | expired | abandoned', () => {

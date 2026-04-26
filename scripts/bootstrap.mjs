@@ -264,7 +264,7 @@ async function main() {
   // Two principals: human operator (root) and the agent (signed_by operator).
   // This repo IS its own first LAG-governed organization (see DECISIONS.md D12).
   // Changing the operator id is a one-line override per-install.
-  const operatorId = process.env.LAG_OPERATOR_ID || 'stephen-human';
+  const operatorId = process.env.LAG_OPERATOR_ID || 'apex-agent';
   const agentId = process.env.LAG_AGENT_ID || 'claude-agent';
   const principalId = operatorId; // L3 canon is operator-signed by default.
 

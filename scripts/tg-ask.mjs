@@ -80,7 +80,7 @@ async function main() {
     relatedAtoms: args.related,
     metadata: {
       asked_via: 'telegram',
-      expected_responder: process.env.LAG_OPERATOR_ID || 'stephen-human',
+      expected_responder: process.env.LAG_OPERATOR_ID || 'apex-agent',
     },
   });
 

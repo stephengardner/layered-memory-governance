@@ -9,10 +9,10 @@ const threads = [
   // ---- Finding 1 -------------------------------------------------------
   {
     id: 'PRRT_kwDOSGhm9859mZ0d',
-    label: 'F1 (Critical) bootstrap-pr-fix-canon.mjs:121 -- hardcoded stephen-human fallback',
+    label: 'F1 (Critical) bootstrap-pr-fix-canon.mjs:121 -- hardcoded apex-agent fallback',
     body:
       'Fixed in bd8e7ed.\n\n'
-      + '**What changed:** dropped both `|| \'stephen-human\'` fallbacks. The '
+      + '**What changed:** dropped both `|| \'apex-agent\'` fallbacks. The '
       + 'script now reads `process.env.LAG_OPERATOR_ID` exactly once at module '
       + 'top; if it is undefined or empty, the script prints an actionable '
       + 'error pointing at the env var and exits 2 (matching '

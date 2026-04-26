@@ -13,7 +13,7 @@ import { aggregateRelevantContext } from '../../../src/actors/planning/aggregate
 import type { AtomId, PrincipalId } from '../../../src/types.js';
 import { sampleAtom, samplePrincipal } from '../../fixtures.js';
 
-const OPERATOR: PrincipalId = 'stephen-human' as PrincipalId;
+const OPERATOR: PrincipalId = 'apex-agent' as PrincipalId;
 
 describe('aggregateRelevantContext', () => {
   it('collects L3 directives and L3 decisions separately', async () => {

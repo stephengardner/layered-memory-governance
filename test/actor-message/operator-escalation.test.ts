@@ -228,11 +228,11 @@ describe('sendOperatorEscalation', () => {
       host,
       report: mkReport({ haltReason: 'convergence-loop' }),
       pr: { owner: 'o', repo: 'r', number: 1 },
-      operator: 'stephen-human' as PrincipalId,
+      operator: 'apex-agent' as PrincipalId,
     });
 
     const { atoms } = await host.atoms.query({ type: ['actor-message'] }, 10);
     const env = atoms[0]!.metadata?.actor_message as Record<string, unknown>;
-    expect(env.to).toBe('stephen-human');
+    expect(env.to).toBe('apex-agent');
   });
 });

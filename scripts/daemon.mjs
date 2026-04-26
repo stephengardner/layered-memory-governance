@@ -206,7 +206,7 @@ async function main() {
     // Two-principal default: Telegram-origin messages are attributed to
     // the human operator; the daemon writes the agent's responses
     // under the agent principal. Override via env for multi-user.
-    principalResolver: () => process.env.LAG_OPERATOR_ID || 'stephen-human',
+    principalResolver: () => process.env.LAG_OPERATOR_ID || 'apex-agent',
     onCallback: async (handle, disposition, responder) => {
       try {
         await host.notifier.respond(handle, disposition, responder);

@@ -3,7 +3,7 @@ import { requireActorId } from './session.service';
 
 /*
  * `requireActorId` is the fail-closed checkpoint that replaced the
- * hardcoded `'stephen-human'` literal in CanonCard, KillSwitchPill,
+ * hardcoded `'apex-agent'` literal in CanonCard, KillSwitchPill,
  * and ProposeAtomDialog (CodeRabbit Critical on PR #78). A write
  * attempt with no configured operator MUST throw loudly — never
  * silently attribute to a fallback.

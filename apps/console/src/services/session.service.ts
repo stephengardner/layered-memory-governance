@@ -19,7 +19,7 @@ import { transport } from './transport';
  *     Per canon `dev-framework-mechanism-only`, a governance write
  *     without a known operator MUST NOT silently proceed.
  *
- * This replaces the hardcoded `'stephen-human'` literal that was
+ * This replaces the hardcoded `'apex-agent'` literal that was
  * baked into CanonCard, ProposeAtomDialog, and KillSwitchPill. That
  * was a canon violation (`dev-framework-mechanism-only`: framework
  * code stays mechanism-only, instance identity lives in config) and

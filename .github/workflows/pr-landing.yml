@@ -87,7 +87,7 @@ jobs:
       - name: Bootstrap pr-landing canon
         run: node scripts/bootstrap-pr-landing-canon.mjs
         env:
-          LAG_OPERATOR_ID: stephen-human
+          LAG_OPERATOR_ID: apex-agent
           LAG_AGENT_ID: claude-agent
 
       - name: Determine PR number

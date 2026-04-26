@@ -46,7 +46,7 @@ function mkPolicyAtom(policy: Record<string, unknown>, overrides: Partial<Atom> 
       validation_status: 'unchecked',
       last_validated_at: null,
     },
-    principal_id: 'stephen-human' as PrincipalId,
+    principal_id: 'apex-agent' as PrincipalId,
     taint: 'clean',
     metadata: { policy },
     ...overrides,

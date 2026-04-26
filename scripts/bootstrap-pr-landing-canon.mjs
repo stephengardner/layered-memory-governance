@@ -125,7 +125,7 @@ function policyAtom(spec) {
       validation_status: 'unchecked',
       last_validated_at: null,
     },
-    principal_id: process.env.LAG_OPERATOR_ID || 'stephen-human',
+    principal_id: process.env.LAG_OPERATOR_ID || 'apex-agent',
     taint: 'clean',
     metadata: {
       policy: {
@@ -145,7 +145,7 @@ async function main() {
   await mkdir(STATE_DIR, { recursive: true });
   const host = await createFileHost({ rootDir: STATE_DIR });
 
-  const operatorId = process.env.LAG_OPERATOR_ID || 'stephen-human';
+  const operatorId = process.env.LAG_OPERATOR_ID || 'apex-agent';
   const claudeAgentId = process.env.LAG_AGENT_ID || 'claude-agent';
 
   // Ensure parent chain exists. bootstrap.mjs normally creates these;

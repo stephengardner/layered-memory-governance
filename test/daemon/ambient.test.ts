@@ -17,7 +17,7 @@ import { EXTRACT_CLAIMS } from '../../src/schemas/index.js';
 import type { AtomId, PrincipalId, Time } from '../../src/types.js';
 import { sampleAtom } from '../fixtures.js';
 
-const PRINCIPAL = 'stephen-human' as PrincipalId;
+const PRINCIPAL = 'apex-agent' as PrincipalId;
 
 async function emptyCanonPath() {
   const d = await mkdtemp(join(tmpdir(), 'lag-ambient-'));

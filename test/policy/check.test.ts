@@ -22,7 +22,7 @@ import {
 import type { AtomId, PrincipalId, Time } from '../../src/types.js';
 import { sampleAtom } from '../fixtures.js';
 
-const operator = 'stephen-human' as PrincipalId;
+const operator = 'apex-agent' as PrincipalId;
 const agent = 'claude-agent' as PrincipalId;
 
 function policyAtom(id: string, policy: Record<string, unknown>, overrides: Record<string, unknown> = {}) {

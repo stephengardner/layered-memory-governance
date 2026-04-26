@@ -89,7 +89,7 @@ The atom is written with `principal_id=$LAG_OPERATOR_ID` and `provenance.kind=hu
 If `LAG_OPERATOR_ID` is unset, the script exits with a clear error. Set it in your shell profile or in the session:
 
 ```bash
-export LAG_OPERATOR_ID=stephen-human   # whatever your operator principal id is
+export LAG_OPERATOR_ID=apex-agent   # whatever your operator principal id is
 ```
 
 ## Discipline notes

@@ -14,7 +14,7 @@ import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import { LAGDaemon, StubTranscriber } from '../../src/daemon/index.js';
 import type { PrincipalId } from '../../src/types.js';
 
-const PRINCIPAL = 'stephen-human' as PrincipalId;
+const PRINCIPAL = 'apex-agent' as PrincipalId;
 const CHAT_ID = 12345;
 
 async function emptyCanonPath(): Promise<string> {

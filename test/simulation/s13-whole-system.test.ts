@@ -33,7 +33,7 @@ import { EXTRACT_CLAIMS, type ExtractClaimsOutput } from '../../src/schemas/inde
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import { sampleAtom, samplePrincipal } from '../fixtures.js';
 
-const operator = 'stephen-human' as PrincipalId;
+const operator = 'apex-agent' as PrincipalId;
 const alice = 'agent-alice' as PrincipalId;
 const bob = 'agent-bob' as PrincipalId;
 const FIXED = '2026-04-19T00:00:00.000Z' as Time;

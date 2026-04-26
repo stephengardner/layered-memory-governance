@@ -210,7 +210,7 @@ function MaintenanceActions({ atom }: { atom: CanonAtom }) {
    * null (LAG_CONSOLE_ACTOR_ID unset), so a write never silently
    * attributes to a fallback identity. This is the client half of
    * `dec-console-session-identity-server-sourced` and closes the
-   * CodeRabbit critical on hardcoded `'stephen-human'`.
+   * CodeRabbit critical on hardcoded `'apex-agent'`.
    */
   const actorId = useCurrentActorId();
   const reinforce = useMutation({

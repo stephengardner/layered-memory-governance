@@ -31,7 +31,7 @@
  * for the self-audit use case.
  *
  * Usage:
- *   LAG_OPERATOR_ID=stephen-human node scripts/run-cto-self-audit.mjs
+ *   LAG_OPERATOR_ID=apex-agent node scripts/run-cto-self-audit.mjs
  */
 
 import { resolve, dirname } from 'node:path';
