@@ -1,4 +1,4 @@
-import { useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Book } from 'lucide-react';
@@ -54,6 +54,21 @@ export function MobileNavOverflow({ open, onClose, items, currentRoute }: Props)
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   /*
+   * Stash the latest `onClose` in a ref so the effect below can
+   * fire its keyboard handler without taking onClose as a dep.
+   * Without this ref the effect tears down + re-runs on every
+   * parent render (since Sidebar passes a fresh inline arrow at
+   * the call site), which would yank focus back to the trigger
+   * mid-interaction and corrupt previousFocusRef. Updating the
+   * ref via a layoutless side-effect keeps callers free to pass
+   * inline arrows without paying a focus-thrash penalty.
+   */
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  /*
    * Sort drawer entries alphabetically by label. Predictable
    * ordering beats "designer's intent" once the org grows past
    * ~10 destinations; the operator scans by first letter, not
@@ -90,7 +105,7 @@ export function MobileNavOverflow({ open, onClose, items, currentRoute }: Props)
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
       }
     };
 
@@ -101,10 +116,21 @@ export function MobileNavOverflow({ open, onClose, items, currentRoute }: Props)
      * simpler than a full focus-trap library (3KB+ for behavior we
      * already get from one event listener) and matches what
      * shadcn's Dialog primitive does internally.
+     *
+     * The `!open` early-return guards the close-by-backdrop-click
+     * race: between `onClick={onClose}` setting `open=false` and
+     * React unmounting the portal, focus moves to document.body
+     * and `focusin` fires; without this guard the handler would
+     * snap focus back into the drawer right before unmount,
+     * causing a brief focus flash + extra screen-reader
+     * announcement. The `dialogRef.current.isConnected` belt-and-
+     * suspenders catches the same race when state-update timing
+     * leaves `open` stale during the unmount tick.
      */
     const onFocusIn = (e: FocusEvent) => {
+      if (!open) return;
       const dlg = dialogRef.current;
-      if (!dlg) return;
+      if (!dlg || !dlg.isConnected) return;
       const target = e.target as Node | null;
       if (target && !dlg.contains(target)) {
         const firstFocusable = dlg.querySelector<HTMLElement>(
@@ -123,7 +149,11 @@ export function MobileNavOverflow({ open, onClose, items, currentRoute }: Props)
       // users do not lose their place.
       previousFocusRef.current?.focus();
     };
-  }, [open, onClose]);
+    // onClose intentionally omitted: it's read through onCloseRef
+    // so the effect doesn't tear down on every parent render. See
+    // the ref setup above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   /*
    * Reduced-motion is read once per open via matchMedia; framer-motion
@@ -134,6 +164,21 @@ export function MobileNavOverflow({ open, onClose, items, currentRoute }: Props)
   const reducedMotion = typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /*
+   * Mount-gate so the createPortal(document.body) call is never
+   * evaluated during a server render. The console is currently
+   * pure CSR (vite.config.ts has no SSR setup), so this guard is
+   * defensive: it matches the `typeof window` discipline used a
+   * few lines up for matchMedia, and would prevent a landmine if
+   * SSR / prerender ever lands on this app. Cost is one extra
+   * render at component mount.
+   */
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  if (!mounted) return null;
 
   return createPortal(
     <AnimatePresence>
@@ -151,6 +196,7 @@ export function MobileNavOverflow({ open, onClose, items, currentRoute }: Props)
           />
           <motion.div
             ref={dialogRef}
+            id="mobile-nav-overflow-dialog"
             className={styles.sheet}
             initial={{ y: reducedMotion ? 0 : '100%', opacity: reducedMotion ? 0 : 1 }}
             animate={{ y: 0, opacity: 1 }}

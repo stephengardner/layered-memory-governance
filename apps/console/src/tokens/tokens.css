@@ -120,6 +120,33 @@
      */
     --ring-width-sm: 3px;
     --ring-width-md: 6px;
+
+    /*
+     * Backdrop blur scale. Used by drawers, dialogs, and command
+     * palette overlays whose `backdrop-filter: blur(...)` calls
+     * cannot be expressed with the spacing scale (the function takes
+     * a length argument; `var(--space-1)` would render as a token
+     * fallback chain, not a px primitive backed by stylelint).
+     * Keeping these as raw px tokens (vs literal px in component CSS)
+     * lets a future high-contrast / low-power theme dial down the
+     * blur cost wholesale, and keeps the canon `dev-web-no-hardcoded-px`
+     * rule honest at the call site.
+     */
+    --blur-sm: 4px;
+    --blur-md: 6px;
+    --blur-lg: 12px;
+    --blur-xl: 16px;
+
+    /*
+     * Notification dot sizing for the "more" overflow indicator and
+     * any future small badge sitting on top of an icon. Kept as tokens
+     * so a future high-contrast theme can dial up dot weight without
+     * touching every component, and so the offset stays in lockstep
+     * with the dot diameter (offset = -dot-size / 3 by design).
+     */
+    --dot-size: 6px;
+    --dot-offset-y: -2px;
+    --dot-offset-x: -4px;
   }
 
   /* ===== DARK THEME (default) ===== */

@@ -169,11 +169,19 @@
 }
 
 .itemMoreDot {
+  /*
+   * Notification-style dot pinned to the upper-right of the icon to
+   * indicate "the active route lives inside the overflow drawer".
+   * Sizing + offsets driven by tokens in src/tokens/tokens.css so a
+   * theme can dial the dot weight wholesale (e.g. high-contrast
+   * boosts dot-size + ring-width together) without touching the
+   * component.
+   */
   position: absolute;
-  top: -2px;
-  right: -4px;
-  width: 6px;
-  height: 6px;
+  top: var(--dot-offset-y);
+  right: var(--dot-offset-x);
+  width: var(--dot-size);
+  height: var(--dot-size);
   border-radius: var(--radius-pill);
   background: var(--accent);
   box-shadow: 0 0 0 var(--stroke-hairline) var(--surface-base);

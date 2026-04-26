@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb, ShieldAlert, Radio, GitFork, Brain, Zap, MoreHorizontal } from 'lucide-react';
 import { routeHref, setRoute, type Route } from '@/state/router.store';
 import logoUrl from '@/assets/lag-logo.png';
@@ -64,6 +64,16 @@ const items: ReadonlyArray<NavItem> = [
 
 export function Sidebar({ route }: { route: Route }) {
   const [overflowOpen, setOverflowOpen] = useState(false);
+  /*
+   * Stable close callback. The ref pattern inside MobileNavOverflow
+   * is defense-in-depth, but a stable identity at the call site is
+   * the right shape for the seam: any future hook that takes the
+   * close handler as a dep (e.g. an outside-click listener composed
+   * over the drawer) shouldn't re-fire on every Sidebar render.
+   * `setOverflowOpen` is stable from React, so this useCallback
+   * is genuinely stable across the component's lifetime.
+   */
+  const closeOverflow = useCallback(() => setOverflowOpen(false), []);
 
   /*
    * Desktop renders the full flat list (the existing behavior, which
@@ -192,7 +202,7 @@ export function Sidebar({ route }: { route: Route }) {
 
       <MobileNavOverflow
         open={overflowOpen}
-        onClose={() => setOverflowOpen(false)}
+        onClose={closeOverflow}
         items={overflowItems}
         currentRoute={route}
       />

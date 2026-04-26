@@ -9,11 +9,23 @@
  */
 
 .backdrop {
+  /*
+   * Clip the backdrop to the area above the bottom-tab bar so the
+   * bar itself remains visible (the drawer's slide-up animation
+   * comes out of the bar's top edge). Header docstring says the bar
+   * is visible above the backdrop; using `bottom: <bar-height>`
+   * here is what actually delivers that promise (CR PR #209). An
+   * earlier shape used `inset: 0` which buried the bar under the
+   * 60% ink overlay + 4px blur.
+   */
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--space-10) + env(safe-area-inset-bottom));
   background: color-mix(in srgb, var(--palette-ink-950) 60%, transparent);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(var(--blur-sm));
+  -webkit-backdrop-filter: blur(var(--blur-sm));
   z-index: 100;
 }
 
@@ -49,8 +61,14 @@
 }
 
 .handle {
+  /*
+   * iOS-style drag handle (the small horizontal pill at the top of
+   * a sheet). 4px height = 2 × --space-px so a future high-contrast
+   * theme that thickens borders wholesale picks it up via the
+   * primitive scale.
+   */
   width: var(--space-7);
-  height: 4px;
+  height: var(--space-1);
   background: var(--border-strong);
   border-radius: var(--radius-pill);
   margin: 0 auto var(--space-3);
@@ -117,7 +135,7 @@
   left: 0;
   top: 25%;
   bottom: 25%;
-  width: 2px;
+  width: var(--stroke-rail);
   background: var(--accent);
   border-radius: var(--radius-pill);
 }
