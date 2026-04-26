@@ -7,6 +7,7 @@ import { ControlPanelView } from '@/features/control-panel/ControlPanelView';
 import { CanonViewer } from '@/features/canon-viewer/CanonViewer';
 import { CanonSuggestionsView } from '@/features/canon-suggestions/CanonSuggestionsView';
 import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
+import { PrincipalTreeView } from '@/features/principal-tree/PrincipalTreeView';
 import { ActivitiesView } from '@/features/activities-viewer/ActivitiesView';
 import { PlansView } from '@/features/plans-viewer/PlansView';
 import { PlanLifecycleView } from '@/features/plan-lifecycle-viewer/PlanLifecycleView';
@@ -77,6 +78,7 @@ function renderRoute(r: Route) {
     case 'canon': return <CanonViewer />;
     case 'canon-suggestions': return <CanonSuggestionsView />;
     case 'principals': return <PrincipalsView />;
+    case 'hierarchy': return <PrincipalTreeView />;
     case 'activities': return <ActivitiesView />;
     case 'plans': return <PlansView />;
     case 'plan-lifecycle': return <PlanLifecycleView />;

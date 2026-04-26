@@ -33,6 +33,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Principals',
     subtitle: 'Identities that author atoms and hold authority in the hierarchy',
   },
+  hierarchy: {
+    title: 'Principal Hierarchy',
+    subtitle: 'Signed-by tree: who delegated authority to whom, and where taint would cascade',
+  },
   activities: {
     title: 'Activities',
     subtitle: 'Recent atom writes across layers, sorted by time',
