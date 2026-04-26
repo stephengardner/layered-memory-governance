@@ -853,6 +853,41 @@ async function handleDaemonStatus(): Promise<{
   };
 }
 
+/*
+ * Canon suggestions: agent-observed L1 atoms whose metadata.kind is
+ * `canon-proposal-suggestion`. The console READS these so the operator
+ * can scan pending suggestions; the console NEVER writes them. Triage
+ * (promote/dismiss/defer) goes through scripts/canon-suggest-triage.mjs
+ * + scripts/decide.mjs per inv-l3-requires-human + the apps/console
+ * "v1 read-only" scope boundary.
+ *
+ * The discriminator is the `metadata.kind` string, NOT a new AtomType.
+ * Per dev-substrate-not-prescription, the framework's AtomType union
+ * stays untouched; suggestions are a metadata-shaped projection over
+ * the existing observation atom type.
+ */
+const CANON_SUGGESTION_KIND = 'canon-proposal-suggestion';
+const CANON_SUGGESTION_REVIEW_STATES = ['pending', 'promoted', 'dismissed', 'deferred'] as const;
+type CanonSuggestionReviewState = typeof CANON_SUGGESTION_REVIEW_STATES[number];
+
+async function handleCanonSuggestionsList(params: {
+  review_state?: CanonSuggestionReviewState;
+}): Promise<Atom[]> {
+  const all = await readAllAtoms();
+  const wanted = params.review_state ?? 'pending';
+  const out = all.filter((a) => {
+    if (a.type !== 'observation') return false;
+    if (a.superseded_by && a.superseded_by.length > 0) return false;
+    const meta = a.metadata as Record<string, unknown> | undefined;
+    if (!meta || meta['kind'] !== CANON_SUGGESTION_KIND) return false;
+    return meta['review_state'] === wanted;
+  });
+  // Newest first so the freshly-suggested ones land at the top of the
+  // operator's review panel.
+  out.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
+  return out;
+}
+
 async function handlePlansList(): Promise<Atom[]> {
   const all = await readAllAtoms();
   const out = all.filter((a) => {
@@ -1886,6 +1921,30 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'daemon-status-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/canon-suggestions.list' && req.method === 'POST') {
+    /*
+     * READ-ONLY endpoint per apps/console v1 scope boundary. The
+     * operator triages via the canon-suggest-triage CLI (which writes
+     * the state change) — this endpoint never mutates atom metadata.
+     * Default review_state=pending so a typical request returns the
+     * inbox of suggestions awaiting operator review; pass
+     * review_state=promoted|dismissed|deferred to see the audit trail.
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const raw = typeof body['review_state'] === 'string' ? (body['review_state'] as string) : 'pending';
+    if (!CANON_SUGGESTION_REVIEW_STATES.includes(raw as CanonSuggestionReviewState)) {
+      sendErr(req, res, 400, 'invalid-review-state', `review_state must be one of ${CANON_SUGGESTION_REVIEW_STATES.join('|')}`);
+      return;
+    }
+    try {
+      const data = await handleCanonSuggestionsList({ review_state: raw as CanonSuggestionReviewState });
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'canon-suggestions-list-failed', (err as Error).message);
     }
     return;
   }

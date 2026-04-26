@@ -21,6 +21,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Canon',
     subtitle: 'Governance substrate — directives, decisions, preferences, references',
   },
+  'canon-suggestions': {
+    title: 'Suggestions',
+    subtitle: 'Agent-observed canon proposals awaiting operator triage — promote, dismiss, or defer via CLI',
+  },
   principals: {
     title: 'Principals',
     subtitle: 'Identities that author atoms and hold authority in the hierarchy',
