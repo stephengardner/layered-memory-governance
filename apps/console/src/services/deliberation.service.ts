@@ -177,7 +177,13 @@ function whatBreaksOf(atom: PlanLikeAtom): string | null {
 
 function titleOf(atom: PlanLikeAtom): string {
   const meta = readMeta(atom);
-  if (typeof meta.title === 'string' && meta.title.length > 0) return meta.title;
+  // Trim before length check so whitespace-only metadata.title (e.g.
+  // an authoring-time formatting slip) doesn't bypass the heading
+  // and id fallbacks. Mirrors the trim discipline in whatBreaksOf.
+  if (typeof meta.title === 'string') {
+    const trimmed = meta.title.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
   return extractPlanTitle(atom.content) ?? atom.id;
 }
 
