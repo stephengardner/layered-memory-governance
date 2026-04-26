@@ -310,6 +310,7 @@ const cases: readonly SubpathCase[] = [
       'RateLimitedError',
       'ResetAuthorityError',
       'ResetShapeError',
+      'SkipReason',
       'SubActorRegistry',
       'buildAgenticCodeAuthorExecutor',
       'buildDefaultCodeAuthorExecutor',

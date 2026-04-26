@@ -146,6 +146,7 @@ export type {
 
 export {
   RADIUS_RANK,
+  SkipReason,
   isBlastRadiusWithin,
   findIntentInProvenance,
   runIntentAutoApprovePass,
@@ -154,4 +155,5 @@ export type {
   BlastRadius,
   IntentAutoApproveResult,
   IntentAutoApproveOptions,
+  SkippedByReason,
 } from './intent-approve.js';

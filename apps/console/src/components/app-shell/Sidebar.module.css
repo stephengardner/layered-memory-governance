@@ -112,8 +112,24 @@
   border-color: color-mix(in srgb, var(--status-danger) 38%, transparent);
 }
 
-.itemLabel {
+/*
+ * Dual-label pattern. Items that need a shorter label on the mobile
+ * bottom-tab bar (e.g. Dashboard becomes Home, where the desktop
+ * label overflows the constrained tab width on iPhone-13-class
+ * viewports) render BOTH spans in markup; CSS toggles which is
+ * visible based on viewport. Keeping this purely CSS-driven avoids a
+ * JS viewport read (no flash on first paint, no SSR mismatch risk)
+ * and matches the @layer/token-driven aesthetic of the rest of the
+ * console. Items without a mobileLabel only render the desktop span,
+ * which the mobile media-query block below leaves visible (the
+ * `.itemLabelMobile` rule only flips when both spans are present).
+ */
+.itemLabelDesktop {
   display: inline;
+}
+
+.itemLabelMobile {
+  display: none;
 }
 
 /*
@@ -170,5 +186,23 @@
     right: 20%;
     width: auto;
     height: 2px;
+  }
+
+  /*
+   * Dual-label toggle on mobile. When an item ships both spans
+   * (.itemLabelDesktop + .itemLabelMobile), swap visibility: the
+   * shorter mobile copy is shown and the longer desktop one is
+   * hidden. Items with only the desktop span keep showing it (the
+   * sibling-conditioned rule below is a no-op for them) so labels
+   * that already fit (Canon, Plans, Graph) render unchanged on
+   * mobile. `:has()` is supported in every browser the console
+   * targets (modern Chromium/Safari/Firefox 121+).
+   */
+  .item:has(.itemLabelMobile) .itemLabelDesktop {
+    display: none;
+  }
+
+  .itemLabelMobile {
+    display: inline;
   }
 }

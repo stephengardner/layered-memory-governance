@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   RADIUS_RANK,
+  SkipReason,
   isBlastRadiusWithin,
   findIntentInProvenance,
   runIntentAutoApprovePass,
@@ -361,8 +362,8 @@ describe('runIntentAutoApprovePass', () => {
     expect(plan?.plan_state).toBe('proposed');
   });
 
-  // 6. Plan confidence below envelope.min_plan_confidence -> skipped silently (NOT rejected)
-  it('T6: plan confidence below min_plan_confidence -> silently skipped, not rejected', async () => {
+  // 6. Plan confidence below envelope.min_plan_confidence -> skipped + observable
+  it('T6: plan confidence below min_plan_confidence -> observable skip, not rejected', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -374,13 +375,23 @@ describe('runIntentAutoApprovePass', () => {
 
     expect(result.approved).toBe(0);
     expect(result.rejected).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.BELOW_MIN_CONFIDENCE]).toBe(1);
 
     const plan = await host.atoms.get('plan-lowconf' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(SkipReason.BELOW_MIN_CONFIDENCE);
+    expect(events[0]?.details['plan_id']).toBe('plan-lowconf');
+    expect(events[0]?.details['intent_id']).toBe('intent-lowconf');
+    expect(events[0]?.details['plan_confidence']).toBe(0.60);
+    expect(events[0]?.details['envelope_min_confidence']).toBe(0.75);
   });
 
-  // 7. Sub-actor not in envelope.allowed_sub_actors -> skipped silently
-  it('T7: plan sub-actor not in intent allowed_sub_actors -> silently skipped', async () => {
+  // 7. Sub-actor not in envelope.allowed_sub_actors -> skipped + observable
+  it('T7: plan sub-actor not in intent allowed_sub_actors -> observable skip', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -392,13 +403,21 @@ describe('runIntentAutoApprovePass', () => {
 
     expect(result.approved).toBe(0);
     expect(result.rejected).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.SUB_ACTOR_NOT_ALLOWED]).toBe(1);
 
     const plan = await host.atoms.get('plan-subactor' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(SkipReason.SUB_ACTOR_NOT_ALLOWED);
+    expect(events[0]?.details['plan_sub_actor']).toBe('code-author');
+    expect(events[0]?.details['envelope_allowed_sub_actors']).toEqual(['auditor-actor']);
   });
 
-  // 8. Blast-radius exceeds envelope.max_blast_radius -> skipped silently
-  it('T8: plan implied_blast_radius exceeds envelope max -> silently skipped', async () => {
+  // 8. Blast-radius exceeds envelope.max_blast_radius -> skipped + observable
+  it('T8: plan implied_blast_radius exceeds envelope max -> observable skip', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -412,9 +431,17 @@ describe('runIntentAutoApprovePass', () => {
 
     expect(result.approved).toBe(0);
     expect(result.rejected).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE]).toBe(1);
 
     const plan = await host.atoms.get('plan-bigblast' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE);
+    expect(events[0]?.details['plan_radius']).toBe('framework');
+    expect(events[0]?.details['envelope_max_radius']).toBe('tooling');
   });
 
   // 9. Empty allowed_sub_actors in pol-plan-autonomous-intent-approve -> short-circuit, scanned: 0
@@ -457,8 +484,8 @@ describe('runIntentAutoApprovePass', () => {
     expect(meta['approved_via']).toBeUndefined();
   });
 
-  // 11. Unknown plan implied_blast_radius -> fail-closed: silently skipped (not approved)
-  it('T11: unknown implied_blast_radius on plan -> fail-closed, not approved', async () => {
+  // 11. Unknown plan implied_blast_radius -> fail-closed + observable skip
+  it('T11: unknown implied_blast_radius on plan -> observable RADIUS_UNKNOWN skip', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -470,12 +497,58 @@ describe('runIntentAutoApprovePass', () => {
     const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
 
     expect(result.approved).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.RADIUS_UNKNOWN]).toBe(1);
     const plan = await host.atoms.get('plan-unknown-radius' as AtomId);
+    expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(SkipReason.RADIUS_UNKNOWN);
+    expect(events[0]?.details['plan_radius']).toBe('galaxy-brain');
+  });
+
+  // 11b. Prototype-chain key on plan radius -> fail-closed + observable skip
+  it('T11b: implied_blast_radius=toString (prototype-chain key) -> RADIUS_UNKNOWN skip, never falls through', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-proto-radius', { max_blast_radius: 'framework' }));
+    await host.atoms.put(
+      planAtom('plan-proto-radius', 'intent-proto-radius', { implied_blast_radius: 'toString' }),
+    );
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    // Pre-fix this would silently approve (Object.prototype.toString in RADIUS_RANK === true,
+    // then RADIUS_RANK['toString'] === undefined > N === false at the rank comparison).
+    // Object.hasOwn rejects prototype-chain keys, so the guard fails closed.
+    expect(result.approved).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.RADIUS_UNKNOWN]).toBe(1);
+    const plan = await host.atoms.get('plan-proto-radius' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
   });
 
-  // 12. Unknown envelope max_blast_radius -> fail-closed: silently skipped (not approved)
-  it('T12: unknown max_blast_radius in envelope -> fail-closed, not approved', async () => {
+  // 12b. Prototype-chain key on envelope -> fail-closed + observable skip
+  it('T12b: max_blast_radius=constructor (prototype-chain key) -> DELEGATION_RADIUS_UNKNOWN skip', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-proto-env', { max_blast_radius: 'constructor' }));
+    await host.atoms.put(
+      planAtom('plan-proto-env', 'intent-proto-env', { implied_blast_radius: 'tooling' }),
+    );
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_UNKNOWN]).toBe(1);
+  });
+
+  // 12. Unknown envelope max_blast_radius -> fail-closed + observable skip
+  it('T12: unknown max_blast_radius in envelope -> observable DELEGATION_RADIUS_UNKNOWN skip', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -487,7 +560,125 @@ describe('runIntentAutoApprovePass', () => {
     const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
 
     expect(result.approved).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_UNKNOWN]).toBe(1);
     const plan = await host.atoms.get('plan-unknown-env' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(SkipReason.DELEGATION_RADIUS_UNKNOWN);
+    expect(events[0]?.details['envelope_max_radius']).toBe('total-destruction');
+  });
+
+  // 13. NEW: Intent missing trust_envelope -> observable MISSING_TRUST_ENVELOPE skip
+  it('T13: intent missing trust_envelope -> observable MISSING_TRUST_ENVELOPE skip', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+
+    // Build an intent with the trust_envelope key removed.
+    const baseIntent = intentAtom('intent-no-env');
+    const meta = { ...(baseIntent.metadata as Record<string, unknown>) };
+    delete meta['trust_envelope'];
+    const intentNoEnv: Atom = { ...baseIntent, metadata: meta };
+    await host.atoms.put(intentNoEnv);
+    await host.atoms.put(planAtom('plan-no-env', 'intent-no-env'));
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(0);
+    expect(result.rejected).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedByReason[SkipReason.MISSING_TRUST_ENVELOPE]).toBe(1);
+
+    const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(SkipReason.MISSING_TRUST_ENVELOPE);
+    expect(events[0]?.details['plan_id']).toBe('plan-no-env');
+    expect(events[0]?.details['intent_id']).toBe('intent-no-env');
+  });
+
+  // 14. NEW: per-tick aggregation across multiple skip reasons.
+  // Asserts that the result.skippedByReason breakdown sums to result.skipped
+  // and that one audit event lands per skip site.
+  it('T14: multiple skips in one tick -> per-reason breakdown sums to total', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+
+    // 1 BELOW_MIN_CONFIDENCE
+    await host.atoms.put(intentAtom('intent-a', { min_plan_confidence: 0.95 }));
+    await host.atoms.put(planAtom('plan-a', 'intent-a', { confidence: 0.50 }));
+
+    // 2 SUB_ACTOR_NOT_ALLOWED (two plans with same shape)
+    await host.atoms.put(intentAtom('intent-b', { allowed_sub_actors: ['auditor-actor'] }));
+    await host.atoms.put(planAtom('plan-b1', 'intent-b', { sub_actor: 'code-author' }));
+    await host.atoms.put(planAtom('plan-b2', 'intent-b', { sub_actor: 'code-author' }));
+
+    // 1 DELEGATION_RADIUS_EXCEEDS_ENVELOPE
+    await host.atoms.put(intentAtom('intent-c', { max_blast_radius: 'tooling' }));
+    await host.atoms.put(planAtom('plan-c', 'intent-c', { implied_blast_radius: 'framework' }));
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(0);
+    expect(result.rejected).toBe(0);
+    expect(result.skipped).toBe(4);
+    expect(result.skippedByReason[SkipReason.BELOW_MIN_CONFIDENCE]).toBe(1);
+    expect(result.skippedByReason[SkipReason.SUB_ACTOR_NOT_ALLOWED]).toBe(2);
+    expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE]).toBe(1);
+    // Untriggered reasons stay zero.
+    expect(result.skippedByReason[SkipReason.MISSING_TRUST_ENVELOPE]).toBe(0);
+    expect(result.skippedByReason[SkipReason.NO_DELEGATION]).toBe(0);
+    expect(result.skippedByReason[SkipReason.RADIUS_UNKNOWN]).toBe(0);
+    expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_UNKNOWN]).toBe(0);
+    // Sum invariant: per-reason counts sum to skipped total.
+    const sum = Object.values(result.skippedByReason).reduce((a, b) => a + b, 0);
+    expect(sum).toBe(result.skipped);
+
+    const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 50);
+    expect(events.length).toBe(4);
+  });
+
+  // 15. NEW: clean tick -> skipped=0, no plan.skipped-by-intent events emitted.
+  it('T15: clean tick -> zero skips, no skip events', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-clean'));
+    await host.atoms.put(planAtom('plan-clean', 'intent-clean', { confidence: 0.85 }));
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(1);
+    expect(result.rejected).toBe(0);
+    expect(result.skipped).toBe(0);
+    const sum = Object.values(result.skippedByReason).reduce((a, b) => a + b, 0);
+    expect(sum).toBe(0);
+
+    const skipEvents = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+    expect(skipEvents.length).toBe(0);
+  });
+
+  // 16. NEW: short-circuit (empty allowlist) -> result includes empty
+  // skippedByReason map (all zeros). Verifies the contract that every
+  // reason key is always present even on early-return paths.
+  it('T16: short-circuit -> result.skippedByReason is fully zeroed', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom({ allowed_sub_actors: [] }));
+    await host.atoms.put(intentCreationPolicyAtom());
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.scanned).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.skippedByReason[SkipReason.MISSING_TRUST_ENVELOPE]).toBe(0);
+    expect(result.skippedByReason[SkipReason.BELOW_MIN_CONFIDENCE]).toBe(0);
+    expect(result.skippedByReason[SkipReason.NO_DELEGATION]).toBe(0);
+    expect(result.skippedByReason[SkipReason.SUB_ACTOR_NOT_ALLOWED]).toBe(0);
+    expect(result.skippedByReason[SkipReason.RADIUS_UNKNOWN]).toBe(0);
+    expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_UNKNOWN]).toBe(0);
+    expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE]).toBe(0);
   });
 });

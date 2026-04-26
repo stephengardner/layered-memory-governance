@@ -7,13 +7,18 @@
  * when all checks pass, transitions the plan from 'proposed' to
  * 'approved'.
  *
- * Design contract (see spec section 4):
+ * Behaviour contract:
  * - Kill-switch takes absolute priority: checked at the top before any reads.
- * - pol-plan-autonomous-intent-approve drives the global allowlist.
- *   Empty allowlist -> short-circuit, scanned: 0.
- * - pol-operator-intent-creation drives the principal whitelist.
- * - Envelope checks (confidence, sub-actor, blast-radius) are silent
- *   skips (not rejections) when the plan fails to match.
+ * - The intent-approve policy drives the global sub-actor allowlist;
+ *   an empty allowlist short-circuits the tick (scanned: 0).
+ * - The intent-creation policy drives the principal whitelist for
+ *   intent authorship.
+ * - Envelope checks (confidence, sub-actor, blast-radius) are observable
+ *   skips (not rejections) when the plan fails to match: each skip
+ *   emits a 'plan.skipped-by-intent' audit event with a typed reason
+ *   and is counted in the result's `skipped` total + `skippedByReason`
+ *   breakdown. No skip-atom is written; the audit log is the single
+ *   source of skip evidence so atom-store growth stays bounded.
  * - Principal / taint / expiry failures are counted as rejections.
  * - Claim-before-mutate: each plan is re-read immediately before
  *   host.atoms.update to prevent double-approve under concurrent ticks.
@@ -54,6 +59,57 @@ export async function findIntentInProvenance(host: Host, plan: Atom): Promise<At
 }
 
 // ---------------------------------------------------------------------------
+// Skip-reason taxonomy
+// ---------------------------------------------------------------------------
+
+/**
+ * Typed reasons a plan can be skipped during the intent-approve tick.
+ *
+ * Each value names a single envelope-mismatch condition. Skips are
+ * observable (one audit event per skip plus a per-tick count) but do
+ * not write atoms; the atom store stays bounded under high churn.
+ *
+ * Note: a plan with no operator-intent in provenance.derived_from is
+ * NOT counted as skipped; it is simply not eligible for this tick and
+ * is filtered before reason inspection. Counting "no intent citation"
+ * as a skip would emit one event per non-intent plan on every tick,
+ * which is noise rather than signal.
+ */
+export const SkipReason = {
+  /** Intent has no `trust_envelope` block. Indicates a malformed intent. */
+  MISSING_TRUST_ENVELOPE: 'missing_trust_envelope',
+  /** Plan confidence is below `envelope.min_plan_confidence`. */
+  BELOW_MIN_CONFIDENCE: 'below_min_confidence',
+  /** Plan has no `metadata.delegation` block (defensive recheck). */
+  NO_DELEGATION: 'no_delegation',
+  /** Plan's `delegation.sub_actor_principal_id` not in envelope allowlist. */
+  SUB_ACTOR_NOT_ALLOWED: 'sub_actor_not_allowed',
+  /** Plan's `delegation.implied_blast_radius` not a known label. */
+  RADIUS_UNKNOWN: 'radius_unknown',
+  /** Envelope's `max_blast_radius` not a known label. */
+  DELEGATION_RADIUS_UNKNOWN: 'delegation_radius_unknown',
+  /** Plan radius rank exceeds envelope max-radius rank. */
+  DELEGATION_RADIUS_EXCEEDS_ENVELOPE: 'delegation_radius_exceeds_envelope',
+} as const;
+
+export type SkipReason = typeof SkipReason[keyof typeof SkipReason];
+
+/** Per-reason skip counts. Every key is always present (zero-initialized). */
+export type SkippedByReason = Readonly<Record<SkipReason, number>>;
+
+function emptySkippedByReason(): Record<SkipReason, number> {
+  return {
+    [SkipReason.MISSING_TRUST_ENVELOPE]: 0,
+    [SkipReason.BELOW_MIN_CONFIDENCE]: 0,
+    [SkipReason.NO_DELEGATION]: 0,
+    [SkipReason.SUB_ACTOR_NOT_ALLOWED]: 0,
+    [SkipReason.RADIUS_UNKNOWN]: 0,
+    [SkipReason.DELEGATION_RADIUS_UNKNOWN]: 0,
+    [SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE]: 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Result shape
 // ---------------------------------------------------------------------------
 
@@ -61,6 +117,10 @@ export interface IntentAutoApproveResult {
   readonly scanned: number;
   readonly approved: number;
   readonly rejected: number;
+  /** Plans that matched an intent but failed an envelope check. */
+  readonly skipped: number;
+  /** Per-reason breakdown of `skipped`. Sum equals `skipped`. */
+  readonly skippedByReason: SkippedByReason;
   readonly stale: number;
   readonly halted?: boolean;
 }
@@ -179,13 +239,28 @@ export async function runIntentAutoApprovePass(
 ): Promise<IntentAutoApproveResult> {
   // Kill-switch absolute priority: check before any reads.
   if (host.scheduler.killswitchCheck()) {
-    return { scanned: 0, approved: 0, rejected: 0, stale: 0, halted: true };
+    return {
+      scanned: 0,
+      approved: 0,
+      rejected: 0,
+      skipped: 0,
+      skippedByReason: emptySkippedByReason(),
+      stale: 0,
+      halted: true,
+    };
   }
 
   const approvePolicy = await readIntentApprovePolicy(host);
   // Fail-closed short-circuit: empty allowlist means the tick is off.
   if (approvePolicy.allowed_sub_actors.length === 0) {
-    return { scanned: 0, approved: 0, rejected: 0, stale: 0 };
+    return {
+      scanned: 0,
+      approved: 0,
+      rejected: 0,
+      skipped: 0,
+      skippedByReason: emptySkippedByReason(),
+      stale: 0,
+    };
   }
 
   const creationPolicy = await readIntentCreationPolicy(host);
@@ -225,11 +300,43 @@ export async function runIntentAutoApprovePass(
 
   let approved = 0;
   let rejected = 0;
+  let skipped = 0;
+  const skippedByReason = emptySkippedByReason();
+
+  /**
+   * Record a skip: emit one audit event, increment the per-reason
+   * counter, and bump the total. Centralized here so every skip site
+   * goes through the same observability path; missing a call is the
+   * exact bug class this whole change closes.
+   */
+  const recordSkip = async (
+    plan: Atom,
+    intent: Atom,
+    reason: SkipReason,
+    extra: Readonly<Record<string, unknown>>,
+  ): Promise<void> => {
+    skippedByReason[reason] += 1;
+    skipped += 1;
+    await host.auditor.log({
+      kind: 'plan.skipped-by-intent',
+      principal_id: intent.principal_id as PrincipalId,
+      timestamp: nowFn() as Time,
+      refs: { atom_ids: [plan.id, intent.id] },
+      details: {
+        plan_id: String(plan.id),
+        intent_id: String(intent.id),
+        reason,
+        ...extra,
+      },
+    });
+  };
 
   for (const plan of candidates) {
     // Walk provenance.derived_from for a direct operator-intent citation.
     const intentId = await findIntentInProvenance(host, plan);
-    // No intent citation: not eligible for this tick; skip silently.
+    // No intent citation: not eligible for this tick. NOT counted as
+    // a skip (it would emit one event per non-intent plan every tick;
+    // see SkipReason JSDoc).
     if (!intentId) continue;
 
     const intent = await host.atoms.get(intentId);
@@ -249,28 +356,46 @@ export async function runIntentAutoApprovePass(
       rejected++;
       continue;
     }
-    // Principal not in pol-operator-intent-creation allowlist -> reject.
+    // Principal not in operator-intent-creation allowlist -> reject.
     if (!creationPolicy.allowed_principal_ids.includes(String(intent.principal_id))) {
       rejected++;
       continue;
     }
 
     // Envelope checks: confidence, sub-actor, blast-radius.
-    // These are silent skips (no rejection count) per spec.
+    // Each mismatch is observable (audit event + per-reason count)
+    // but NOT a rejection: a fresh intent + lower-confidence plan is
+    // a normal "not yet" state, not a violation.
     const envelope = (intent.metadata as Record<string, unknown>)?.trust_envelope as
       | Record<string, unknown>
       | undefined;
-    if (!envelope) continue;
+    if (!envelope) {
+      await recordSkip(plan, intent, SkipReason.MISSING_TRUST_ENVELOPE, {});
+      continue;
+    }
 
     const minPlanConf = typeof envelope.min_plan_confidence === 'number'
       ? envelope.min_plan_confidence
       : 0.75;
-    if (plan.confidence < minPlanConf) continue;
+    if (plan.confidence < minPlanConf) {
+      await recordSkip(plan, intent, SkipReason.BELOW_MIN_CONFIDENCE, {
+        plan_confidence: plan.confidence,
+        envelope_min_confidence: minPlanConf,
+      });
+      continue;
+    }
 
     const delegation = (plan.metadata as Record<string, unknown>)?.delegation as
       | Record<string, unknown>
       | undefined;
-    if (!delegation) continue;
+    // Defensive recheck: candidate-collection already filtered plans
+    // without a delegation block, but a concurrent update could have
+    // stripped it between phases. Counted as a skip rather than a
+    // silent drop so the operator can observe the race.
+    if (!delegation) {
+      await recordSkip(plan, intent, SkipReason.NO_DELEGATION, {});
+      continue;
+    }
 
     const subActor = typeof delegation.sub_actor_principal_id === 'string'
       ? delegation.sub_actor_principal_id
@@ -278,13 +403,40 @@ export async function runIntentAutoApprovePass(
     const envAllowedSubActors = Array.isArray(envelope.allowed_sub_actors)
       ? (envelope.allowed_sub_actors as unknown[]).filter((v): v is string => typeof v === 'string')
       : [];
-    if (!envAllowedSubActors.includes(subActor)) continue;
+    if (!envAllowedSubActors.includes(subActor)) {
+      await recordSkip(plan, intent, SkipReason.SUB_ACTOR_NOT_ALLOWED, {
+        plan_sub_actor: subActor,
+        envelope_allowed_sub_actors: envAllowedSubActors,
+      });
+      continue;
+    }
 
     const planRadius = delegation.implied_blast_radius;
     const envelopeMax = envelope.max_blast_radius;
-    if (typeof planRadius !== 'string' || !(planRadius in RADIUS_RANK)) continue;
-    if (typeof envelopeMax !== 'string' || !(envelopeMax in RADIUS_RANK)) continue;
-    if (RADIUS_RANK[planRadius as BlastRadius] > RADIUS_RANK[envelopeMax as BlastRadius]) continue;
+    // Use Object.hasOwn so prototype-chain keys ('toString', 'valueOf',
+    // 'constructor') do not pass the guard. The `in` operator walks the
+    // chain and would silently fall through to `undefined > N` (false)
+    // at the rank comparison, fail-opening for attacker- or LLM-supplied
+    // strings.
+    if (typeof planRadius !== 'string' || !Object.hasOwn(RADIUS_RANK, planRadius)) {
+      await recordSkip(plan, intent, SkipReason.RADIUS_UNKNOWN, {
+        plan_radius: typeof planRadius === 'string' ? planRadius : null,
+      });
+      continue;
+    }
+    if (typeof envelopeMax !== 'string' || !Object.hasOwn(RADIUS_RANK, envelopeMax)) {
+      await recordSkip(plan, intent, SkipReason.DELEGATION_RADIUS_UNKNOWN, {
+        envelope_max_radius: typeof envelopeMax === 'string' ? envelopeMax : null,
+      });
+      continue;
+    }
+    if (RADIUS_RANK[planRadius as BlastRadius] > RADIUS_RANK[envelopeMax as BlastRadius]) {
+      await recordSkip(plan, intent, SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE, {
+        plan_radius: planRadius,
+        envelope_max_radius: envelopeMax,
+      });
+      continue;
+    }
 
     // Claim-before-mutate: re-read to prevent double-approve under
     // concurrent ticks. If the plan has moved, skip.
@@ -316,5 +468,12 @@ export async function runIntentAutoApprovePass(
     approved++;
   }
 
-  return { scanned: candidates.length, approved, rejected, stale: 0 };
+  return {
+    scanned: candidates.length,
+    approved,
+    rejected,
+    skipped,
+    skippedByReason,
+    stale: 0,
+  };
 }

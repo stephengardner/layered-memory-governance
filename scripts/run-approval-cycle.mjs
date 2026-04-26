@@ -264,7 +264,19 @@ async function main() {
   // 0. Intent-backed single-principal path (most-specific gate, runs first).
   try {
     const intentResult = await runIntentAutoApprovePass(host);
-    console.log(`[approval-cycle] intent-approve     scanned=${intentResult.scanned} approved=${intentResult.approved} rejected=${intentResult.rejected ?? 0}${intentResult.halted ? ' [HALTED by kill-switch]' : ''}`);
+    const skipped = intentResult.skipped ?? 0;
+    const byReason = intentResult.skippedByReason ?? {};
+    // Render the skip breakdown only when at least one skip happened;
+    // a clean tick stays terse. Keys with zero counts are omitted so
+    // the line stays scannable even with a 7-reason taxonomy.
+    const skipBreakdown = Object.entries(byReason)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${k}=${n}`)
+      .join(' ');
+    const skippedFragment = skipped > 0
+      ? ` skipped=${skipped}${skipBreakdown ? ` (${skipBreakdown})` : ''}`
+      : '';
+    console.log(`[approval-cycle] intent-approve     scanned=${intentResult.scanned} approved=${intentResult.approved} rejected=${intentResult.rejected ?? 0}${skippedFragment}${intentResult.halted ? ' [HALTED by kill-switch]' : ''}`);
     if (intentResult.halted) return;
   } catch (err) {
     console.error(`[approval-cycle] intent-approve FAILED: ${err?.message ?? err}`);

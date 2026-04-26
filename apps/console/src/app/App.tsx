@@ -13,6 +13,7 @@ import { PlanLifecycleView } from '@/features/plan-lifecycle-viewer/PlanLifecycl
 import { GraphView } from '@/features/graph-viewer/GraphView';
 import { TimelineView } from '@/features/timeline-viewer/TimelineView';
 import { MetricsRollupView } from '@/features/metrics-rollup/MetricsRollupView';
+import { ActorActivityView } from '@/features/actor-activity/ActorActivityView';
 import { PageTransition } from '@/components/page-transition/PageTransition';
 import { useRoute, type Route } from '@/state/router.store';
 import { useThemeStore } from '@/state/theme.store';
@@ -81,5 +82,6 @@ function renderRoute(r: Route) {
     case 'plan-lifecycle': return <PlanLifecycleView />;
     case 'graph': return <GraphView />;
     case 'timeline': return <TimelineView />;
+    case 'actor-activity': return <ActorActivityView />;
   }
 }
