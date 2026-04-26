@@ -43,3 +43,22 @@ export {
   type ExecutionReport,
   type ExecutionOutcomeAtom,
 } from './execute.js';
+export {
+  classifyPlan,
+  classifyPlans,
+  applyReap,
+  loadAllProposedPlans,
+  runReaperSweep,
+  DEFAULT_REAPER_TTLS,
+  REAPER_PAGE_SIZE,
+  REAPER_PAGE_LIMIT,
+} from './reaper.js';
+export type {
+  ReaperTtls,
+  ReaperBucket,
+  ReaperClassification,
+  ReaperClassifications,
+  ReapApplyResult,
+  LoadAllProposedPlansResult,
+  RunReaperSweepResult,
+} from './reaper.js';
