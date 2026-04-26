@@ -80,3 +80,68 @@
   padding-top: var(--space-2);
   font-family: var(--font-mono);
 }
+
+/*
+ * Skeleton bars for the loading variant. Use --text-tertiary at low
+ * alpha so the loading shape reads as "the same card, awaiting data"
+ * rather than a different visual. Shimmer animation is a single
+ * keyframe over the bar's own background for accessibility (no
+ * pseudo-element swiping; respects reduced-motion below).
+ */
+.skeletonChip,
+.skeletonLine,
+.skeletonLineShort,
+.skeletonMeta,
+.skeletonMetaShort {
+  display: inline-block;
+  background: color-mix(in srgb, var(--text-tertiary) 18%, transparent);
+  border-radius: var(--radius-xs);
+  animation: hoverSkeletonPulse 1.2s var(--easing-standard) infinite;
+}
+
+.skeletonChip {
+  width: 4.25rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+}
+
+.skeletonContent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.skeletonLine {
+  width: 100%;
+  height: 0.6875rem;
+}
+
+.skeletonLineShort {
+  width: 70%;
+  height: 0.6875rem;
+}
+
+.skeletonMeta {
+  width: 8rem;
+  height: 0.6875rem;
+}
+
+.skeletonMetaShort {
+  width: 4rem;
+  height: 0.6875rem;
+}
+
+@keyframes hoverSkeletonPulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonChip,
+  .skeletonLine,
+  .skeletonLineShort,
+  .skeletonMeta,
+  .skeletonMetaShort {
+    animation: none;
+  }
+}
