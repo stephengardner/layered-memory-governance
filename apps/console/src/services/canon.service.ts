@@ -56,9 +56,13 @@ export interface CanonAtom {
   };
 }
 
-export function asAlternative(raw: Alternative): { option: string; reason?: string } {
+export function asAlternative(raw: unknown): { option: string; reason?: string } {
   if (typeof raw === 'string') return { option: raw };
-  return { option: raw.option, reason: raw.reason };
+  if (raw == null || typeof raw !== 'object') return { option: '' };
+  const obj = raw as Record<string, unknown>;
+  const option = typeof obj.option === 'string' ? obj.option : '';
+  const reason = typeof obj.reason === 'string' ? obj.reason : undefined;
+  return reason && reason.length > 0 ? { option, reason } : { option };
 }
 
 export interface ListCanonParams {
