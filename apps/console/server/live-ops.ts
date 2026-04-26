@@ -46,7 +46,7 @@ const ONE_HOUR_MS = 60 * ONE_MINUTE_MS;
 const FIFTEEN_MINUTES_MS = 15 * ONE_MINUTE_MS;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 /** A session is "active" if its latest agent-turn lands inside this window. */
-const ACTIVE_SESSION_TURN_WINDOW_MS = 60 * 1000;
+const ACTIVE_SESSION_TURN_WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * Parse an ISO timestamp (UTC) into a numeric epoch ms. Returns NaN
@@ -136,6 +136,7 @@ export function listActiveSessions(
   const latestTurnBySession = new Map<string, number>();
   for (const atom of atoms) {
     if (atom.type !== 'agent-turn') continue;
+    if (atom.taint && atom.taint !== 'clean') continue;
     const meta = (atom.metadata ?? {}) as Record<string, unknown>;
     const sid = typeof meta['session_id'] === 'string' ? (meta['session_id'] as string) : null;
     if (!sid) continue;
@@ -153,6 +154,7 @@ export function listActiveSessions(
   }> = [];
   for (const atom of atoms) {
     if (atom.type !== 'agent-session') continue;
+    if (atom.taint && atom.taint !== 'clean') continue;
     const meta = (atom.metadata ?? {}) as Record<string, unknown>;
     const endedAt = typeof meta['ended_at'] === 'string' ? (meta['ended_at'] as string) : null;
     const sessionId = typeof meta['session_id'] === 'string' ? (meta['session_id'] as string) : atom.id;
@@ -202,6 +204,7 @@ export function listLiveDeliberations(
     const planState = atomPlanState(atom);
     if (planState !== 'proposed') continue;
     if (atom.superseded_by && atom.superseded_by.length > 0) continue;
+    if (atom.taint && atom.taint !== 'clean') continue;
     const ts = parseIsoTs(atom.created_at);
     if (!Number.isFinite(ts)) continue;
     proposed.push({ atom, ts });
@@ -236,6 +239,7 @@ export function listInFlightExecutions(
     const planState = atomPlanState(atom);
     if (planState !== 'executing') continue;
     if (atom.superseded_by && atom.superseded_by.length > 0) continue;
+    if (atom.taint && atom.taint !== 'clean') continue;
     const meta = (atom.metadata ?? {}) as Record<string, unknown>;
     const dispatch = (meta['dispatch_result'] as Record<string, unknown> | undefined) ?? null;
     const dispatchAt = typeof dispatch?.['at'] === 'string'
