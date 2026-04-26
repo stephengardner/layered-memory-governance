@@ -47,6 +47,7 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GH_AS_PATH = resolve(HERE, '..', 'gh-as.mjs');
+const PR_LANDING_PATH = resolve(HERE, '..', 'run-pr-landing.mjs');
 
 export default async function register(host, registry) {
   const { runCodeAuthor } = await import('../../dist/runtime/actor-message/code-author-invoker.js');
@@ -172,6 +173,30 @@ export default async function register(host, registry) {
           const cause = err instanceof Error ? err.message : String(err);
           console.error(`[autonomous-dispatch] WARNING: failed to label PR #${capturedPrNumber}: ${cause}. LAG-auditor gate will not fire until labels are added manually.`);
         }
+      }
+
+      // Auto-observe the PR right after dispatch so the
+      // observation atom carries the plan id and the next
+      // plan-merge-reconcile tick can join observation -> plan
+      // without an out-of-band manual run-pr-landing call.
+      // Without this, plans sit at plan_state='executing' until
+      // an operator runs pr-landing by hand. Auto-observe closes
+      // that gap; the in-process plan-merge-reconcile tick then
+      // transitions the plan to 'succeeded' (merged) or
+      // 'abandoned' (closed) the next time it fires.
+      try {
+        await execa('node', [
+          PR_LANDING_PATH,
+          '--pr', String(capturedPrNumber),
+          '--owner', owner,
+          '--repo', repo,
+          '--observe-only',
+          '--live',
+          '--plan-id', capturedPlanId,
+        ], { stdio: 'inherit', cwd: repoDir });
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        console.error(`[autonomous-dispatch] WARNING: failed to observe PR #${capturedPrNumber} after dispatch: ${cause}. Plan ${capturedPlanId} will stay at plan_state='executing' until pr-landing is run manually.`);
       }
     }
     return result;

@@ -186,6 +186,52 @@ describe('mkPrObservationAtom', () => {
     });
     expect(withoutOrigin.provenance.source?.session_id).toBeUndefined();
   });
+
+  it('optional planId lands in metadata.plan_id and provenance.derived_from', () => {
+    // The dispatch invoker passes planId after a code-author run
+    // produces a PR, so the plan-merge reconciler can join the
+    // observation back to the deliberation in one read. Without
+    // this linkage the reconciler skips the plan and it stays at
+    // plan_state='executing' indefinitely.
+    const atom = mkPrObservationAtom({
+      ...base,
+      status: mkStatus(),
+      planId: 'plan-deliberation-source-1',
+    });
+    const md = atom.metadata as Record<string, unknown>;
+    expect(md.plan_id).toBe('plan-deliberation-source-1');
+    expect(atom.provenance.derived_from).toEqual(['plan-deliberation-source-1']);
+  });
+
+  it('chains both priorId and planId in provenance.derived_from when both present', () => {
+    const atom = mkPrObservationAtom({
+      ...base,
+      status: mkStatus(),
+      priorId: 'pr-observation-o-r-42-prior0000000',
+      planId: 'plan-deliberation-source-1',
+    });
+    // Order: prior observation first, then plan id. Order is
+    // pinned because audit-trace consumers walking derived_from
+    // expect the immediate predecessor first.
+    expect(atom.provenance.derived_from).toEqual([
+      'pr-observation-o-r-42-prior0000000',
+      'plan-deliberation-source-1',
+    ]);
+  });
+
+  it('omits metadata.plan_id when planId is empty or undefined (back-compat)', () => {
+    const noPlan = mkPrObservationAtom({
+      ...base,
+      status: mkStatus(),
+    });
+    const emptyPlan = mkPrObservationAtom({
+      ...base,
+      status: mkStatus(),
+      planId: '',
+    });
+    expect((noPlan.metadata as Record<string, unknown>).plan_id).toBeUndefined();
+    expect((emptyPlan.metadata as Record<string, unknown>).plan_id).toBeUndefined();
+  });
 });
 
 describe('mkPrObservationFailedAtom', () => {
