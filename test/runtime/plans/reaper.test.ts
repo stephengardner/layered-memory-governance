@@ -233,23 +233,46 @@ describe('runReaperSweep', () => {
   it('returns truncated=true when pagination claims more remain past the iteration cap', async () => {
     const host = createMemoryHost();
     const reaper: PrincipalId = 'plan-reaper' as PrincipalId;
-    await host.atoms.put(planAtom('only-one', '2026-04-23T18:00:00.000Z'));
     /*
-     * Stub host.atoms.query to return a synthetic non-null nextCursor
-     * so loadAllProposedPlans hits REAPER_PAGE_LIMIT (200) without ever
-     * exhausting the cursor. runReaperSweep should surface
-     * truncated=true so the caller can warn the operator that the
-     * slate they just saw is partial.
+     * Replace host.atoms.query entirely with a stub that returns one
+     * stale plan plus a non-null nextCursor on every call - never
+     * exhausting. The MemoryAtomStore validates cursors as base64-
+     * encoded integers, so re-using realQuery + a raw string cursor
+     * crashes on the next call. The stub bypasses the validator
+     * because it never round-trips through MemoryAtomStore again.
+     *
+     * loadAllProposedPlans hits REAPER_PAGE_LIMIT (200) without
+     * exhausting; runReaperSweep should surface truncated=true so the
+     * caller can warn the operator that the slate they just saw is
+     * partial.
      */
-    const realQuery = host.atoms.query.bind(host.atoms);
-    (host.atoms as { query: typeof host.atoms.query }).query = async (f, l, c) => {
-      const page = await realQuery(f, l, c);
-      return { ...page, nextCursor: 'never-exhausts' };
+    const stalePlan = planAtom('only-one', '2026-04-23T18:00:00.000Z');
+    let queryCalls = 0;
+    (host.atoms as { query: typeof host.atoms.query }).query = async () => {
+      queryCalls += 1;
+      // Return the stale plan only on the first page so we still
+      // produce one abandon transition (the abandon path requires
+      // host.atoms.get to find the plan; we put it below).
+      return {
+        atoms: queryCalls === 1 ? [stalePlan] : [],
+        nextCursor: 'pretend-more-remain',
+      };
     };
+    /*
+     * Seed the actual store with the same plan id so applyReap's
+     * re-fetch (host.atoms.get) succeeds; the stub only affects the
+     * paginated query path.
+     */
+    await host.atoms.put(stalePlan);
     const fakeNowIso = '2026-04-26T20:00:00.000Z';
     (host.clock as { now: () => Time }).now = () => fakeNowIso as Time;
     const out = await runReaperSweep(host, reaper, TTLS);
     expect(out.truncated).toBe(true);
+    /*
+     * Spot-check: the iteration cap fired, not the cursor exhaustion.
+     * REAPER_PAGE_LIMIT is 200 in the helper.
+     */
+    expect(queryCalls).toBeGreaterThanOrEqual(200);
   });
 
   it('returns truncated=false for normal sweeps (under page-cap)', async () => {
