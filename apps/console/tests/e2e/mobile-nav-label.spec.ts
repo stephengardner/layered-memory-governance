@@ -11,21 +11,23 @@ import { test, expect } from '@playwright/test';
  *
  * This regression guard pins:
  *   - the visible dashboard nav text on mobile is exactly "Home"
- *     (not "Dashboard", not "DashboardHome", which would mean the
- *     desktop span was not hidden)
- *   - the desktop span is still in the DOM (CSS-only toggle, no
- *     JS viewport read), but display:none on mobile
- *   - the chromium project still sees "Dashboard" (the desktop
- *     copy is the source of truth above the breakpoint)
+ *     (not "Dashboard", not "DashboardHome")
+ *   - the dashboard tab in the mobile bottom-bar is rendered by the
+ *     dedicated mobile nav (testid `mobile-nav-dashboard`); the
+ *     desktop nav (`nav-dashboard`) sits in the same DOM but is
+ *     `display:none` below the breakpoint
+ *   - the chromium project still sees "Dashboard" in the desktop nav
+ *     (the desktop copy is the source of truth above the breakpoint)
  *
- * Pair with `views.spec.ts` which guards the broader nav contract.
+ * Pair with `mobile-nav-overflow.spec.ts` for the overflow drawer
+ * contract and `views.spec.ts` for the broader nav contract.
  */
 
 test.describe('mobile nav label', () => {
   test('dashboard tab reads "Home" below the breakpoint', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile', 'mobile-only assertion');
     await page.goto('/');
-    const tab = page.getByTestId('nav-dashboard');
+    const tab = page.getByTestId('mobile-nav-dashboard');
     await expect(tab).toBeVisible();
     // Visible text is what the operator sees. Playwright's
     // `toHaveText` matches against `textContent`, which includes
@@ -39,20 +41,17 @@ test.describe('mobile nav label', () => {
     ).toBe('Home');
   });
 
-  test('desktop span remains in the DOM (CSS-only toggle)', async ({ page }, testInfo) => {
+  test('desktop nav coexists in markup (CSS-only toggle)', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile', 'mobile-only assertion');
     await page.goto('/');
-    const tab = page.getByTestId('nav-dashboard');
-    await expect(tab).toBeVisible();
-    // The desktop span exists in markup but is display:none on
-    // mobile. `innerText` returns visible text only; `textContent`
-    // returns markup-order text including hidden spans. The two
-    // diverging is the proof the toggle is CSS-driven, not JS.
-    const visible = await tab.evaluate((el) => (el as HTMLElement).innerText.trim());
-    const inMarkup = await tab.evaluate((el) => el.textContent?.trim() ?? '');
-    expect(visible).toBe('Home');
-    expect(inMarkup).toContain('Dashboard');
-    expect(inMarkup).toContain('Home');
+    // The mobile bar is the visible nav at this viewport.
+    const mobileTab = page.getByTestId('mobile-nav-dashboard');
+    await expect(mobileTab).toBeVisible();
+    // The desktop nav still exists in the DOM (proof the toggle is
+    // CSS-driven, not a JS viewport read) but is hidden.
+    const desktopTab = page.getByTestId('nav-dashboard');
+    await expect(desktopTab).toBeAttached();
+    await expect(desktopTab).toBeHidden();
   });
 
   test('desktop project still shows "Dashboard"', async ({ page }, testInfo) => {

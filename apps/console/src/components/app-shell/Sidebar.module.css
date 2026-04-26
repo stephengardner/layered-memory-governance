@@ -46,10 +46,25 @@
   text-align: center;
 }
 
-.nav {
+/*
+ * Two nav variants live in the markup at the same time and CSS gates
+ * which is visible based on viewport. Keeping the toggle purely
+ * CSS-driven avoids a JS viewport read (no flash on first paint, no
+ * SSR mismatch risk) and matches the @layer/token-driven aesthetic of
+ * the rest of the console.
+ */
+.navDesktop {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+}
+
+.navMobile {
+  /*
+   * Hidden by default at desktop sizes; the @media (max-width: 48rem)
+   * block below flips this to flex.
+   */
+  display: none;
 }
 
 .item {
@@ -63,6 +78,10 @@
   color: var(--text-secondary);
   text-align: left;
   text-decoration: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
   transition: background var(--duration-fast) var(--easing-standard),
               color var(--duration-fast) var(--easing-standard);
 }
@@ -120,9 +139,7 @@
  * visible based on viewport. Keeping this purely CSS-driven avoids a
  * JS viewport read (no flash on first paint, no SSR mismatch risk)
  * and matches the @layer/token-driven aesthetic of the rest of the
- * console. Items without a mobileLabel only render the desktop span,
- * which the mobile media-query block below leaves visible (the
- * `.itemLabelMobile` rule only flips when both spans are present).
+ * console.
  */
 .itemLabelDesktop {
   display: inline;
@@ -133,10 +150,58 @@
 }
 
 /*
+ * Mobile-only "More" overflow trigger. The icon-wrap is
+ * position-relative so the active dot can be absolutely-positioned
+ * over the icon without measuring the icon's exact size.
+ */
+.itemMore {
+  /*
+   * Same flex skeleton as anchor items so the bar lays out evenly
+   * (.navMobile uses flex:1 children).
+   */
+}
+
+.itemMoreIconWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.itemMoreDot {
+  /*
+   * Notification-style dot pinned to the upper-right of the icon to
+   * indicate "the active route lives inside the overflow drawer".
+   * Sizing + offsets driven by tokens in src/tokens/tokens.css so a
+   * theme can dial the dot weight wholesale (e.g. high-contrast
+   * boosts dot-size + ring-width together) without touching the
+   * component.
+   */
+  position: absolute;
+  top: var(--dot-offset-y);
+  right: var(--dot-offset-x);
+  width: var(--dot-size);
+  height: var(--dot-size);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  box-shadow: 0 0 0 var(--stroke-hairline) var(--surface-base);
+}
+
+.itemMoreActive {
+  color: var(--text-primary);
+}
+
+.itemMoreActive svg {
+  color: var(--accent);
+}
+
+/*
  * Mobile: sidebar becomes a fixed bottom tab bar. Brand is hidden
- * (logo lives in header instead at mobile sizes). Nav becomes a
- * horizontal row, 4 equal tabs, touch targets ≥44px per mobile-first
- * canon. Safe-area padding for devices with a home-indicator.
+ * (logo lives in header instead at mobile sizes). Desktop nav is
+ * hidden; mobile nav shows the four critical destinations plus a
+ * MoreHorizontal overflow trigger. Touch targets ≥44px per
+ * mobile-first canon. Safe-area padding for devices with a
+ * home-indicator.
  */
 @media (max-width: 48rem) {
   .sidebar {
@@ -162,7 +227,14 @@
     display: none;
   }
 
-  .nav {
+  /* Hide the desktop flat list at mobile widths. */
+  .navDesktop {
+    display: none;
+  }
+
+  /* Show the mobile bar at mobile widths. */
+  .navMobile {
+    display: flex;
     flex-direction: row;
     flex: 1;
     gap: var(--space-1);
@@ -189,20 +261,12 @@
   }
 
   /*
-   * Dual-label toggle on mobile. When an item ships both spans
-   * (.itemLabelDesktop + .itemLabelMobile), swap visibility: the
-   * shorter mobile copy is shown and the longer desktop one is
-   * hidden. Items with only the desktop span keep showing it (the
-   * sibling-conditioned rule below is a no-op for them) so labels
-   * that already fit (Canon, Plans, Graph) render unchanged on
-   * mobile. `:has()` is supported in every browser the console
-   * targets (modern Chromium/Safari/Firefox 121+).
+   * Force the mobile label span visible inside the mobile bar.
+   * Items in the desktop nav still hide it (the .navDesktop block
+   * doesn't apply this rule), so dual-label markup keeps the
+   * desktop copy ("Dashboard") visible above the breakpoint.
    */
-  .item:has(.itemLabelMobile) .itemLabelDesktop {
-    display: none;
-  }
-
-  .itemLabelMobile {
+  .navMobile .itemLabelMobile {
     display: inline;
   }
 }

@@ -1,0 +1,162 @@
+/*
+ * Mobile bottom-nav overflow drawer styles.
+ *
+ * The drawer slides up from the bottom edge and stops above the
+ * bottom-tab bar so the operator can dismiss by tapping outside
+ * (the bar itself remains visible above the backdrop). z-index
+ * sits above the bottom-bar (which is 50) but below the command
+ * palette (200/201): different mental model, different layer.
+ */
+
+.backdrop {
+  /*
+   * Clip the backdrop to the area above the bottom-tab bar so the
+   * bar itself remains visible (the drawer's slide-up animation
+   * comes out of the bar's top edge). Header docstring says the bar
+   * is visible above the backdrop; using `bottom: <bar-height>`
+   * here is what actually delivers that promise (CR PR #209). An
+   * earlier shape used `inset: 0` which buried the bar under the
+   * 60% ink overlay + 4px blur.
+   */
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--space-10) + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--palette-ink-950) 60%, transparent);
+  backdrop-filter: blur(var(--blur-sm));
+  -webkit-backdrop-filter: blur(var(--blur-sm));
+  z-index: 100;
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  /*
+   * Anchor the drawer above the bottom-tab bar (height var(--space-10)
+   * + the home-indicator inset). The bar stays visible so the
+   * operator's mental model "I'm still in the bottom-nav, just
+   * looking at More" is preserved.
+   */
+  bottom: calc(var(--space-10) + env(safe-area-inset-bottom));
+  z-index: 101;
+  background: var(--surface-base);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-overlay) 60%, transparent) 0%,
+    transparent 40%
+  );
+  border-top-left-radius: var(--radius-lg);
+  border-top-right-radius: var(--radius-lg);
+  border-top: 1px solid var(--border-strong);
+  border-left: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-lg);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  overflow: hidden;
+}
+
+.handle {
+  /*
+   * iOS-style drag handle (the small horizontal pill at the top of
+   * a sheet). 4px height = 2 × --space-px so a future high-contrast
+   * theme that thickens borders wholesale picks it up via the
+   * primitive scale.
+   */
+  width: var(--space-7);
+  height: var(--space-1);
+  background: var(--border-strong);
+  border-radius: var(--radius-pill);
+  margin: 0 auto var(--space-3);
+  flex-shrink: 0;
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.24em;
+  margin: 0 0 var(--space-3);
+  padding: 0 var(--space-2);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  min-height: 44px;
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard);
+}
+
+.item:hover,
+.item:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.item:focus-visible {
+  box-shadow: 0 0 0 var(--stroke-rail) color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.itemActive {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  position: relative;
+}
+
+.itemActive::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 25%;
+  bottom: 25%;
+  width: var(--stroke-rail);
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+}
+
+.item svg {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.itemActive svg {
+  color: var(--accent);
+}
+
+/*
+ * Reduced motion: framer-motion handles the slide via JS, but the
+ * non-motion bits (focus ring, hover transition) still benefit from
+ * the canon `dev-web-reduced-motion` directive: kill the transitions
+ * outright so a user who has opted out gets a static UI.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .item {
+    transition: none;
+  }
+}
