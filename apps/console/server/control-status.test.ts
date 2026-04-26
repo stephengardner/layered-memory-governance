@@ -568,6 +568,23 @@ describe('pickRecentEscalations', () => {
     expect(got[0]!.headline).toBe('Sub-actor dispatch failed for plan plan-x.');
   });
 
+  it('strips trailing carriage return on CRLF-authored content', () => {
+    // Atoms whose content was authored on Windows or pasted from a
+    // PowerShell session use CRLF line endings. The headline split
+    // must not leave a stray \r on the first line, otherwise the
+    // operator sees a phantom space at the end of the headline.
+    const got = pickRecentEscalations([
+      {
+        id: 'dispatch-escalation-crlf-headline',
+        created_at: '2026-04-26T02:08:49.395Z',
+        content: 'Sub-actor dispatch failed for plan plan-y.\r\nMore details below.',
+      },
+    ]);
+    expect(got.length).toBe(1);
+    expect(got[0]!.headline).toBe('Sub-actor dispatch failed for plan plan-y.');
+    expect(got[0]!.headline.endsWith('\r')).toBe(false);
+  });
+
   it('caps the headline at 160 characters', () => {
     const longLine = 'A'.repeat(500);
     const got = pickRecentEscalations([

@@ -544,7 +544,7 @@ export function pickRecentEscalations(
     if (a.taint && a.taint !== 'clean') continue;
     if (!a.created_at) continue;
     const firstLine = typeof a.content === 'string'
-      ? a.content.split('\n')[0]?.slice(0, 160) ?? ''
+      ? (a.content.split(/\r?\n/, 1)[0] ?? '').slice(0, 160)
       : '';
     out.push({
       atom_id: a.id,

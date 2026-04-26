@@ -344,7 +344,14 @@ test.describe('operator control panel', () => {
      * hero or any list row overflows, scrollWidth exceeds clientWidth
      * and the assertion fails. This is the load-bearing mobile-fit
      * test for the control panel.
+     *
+     * We explicitly pin the viewport here so the assertion is
+     * self-contained: it exercises the 390x844 contract regardless
+     * of which Playwright project (chromium desktop, mobile, etc.)
+     * runs the test, instead of relying on an external `mobile`
+     * project to enforce the constraint.
      */
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.route('**/api/control.status', async (route) => {
       await route.fulfill({
         status: 200,
