@@ -109,7 +109,14 @@ function readMeta(atom: PlanLikeAtom): PlanLikeMetadata {
 }
 
 function alternativesOf(atom: PlanLikeAtom): ReadonlyArray<DeliberationAlternative> {
-  const raw = readMeta(atom).alternatives_rejected ?? [];
+  // readMeta casts `unknown` metadata to PlanLikeMetadata; a malformed
+  // atom can put any shape here (null, an object, a string). Guard at
+  // the source with Array.isArray so a non-array value falls back to
+  // an empty list instead of throwing inside .map -- otherwise the
+  // listDeliberations + getDeliberation reads break for the entire
+  // store on a single bad atom.
+  const raw = readMeta(atom).alternatives_rejected;
+  if (!Array.isArray(raw)) return [];
   return raw.map((entry) => {
     const norm = asAlternative(entry);
     if (norm.reason && norm.reason.length > 0) {
@@ -120,7 +127,12 @@ function alternativesOf(atom: PlanLikeAtom): ReadonlyArray<DeliberationAlternati
 }
 
 function citationsOf(atom: PlanLikeAtom): ReadonlyArray<DeliberationCitation> {
-  const raw = atom.provenance?.derived_from ?? [];
+  // Same defensive Array.isArray pattern as alternativesOf: a
+  // non-array provenance.derived_from would explode at the `for...of`
+  // site even though the per-element typeof check would otherwise
+  // neutralize bad entries.
+  const raw = atom.provenance?.derived_from;
+  if (!Array.isArray(raw)) return [];
   // Dedupe while preserving order (a planner sometimes lists the
   // same intent twice as both an entry and a tail-anchor).
   const seen = new Set<string>();
@@ -135,7 +147,10 @@ function citationsOf(atom: PlanLikeAtom): ReadonlyArray<DeliberationCitation> {
 }
 
 function principlesOf(atom: PlanLikeAtom): ReadonlyArray<string> {
-  const raw = readMeta(atom).principles_applied ?? [];
+  // Same defensive Array.isArray pattern as alternativesOf /
+  // citationsOf so a non-array principles_applied does not throw.
+  const raw = readMeta(atom).principles_applied;
+  if (!Array.isArray(raw)) return [];
   // Dedupe while preserving order: a planner sometimes lists the same
   // principle/intent twice (once as the entry it applied, once as a
   // tail-anchor). The View renders these with `key={p}` so a duplicate

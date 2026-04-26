@@ -74,6 +74,34 @@ describe('deliberation.service helpers', () => {
     expect(out).toEqual(['inv-x', 'dev-y', 'pol-z']);
   });
 
+  // Regression: a malformed atom (alternatives_rejected: null, an
+  // object, or any non-array) used to throw inside .map and break
+  // listDeliberations + getDeliberation for the entire store. The
+  // Array.isArray guard at the source returns an empty list instead.
+  it('alternativesOf falls back to empty when raw is not an array', () => {
+    for (const bad of [null, undefined, 'string', 7, { not: 'array' }]) {
+      const atom = { ...baseAtom, metadata: { alternatives_rejected: bad as unknown } };
+      const out = _internal.alternativesOf(atom as unknown as Parameters<typeof _internal.alternativesOf>[0]);
+      expect(out).toEqual([]);
+    }
+  });
+
+  it('citationsOf falls back to empty when derived_from is not an array', () => {
+    for (const bad of [null, undefined, 'string', 7, { not: 'array' }]) {
+      const atom = { ...baseAtom, provenance: { derived_from: bad as unknown } };
+      const out = _internal.citationsOf(atom as unknown as Parameters<typeof _internal.citationsOf>[0]);
+      expect(out).toEqual([]);
+    }
+  });
+
+  it('principlesOf falls back to empty when principles_applied is not an array', () => {
+    for (const bad of [null, undefined, 'string', 7, { not: 'array' }]) {
+      const atom = { ...baseAtom, metadata: { principles_applied: bad as unknown } };
+      const out = _internal.principlesOf(atom as unknown as Parameters<typeof _internal.principlesOf>[0]);
+      expect(out).toEqual([]);
+    }
+  });
+
   it('whatBreaksOf accepts both spelling variants', () => {
     const a = _internal.whatBreaksOf({ ...baseAtom, metadata: { what_breaks_if_revisit: 'A' } } as unknown as Parameters<typeof _internal.whatBreaksOf>[0]);
     expect(a).toBe('A');
