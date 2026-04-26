@@ -3,7 +3,15 @@ import { useQuery } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Search } from 'lucide-react';
 import { listCanonAtoms, type AtomType, type CanonAtom } from '@/services/canon.service';
-import { useRouteId, setRoute, routeForAtomId, routeHref, type Route } from '@/state/router.store';
+import {
+  useRouteId,
+  useRouteQuery,
+  setRoute,
+  setRouteQuery,
+  routeForAtomId,
+  routeHref,
+  type Route,
+} from '@/state/router.store';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { DriftBanner } from '@/components/drift-banner/DriftBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
@@ -21,10 +29,34 @@ const TYPE_OPTIONS: ReadonlyArray<TypeOption> = [
   { id: 'reference', label: 'References', types: ['reference'] },
 ];
 
+const VALID_FILTER_IDS = new Set(TYPE_OPTIONS.map((o) => o.id));
+
+/*
+ * Read the active type filter from the URL query (?type=directive
+ * etc). The URL is the source of truth so the filter survives
+ * refresh, is shareable as a deep link, and stays in sync with
+ * back/forward navigation. An invalid or missing value falls back to
+ * 'all' so a typo can't render the canon view empty.
+ */
+function readFilterFromUrl(query: URLSearchParams): string {
+  const raw = query.get('type');
+  return raw && VALID_FILTER_IDS.has(raw) ? raw : 'all';
+}
+
 export function CanonViewer() {
-  const [activeFilterId, setActiveFilterId] = useState<string>('all');
   const [localSearch, setLocalSearch] = useState<string>('');
   const focusId = useRouteId();
+  const query = useRouteQuery();
+  const activeFilterId = readFilterFromUrl(query);
+
+  /*
+   * Click handler for type chips: write the filter to the URL query
+   * (no path change, no scroll). 'all' clears the param entirely so
+   * the URL stays clean (no `?type=all` noise on the default view).
+   */
+  const handleFilterSelect = (next: string) => {
+    setRouteQuery({ type: next === 'all' ? null : next });
+  };
 
   /*
    * When /canon/<id> is in the URL, the search text derives from the
@@ -91,7 +123,7 @@ export function CanonViewer() {
         <TypeFilter
           options={TYPE_OPTIONS}
           activeId={activeFilterId}
-          onSelect={setActiveFilterId}
+          onSelect={handleFilterSelect}
         />
       </div>
 

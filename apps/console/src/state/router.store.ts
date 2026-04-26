@@ -118,6 +118,32 @@ export function useRouteQuery(): URLSearchParams {
   return useLocation().query;
 }
 
+/**
+ * Update the URL query string without changing the route or id.
+ * Operators get filters that survive a refresh and are shareable as
+ * deep links. Pass `null` (or omit a key from the object) to clear
+ * that param. The path is preserved; only `?...` changes.
+ *
+ * Routing-layer state, not feature-layer state - features that own a
+ * filter call this helper instead of localStorage so the URL is the
+ * single source of truth.
+ */
+export function setRouteQuery(updates: Record<string, string | null>): void {
+  const url = new URL(window.location.href);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === null || value === '') {
+      url.searchParams.delete(key);
+    } else {
+      url.searchParams.set(key, value);
+    }
+  }
+  const next = url.pathname + (url.searchParams.toString() ? '?' + url.searchParams.toString() : '');
+  if (next !== window.location.pathname + window.location.search) {
+    window.history.replaceState({}, '', next);
+    window.dispatchEvent(new Event(NAV_EVENT));
+  }
+}
+
 export function setRoute(next: Route, id?: string): void {
   const target = id ? `/${next}/${encodeURIComponent(id)}` : `/${next}`;
   if (window.location.pathname !== target) {
