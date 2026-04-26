@@ -15,7 +15,7 @@ Capture the agent's reasoning + tool-call ledger as atoms so the entire chain - 
 
 The substrate is the value. `CodeAuthorExecutor` is the first migration; `PlanningActor`, `AuditorActor`, `PrLandingActor`, and any future actor that wants multi-turn reasoning compose the same seam without the framework changing shape.
 
-**Why not stay with the diff path:** it's empirically brittle. ~10–30% of LLM-emitted diffs fail `git apply` due to hunk-header arithmetic drift, whitespace mismatches, BOMs, line-ending mismatches. PR #164's self-correcting retry loop is the band-aid. The right fix is to give the agent a workspace it can iterate in.
+**Why not stay with the diff path:** it's empirically brittle. ~10-30% of LLM-emitted diffs fail `git apply` due to hunk-header arithmetic drift, whitespace mismatches, BOMs, line-ending mismatches. PR #164's self-correcting retry loop is the band-aid. The right fix is to give the agent a workspace it can iterate in.
 
 **Why this is durable, not flaky:** atoms are the source of truth. The substrate captures session-level metadata + turn-by-turn IO + tool-call ledger. Replay walks the atom tree. Audits, taint cascades, compromise response, debug-why all work because the chain is content-addressed.
 
@@ -322,7 +322,7 @@ PR review + merge (existing flow; PrLandingActor handles CR loop)
 |---|---|---|
 | `best-effort` | Turn IO inline / blob, tool call args + results, model_id | "Re-fed inputs to the same model usually produce similar output." No promise. |
 | `content-addressed` (default) | Above + `canon_hash` per turn (read at session-start), `tool_versions` snapshot, `fence` snapshot | "Re-fed inputs produce deterministic-modulo-LLM-sampling-noise output (typically temp=0 → deterministic)." Replay works as long as the model_id is still available from the provider. |
-| `strict` | Above + full `canon_snapshot_blob_ref` (canon serialized at session-start) + sampling params + principal-hierarchy snapshot | "Reproducible byte-identical traces modulo provider nondeterminism." Requires content-hashing tool implementations and snapshotting canon at session-start. ~10–100 KB extra per session for the canon snapshot. |
+| `strict` | Above + full `canon_snapshot_blob_ref` (canon serialized at session-start) + sampling params + principal-hierarchy snapshot | "Reproducible byte-identical traces modulo provider nondeterminism." Requires content-hashing tool implementations and snapshotting canon at session-start. ~10-100 KB extra per session for the canon snapshot. |
 
 ### 4.2 Tree projection
 
@@ -520,7 +520,7 @@ This design derives from:
 **Canon directives:**
 - `dev-substrate-not-prescription` - framework code stays mechanism-focused; adapters live in `examples/`.
 - `simple-surface-deep-architecture` - pluggable seam keeps the surface simple while enabling org-scale architecture.
-- `dev-flag-structural-concerns-proactively` - surfaced during brainstorming: per-tool atoms would inflate volume 5–10x; per-session-only loses turn-level provenance; turn-level is the right cut.
+- `dev-flag-structural-concerns-proactively` - surfaced during brainstorming: per-tool atoms would inflate volume 5-10x; per-session-only loses turn-level provenance; turn-level is the right cut.
 - `inv-provenance-every-write` - every new atom (`agent-session`, `agent-turn`) carries `derived_from` linking back through the chain.
 - `inv-governance-before-autonomy` - failure taxonomy + Notifier escalation keeps a human in the loop on structural failures by default.
 - `dev-extreme-rigor-and-research` - the brainstorming session worked through 8 design questions sequentially, each with multiple alternatives weighed.
@@ -528,11 +528,11 @@ This design derives from:
 - `dev-forward-thinking-no-regrets` - atom schemas are additive (new types in the union); existing atoms unaffected; future encryption layer composes without schema change.
 
 **Atoms:**
-- `intent-253cf493b08f-2026-04-24T22-54-13-895Z` - operator-intent that drove PRs #157–#165 substrate work.
+- `intent-253cf493b08f-2026-04-24T22-54-13-895Z` - operator-intent that drove PRs #157-#165 substrate work.
 - Memories: `project_agentic_executor_session_log_direction.md`, `project_autonomous_intent_e2e_complete.md`, `feedback_security_correctness_at_write_time.md`, `feedback_pull_main_after_pr_merge.md`, `feedback_canon_strategic_not_tactical.md`.
 
 **Prior work this builds on:**
-- PRs #157–#165 (substrate foundations + dogfood-cycle gaps).
+- PRs #157-#165 (substrate foundations + dogfood-cycle gaps).
 - Existing seams (`Host`, `LLM`, `AtomStore`, `Notifier`, `Auditor`, `PrincipalStore`, `Clock`, `CanonStore`, `Scheduler`).
 - Existing actor primitives (`PlanningActor`, `CodeAuthorExecutor` diff-based path).
 

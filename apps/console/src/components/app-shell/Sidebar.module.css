@@ -109,26 +109,32 @@
 }
 
 /*
- * Operator-critical items (the control panel surfacing the kill
- * switch + autonomy tier). Slight border + tinted icon so the
- * "halt the org" entry is visually distinct from generic nav. We
- * deliberately keep the treatment subtle: a noisy red badge is
- * fatigue-inducing for an item the operator passes hundreds of
- * times a day. Color-mix lets the tint follow the active theme's
- * danger token without re-implementing the dark/light pairing.
+ * Operator-critical items (live-ops Pulse + Control). Originally
+ * tinted with --status-danger because they front the kill-switch
+ * and autonomy dial. In practice the red read as alarm-state
+ * ("the system is on fire") rather than emphasis ("these are the
+ * two surfaces operators reach for first"). Operator confirmed
+ * 2026-04-26 the red was scaring rather than highlighting.
+ *
+ * Switched to --accent (the same emphasis token used for the
+ * focus ring, the active filter chip, and the inline-link).
+ * Goal: "these are the always-available operator entry points,"
+ * not "danger imminent." When the kill-switch IS active, the
+ * Control view itself surfaces the alarm; the navigation chrome
+ * does not need to double-signal.
  */
 .itemCritical {
-  border: 1px solid color-mix(in srgb, var(--status-danger) 22%, transparent);
-  background: color-mix(in srgb, var(--status-danger) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
 .itemCritical svg {
-  color: var(--status-danger);
+  color: var(--accent);
 }
 
 .itemCritical:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--status-danger) 12%, var(--surface-hover));
-  border-color: color-mix(in srgb, var(--status-danger) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-hover));
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
 }
 
 /*
