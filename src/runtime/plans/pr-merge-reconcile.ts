@@ -45,8 +45,14 @@ import type { Host } from '../../interface.js';
 import type { Atom, AtomId, PlanState, Time } from '../../types.js';
 import { ConflictError } from '../../substrate/errors.js';
 
-/** Terminal PR states that trigger a Plan transition. */
-const TERMINAL_MERGE_STATES: ReadonlySet<string> = new Set(['merged', 'closed']);
+/**
+ * Terminal PR lifecycle states that trigger a Plan transition.
+ * GitHub's GraphQL `state` enum: `OPEN | CLOSED | MERGED`. The
+ * reconciler reads from the observation atom's `pr_state` field
+ * (PR lifecycle), not `merge_state_status` (merge-readiness for an
+ * OPEN PR; returns `UNKNOWN` once the PR is merged or closed).
+ */
+const TERMINAL_PR_STATES: ReadonlySet<string> = new Set(['MERGED', 'CLOSED']);
 
 /**
  * Plan states the reconciler is willing to transition from. Broader
@@ -105,10 +111,25 @@ export async function runPlanStateReconcileTick(
       if (obs.superseded_by.length > 0) continue;
       const meta = obs.metadata as Record<string, unknown>;
       if (meta['kind'] !== 'pr-observation') continue;
-      const status = meta['merge_state_status'];
-      if (typeof status !== 'string') continue;
-      const terminal = status.toLowerCase();
-      if (!TERMINAL_MERGE_STATES.has(terminal)) continue;
+      // Read PR lifecycle (`pr_state`: OPEN/CLOSED/MERGED), NOT
+      // merge-readiness (`merge_state_status`: CLEAN/BLOCKED/UNKNOWN/
+      // BEHIND/UNSTABLE/etc.). The two were conflated under the same
+      // field name in earlier observation atoms; for back-compat the
+      // reconciler also accepts a lowercase `merged|closed` string in
+      // `merge_state_status` as a fallback signal, but new
+      // observations should populate `pr_state` and the legacy field
+      // remains as a snapshot of merge-readiness only.
+      const prStateRaw = meta['pr_state'];
+      const legacyStatusRaw = meta['merge_state_status'];
+      let terminal: 'MERGED' | 'CLOSED' | null = null;
+      if (typeof prStateRaw === 'string' && TERMINAL_PR_STATES.has(prStateRaw)) {
+        terminal = prStateRaw as 'MERGED' | 'CLOSED';
+      } else if (typeof legacyStatusRaw === 'string') {
+        const legacy = legacyStatusRaw.toLowerCase();
+        if (legacy === 'merged') terminal = 'MERGED';
+        else if (legacy === 'closed') terminal = 'CLOSED';
+      }
+      if (terminal === null) continue;
       const planIdRaw = meta['plan_id'];
       if (typeof planIdRaw !== 'string' || planIdRaw.length === 0) continue;
       matched += 1;
@@ -119,7 +140,7 @@ export async function runPlanStateReconcileTick(
       // claimed this transition; skip".
       const planId = planIdRaw as AtomId;
       const markerId = makeMarkerId(planId, obs.id);
-      const targetState: PlanState = terminal === 'merged' ? 'succeeded' : 'abandoned';
+      const targetState: PlanState = terminal === 'MERGED' ? 'succeeded' : 'abandoned';
 
       const prInfo = (meta['pr'] ?? {}) as Record<string, unknown>;
 
@@ -163,7 +184,7 @@ export async function runPlanStateReconcileTick(
           metadata: {
             plan_id: String(planId),
             pr_observation_id: String(obs.id),
-            merge_state_status: terminal,
+            pr_state: terminal,
             target_plan_state: targetState,
             settled_at: nowIso,
             pr: prInfo,

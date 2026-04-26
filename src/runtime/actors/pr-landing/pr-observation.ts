@@ -108,6 +108,7 @@ export function mkPrObservationAtom(inputs: PrObservationInputs): Atom {
       observed_at: observedAt,
       mergeable: status.mergeable,
       merge_state_status: status.mergeStateStatus,
+      pr_state: status.prState,
       counts: {
         line_comments: status.lineComments.length,
         body_nits: status.bodyNits.length,

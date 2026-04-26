@@ -166,6 +166,17 @@ export interface PrReviewStatus {
    */
   readonly mergeStateStatus: string | null;
   /**
+   * GitHub's PR lifecycle state enum: OPEN, CLOSED, MERGED.
+   * Distinct from `mergeStateStatus` (which is the merge-readiness
+   * snapshot of an OPEN PR); `prState` is the lifecycle phase
+   * regardless of merge-readiness. Consumers that want to detect
+   * "this PR has terminated" (merged or closed without merge) read
+   * this field, not `mergeStateStatus` (a merged PR returns
+   * `mergeStateStatus="UNKNOWN"` because merge-readiness is no
+   * longer meaningful). `null` only when the metadata fetch failed.
+   */
+  readonly prState: string | null;
+  /**
    * Line-level unresolved review comments. Same shape as
    * listUnresolvedComments; duplicated in this composite so a
    * caller never has to make a second call.

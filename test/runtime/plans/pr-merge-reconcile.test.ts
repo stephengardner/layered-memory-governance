@@ -71,6 +71,7 @@ function prObservationAtom(
   id: string,
   overrides: {
     readonly merge_state_status?: string;
+    readonly pr_state?: string;
     readonly plan_id?: string | null;
     readonly tainted?: boolean;
     readonly superseded?: boolean;
@@ -82,6 +83,9 @@ function prObservationAtom(
     pr: overrides.pr ?? { owner: 'o', repo: 'r', number: 42 },
     merge_state_status: overrides.merge_state_status ?? 'merged',
   };
+  if (overrides.pr_state !== undefined) {
+    meta['pr_state'] = overrides.pr_state;
+  }
   if (overrides.plan_id !== null) {
     meta['plan_id'] = overrides.plan_id ?? 'p1';
   }
@@ -218,6 +222,59 @@ describe('runPlanStateReconcileTick', () => {
     const host = createMemoryHost();
     await host.atoms.put(planAtom('p1'));
     await host.atoms.put(prObservationAtom('obs1', { merge_state_status: 'clean' }));
+
+    const r = await runPlanStateReconcileTick(host, { now: () => NOW });
+
+    expect(r.matched).toBe(0);
+    expect(r.transitioned).toBe(0);
+  });
+
+  it('pr-observation with pr_state=MERGED transitions to succeeded (preferred shape)', async () => {
+    // The post-fix observation atom carries `pr_state` (PR lifecycle:
+    // OPEN/CLOSED/MERGED) alongside `merge_state_status` (merge-
+    // readiness, often UNKNOWN once the PR is merged). The reconciler
+    // reads `pr_state` first; this test pins that path independently
+    // of the legacy fallback.
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1'));
+    await host.atoms.put(prObservationAtom('obs1', {
+      pr_state: 'MERGED',
+      // Realistic post-merge GitHub shape: merge_state_status is
+      // UNKNOWN because merge-readiness is no longer meaningful.
+      merge_state_status: 'UNKNOWN',
+    }));
+
+    const r = await runPlanStateReconcileTick(host, { now: () => NOW });
+
+    expect(r.matched).toBe(1);
+    expect(r.transitioned).toBe(1);
+    const plan = await host.atoms.get('p1' as AtomId);
+    expect(plan?.plan_state).toBe('succeeded');
+  });
+
+  it('pr-observation with pr_state=CLOSED transitions to abandoned', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1'));
+    await host.atoms.put(prObservationAtom('obs1', {
+      pr_state: 'CLOSED',
+      merge_state_status: 'UNKNOWN',
+    }));
+
+    const r = await runPlanStateReconcileTick(host, { now: () => NOW });
+
+    expect(r.matched).toBe(1);
+    expect(r.transitioned).toBe(1);
+    const plan = await host.atoms.get('p1' as AtomId);
+    expect(plan?.plan_state).toBe('abandoned');
+  });
+
+  it('pr-observation with pr_state=OPEN: skipped (not a terminal lifecycle state)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1'));
+    await host.atoms.put(prObservationAtom('obs1', {
+      pr_state: 'OPEN',
+      merge_state_status: 'CLEAN',
+    }));
 
     const r = await runPlanStateReconcileTick(host, { now: () => NOW });
 
