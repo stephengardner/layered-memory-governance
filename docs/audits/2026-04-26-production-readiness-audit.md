@@ -7,7 +7,7 @@ Scope: a full-substrate readiness pass before LAG goes from "internal dogfood" t
 
 LAG's substrate is in better shape than the size of the codebase suggests. The 8-interface Host contract is mechanism-only and well-documented, the runActor driver checks the kill-switch at every loop boundary AND between every action, the policy primitive defaults to fail-closed escalate, the file adapter writes atomically (write-temp + rename), and the agentic-actor-loop trilogy (substrate + executor + adapter) is shipping real PRs end-to-end (PR #186 landed via the autonomous chain on 2026-04-26 at 07:59:49Z). 2,164 unit tests pass with zero failures, and overall coverage is 80.77% lines / 79.62% branches / 86.25% functions.
 
-The substrate gaps are concentrated in three places: (1) the file AtomStore.put() has a TOCTOU window between read-then-write that the atomic-rename does not fully close; (2) the agent-loop adapter contract leaves commitSha verification "future hardening" (an attacker-controlled adapter could fabricate a SHA and PR creation would proceed); and (3) several src/ modules (provisioning at 1-30% coverage, src/cli at 11.74%, daemon/invoke-claude.ts at 15.32%) are below the production bar. The Console is read-only-by-design but exposes only one mutation path (kill-switch off↔soft) that is correctly enforced server-side. The dogfood loop is sound when the worktree is clean; the PR #186 chain captured 5 atom hops with intact provenance.
+The substrate gaps are concentrated in three places: (1) the file AtomStore.put() has a TOCTOU window between read-then-write that the atomic-rename does not fully close; (2) the agent-loop adapter contract leaves commitSha verification "future hardening" (an attacker-controlled adapter could fabricate a SHA and PR creation would proceed); and (3) several src/ modules (provisioning at 1-30% coverage, src/cli at 11.74%, daemon/invoke-claude.ts at 15.32%) are below the production bar. The Console is read-mostly by design, but currently exposes two mutation paths (`/api/kill-switch.transition` and `/api/atom.propose`); the kill-switch transition is correctly enforced server-side and the atom.propose path is the one flagged by Finding 4 below as a contract violation worth closing. The dogfood loop is sound when the worktree is clean; the PR #186 chain captured 5 atom hops with intact provenance.
 
 The work to ship to a first external operator is bounded: address the AtomStore put race, the commit-SHA verification gap, and bring the bottom 8 files above 60% coverage. Most other gaps are quality-of-life, not safety.
 
@@ -17,7 +17,7 @@ The work to ship to a first external operator is bounded: address the AtomStore 
 
 Where: `src/adapters/file/atom-store.ts:49-57`.
 
-```
+```ts
 async put(atom: Atom): Promise<AtomId> {
   const path = this.pathFor(atom.id);
   const existing = await readJsonOrNull<Atom>(path);
