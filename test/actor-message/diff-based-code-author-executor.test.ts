@@ -20,9 +20,13 @@ import type { execa } from 'execa';
 import { createMemoryHost, type MemoryHost } from '../../src/adapters/memory/index.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../src/types.js';
 import type { GhClient } from '../../src/external/github/index.js';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import {
   buildDiffBasedCodeAuthorExecutor,
   buildSelfCorrectingPrompt,
+  verifyCitedPaths,
 } from '../../src/runtime/actor-message/diff-based-code-author-executor.js';
 import {
   DRAFT_SCHEMA,
@@ -1212,5 +1216,97 @@ describe('buildSelfCorrectingPrompt', () => {
     });
     expect(out).not.toContain('ORIGINAL_REQUEST:');
     expect(out).toContain('PREVIOUS_ATTEMPT_REJECTED_BY_GIT_APPLY:');
+  });
+});
+
+describe('verifyCitedPaths', () => {
+  // Use the system temp dir via Node fs primitives so the test does
+  // not depend on a real repo checkout. Each test creates a small
+  // file/directory tree, then calls verifyCitedPaths with citations
+  // that should resolve (or escape, or miss).
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(joinPath(tmpdir(), 'lag-cited-paths-'));
+    await writeFile(joinPath(tmp, 'README.md'), '# present', 'utf8');
+    await mkdir(joinPath(tmp, 'docs'), { recursive: true });
+    await writeFile(joinPath(tmp, 'docs', 'arch.md'), 'present', 'utf8');
+    await mkdir(joinPath(tmp, 'src', 'runtime'), { recursive: true });
+  });
+
+  // Cleanup runs as a final step inside each test (since vitest's
+  // afterEach is not wired in this file's existing test fixtures).
+  // The test framework deletes tmpdirs eventually anyway; explicit
+  // rm keeps the disk tidy when the suite is run repeatedly.
+  async function cleanup(): Promise<void> {
+    await rm(tmp, { recursive: true, force: true });
+  }
+
+  it('returns ok when every cited path exists on the working tree', async () => {
+    const r = await verifyCitedPaths(
+      ['README.md', 'docs/arch.md', 'src/runtime/'],
+      tmp,
+    );
+    expect(r).toEqual({ kind: 'ok' });
+    await cleanup();
+  });
+
+  it('returns ok with an empty cited_paths list (back-compat)', async () => {
+    const r = await verifyCitedPaths([], tmp);
+    expect(r).toEqual({ kind: 'ok' });
+    await cleanup();
+  });
+
+  it('rejects an entry that does not exist with a missing-path error', async () => {
+    const r = await verifyCitedPaths(['docs/missing.md'], tmp);
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).toContain('does not exist');
+      expect(r.message).toContain('"docs/missing.md"');
+    }
+    await cleanup();
+  });
+
+  it('rejects a path-traversal attempt that escapes the repository root', async () => {
+    const r = await verifyCitedPaths(['../etc/passwd'], tmp);
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).toContain('escapes the repository root');
+    }
+    await cleanup();
+  });
+
+  it('rejects an absolute path outright (entries must be repo-relative)', async () => {
+    const r = await verifyCitedPaths([joinPath(tmp, 'README.md')], tmp);
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).toContain('repository-relative');
+    }
+    await cleanup();
+  });
+
+  it('rejects an empty-string entry as a non-string violation', async () => {
+    const r = await verifyCitedPaths([''], tmp);
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).toContain('non-empty string');
+    }
+    await cleanup();
+  });
+
+  it('returns the FIRST failing entry when multiple paths are bad', async () => {
+    // Order-deterministic: the function short-circuits on the first
+    // failure. README.md exists, missing-1 does not. The error
+    // message must mention missing-1 and not missing-2.
+    const r = await verifyCitedPaths(
+      ['README.md', 'docs/missing-1.md', 'docs/missing-2.md'],
+      tmp,
+    );
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).toContain('docs/missing-1.md');
+      expect(r.message).not.toContain('docs/missing-2.md');
+    }
+    await cleanup();
   });
 });

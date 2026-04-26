@@ -21,7 +21,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import type { execa } from 'execa';
 import type { Atom } from '../../types.js';
@@ -247,6 +247,28 @@ export function buildDiffBasedCodeAuthorExecutor(
           };
         }
 
+        // Verify each path the drafter declared in `cited_paths`
+        // exists on the working tree before opening the PR. The
+        // drafter has no read access at draft-time and confabulates
+        // plausible-looking paths from the plan body when not given
+        // the actual files; this gate catches the resulting
+        // hallucinations before they ship as PR-body or in-diff
+        // prose. Verification is path-traversal-safe: every entry
+        // is resolved against repoDir and rejected if it escapes.
+        // Empty `cited_paths` is the back-compat path (drafter
+        // declared no citations) and skips the gate.
+        const citationVerifyResult = await verifyCitedPaths(
+          draftResult.citedPaths,
+          config.repoDir,
+        );
+        if (citationVerifyResult.kind === 'error') {
+          return {
+            kind: 'error',
+            stage: 'drafter/cited-path-not-found',
+            reason: citationVerifyResult.message,
+          };
+        }
+
         try {
           gitResult = await applyDraftBranch({
             diff: draftResult.diff,
@@ -411,6 +433,64 @@ export function buildSelfCorrectingPrompt({
     + 'If you are uncertain about line counts, prefer a smaller, tighter hunk over a larger speculative one.',
   );
   return sections.join('\n');
+}
+
+/**
+ * Verify each entry in `citedPaths` exists on the working tree
+ * rooted at `repoDir`. Returns `{ kind: 'ok' }` when every entry
+ * is present, or `{ kind: 'error', message }` on the first failure.
+ *
+ * Path-traversal safety: each entry is resolved against `repoDir`
+ * via `resolve` and rejected when the resolved absolute path is
+ * not contained in `repoDir`. An adversarial citation that climbs
+ * out of the worktree (e.g. `../../etc/passwd`) is treated the
+ * same as a missing path.
+ *
+ * Trailing-separator entries (`src/runtime/actors/planning/`) are
+ * directory citations; the `access` check tolerates either file
+ * or directory. The check uses fs.access in default mode, which
+ * verifies existence without requiring read permission.
+ *
+ * Empty `citedPaths` is the back-compat path: drafter declared no
+ * citations, nothing to verify, return ok.
+ */
+export async function verifyCitedPaths(
+  citedPaths: ReadonlyArray<string>,
+  repoDir: string,
+): Promise<{ kind: 'ok' } | { kind: 'error'; message: string }> {
+  if (citedPaths.length === 0) return { kind: 'ok' };
+  const repoRoot = resolve(repoDir);
+  const repoRootWithSep = repoRoot.endsWith(sep) ? repoRoot : repoRoot + sep;
+  for (const cited of citedPaths) {
+    if (typeof cited !== 'string' || cited.length === 0) {
+      return {
+        kind: 'error',
+        message: `cited_paths entry is not a non-empty string: ${JSON.stringify(cited)}`,
+      };
+    }
+    if (isAbsolute(cited)) {
+      return {
+        kind: 'error',
+        message: `cited_paths entry must be repository-relative; got absolute path ${JSON.stringify(cited)}`,
+      };
+    }
+    const resolved = resolve(repoRoot, cited);
+    if (resolved !== repoRoot && !resolved.startsWith(repoRootWithSep)) {
+      return {
+        kind: 'error',
+        message: `cited_paths entry escapes the repository root: ${JSON.stringify(cited)}`,
+      };
+    }
+    try {
+      await access(resolved);
+    } catch {
+      return {
+        kind: 'error',
+        message: `cited_paths entry does not exist on the working tree: ${JSON.stringify(cited)}`,
+      };
+    }
+  }
+  return { kind: 'ok' };
 }
 
 function extractStringArray(
