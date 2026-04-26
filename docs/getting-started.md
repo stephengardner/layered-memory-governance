@@ -1,3 +1,5 @@
+> Last validated end-to-end through the autonomous loop on 2026-04-26.
+
 # Getting started
 
 Node 22+. TypeScript optional. A few minutes from clone to a running governance loop.
