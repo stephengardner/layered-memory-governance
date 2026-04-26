@@ -1,4 +1,4 @@
-import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb } from 'lucide-react';
+import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb, ShieldAlert } from 'lucide-react';
 import { routeHref, setRoute, type Route } from '@/state/router.store';
 import logoUrl from '@/assets/lag-logo.png';
 import styles from './Sidebar.module.css';
@@ -7,10 +7,20 @@ interface NavItem {
   readonly id: Route;
   readonly label: string;
   readonly icon: typeof Book;
+  /*
+   * Operator-critical nav items render with the highlighted treatment
+   * so the "halt the org" affordance (the control panel surfacing the
+   * kill switch + autonomy tier) is one glance away from anywhere in
+   * the app. Per canon `inv-kill-switch-before-autonomy`, the kill
+   * switch is load-bearing; the operator should never have to hunt
+   * for it.
+   */
+  readonly priority?: 'critical';
 }
 
 const items: ReadonlyArray<NavItem> = [
   { id: 'dashboard', label: 'Dashboard', icon: Gauge },
+  { id: 'control', label: 'Control', icon: ShieldAlert, priority: 'critical' },
   { id: 'canon', label: 'Canon', icon: Book },
   { id: 'canon-suggestions', label: 'Suggestions', icon: Lightbulb },
   { id: 'principals', label: 'Principals', icon: Users },
@@ -32,13 +42,20 @@ export function Sidebar({ route }: { route: Route }) {
         {items.map((item) => {
           const Icon = item.icon;
           const active = item.id === route;
+          const critical = item.priority === 'critical';
+          const cls = [
+            styles.item,
+            active ? styles.itemActive : '',
+            critical ? styles.itemCritical : '',
+          ].filter(Boolean).join(' ');
           return (
             <a
               key={item.id}
-              className={`${styles.item} ${active ? styles.itemActive : ''}`}
+              className={cls}
               href={routeHref(item.id)}
               aria-current={active ? 'page' : undefined}
               data-testid={`nav-${item.id}`}
+              data-priority={item.priority ?? undefined}
               onClick={(e) => {
                 // Intercept: use pushState navigation instead of full
                 // page load. Keep default behavior for Cmd/Ctrl+click

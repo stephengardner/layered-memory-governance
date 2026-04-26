@@ -27,20 +27,21 @@ import { useSyncExternalStore } from 'react';
  * routes by default, so `/canon/my-atom-id` resolves to the SPA bundle.
  */
 
-export type Route = 'dashboard' | 'canon' | 'principals' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions';
+export type Route = 'dashboard' | 'control' | 'canon' | 'principals' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions';
 
 /*
  * `dashboard` is the new home: landing on `/` resolves here so the
  * conference-demo metrics view is the first thing an operator sees.
- * Everything else (canon / plans / activities / lifecycle / principals
- * / graph / timeline / canon-suggestions) becomes a navigation target
- * from there. Adding dashboard at the head of VALID keeps existing
- * deep-links stable (e.g. `/canon/<atom-id>` still routes to the
- * Canon view).
+ * Everything else (control / canon / plans / activities / lifecycle
+ * / principals / graph / timeline / canon-suggestions) becomes a
+ * navigation target from there. Adding dashboard at the head of VALID
+ * keeps existing deep-links stable (e.g. `/canon/<atom-id>` still
+ * routes to the Canon view).
  */
 const DEFAULT: Route = 'dashboard';
 const VALID: ReadonlyArray<Route> = [
   'dashboard',
+  'control',
   'canon',
   'principals',
   'activities',

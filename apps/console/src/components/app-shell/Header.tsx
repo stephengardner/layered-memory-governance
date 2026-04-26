@@ -17,6 +17,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Dashboard',
     subtitle: 'Autonomous-loop health at a glance: atom volume, plan outcomes, drafter economics',
   },
+  control: {
+    title: 'Operator Control Panel',
+    subtitle: 'Kill-switch state, autonomy tier, and live governance posture',
+  },
   canon: {
     title: 'Canon',
     subtitle: 'Governance substrate — directives, decisions, preferences, references',

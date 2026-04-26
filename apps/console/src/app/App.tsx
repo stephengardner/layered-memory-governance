@@ -3,6 +3,7 @@ import { AppShell } from '@/components/app-shell/AppShell';
 import { ShortcutsHelp } from '@/components/shortcuts-help/ShortcutsHelp';
 import { CommandPalette } from '@/components/command-palette/CommandPalette';
 import { ProposeAtomDialog } from '@/components/propose-atom/ProposeAtomDialog';
+import { ControlPanelView } from '@/features/control-panel/ControlPanelView';
 import { CanonViewer } from '@/features/canon-viewer/CanonViewer';
 import { CanonSuggestionsView } from '@/features/canon-suggestions/CanonSuggestionsView';
 import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
@@ -71,6 +72,7 @@ export function App() {
 function renderRoute(r: Route) {
   switch (r) {
     case 'dashboard': return <MetricsRollupView />;
+    case 'control': return <ControlPanelView />;
     case 'canon': return <CanonViewer />;
     case 'canon-suggestions': return <CanonSuggestionsView />;
     case 'principals': return <PrincipalsView />;

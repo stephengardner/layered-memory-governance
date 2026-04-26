@@ -29,6 +29,15 @@ import {
 } from './security';
 import { parseAutonomyDial } from './kill-switch-state';
 import { median, extractFailureStage } from './metrics-rollup';
+import {
+  countActivePolicies,
+  pickLastCanonApply,
+  pickOperatorPrincipalId,
+  readSentinelState,
+  resolveSentinelInside,
+  tierFromKillSwitch,
+  type ControlStatus,
+} from './control-status';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -811,6 +820,51 @@ async function readKillSwitchState(): Promise<{
     // Absent state file = fully autonomous, no tier active.
     return { tier: 'off', since: null, reason: null, autonomyDial: 1 };
   }
+}
+
+/*
+ * Operator control-panel status. Projection over the live filesystem
+ * + atom store. Read-only by contract: this handler MUST NOT write
+ * the STOP sentinel from the console UI -- engaging the kill switch
+ * crosses the operator-shell trust boundary, and the UI surfaces the
+ * manual `touch .lag/STOP` command instead. Removing that read-only
+ * guarantee changes the threat model and is out of scope for v1.
+ *
+ * Path-traversal: the sentinel path is resolved via
+ * `resolveSentinelInside(LAG_DIR)` which rejects any target whose
+ * resolved location escapes the .lag directory. fs.stat (not access)
+ * gives us the mtime, surfaced as `engaged_at`, so the operator can
+ * see when the halt landed.
+ *
+ * Stale-data: callers (the React view) refetch on a 3-second interval
+ * via TanStack Query refetchInterval. For a single operator on the
+ * dashboard this is fine; if scaling matters (many concurrent
+ * operators on the same backend), a rate-limit middleware on this
+ * handler is the natural follow-up but not load-bearing for v1.
+ */
+async function handleControlStatus(): Promise<ControlStatus> {
+  const sentinelAbs = resolveSentinelInside(LAG_DIR, 'STOP');
+  const [killSwitchState, kill_switch, atoms, principals] = await Promise.all([
+    readKillSwitchState(),
+    readSentinelState(sentinelAbs),
+    readAllAtoms(),
+    readAllPrincipals(),
+  ]);
+  const autonomy_tier = tierFromKillSwitch(killSwitchState.tier);
+  /*
+   * Actors are principals whose role is not 'apex'. The apex root is
+   * the operator; everything signed_by it is a governed actor. This
+   * matches how the principal hierarchy actually composes in the org.
+   */
+  const actors_governed = principals.filter((p) => p.role !== 'apex' && p.active !== false).length;
+  return {
+    kill_switch,
+    autonomy_tier,
+    actors_governed,
+    policies_active: countActivePolicies(atoms),
+    last_canon_apply: pickLastCanonApply(atoms),
+    operator_principal_id: pickOperatorPrincipalId(principals),
+  };
 }
 
 async function handleDaemonStatus(): Promise<{
@@ -1957,6 +2011,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'canon-suggestions-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/control.status' && req.method === 'POST') {
+    /*
+     * Operator control-panel projection. Read-only: MUST NOT mutate
+     * the STOP sentinel from this code path. See handleControlStatus
+     * JSDoc for the full read-only contract.
+     */
+    try {
+      const data = await handleControlStatus();
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'control-status-failed', (err as Error).message);
     }
     return;
   }

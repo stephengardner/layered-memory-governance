@@ -89,6 +89,29 @@
   border-radius: var(--radius-pill);
 }
 
+/*
+ * Operator-critical items (the control panel surfacing the kill
+ * switch + autonomy tier). Slight border + tinted icon so the
+ * "halt the org" entry is visually distinct from generic nav. We
+ * deliberately keep the treatment subtle: a noisy red badge is
+ * fatigue-inducing for an item the operator passes hundreds of
+ * times a day. Color-mix lets the tint follow the active theme's
+ * danger token without re-implementing the dark/light pairing.
+ */
+.itemCritical {
+  border: 1px solid color-mix(in srgb, var(--status-danger) 22%, transparent);
+  background: color-mix(in srgb, var(--status-danger) 6%, transparent);
+}
+
+.itemCritical svg {
+  color: var(--status-danger);
+}
+
+.itemCritical:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-danger) 12%, var(--surface-hover));
+  border-color: color-mix(in srgb, var(--status-danger) 38%, transparent);
+}
+
 .itemLabel {
   display: inline;
 }
