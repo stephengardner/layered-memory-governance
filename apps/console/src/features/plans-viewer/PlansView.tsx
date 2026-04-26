@@ -168,7 +168,7 @@ export function PlansView() {
           )}
           {filteredOut && (
             <EmptyState
-              title={`No ${bucket === 'all' ? '' : bucket + ' '}plans`}
+              title="No plans match this filter"
               detail={
                 <>
                   Nothing in the <code>{bucket}</code> bucket right now.{' '}
@@ -257,7 +257,6 @@ function PlanFilterChips({
             aria-pressed={selected}
             data-testid={`plans-filter-chip-${b}`}
             data-bucket={b}
-            data-selected={selected ? 'true' : 'false'}
             onClick={() => onChange(b)}
           >
             <span className={styles.filterChipLabel}>{label}</span>
