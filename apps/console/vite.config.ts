@@ -31,6 +31,12 @@ export default defineConfig({
   server: {
     port: DASHBOARD_PORT,
     strictPort: true, // fail fast if port taken instead of hopping
+    // Allow access via the operator's cloudflared quick-tunnel hosts
+    // (random *.trycloudflare.com subdomains) so a public preview URL
+    // works without each tunnel restart needing a config edit. Local
+    // operator-only by default; tunnel exposure remains gated on the
+    // operator running cloudflared explicitly.
+    allowedHosts: ['localhost', '.trycloudflare.com'],
     proxy: {
       '/api': {
         target: `http://localhost:${BACKEND_PORT}`,

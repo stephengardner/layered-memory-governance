@@ -179,7 +179,16 @@ async function main() {
   // 'memory' is the test stub; selecting it on a daemon that will
   // dispatch code-author would crash the drafter at runtime, so we
   // gate on the registered set after invokers load (below).
-  const llm = args.llm === 'claude-cli' ? new ClaudeCliLLM({}) : undefined;
+  // Deployment-side timeout posture: dispatched drafters (code-author,
+  // pr-fix) routinely produce multi-file diffs that exceed the framework's
+  // conservative 3-minute floor. The runner sets a 30-minute envelope at
+  // construction so the adapter falls back to it when no per-call
+  // override is provided. Per-invocation options.timeout_ms still wins
+  // for callers that want a tighter envelope.
+  const INSTANCE_LLM_DEFAULT_TIMEOUT_MS = 1_800_000;
+  const llm = args.llm === 'claude-cli'
+    ? new ClaudeCliLLM({ defaultTimeoutMs: INSTANCE_LLM_DEFAULT_TIMEOUT_MS })
+    : undefined;
   const host = await createFileHost({ rootDir, llm });
 
   // Register invokers. V0 ships with the auditor (read-only, always

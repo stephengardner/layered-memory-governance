@@ -50,6 +50,15 @@ export interface ClaudeCliOptions {
   /** If true, log the command line to stderr for debugging. */
   readonly verbose?: boolean;
   /**
+   * Default per-call spawn timeout (ms). Per-invocation
+   * `LlmOptions.timeout_ms` overrides this. The adapter ships with a
+   * conservative 3-minute floor; deployments that expect longer drafts
+   * (multi-file diffs, rich context) configure a larger envelope at
+   * construction. Framework code stays mechanism-only; the deployment
+   * posture lives at the call site.
+   */
+  readonly defaultTimeoutMs?: number;
+  /**
    * Injectable exec implementation for tests. Takes (binary, args,
    * execaOptions) and returns the execa result shape. Defaults to
    * the real execa. Tests pass a stub that records the call and
@@ -179,6 +188,18 @@ export class ClaudeCliLLM implements LLM {
         '--disable-slash-commands',
         '--mcp-config',
         '{"mcpServers":{}}',
+        // Without --strict-mcp-config, the CLI MERGES our empty config with
+        // the user-level ~/.claude.json MCP list. Every MCP server in that
+        // list spawns at startup; if any one blocks (OAuth prompt, slow
+        // npm cold-start, missing browser, hung handshake) the parent
+        // claude CLI never reaches the API call -- execa returns
+        // exit=undefined with empty stdout/stderr after the parent's
+        // timeout fires. With --strict-mcp-config, ONLY the empty config
+        // applies; the spawn ignores user MCP entirely. Verified 2026-04-26:
+        // same prompt + same model returns a schema-validated
+        // structured_output in ~6s with --strict-mcp-config vs >25min hung
+        // without it.
+        '--strict-mcp-config',
         ...(this.opts.extraArgs ?? []),
       ];
 
@@ -188,7 +209,12 @@ export class ClaudeCliLLM implements LLM {
       }
 
       const startedAt = Date.now();
-      const timeoutMs = options.timeout_ms ?? 180_000;
+      // Precedence: per-invocation options.timeout_ms > adapter
+      // constructor default > hardcoded 3-minute floor. Deployments that
+      // expect longer-running drafts configure ClaudeCliOptions.defaultTimeoutMs
+      // at construction; framework code stays mechanism-only with a
+      // conservative floor.
+      const timeoutMs = options.timeout_ms ?? this.opts.defaultTimeoutMs ?? 180_000;
 
       const exec = this.opts.execImpl ?? execa;
       let execResult;

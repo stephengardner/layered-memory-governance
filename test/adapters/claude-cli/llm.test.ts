@@ -136,6 +136,68 @@ describe('ClaudeCliLLM', () => {
       // latent "works at 1k, breaks at 40k" footgun.
       expect(calls[0]!.args.some((a) => a.includes('"ping":"ping"'))).toBe(false);
     });
+
+    it('honors ClaudeCliOptions.defaultTimeoutMs when no per-call timeout is set', async () => {
+      // Precedence: per-invocation options.timeout_ms > adapter-level
+      // defaultTimeoutMs > hardcoded 3-minute floor. This test pins the
+      // middle rung: deployments configure their timeout posture at
+      // construction (e.g. a long-running drafter envelope), and the
+      // per-call value is unset.
+      const { exec, calls } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm = new ClaudeCliLLM({ execImpl: exec, defaultTimeoutMs: 12_345 });
+
+      await llm.judge(
+        SCHEMA,
+        'classify',
+        { x: 1 },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true },
+      );
+
+      expect(calls.length).toBe(1);
+      expect((calls[0]!.options as { timeout?: number }).timeout).toBe(12_345);
+    });
+
+    it('lets per-call options.timeout_ms override defaultTimeoutMs', async () => {
+      const { exec, calls } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm = new ClaudeCliLLM({ execImpl: exec, defaultTimeoutMs: 12_345 });
+
+      await llm.judge(
+        SCHEMA,
+        'classify',
+        { x: 1 },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true, timeout_ms: 67_890 },
+      );
+
+      expect((calls[0]!.options as { timeout?: number }).timeout).toBe(67_890);
+    });
+
+    it('passes --strict-mcp-config so user-level MCP config does not leak in', async () => {
+      // Regression guard: without --strict-mcp-config, the CLI MERGES our
+      // empty `--mcp-config '{"mcpServers":{}}'` with the user-level
+      // ~/.claude.json MCP list, spawning every configured MCP server at
+      // startup. If any blocks (auth prompt, slow npm cold-start, missing
+      // browser, OAuth handshake) the parent claude CLI never reaches the
+      // API call and execa returns exit=undefined with empty stdout/stderr
+      // after the parent's timeout fires. The flag forces "ONLY use
+      // --mcp-config sources, ignore everything else."
+      const { exec, calls } = makeExecStub(SUCCESS_ENVELOPE);
+      const llm = new ClaudeCliLLM({ execImpl: exec });
+
+      await llm.judge(
+        SCHEMA,
+        'classify',
+        { x: 1 },
+        { model: 'claude-test', max_budget_usd: 0.5, sandboxed: true },
+      );
+
+      expect(calls.length).toBe(1);
+      expect(calls[0]!.args).toContain('--strict-mcp-config');
+      // And the empty mcp-config remains so the strict mode applies to a
+      // known-empty list rather than nothing.
+      const mcpConfigIdx = calls[0]!.args.indexOf('--mcp-config');
+      expect(mcpConfigIdx).toBeGreaterThanOrEqual(0);
+      expect(calls[0]!.args[mcpConfigIdx + 1]).toBe('{"mcpServers":{}}');
+    });
   });
 
   describe('error paths', () => {
