@@ -117,10 +117,14 @@ function ghClientStub(restImpl: GhClient['rest']): GhClient {
 interface StubReply { exitCode: number; stdout?: string; stderr?: string }
 
 function stubGitExeca(replies: ReadonlyArray<StubReply>) {
-  const calls: Array<{ args: ReadonlyArray<string>; input?: string }> = [];
+  const calls: Array<{ args: ReadonlyArray<string>; input?: string; cwd?: string }> = [];
   let i = 0;
   const impl = (async (_bin: string, args: ReadonlyArray<string>, options: Record<string, unknown>) => {
-    calls.push({ args: args.slice(), ...(options['input'] !== undefined ? { input: options['input'] as string } : {}) });
+    calls.push({
+      args: args.slice(),
+      ...(options['input'] !== undefined ? { input: options['input'] as string } : {}),
+      ...(options['cwd'] !== undefined ? { cwd: options['cwd'] as string } : {}),
+    });
     const r = replies[i++];
     if (!r) throw new Error(`stubGitExeca: no reply for call #${i}; args=${args.join(' ')}`);
     return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', exitCode: r.exitCode };
@@ -1266,13 +1270,11 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     // single call leaks back to `/tmp/dirty-primary`, the
     // dirty-worktree symptom returns the moment a real worktree is
     // dirty, and the substrate-purity invariant is broken.
+    expect(gitCalls.length).toBeGreaterThan(0);
     for (const c of gitCalls) {
-      const optsCwd = (c as unknown as { cwd?: string }).cwd;
-      // The git stub records args, not cwd directly; cross-check via
-      // the cwd captured by stubExeca's options-passthrough. Most stub
-      // shapes do not record cwd, so assert via the events sequence
-      // and the absence of any error-path stage in the result.
-      void optsCwd;
+      expect(c.cwd, `every git invocation must capture cwd; missing on ${c.args.join(' ')}`).toBeDefined();
+      expect(c.cwd, `git ran against /tmp/dirty-primary instead of workspace.path on args=${c.args.join(' ')}`).not.toBe('/tmp/dirty-primary');
+      expect(c.cwd, `git ran outside the isolated workspace on args=${c.args.join(' ')}`).toBe('/tmp/clean-isolated');
     }
     // Acquire-then-release order is guaranteed by the try/finally.
     expect(events).toEqual([
