@@ -170,7 +170,15 @@ async function main() {
     console.error(
       '[plan-reaper] this script writes audit rows and refuses to guess the operator principal.',
     );
-    process.exit(2);
+    /*
+     * Exit 3, distinct from the STOP-sentinel exit 2 (governance halt)
+     * and from the generic exit 1 (code threw). Cron wrappers can
+     * distinguish "operator misconfigured the env" (3, recoverable
+     * with config edit) from "kill-switch armed" (2, intentional)
+     * from "code threw" (1, needs investigation). Same convention
+     * pattern as the agentic-loop's distinct-condition exit codes.
+     */
+    process.exit(3);
   }
   const out = await runReaperSweep(host, principal, ttls);
   console.log(
