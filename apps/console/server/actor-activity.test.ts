@@ -165,4 +165,41 @@ describe('buildActorActivityResponse', () => {
     const r = buildActorActivityResponse(atoms, {}, NOW);
     expect(r.groups[0]!.latest_at).toBe('2026-04-26T11:00:00.000Z');
   });
+
+  describe('principal_id filter', () => {
+    const mixed: ActorActivityAtom[] = [
+      atom({ id: 'a-1', principal_id: 'cto-actor', created_at: '2026-04-26T11:00:00.000Z' }),
+      atom({ id: 'b-1', principal_id: 'cpo-actor', created_at: '2026-04-26T11:30:00.000Z' }),
+      atom({ id: 'a-2', principal_id: 'cto-actor', created_at: '2026-04-26T12:00:00.000Z' }),
+    ];
+
+    it('returns only entries authored by the principal when set', () => {
+      const r = buildActorActivityResponse(mixed, { principal_id: 'cto-actor' }, NOW);
+      expect(r.entry_count).toBe(2);
+      const ids = r.groups.flatMap((g) => g.entries.map((e) => e.id));
+      expect(ids).toEqual(['a-2', 'a-1']);
+    });
+
+    it('returns full feed when principal_id is omitted', () => {
+      const r = buildActorActivityResponse(mixed, {}, NOW);
+      expect(r.entry_count).toBe(3);
+    });
+
+    it('treats empty-string principal_id as no filter', () => {
+      const r = buildActorActivityResponse(mixed, { principal_id: '' }, NOW);
+      expect(r.entry_count).toBe(3);
+    });
+
+    it('returns empty groups when principal has no atoms', () => {
+      const r = buildActorActivityResponse(mixed, { principal_id: 'no-such-principal' }, NOW);
+      expect(r.entry_count).toBe(0);
+      expect(r.groups).toEqual([]);
+    });
+
+    it('respects limit cap on the filtered set', () => {
+      const r = buildActorActivityResponse(mixed, { principal_id: 'cto-actor', limit: 1 }, NOW);
+      expect(r.entry_count).toBe(1);
+      expect(r.groups[0]!.entries[0]!.id).toBe('a-2'); // newest first
+    });
+  });
 });

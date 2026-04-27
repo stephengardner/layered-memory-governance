@@ -38,6 +38,13 @@ export interface ActorActivityResponse {
 
 export interface ListActorActivityParams {
   readonly limit?: number;
+  /**
+   * When set, the server filters entries to those authored by this
+   * principal. Used by the principal-detail surface to render a
+   * focused principal's recent activity alongside their skill
+   * content. Empty string is normalized to "no filter" server-side.
+   */
+  readonly principal_id?: string;
 }
 
 export async function fetchActorActivity(

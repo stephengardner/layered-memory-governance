@@ -123,7 +123,7 @@ function isLive(a: ActorActivityAtom): boolean {
  */
 export function buildActorActivityResponse(
   atoms: ReadonlyArray<ActorActivityAtom>,
-  params: { limit?: number },
+  params: { limit?: number; principal_id?: string },
   now: Date,
 ): ActorActivityResponse {
   // Defensive clamp: caller may pass any number or omit; we always
@@ -134,7 +134,22 @@ export function buildActorActivityResponse(
   const limit = Math.max(1, Math.min(ACTOR_ACTIVITY_MAX_LIMIT, Math.floor(requested)));
 
   const live = atoms.filter(isLive);
-  const sorted = [...live].sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
+  /*
+   * Optional per-principal filter so a focused-principal view can pull
+   * only that principal's activity. When unset, behaviour is identical
+   * to the prior implementation (full live feed). The value is checked
+   * for non-empty string to distinguish "no filter" from "empty filter
+   * matches nothing." Applied BEFORE sort + slice so the cap counts
+   * the principal's atoms, not the global atoms truncated to a window
+   * that happens to omit the principal.
+   */
+  const principalFilter = typeof params.principal_id === 'string' && params.principal_id.length > 0
+    ? params.principal_id
+    : null;
+  const filtered = principalFilter !== null
+    ? live.filter((a) => a.principal_id === principalFilter)
+    : live;
+  const sorted = [...filtered].sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
   const sliced = sorted.slice(0, limit);
 
   const entries: ActorActivityEntry[] = sliced.map((a) => ({

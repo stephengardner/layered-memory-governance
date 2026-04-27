@@ -455,7 +455,10 @@ async function handleActivitiesList(params: { limit?: number; types?: string[] }
  * readAllAtoms() (a snapshot, not the live Map) and the resulting
  * response is a derived projection.
  */
-async function handleActorActivityStream(params: { limit?: number }): Promise<ActorActivityResponse> {
+async function handleActorActivityStream(params: {
+  limit?: number;
+  principal_id?: string;
+}): Promise<ActorActivityResponse> {
   const all = await readAllAtoms();
   // Atom -> ActorActivityAtom is a structural narrowing. The runtime
   // shape is identical; the cast carries no risk because the consumer
@@ -2000,8 +2003,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (path === '/api/actor-activity.stream' && req.method === 'POST') {
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const bodyLimit = body['limit'];
+    const bodyPrincipal = body['principal_id'];
     const limit = typeof bodyLimit === 'number' ? bodyLimit : undefined;
-    const params: { limit?: number } = limit !== undefined ? { limit } : {};
+    const principal_id = typeof bodyPrincipal === 'string' && bodyPrincipal.length > 0
+      ? bodyPrincipal
+      : undefined;
+    const params: { limit?: number; principal_id?: string } = {
+      ...(limit !== undefined ? { limit } : {}),
+      ...(principal_id !== undefined ? { principal_id } : {}),
+    };
     try {
       const data = await handleActorActivityStream(params);
       sendOk(req, res, data);
