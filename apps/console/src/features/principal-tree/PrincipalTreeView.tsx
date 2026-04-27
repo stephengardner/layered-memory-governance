@@ -200,7 +200,6 @@ function TreeBranch({
 }) {
   const hasChildren = node.children.length > 0;
   const open = isOpen(node);
-  const isLeaf = !hasChildren;
   const selected = selectedId === node.id;
   const childrenId = `principal-tree-children-${node.id}`;
 
