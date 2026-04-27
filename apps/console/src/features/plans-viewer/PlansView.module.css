@@ -266,6 +266,21 @@
   color: var(--text-secondary);
   overflow: hidden;
   position: relative;
+  /*
+   * Plan bodies regularly contain unbroken tokens (URLs, atom ids,
+   * encoded JSON) that would otherwise blow past the card edge on
+   * narrow viewports. `overflow-wrap: anywhere` breaks at any
+   * character only when no soft-break candidate fits, so well-formed
+   * prose stays normal-wrapped while pathological inputs stop
+   * overflowing. <pre> blocks keep their own `overflow-x: auto` so
+   * code samples scroll instead of breaking.
+   *
+   * `break-word` first as an iOS Safari < 15.4 fallback; modern
+   * browsers honor the more aggressive `anywhere` keyword that
+   * follows.
+   */
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 
 /*

@@ -127,6 +127,16 @@
   line-height: var(--line-height-relaxed);
   color: var(--text-primary);
   white-space: pre-wrap;
+  /*
+   * Proposal content is operator-suggested canon prose; it can carry
+   * unbroken tokens (URLs, atom ids, encoded JSON) that would
+   * otherwise overflow the proposal card on narrow viewports.
+   * `overflow-wrap: anywhere` breaks at any character only when no
+   * soft-break candidate fits, preserving normal wrapping on prose.
+   * `break-word` first as iOS Safari < 15.4 fallback.
+   */
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 
 .chatExcerpt {
@@ -139,6 +149,13 @@
   white-space: pre-wrap;
   background-color: var(--surface-canvas);
   border-radius: var(--radius-sm);
+  /*
+   * Same rationale as .proposedContent: unbroken tokens in chat
+   * excerpts must wrap at the edge. `break-word` first as
+   * iOS Safari < 15.4 fallback.
+   */
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 
 .actions {
