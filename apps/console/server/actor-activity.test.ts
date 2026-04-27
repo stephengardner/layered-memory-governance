@@ -145,6 +145,34 @@ describe('buildActorActivityResponse', () => {
     expect(verbs).toEqual(['drafted a plan', 'declared a directive', 'observed', 'wrote']);
   });
 
+  it('maps operator-governance atom types to human verbs', () => {
+    /*
+     * Specifically guards the `operator-intent` -> 'expressed intent'
+     * mapping (typo'd as `intent` historically and fell through to
+     * the default 'wrote' verb) plus the new mappings for
+     * actor-message-ack, plan-merge-settled, circuit-breaker-trip,
+     * circuit-breaker-reset, and ephemeral.
+     */
+    const atoms: ActorActivityAtom[] = [
+      atom({ id: 'a', type: 'operator-intent', principal_id: 'p1', created_at: '2026-04-26T11:06:00.000Z' }),
+      atom({ id: 'b', type: 'actor-message-ack', principal_id: 'p1', created_at: '2026-04-26T11:05:00.000Z' }),
+      atom({ id: 'c', type: 'plan-merge-settled', principal_id: 'p1', created_at: '2026-04-26T11:04:00.000Z' }),
+      atom({ id: 'd', type: 'circuit-breaker-trip', principal_id: 'p1', created_at: '2026-04-26T11:03:00.000Z' }),
+      atom({ id: 'e', type: 'circuit-breaker-reset', principal_id: 'p1', created_at: '2026-04-26T11:02:00.000Z' }),
+      atom({ id: 'f', type: 'ephemeral', principal_id: 'p1', created_at: '2026-04-26T11:01:00.000Z' }),
+    ];
+    const r = buildActorActivityResponse(atoms, {}, NOW);
+    const verbs = r.groups[0]!.entries.map((e) => e.verb);
+    expect(verbs).toEqual([
+      'expressed intent',
+      'acknowledged a message',
+      'settled a merge',
+      'tripped a circuit breaker',
+      'reset a circuit breaker',
+      'noted ephemerally',
+    ]);
+  });
+
   it('counts distinct principals across consecutive runs', () => {
     const atoms: ActorActivityAtom[] = [
       atom({ id: '1', principal_id: 'a', created_at: '2026-04-26T11:00:00.000Z' }),
