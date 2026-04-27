@@ -92,12 +92,23 @@ const VERB_BY_TYPE: Readonly<Record<string, string>> = Object.freeze({
   reference: 'cited a reference',
   observation: 'observed',
   'actor-message': 'messaged',
+  'actor-message-ack': 'acknowledged a message',
   'agent-session': 'started a session',
   'agent-turn': 'took a turn',
   plan: 'drafted a plan',
+  'plan-merge-settled': 'settled a merge',
   question: 'raised a question',
   'operator-action': 'acted',
-  intent: 'expressed intent',
+  /*
+   * Atom type is `operator-intent` (per AtomType union); the prior
+   * `intent` key here was a typo that fell through to the default
+   * 'wrote' verb for all 14 operator-intent atoms in the local store
+   * as of 2026-04-27. Keep the corrected key.
+   */
+  'operator-intent': 'expressed intent',
+  'circuit-breaker-trip': 'tripped a circuit breaker',
+  'circuit-breaker-reset': 'reset a circuit breaker',
+  ephemeral: 'noted ephemerally',
 });
 
 function truncate(s: string, n: number): string {
