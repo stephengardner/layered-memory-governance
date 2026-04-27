@@ -112,8 +112,9 @@ dispatch, auditor). The `intend` CLI also refuses to write if STOP is present.
 
 - `design/target-architecture.md`: north-star diagram; gap analysis covers
   intent substrate placement.
-- `src/actors/planning/`: PlanningActor primitive; `runIntentAutoApprovePass`
-  lives here.
+- `src/runtime/actors/planning/`: PlanningActor primitive.
+- `src/runtime/actor-message/intent-approve.ts`: where `runIntentAutoApprovePass`
+  actually lives (consumed by the dispatch entry).
 - `scripts/invokers/autonomous-dispatch.mjs`: dispatch entry point.
 - `DECISIONS.md` D13, D16, D17: autonomy dial trade-offs and the two-seam
   architecture.
