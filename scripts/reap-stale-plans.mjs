@@ -46,19 +46,21 @@ const REPO_ROOT = resolve(__dirname, '..');
 
 /*
  * Principal that the reaper attributes its abandonment transitions to
- * in the audit log. Defaults to `apex-agent` (already registered in
- * every LAG instance) because:
- *   1. The reaper is operator-policy execution: the operator
- *      authorized the TTL by invoking the script; apex-agent is the
- *      operator's principal of record.
- *   2. Picking a bespoke `plan-reaper` id would require seeding a new
- *      principal entry on every fresh install, which contradicts the
- *      indie-floor zero-config goal.
- * Override via --principal or LAG_REAPER_PRINCIPAL when a deployment
- * registers a dedicated reaper principal and wants the audit chain to
- * cite it explicitly.
+ * in the audit log. Resolved from --principal flag, then
+ * LAG_REAPER_PRINCIPAL env, then LAG_OPERATOR_ID env. No silent
+ * fallback to a hardcoded id, because a wrong principal in an audit
+ * row makes the chain lie about who authored a state transition.
+ * Same discipline as scripts/decide.mjs (LAG_OPERATOR_ID required)
+ * and scripts/plan-approve-telegram.mjs.
  */
-const DEFAULT_REAPER_PRINCIPAL = 'apex-agent';
+function resolveReaperPrincipal(args) {
+  return (
+    args.principal
+    || process.env.LAG_REAPER_PRINCIPAL
+    || process.env.LAG_OPERATOR_ID
+    || null
+  );
+}
 
 function parseArgs(argv) {
   const args = {
@@ -160,7 +162,16 @@ async function main() {
     return;
   }
 
-  const principal = args.principal ?? DEFAULT_REAPER_PRINCIPAL;
+  const principal = resolveReaperPrincipal(args);
+  if (!principal) {
+    console.error(
+      '[plan-reaper] no principal resolved. Set --principal, LAG_REAPER_PRINCIPAL, or LAG_OPERATOR_ID.',
+    );
+    console.error(
+      '[plan-reaper] this script writes audit rows and refuses to guess the operator principal.',
+    );
+    process.exit(2);
+  }
   const out = await runReaperSweep(host, principal, ttls);
   console.log(
     `[plan-reaper] classified: fresh=${out.classifications.fresh.length} warn=${out.classifications.warn.length} abandon=${out.classifications.abandon.length}${out.truncated ? ' (TRUNCATED - more atoms remain; will pick up next run)' : ''}`,
