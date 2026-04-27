@@ -2,8 +2,8 @@
  * Pure-function helpers for the resolve-outdated-threads flow.
  *
  * Lives next to scripts/lib/git-as.mjs (the existing per-bot helpers
- * convention) so vitest can exercise the classification logic without
- * touching the GitHub API.
+ * convention) so vitest can exercise the classification + arg-parsing
+ * logic without touching the GitHub API.
  *
  * The wire shape mirrors GitHub's PullRequest.reviewThreads.nodes
  * GraphQL response so the production callsite can pass the response
@@ -51,4 +51,49 @@ export function classifyReviewThreads(threads) {
     }
   }
   return { resolveTargets, stillCurrent, alreadyResolved };
+}
+
+/**
+ * @typedef {Object} ResolveArgs
+ * @property {number|null} pr - PR number, or null when --help or no number provided
+ * @property {boolean} dryRun
+ * @property {boolean} help
+ * @property {string|null} error - Error message, or null when args are valid
+ */
+
+/**
+ * Parse argv for the resolve-outdated-threads CLI.
+ *
+ * Returns the parsed result instead of throwing or exiting, so callers
+ * (the CLI in this repo, plus future callers wiring this into actor
+ * loops) own the exit-code policy.
+ *
+ * Rejects a second numeric argument loud rather than silently
+ * overwriting -- otherwise `node script.mjs 229 234` would target 234
+ * with no warning, an obvious footgun once this gets wired into
+ * `run-pr-fix.mjs` / `run-pr-landing.mjs` and someone forwards an
+ * argv blindly.
+ *
+ * @param {ReadonlyArray<string>} argv
+ * @returns {ResolveArgs}
+ */
+export function parseResolveArgs(argv) {
+  const out = { pr: null, dryRun: false, help: false, error: null };
+  for (const a of argv) {
+    if (a === '--dry-run') {
+      out.dryRun = true;
+    } else if (a === '--help' || a === '-h') {
+      out.help = true;
+    } else if (/^\d+$/.test(a)) {
+      if (out.pr !== null) {
+        out.error = `multiple pr numbers provided (${out.pr}, ${a}); pass exactly one`;
+        return out;
+      }
+      out.pr = Number(a);
+    } else {
+      out.error = `unknown arg: ${a}`;
+      return out;
+    }
+  }
+  return out;
 }

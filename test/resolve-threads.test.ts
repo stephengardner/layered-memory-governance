@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReviewThreads } from '../scripts/lib/resolve-threads.mjs';
+import { classifyReviewThreads, parseResolveArgs } from '../scripts/lib/resolve-threads.mjs';
 
 describe('classifyReviewThreads', () => {
   it('returns three empty buckets for an empty input', () => {
@@ -61,5 +61,44 @@ describe('classifyReviewThreads', () => {
     const t = { id: 'no-path', isResolved: false, isOutdated: true };
     const r = classifyReviewThreads([t]);
     expect(r.resolveTargets).toEqual([t]);
+  });
+});
+
+describe('parseResolveArgs', () => {
+  it('parses a single pr number', () => {
+    expect(parseResolveArgs(['229'])).toEqual({ pr: 229, dryRun: false, help: false, error: null });
+  });
+
+  it('parses --dry-run flag', () => {
+    expect(parseResolveArgs(['229', '--dry-run'])).toEqual({ pr: 229, dryRun: true, help: false, error: null });
+  });
+
+  it('parses --help flag', () => {
+    expect(parseResolveArgs(['--help'])).toEqual({ pr: null, dryRun: false, help: true, error: null });
+  });
+
+  it('parses -h alias as help', () => {
+    expect(parseResolveArgs(['-h'])).toEqual({ pr: null, dryRun: false, help: true, error: null });
+  });
+
+  it('rejects multiple pr numbers loud rather than overwriting silently', () => {
+    /*
+     * Regression: `node scripts/resolve-outdated-threads.mjs 229 234`
+     * would silently target 234. Once this script gets wired into
+     * run-pr-fix.mjs / run-pr-landing.mjs, blind argv-forwarding by a
+     * caller would cause the wrong PR's threads to get resolved.
+     */
+    const r = parseResolveArgs(['229', '234']);
+    expect(r.error).toMatch(/multiple pr numbers/);
+    expect(r.pr).toBe(229);
+  });
+
+  it('rejects unknown args', () => {
+    const r = parseResolveArgs(['--bogus']);
+    expect(r.error).toMatch(/unknown arg/);
+  });
+
+  it('handles empty argv (caller surfaces missing-pr error itself)', () => {
+    expect(parseResolveArgs([])).toEqual({ pr: null, dryRun: false, help: false, error: null });
   });
 });
