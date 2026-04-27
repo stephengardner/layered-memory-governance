@@ -135,4 +135,101 @@ describe('aggregateRelevantContext', () => {
     });
     expect(ctx.directives.length).toBeLessThanOrEqual(3);
   });
+
+  describe('selfContext (principal-memory)', () => {
+    it('is empty when no selfPrincipalId is given (back-compat)', async () => {
+      const host = createMemoryHost();
+      await host.atoms.put(sampleAtom({
+        id: 'plan-1' as AtomId,
+        type: 'plan',
+        layer: 'L1',
+        principal_id: 'cto-actor' as PrincipalId,
+      }));
+      const ctx = await aggregateRelevantContext(host, 'x');
+      expect(ctx.selfContext).toEqual([]);
+    });
+
+    it('includes only atoms authored by the selfPrincipalId', async () => {
+      const host = createMemoryHost();
+      await host.atoms.put(sampleAtom({
+        id: 'plan-cto-1' as AtomId,
+        type: 'plan',
+        layer: 'L1',
+        principal_id: 'cto-actor' as PrincipalId,
+        created_at: '2026-04-26T10:00:00.000Z',
+      }));
+      await host.atoms.put(sampleAtom({
+        id: 'plan-cpo-1' as AtomId,
+        type: 'plan',
+        layer: 'L1',
+        principal_id: 'cpo-actor' as PrincipalId,
+        created_at: '2026-04-26T10:00:00.000Z',
+      }));
+      const ctx = await aggregateRelevantContext(host, 'x', {
+        selfPrincipalId: 'cto-actor' as PrincipalId,
+      });
+      expect(ctx.selfContext.map((a) => a.id)).toEqual(['plan-cto-1']);
+    });
+
+    it('orders selfContext by created_at desc (newest first)', async () => {
+      const host = createMemoryHost();
+      await host.atoms.put(sampleAtom({
+        id: 'plan-old' as AtomId,
+        type: 'plan',
+        layer: 'L1',
+        principal_id: 'cto-actor' as PrincipalId,
+        created_at: '2026-04-20T00:00:00.000Z',
+      }));
+      await host.atoms.put(sampleAtom({
+        id: 'plan-new' as AtomId,
+        type: 'plan',
+        layer: 'L1',
+        principal_id: 'cto-actor' as PrincipalId,
+        created_at: '2026-04-26T00:00:00.000Z',
+      }));
+      const ctx = await aggregateRelevantContext(host, 'x', {
+        selfPrincipalId: 'cto-actor' as PrincipalId,
+      });
+      expect(ctx.selfContext.map((a) => a.id)).toEqual(['plan-new', 'plan-old']);
+    });
+
+    it('respects maxSelfContext cap', async () => {
+      const host = createMemoryHost();
+      for (let i = 0; i < 8; i++) {
+        await host.atoms.put(sampleAtom({
+          id: `plan-${i}` as AtomId,
+          type: 'plan',
+          layer: 'L1',
+          principal_id: 'cto-actor' as PrincipalId,
+          created_at: `2026-04-26T0${i}:00:00.000Z`,
+        }));
+      }
+      const ctx = await aggregateRelevantContext(host, 'x', {
+        selfPrincipalId: 'cto-actor' as PrincipalId,
+        maxSelfContext: 3,
+      });
+      expect(ctx.selfContext.length).toBe(3);
+    });
+
+    it('excludes superseded atoms from selfContext', async () => {
+      const host = createMemoryHost();
+      await host.atoms.put(sampleAtom({
+        id: 'plan-old' as AtomId,
+        type: 'plan',
+        layer: 'L1',
+        principal_id: 'cto-actor' as PrincipalId,
+        superseded_by: ['plan-new' as AtomId],
+      }));
+      await host.atoms.put(sampleAtom({
+        id: 'plan-new' as AtomId,
+        type: 'plan',
+        layer: 'L1',
+        principal_id: 'cto-actor' as PrincipalId,
+      }));
+      const ctx = await aggregateRelevantContext(host, 'x', {
+        selfPrincipalId: 'cto-actor' as PrincipalId,
+      });
+      expect(ctx.selfContext.map((a) => a.id)).toEqual(['plan-new']);
+    });
+  });
 });

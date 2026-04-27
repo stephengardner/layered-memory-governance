@@ -101,6 +101,7 @@ function makeContext(overrides: Partial<PlanningContext> = {}): PlanningContext 
     relevantPrincipals: [
       { id: 'cto-actor' as PrincipalId, role: 'agent', signed_by: 'claude-agent' as PrincipalId },
     ],
+    selfContext: [],
     gatheredAt: '2026-04-19T00:00:00.000Z' as Time,
   };
   return { ...base, ...overrides };
@@ -138,6 +139,7 @@ function renderDataForJudge(context: PlanningContext): Record<string, unknown> {
       role: p.role,
       signed_by: p.signed_by === null ? null : String(p.signed_by),
     })),
+    self_context: context.selfContext.map(renderAtom),
   };
 }
 

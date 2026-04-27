@@ -227,6 +227,13 @@ function renderContextForJudge(context: PlanningContext): Record<string, unknown
       role: p.role,
       signed_by: p.signed_by === null ? null : String(p.signed_by),
     })),
+    /*
+     * The principal's own recent atoms. Threaded into the judge so
+     * its answer is grounded in "your prior work." Empty when no
+     * selfPrincipalId was passed at aggregateRelevantContext time --
+     * back-compat default.
+     */
+    self_context: context.selfContext.map(renderAtomForJudge),
   };
 }
 

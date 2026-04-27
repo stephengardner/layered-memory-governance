@@ -50,6 +50,18 @@ export interface PlanningContext {
     readonly role: string;
     readonly signed_by: PrincipalId | null;
   }>;
+  /**
+   * The principal's own recent atoms (plans, decisions, observations
+   * authored by them). Threaded into the LLM prompt so a planner can
+   * see "your prior work" alongside canon and relevant context. Empty
+   * when no `selfPrincipalId` is requested (back-compat default).
+   *
+   * This is the substrate-level seam for "principals remember
+   * themselves across time" -- the cheap path on the org-ceiling
+   * roadmap (atoms-as-memory, not LLM-session-resume). Sequenced
+   * before the deeper agent-session continuity work.
+   */
+  readonly selfContext: ReadonlyArray<Atom>;
   /** Time when the context was aggregated (for determinism audit). */
   readonly gatheredAt: Time;
 }

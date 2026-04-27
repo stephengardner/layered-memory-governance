@@ -27,6 +27,19 @@ export interface AggregateContextOptions {
   readonly maxOpenPlans?: number;
   /** Max relevant principals. Default 20. */
   readonly maxPrincipals?: number;
+  /**
+   * Principal whose own recent atoms (plans, decisions, observations)
+   * should be folded into the planning context as `selfContext`. When
+   * unset, selfContext is empty and the planner runs as before
+   * (backwards-compat default).
+   *
+   * The substrate seam for "principals remember themselves across
+   * time": the cheap path is atoms-as-memory (this option), the
+   * deeper path is agent-loop session resume (separate work).
+   */
+  readonly selfPrincipalId?: PrincipalId;
+  /** Max self-context atoms to include. Default 30. */
+  readonly maxSelfContext?: number;
 }
 
 export async function aggregateRelevantContext(
@@ -96,6 +109,33 @@ export async function aggregateRelevantContext(
     signed_by: p.signed_by,
   }));
 
+  /*
+   * 6. Self-context: the requesting principal's own recent plans +
+   *    decisions + observations. The planner consumes this so its
+   *    judgment is grounded in "what I have already proposed /
+   *    decided / noticed." Empty when no selfPrincipalId is given so
+   *    historical callers see no behavior change.
+   *
+   *    Sort by created_at desc (newest first) so the slice keeps the
+   *    freshest context. We pull plans, decisions, and observations
+   *    -- the atom types most predictive of "what was on this
+   *    principal's mind recently."
+   */
+  const selfPrincipalId = options.selfPrincipalId;
+  const maxSelfContext = options.maxSelfContext ?? 30;
+  let selfContext: Atom[] = [];
+  if (selfPrincipalId) {
+    const selfPage = await host.atoms.query(
+      { type: ['plan', 'decision', 'observation'] },
+      Math.max(maxSelfContext * 4, 100),
+    );
+    selfContext = selfPage.atoms
+      .filter((a) => a.principal_id === selfPrincipalId)
+      .filter((a) => !a.superseded_by || a.superseded_by.length === 0)
+      .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+      .slice(0, maxSelfContext);
+  }
+
   return {
     request,
     directives,
@@ -103,6 +143,7 @@ export async function aggregateRelevantContext(
     relevantAtoms,
     openPlans,
     relevantPrincipals,
+    selfContext,
     gatheredAt: host.clock.now(),
   };
 }
