@@ -53,8 +53,12 @@ test.describe('principal hierarchy view', () => {
      * Body click navigates to /principals/<id>. The principals view
      * mounts and the corresponding row is the focused/selected one.
      * URL is the source of truth so we assert against it directly.
+     * Escape regex specials in the id and URL-encode it so the assertion
+     * holds even when the principal id carries '.' or other reserved chars.
      */
-    await expect(page).toHaveURL(new RegExp(`/principals/${principalId}$`));
+    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const encoded = encodeURIComponent(principalId!);
+    await expect(page).toHaveURL(new RegExp(`/principals/${escapeRegex(encoded)}$`));
   });
 
   test('clicking a chevron toggles its subtree visibility', async ({ page }) => {
