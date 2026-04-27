@@ -23,7 +23,7 @@ Host (governance)             -- createFileHost(.lag)
   |
   +-- Auditor                 -- host.auditor (every phase recorded)
 
-Actor (mechanism)             -- PlanningActor (src/actors/planning)
+Actor (mechanism)             -- PlanningActor (src/runtime/actors/planning)
   |
   +-- PlanningContext         -- directives + decisions + relevantAtoms
   |                             + openPlans + relevantPrincipals
@@ -103,5 +103,5 @@ higher priority. Edit canon, not src/.
 - `design/actors-and-adapters.md`: Actor + ActorAdapter shape.
 - `DECISIONS.md` D13, D16, D17: autonomy trade-offs and the
   two-seam architecture.
-- `src/actors/planning/`: the primitive code.
+- `src/runtime/actors/planning/`: the primitive code.
 - `scripts/bootstrap-cto-actor-canon.mjs`: our instance bootstrap.

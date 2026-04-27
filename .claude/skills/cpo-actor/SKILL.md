@@ -32,7 +32,7 @@ Host (governance)             -- createFileHost(.lag)
   |
   +-- Auditor                 -- host.auditor (every phase recorded)
 
-Actor (mechanism)             -- PlanningActor (src/actors/planning)
+Actor (mechanism)             -- PlanningActor (src/runtime/actors/planning)
   |
   +-- PlanningContext         -- directives + decisions + relevantAtoms
   |                             + openPlans + relevantPrincipals
@@ -135,7 +135,7 @@ than one missed critique.
 - `design/actors-and-adapters.md`: Actor + ActorAdapter shape.
 - `DECISIONS.md` D13, D16, D17: autonomy trade-offs and the
   two-seam architecture (these decisions govern both CPO and CTO).
-- `src/actors/planning/`: the primitive code (shared with the CTO).
+- `src/runtime/actors/planning/`: the primitive code (shared with the CTO).
 - `scripts/bootstrap-cpo-actor-canon.mjs`: this instance's bootstrap.
 - `.claude/skills/cto-actor/SKILL.md`: the sister role's doc; read
   it alongside this one when designing a third lens.
