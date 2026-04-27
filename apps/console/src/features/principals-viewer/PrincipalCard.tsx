@@ -118,19 +118,35 @@ export function PrincipalCard({ principal, focused = false, stats }: Props) {
         )}
       </div>
 
-      {stats && stats.total > 0 && (
-        <div className={styles.stats} data-testid="principal-card-stats">
-          {SURFACED_TYPES.map(({ key, singular, plural }) => {
+      {(() => {
+        /*
+         * Render-time subset filter: gate on the renderable types
+         * (plan / observation / decision) having a non-zero count,
+         * not on stats.total. A principal whose live atoms are all
+         * non-surfaced types (e.g. only directives or only
+         * actor-messages) would pass a stats.total > 0 gate but
+         * produce an empty <div>. Computing the visible chips up
+         * front makes the empty-strip case unrepresentable.
+         */
+        if (!stats) return null;
+        const visibleChips = SURFACED_TYPES
+          .map(({ key, singular, plural }) => {
             const count = stats.by_type[key] ?? 0;
             if (count === 0) return null;
-            return (
+            return { key, label: formatStatLabel(count, singular, plural) };
+          })
+          .filter((chip): chip is { key: string; label: string } => chip !== null);
+        if (visibleChips.length === 0) return null;
+        return (
+          <div className={styles.stats} data-testid="principal-card-stats">
+            {visibleChips.map(({ key, label }) => (
               <span key={key} className={styles.statChip} data-stat-type={key}>
-                {formatStatLabel(count, singular, plural)}
+                {label}
               </span>
-            );
-          })}
-        </div>
-      )}
+            ))}
+          </div>
+        );
+      })()}
 
       <button
         type="button"
