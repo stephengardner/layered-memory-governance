@@ -55,13 +55,20 @@ const REPO_ROOT = resolve(__dirname, '..');
 
 /*
  * Principal that records the plan transition in the audit log.
- * Defaults to apex-agent (operator's pre-registered principal); the
- * operator is the one who tapped Approve/Reject so attribution to
- * apex-agent matches the actual authority. Override via
- * --principal or LAG_TG_PRINCIPAL when a deployment registers a
- * dedicated identity for the Telegram bridge.
+ * Resolved from --principal flag, then LAG_TG_PRINCIPAL env, then
+ * LAG_OPERATOR_ID env. No silent fallback to a hardcoded id, because
+ * a wrong principal in an audit row makes the chain lie about who
+ * authored a state transition; better to fail loud than mis-attribute.
+ * Same discipline as scripts/decide.mjs (LAG_OPERATOR_ID required).
  */
-const DEFAULT_RESPONDER_PRINCIPAL = 'apex-agent';
+function resolveResponderPrincipal(cliPrincipal) {
+  return (
+    cliPrincipal
+    || process.env.LAG_TG_PRINCIPAL
+    || process.env.LAG_OPERATOR_ID
+    || null
+  );
+}
 
 async function loadDotEnv() {
   try {
@@ -81,12 +88,34 @@ async function loadDotEnv() {
 }
 
 function printHelp() {
-  console.log('Usage: node scripts/plan-approve-telegram.mjs <plan-id> [--timeout ms]');
+  console.log([
+    'Usage: node scripts/plan-approve-telegram.mjs <plan-id> [--timeout ms] [--principal id]',
+    '',
+    'Env (required):',
+    '  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID',
+    'Principal resolution (highest first):',
+    '  --principal <id>',
+    '  LAG_TG_PRINCIPAL',
+    '  LAG_OPERATOR_ID',
+    '  (no fallback; the script exits 2 if none resolves)',
+    '',
+    'Exit codes:',
+    '  0  approve | reject applied',
+    '  2  timeout | ignore | STOP sentinel | bad/non-proposed plan | missing principal',
+    '  1  unexpected error (bad token / network / transition error)',
+  ].join('\n'));
 }
 
 async function main() {
   await loadDotEnv();
-  const args = parseArgs(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(`ERROR: ${err?.message ?? err}`);
+    printHelp();
+    process.exit(2);
+  }
   if (args.help) {
     printHelp();
     process.exit(0);
@@ -96,6 +125,15 @@ async function main() {
     console.error(`ERROR: ${validation.error}`);
     printHelp();
     process.exit(1);
+  }
+
+  const principal = resolveResponderPrincipal(args.principal);
+  if (!principal) {
+    console.error(
+      'ERROR: no principal resolved. Set --principal, LAG_TG_PRINCIPAL, or LAG_OPERATOR_ID.',
+    );
+    console.error('This script writes audit rows and refuses to guess the operator principal.');
+    process.exit(2);
   }
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -127,7 +165,6 @@ async function main() {
     process.exit(2);
   }
 
-  const principal = process.env.LAG_TG_PRINCIPAL || DEFAULT_RESPONDER_PRINCIPAL;
   const notifier = new TelegramNotifier({
     botToken: token,
     chatId,

@@ -11,23 +11,42 @@ export const DEFAULT_TIMEOUT_MS = 600_000;
 export const PLAN_SUMMARY_BODY_MAX = 600;
 
 /**
- * Parse argv shape: `<plan-id> [--timeout ms]`. Returns a structured
- * object with planId, timeoutMs, and a help flag. Pure function;
- * caller validates numeric bounds.
+ * Parse argv shape: `<plan-id> [--timeout ms] [--principal id]`.
+ * Returns a structured object with planId, timeoutMs, principal, and
+ * a help flag. Throws on unknown long-form flags so a typo
+ * ('--timout') fails loud instead of silently becoming part of
+ * planId. Throws on a `--timeout` / `--principal` flag without a
+ * value or with a non-numeric timeout.
  */
 export function parseArgs(argv) {
   const args = {
     planId: null,
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    principal: null,
     help: false,
   };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--timeout' && i + 1 < argv.length) {
-      args.timeoutMs = Number(argv[++i]);
-    } else if (a === '-h' || a === '--help') {
+    if (a === '-h' || a === '--help') {
       args.help = true;
+    } else if (a === '--timeout') {
+      if (i + 1 >= argv.length) {
+        throw new Error('missing value for --timeout');
+      }
+      const next = argv[++i];
+      const num = Number(next);
+      if (!Number.isFinite(num)) {
+        throw new Error(`invalid value for --timeout: ${next}`);
+      }
+      args.timeoutMs = num;
+    } else if (a === '--principal') {
+      if (i + 1 >= argv.length) {
+        throw new Error('missing value for --principal');
+      }
+      args.principal = String(argv[++i]).trim() || null;
+    } else if (typeof a === 'string' && a.startsWith('--')) {
+      throw new Error(`unknown option: ${a}`);
     } else {
       rest.push(a);
     }

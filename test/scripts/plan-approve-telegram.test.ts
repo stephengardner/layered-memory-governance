@@ -46,6 +46,27 @@ describe('parseArgs', () => {
     expect(a.planId).toBe('');
     expect(a.timeoutMs).toBe(5000);
   });
+
+  it('throws on unknown long-form flag', () => {
+    expect(() => parseArgs(['plan-foo', '--timout', '5000'])).toThrow(/unknown option/i);
+  });
+
+  it('throws on --timeout without value', () => {
+    expect(() => parseArgs(['plan-foo', '--timeout'])).toThrow(/missing value/i);
+  });
+
+  it('throws on non-numeric --timeout value', () => {
+    expect(() => parseArgs(['plan-foo', '--timeout', 'soon'])).toThrow(/invalid value/i);
+  });
+
+  it('parses --principal', () => {
+    const a = parseArgs(['plan-foo', '--principal', 'apex-agent']);
+    expect(a.principal).toBe('apex-agent');
+  });
+
+  it('throws on --principal without value', () => {
+    expect(() => parseArgs(['plan-foo', '--principal'])).toThrow(/missing value/i);
+  });
 });
 
 describe('validateArgs', () => {
@@ -111,14 +132,16 @@ describe('formatPlanSummary', () => {
     expect(() => formatPlanSummary(null)).not.toThrow();
   });
 
-  it('skips ## and ### subheadings as title (only matches first 1-3 hashes)', () => {
+  it('first heading wins regardless of #-level (1-3 hashes)', () => {
     const plan = {
       id: 'plan-x',
       content: '### Subhead\n\n# Real Title\n\nbody',
     };
     const r = formatPlanSummary(plan);
-    // First heading wins (### matches the regex too); test pins behavior
-    // so a future caller knows which heading drives the Telegram preview.
+    // The regex matches /^#{1,3}\s+(.+)$/ so the first matching line --
+    // even one prefixed with ###/##  --  is the title. Test pins this
+    // contract so a future caller knows which heading drives the
+    // Telegram preview.
     expect(r.title).toBe('Subhead');
   });
 });
