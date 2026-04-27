@@ -375,6 +375,46 @@ async function handlePrincipalsList(): Promise<Principal[]> {
 }
 
 /*
+ * Read the optional skill markdown for a principal. Skill docs live
+ * at .claude/skills/<principal_id>/SKILL.md; not every principal has
+ * one (e.g. apex-agent does not). Returns { content: null } when the
+ * file is absent, distinct from a 500 on read error so the client can
+ * cleanly fall through to "no soul content yet".
+ *
+ * Path-traversal defense: principal_id is constrained to the same
+ * shape the principal-id slot uses elsewhere ([a-z0-9_-]+). A
+ * non-conforming id yields a 400 (rather than a silent skip) so a
+ * caller bug surfaces at the boundary rather than masking as
+ * "no skill".
+ */
+const PRINCIPAL_ID_RE = /^[a-z0-9_-]+$/;
+const SKILLS_DIR = resolve(REPO_ROOT, '.claude', 'skills');
+
+async function handlePrincipalSkill(params: {
+  principal_id: string;
+}): Promise<{ content: string | null }> {
+  const id = String(params.principal_id ?? '').trim();
+  if (!PRINCIPAL_ID_RE.test(id)) {
+    throw new Error(`invalid principal_id: ${JSON.stringify(params.principal_id)}`);
+  }
+  const path = join(SKILLS_DIR, id, 'SKILL.md');
+  try {
+    const content = await readFile(path, 'utf8');
+    return { content };
+  } catch (err) {
+    /*
+     * ENOENT is the expected "no skill yet" case. Any other code is
+     * a real read error worth surfacing; rethrow so the route handler
+     * returns 500 with the message, rather than masking as null.
+     */
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { content: null };
+    }
+    throw err;
+  }
+}
+
+/*
  * Principal hierarchy tree handler. The pure builder lives in
  * ./principal-tree.ts so it can be unit-tested without standing up
  * the HTTP server. This handler just hydrates the input from the
@@ -1906,6 +1946,27 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'principals-tree-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/principals.skill' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pid = body['principal_id'];
+    if (typeof pid !== 'string' || pid.length === 0) {
+      sendErr(req, res, 400, 'principal-skill-bad-request', 'principal_id (string) required');
+      return;
+    }
+    try {
+      const data = await handlePrincipalSkill({ principal_id: pid });
+      sendOk(req, res, data);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.startsWith('invalid principal_id')) {
+        sendErr(req, res, 400, 'principal-skill-bad-request', msg);
+      } else {
+        sendErr(req, res, 500, 'principal-skill-failed', msg);
+      }
     }
     return;
   }

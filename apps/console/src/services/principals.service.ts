@@ -28,6 +28,30 @@ export async function listPrincipals(signal?: AbortSignal): Promise<ReadonlyArra
   );
 }
 
+/*
+ * Principal "soul" content: the markdown skill doc paired with this
+ * principal at .claude/skills/<id>/SKILL.md, fetched via the API.
+ * Returns null when no skill file exists so callers can render a
+ * "no soul yet" placeholder distinct from a fetch error. The API
+ * surface (server/index.ts handlePrincipalSkill) holds the
+ * canonical read; the console never reaches into .claude/ directly,
+ * preserving the agent + UI single-source-of-truth contract.
+ */
+export interface PrincipalSkill {
+  readonly content: string | null;
+}
+
+export async function getPrincipalSkill(
+  principalId: string,
+  signal?: AbortSignal,
+): Promise<PrincipalSkill> {
+  return transport.call<PrincipalSkill>(
+    'principals.skill',
+    { principal_id: principalId },
+    signal ? { signal } : undefined,
+  );
+}
+
 /**
  * Nested principal tree as returned by /api/principals.tree. Mirrors
  * the server-side PrincipalTreeNode shape one-to-one so the renderer
