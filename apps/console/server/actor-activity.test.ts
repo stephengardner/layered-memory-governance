@@ -194,6 +194,68 @@ describe('buildActorActivityResponse', () => {
     expect(r.groups[0]!.latest_at).toBe('2026-04-26T11:00:00.000Z');
   });
 
+  describe('exclude_types filter', () => {
+    const mixed: ActorActivityAtom[] = [
+      atom({ id: 'p-1', type: 'plan', principal_id: 'cto-actor', created_at: '2026-04-26T11:00:00.000Z' }),
+      atom({ id: 'q-1', type: 'question', principal_id: 'cto-actor', created_at: '2026-04-26T11:30:00.000Z' }),
+      atom({ id: 'p-2', type: 'plan', principal_id: 'cto-actor', created_at: '2026-04-26T12:00:00.000Z' }),
+      atom({ id: 'o-1', type: 'observation', principal_id: 'cto-actor', created_at: '2026-04-26T12:30:00.000Z' }),
+    ];
+
+    it('returns all entries when exclude_types is omitted', () => {
+      const r = buildActorActivityResponse(mixed, {}, NOW);
+      expect(r.entry_count).toBe(4);
+    });
+
+    it('suppresses entries whose type is in exclude_types', () => {
+      const r = buildActorActivityResponse(mixed, { exclude_types: ['question'] }, NOW);
+      expect(r.entry_count).toBe(3);
+      const ids = r.groups.flatMap((g) => g.entries.map((e) => e.id));
+      expect(ids).not.toContain('q-1');
+      expect(ids).toEqual(['o-1', 'p-2', 'p-1']); // newest first
+    });
+
+    it('supports multiple excluded types', () => {
+      const r = buildActorActivityResponse(mixed, { exclude_types: ['question', 'observation'] }, NOW);
+      expect(r.entry_count).toBe(2);
+      const ids = r.groups.flatMap((g) => g.entries.map((e) => e.id));
+      expect(ids).toEqual(['p-2', 'p-1']);
+    });
+
+    it('treats empty exclude_types as no filter', () => {
+      const r = buildActorActivityResponse(mixed, { exclude_types: [] }, NOW);
+      expect(r.entry_count).toBe(4);
+    });
+
+    it('silently ignores non-string entries in exclude_types', () => {
+      // Defends against a malformed wire payload where the array
+      // contains nulls/numbers; the response still computes deterministically.
+      const r = buildActorActivityResponse(
+        mixed,
+        { exclude_types: ['question', null, 42, '', undefined] as unknown as ReadonlyArray<string> },
+        NOW,
+      );
+      expect(r.entry_count).toBe(3); // 'question' still excluded
+    });
+
+    it('composes with principal_id filter', () => {
+      const extra: ActorActivityAtom[] = [
+        ...mixed,
+        atom({ id: 'q-2', type: 'question', principal_id: 'cpo-actor', created_at: '2026-04-26T13:00:00.000Z' }),
+      ];
+      const r = buildActorActivityResponse(
+        extra,
+        { principal_id: 'cto-actor', exclude_types: ['question'] },
+        NOW,
+      );
+      expect(r.entry_count).toBe(3);
+      const ids = r.groups.flatMap((g) => g.entries.map((e) => e.id));
+      expect(ids).not.toContain('q-1');
+      expect(ids).not.toContain('q-2');
+      expect(ids.every((id) => id.startsWith('p-') || id.startsWith('o-'))).toBe(true);
+    });
+  });
+
   describe('principal_id filter', () => {
     const mixed: ActorActivityAtom[] = [
       atom({ id: 'a-1', principal_id: 'cto-actor', created_at: '2026-04-26T11:00:00.000Z' }),

@@ -458,6 +458,7 @@ async function handleActivitiesList(params: { limit?: number; types?: string[] }
 async function handleActorActivityStream(params: {
   limit?: number;
   principal_id?: string;
+  exclude_types?: ReadonlyArray<string>;
 }): Promise<ActorActivityResponse> {
   const all = await readAllAtoms();
   // Atom -> ActorActivityAtom is a structural narrowing. The runtime
@@ -2004,13 +2005,29 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const bodyLimit = body['limit'];
     const bodyPrincipal = body['principal_id'];
+    const bodyExclude = body['exclude_types'];
     const limit = typeof bodyLimit === 'number' ? bodyLimit : undefined;
     const principal_id = typeof bodyPrincipal === 'string' && bodyPrincipal.length > 0
       ? bodyPrincipal
       : undefined;
-    const params: { limit?: number; principal_id?: string } = {
+    /*
+     * Per-principal feed defaults to suppressing 'question' atoms.
+     * Question atoms are sub-events of plan deliberation (the planner
+     * raised an internal Q&A inside a plan); they're noise in a "what
+     * did this principal DO" surface and clicking them dead-ends in the
+     * canon view via routeForAtomId's default fallback. The global
+     * feed (no principal_id) shows everything; an explicit
+     * `exclude_types` array in the body always wins so a future caller
+     * can pass `[]` to disable the default or a longer list to suppress
+     * additional sub-event types.
+     */
+    const exclude_types: ReadonlyArray<string> | undefined = Array.isArray(bodyExclude)
+      ? (bodyExclude.filter((t): t is string => typeof t === 'string' && t.length > 0))
+      : (principal_id !== undefined ? ['question'] : undefined);
+    const params: { limit?: number; principal_id?: string; exclude_types?: ReadonlyArray<string> } = {
       ...(limit !== undefined ? { limit } : {}),
       ...(principal_id !== undefined ? { principal_id } : {}),
+      ...(exclude_types !== undefined ? { exclude_types } : {}),
     };
     try {
       const data = await handleActorActivityStream(params);

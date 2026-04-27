@@ -134,7 +134,7 @@ function isLive(a: ActorActivityAtom): boolean {
  */
 export function buildActorActivityResponse(
   atoms: ReadonlyArray<ActorActivityAtom>,
-  params: { limit?: number; principal_id?: string },
+  params: { limit?: number; principal_id?: string; exclude_types?: ReadonlyArray<string> },
   now: Date,
 ): ActorActivityResponse {
   // Defensive clamp: caller may pass any number or omit; we always
@@ -157,9 +157,28 @@ export function buildActorActivityResponse(
   const principalFilter = typeof params.principal_id === 'string' && params.principal_id.length > 0
     ? params.principal_id
     : null;
-  const filtered = principalFilter !== null
+  const principalFiltered = principalFilter !== null
     ? live.filter((a) => a.principal_id === principalFilter)
     : live;
+  /*
+   * Optional type-exclusion filter so a focused per-principal view can
+   * suppress noisy sub-event types ('question' atoms are internal
+   * deliberation flow that aren't meaningful in a "what did this
+   * principal do" feed; clicking them dead-ends in the canon view per
+   * routeForAtomId's default fallback). When unset, behaviour is
+   * identical to the prior implementation. The Set lookup is O(1) per
+   * atom; defensive coercion to a Set tolerates any iterable input
+   * (Array on the wire) and silently ignores non-string entries via
+   * typeof guard so a bad client payload can't crash the response.
+   */
+  const exclude = new Set(
+    Array.isArray(params.exclude_types)
+      ? params.exclude_types.filter((t): t is string => typeof t === 'string' && t.length > 0)
+      : [],
+  );
+  const filtered = exclude.size > 0
+    ? principalFiltered.filter((a) => !exclude.has(a.type))
+    : principalFiltered;
   const sorted = [...filtered].sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
   const sliced = sorted.slice(0, limit);
 

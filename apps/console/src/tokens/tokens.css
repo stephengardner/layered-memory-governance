@@ -47,6 +47,13 @@
        other. 0.875rem = 14px at default font scale. */
     --icon-size-sm: 0.875rem;
 
+    /* Tap-target floor per canon `dev-web-mobile-first-required`:
+       interactive elements meet 44 CSS pixels in both dimensions.
+       Apple HIG / Material baseline. Used as min-width / min-height
+       on buttons that would otherwise render below the floor at the
+       default font scale. */
+    --size-touch-target-min: 2.75rem;  /* 44 */
+
     --radius-xs: 0.25rem;
     --radius-sm: 0.5rem;
     --radius-md: 0.75rem;
