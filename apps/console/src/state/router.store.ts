@@ -177,14 +177,24 @@ export function routeHref(r: Route, id?: string): string {
 
 /*
  * Given an atom id, pick the view it belongs to. Canon atoms use
- * domain prefixes (arch/dev/inv/pol), so the default is 'canon'. Only
- * atoms we KNOW live elsewhere get routed away — plans and
- * activity-like atoms (operator-action, actor-messages, audit replies).
+ * domain prefixes (arch/dev/inv/pol/dec/pref/ref), so the default is
+ * 'canon'. Only atoms we KNOW live elsewhere get routed away — plans
+ * and activity-like atoms (operator-action, actor-messages, audit
+ * replies, planner-deliberation questions).
  *
  * `plan-merge-settled-*` atoms are settlement records emitted by
  * pr-landing-agent; they're activity-shaped, not plan documents, so
  * route them with the other activity atoms. The check is order-
  * sensitive — must precede the generic `plan-` prefix.
+ *
+ * `q-*` atoms are deliberation sub-events (the planner raised an
+ * internal Q&A inside a plan). Without an explicit branch they fell
+ * through to 'canon' and rendered as an empty canon focus page. The
+ * activities view handles arbitrary atom ids in focus mode (the list
+ * scrolls the focused entry into view) and renders the question
+ * content correctly, so route them there until a dedicated
+ * deliberation drill-down resolves question-id back to its parent
+ * plan-id.
  */
 export function routeForAtomId(id: string): Route {
   if (id.startsWith('plan-merge-settled-')) return 'activities';
@@ -194,6 +204,7 @@ export function routeForAtomId(id: string): Route {
     || id.startsWith('ama-')
     || id.startsWith('pr-observation-')
     || id.startsWith('intent-')
+    || id.startsWith('q-')
   ) return 'activities';
   return 'canon';
 }
