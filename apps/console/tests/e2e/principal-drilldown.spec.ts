@@ -48,6 +48,24 @@ test.describe('principal drill-down', () => {
     await expect(page.getByTestId('principal-card')).toHaveCount(1);
   });
 
+  test('focused principal renders skill section (content or empty placeholder)', async ({ page }) => {
+    /*
+     * cto-actor is the canonical principal that ships with a SKILL.md
+     * in this repo, so the focus surface should render the
+     * principal-skill-content panel for it. If the fixture varies
+     * (no .claude/skills/cto-actor/SKILL.md), the test falls through
+     * to the empty-state placeholder so it stays meaningful in
+     * minimal installs.
+     */
+    await page.goto('/principals/cto-actor');
+    await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: 10_000 });
+    const content = page.getByTestId('principal-skill-content');
+    const empty = page.getByTestId('principal-skill-empty');
+    const loading = page.getByTestId('principal-skill-loading');
+    await expect(loading.or(content).or(empty)).toBeVisible({ timeout: 10_000 });
+    await expect(content.or(empty)).toBeVisible({ timeout: 10_000 });
+  });
+
   test('deep link to missing id renders Plan-not-found-style empty state', async ({ page }) => {
     await page.goto('/principals/this-principal-does-not-exist');
     const empty = page.getByTestId('principals-empty');
