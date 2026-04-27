@@ -106,14 +106,20 @@ describe('parseResolveArgs', () => {
     /*
      * Symmetric with the duplicate-PR guard: blind argv-forwarding by a
      * caller (run-pr-fix.mjs / run-pr-landing.mjs / future actors)
-     * should not mask a programming bug as silently-idempotent.
+     * should not mask a programming bug as silently-idempotent. Pin
+     * that prior valid state survives the late error so callers that
+     * inspect parsed fields after the error path do not see clobbered
+     * state.
      */
     const r = parseResolveArgs(['229', '--dry-run', '--dry-run']);
     expect(r.error).toMatch(/multiple --dry-run/);
+    expect(r.pr).toBe(229);
+    expect(r.dryRun).toBe(true);
   });
 
   it('rejects repeated --help loud rather than silently accepting', () => {
     const r = parseResolveArgs(['--help', '--help']);
     expect(r.error).toMatch(/multiple --help/);
+    expect(r.help).toBe(true);
   });
 });

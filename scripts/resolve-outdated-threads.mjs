@@ -35,8 +35,20 @@ import { classifyReviewThreads, parseResolveArgs } from './lib/resolve-threads.m
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..');
+const GH_AS = resolve(REPO_ROOT, 'scripts/gh-as.mjs');
 
 const HELP = 'usage: node scripts/resolve-outdated-threads.mjs <pr-number> [--dry-run]';
+
+const LIST_QUERY = `query($owner:String!, $name:String!, $n:Int!, $cursor:String){
+  repository(owner:$owner, name:$name){
+    pullRequest(number:$n){
+      reviewThreads(first:100, after:$cursor){
+        nodes{ id isResolved isOutdated path }
+        pageInfo{ hasNextPage endCursor }
+      }
+    }
+  }
+}`;
 
 const RESOLVE_MUTATION = `mutation($id:ID!){
   resolveReviewThread(input:{threadId:$id}){
@@ -48,17 +60,27 @@ const RESOLVE_MUTATION = `mutation($id:ID!){
  * Cap on pagination iterations. A theoretical-only safety net: if the
  * server ever returns hasNextPage=true with an unchanged endCursor (or
  * keeps returning hasNextPage=true past any reasonable count) the loop
- * exits with a logged warning rather than spinning forever inside an
- * actor flow.
+ * exits and the script fails hard rather than spinning forever or
+ * silently truncating inside an actor flow.
  */
 const MAX_PAGES = 50;
 
-function ghApi(extraArgs) {
-  return execFileSync('node', [resolve(REPO_ROOT, 'scripts/gh-as.mjs'), 'lag-ceo', 'api', ...extraArgs], {
+/**
+ * Single shared invocation point for `node scripts/gh-as.mjs lag-ceo …`.
+ * All gh-as calls in this script flow through here so a future actor
+ * cannot accidentally introduce a third copy of the execFileSync
+ * shape; per canon `dev-extract-helpers-at-N-2`.
+ */
+function ghAsCeo(extraArgs) {
+  return execFileSync('node', [GH_AS, 'lag-ceo', ...extraArgs], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'inherit'],
     cwd: REPO_ROOT,
   });
+}
+
+function ghApi(apiArgs) {
+  return ghAsCeo(['api', ...apiArgs]);
 }
 
 /**
@@ -67,11 +89,7 @@ function ghApi(extraArgs) {
  * forks of the LAG substrate without source edits.
  */
 function getRepoNameWithOwner() {
-  const out = execFileSync('node', [resolve(REPO_ROOT, 'scripts/gh-as.mjs'), 'lag-ceo', 'repo', 'view', '--json', 'nameWithOwner'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'inherit'],
-    cwd: REPO_ROOT,
-  });
+  const out = ghAsCeo(['repo', 'view', '--json', 'nameWithOwner']);
   const parsed = JSON.parse(out);
   if (!parsed?.nameWithOwner || typeof parsed.nameWithOwner !== 'string' || !parsed.nameWithOwner.includes('/')) {
     throw new Error(`gh repo view returned unexpected nameWithOwner: ${JSON.stringify(parsed)}`);
@@ -79,7 +97,7 @@ function getRepoNameWithOwner() {
   return parsed.nameWithOwner;
 }
 
-async function main() {
+function main() {
   const parsed = parseResolveArgs(process.argv.slice(2));
   if (parsed.help) {
     console.log(HELP);
@@ -97,30 +115,28 @@ async function main() {
 
   const nwo = getRepoNameWithOwner();
   const [owner, repoName] = nwo.split('/');
-  const LIST_QUERY = `query($n:Int!, $cursor:String){
-    repository(owner:"${owner}",name:"${repoName}"){
-      pullRequest(number:$n){
-        reviewThreads(first:100, after:$cursor){
-          nodes{ id isResolved isOutdated path }
-          pageInfo{ hasNextPage endCursor }
-        }
-      }
-    }
-  }`;
 
   /*
    * Paginate to avoid silent truncation on PRs with more than 100
    * review threads. A truncated read could leave outdated threads
    * unresolved, which is exactly the merge-gate failure this script
    * exists to prevent. MAX_PAGES + same-cursor detection bound the
-   * loop against pathological server responses.
+   * loop against pathological server responses; truncation is then
+   * surfaced as a hard failure (unless --dry-run, where the operator
+   * is iterating and a soft warning is more useful).
    */
   const allThreads = [];
   let cursor = null;
   let pageCount = 0;
   let truncated = false;
   while (pageCount < MAX_PAGES) {
-    const queryArgs = ['graphql', '-f', `query=${LIST_QUERY}`, '-F', `n=${parsed.pr}`];
+    const queryArgs = [
+      'graphql',
+      '-f', `query=${LIST_QUERY}`,
+      '-f', `owner=${owner}`,
+      '-f', `name=${repoName}`,
+      '-F', `n=${parsed.pr}`,
+    ];
     if (cursor !== null) queryArgs.push('-f', `cursor=${cursor}`);
     const listOut = ghApi(queryArgs);
     const data = JSON.parse(listOut);
@@ -157,6 +173,18 @@ async function main() {
     (truncated ? ' (TRUNCATED)' : '') +
     (parsed.dryRun ? ' (DRY-RUN)' : ''),
   );
+
+  /*
+   * Hard-fail on truncation when running for real. A truncated read
+   * could leave outdated threads unresolved, which is the exact
+   * merge-gate failure this script exists to prevent. Dry-run keeps
+   * the soft-warning path so operators can see the diagnostic without
+   * blocking their inspection.
+   */
+  if (truncated && !parsed.dryRun) {
+    console.error('[resolve-outdated-threads] truncation detected; refusing to proceed (run with --dry-run to inspect)');
+    process.exit(1);
+  }
   for (const t of stillCurrent) {
     console.log(`  STILL-CURRENT (left for human): ${t.id} path=${t.path ?? '<no-path>'}`);
   }
@@ -194,13 +222,16 @@ async function main() {
   /*
    * Exit code semantics:
    *   0 - all targeted threads resolved (or dry-run completed)
-   *   1 - resolve mutation failed for at least one target (stops + errors)
+   *   1 - resolve mutation failed for at least one target,
+   *       GraphQL error, or truncated read (in non-dry-run)
    *   2 - usage / arg error
    */
   process.exit(0);
 }
 
-main().catch((err) => {
+try {
+  main();
+} catch (err) {
   console.error('[resolve-outdated-threads] error:', err);
   process.exit(1);
-});
+}
