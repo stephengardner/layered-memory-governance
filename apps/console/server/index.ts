@@ -53,6 +53,11 @@ import {
   type PrincipalTreeResult,
 } from './principal-tree';
 import {
+  buildPrincipalStatsResponse,
+  type PrincipalStatsAtom,
+  type PrincipalStatsResponse,
+} from './principal-stats';
+import {
   computeHeartbeat as computeLiveOpsHeartbeat,
   listActiveSessions as listLiveOpsActiveSessions,
   listLiveDeliberations as listLiveOpsDeliberations,
@@ -372,6 +377,20 @@ async function readAllPrincipals(): Promise<Principal[]> {
 
 async function handlePrincipalsList(): Promise<Principal[]> {
   return readAllPrincipals();
+}
+
+/*
+ * Per-principal atom counts by type. A projection over the live atom
+ * snapshot per canon `arch-atomstore-source-of-truth`; consumers
+ * (PrincipalCard chip row) get a quick "X plans, Y observations,
+ * Z decisions" without re-fetching the full atom feed and re-counting
+ * client-side.
+ */
+async function handlePrincipalsStats(): Promise<PrincipalStatsResponse> {
+  const all = await readAllAtoms();
+  // Atom -> PrincipalStatsAtom is a structural narrowing.
+  const projected = all as ReadonlyArray<PrincipalStatsAtom>;
+  return buildPrincipalStatsResponse(projected, new Date());
 }
 
 /*
@@ -1940,6 +1959,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'principals-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/principals.stats' && req.method === 'POST') {
+    try {
+      const data = await handlePrincipalsStats();
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'principals-stats-failed', (err as Error).message);
     }
     return;
   }

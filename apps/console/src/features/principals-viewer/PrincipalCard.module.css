@@ -140,6 +140,28 @@
   font-family: var(--font-mono);
 }
 
+/*
+ * Stat chip strip below the role chips: shows per-principal atom
+ * counts ("12 plans, 8 observations, 3 decisions"). Visually
+ * distinct from role chips via accent border so an operator
+ * registers it as activity volume rather than identity metadata.
+ */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.statChip {
+  font-size: var(--font-size-xs);
+  padding: var(--space-1) var(--space-3);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text-secondary);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: var(--radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 .expand {
   display: inline-flex;
   align-items: center;
