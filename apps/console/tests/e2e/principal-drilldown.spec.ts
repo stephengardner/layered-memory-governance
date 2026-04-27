@@ -66,6 +66,22 @@ test.describe('principal drill-down', () => {
     await expect(content.or(empty)).toBeVisible({ timeout: 10_000 });
   });
 
+  test('focused principal renders activity feed (entries or empty placeholder)', async ({ page }) => {
+    /*
+     * cto-actor authors plans regularly so its principal-detail page
+     * almost always has activity. Coverage falls through to the empty
+     * placeholder if a fresh-install fixture omits cto-actor entries
+     * so the test stays meaningful in minimal installs.
+     */
+    await page.goto('/principals/cto-actor');
+    await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: 10_000 });
+    const content = page.getByTestId('principal-activity-content');
+    const empty = page.getByTestId('principal-activity-empty');
+    const loading = page.getByTestId('principal-activity-loading');
+    await expect(loading.or(content).or(empty)).toBeVisible({ timeout: 10_000 });
+    await expect(content.or(empty)).toBeVisible({ timeout: 15_000 });
+  });
+
   test('deep link to missing id renders Plan-not-found-style empty state', async ({ page }) => {
     await page.goto('/principals/this-principal-does-not-exist');
     const empty = page.getByTestId('principals-empty');

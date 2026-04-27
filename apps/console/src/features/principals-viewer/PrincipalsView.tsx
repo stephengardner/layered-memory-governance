@@ -6,6 +6,7 @@ import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { useRouteId, setRoute } from '@/state/router.store';
+import { PrincipalActivity } from './PrincipalActivity';
 import { PrincipalCard } from './PrincipalCard';
 import { PrincipalSkill } from './PrincipalSkill';
 import { PrincipalTree } from './PrincipalTree';
@@ -117,6 +118,7 @@ export function PrincipalsView() {
             <div className={`${styles.grid} ${styles.gridFocused}`}>
               <PrincipalCard principal={focused} focused={true} />
               <PrincipalSkill principalId={focused.id} />
+              <PrincipalActivity principalId={focused.id} />
             </div>
           ) : layout === 'grid' ? (
             <div className={styles.grid}>
