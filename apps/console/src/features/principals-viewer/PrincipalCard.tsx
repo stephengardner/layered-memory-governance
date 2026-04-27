@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronDown, Shield, AlertOctagon } from 'lucide-react';
-import type { Principal } from '@/services/principals.service';
+import type { Principal, PrincipalStats } from '@/services/principals.service';
 import { setRoute, routeHref } from '@/state/router.store';
 import styles from './PrincipalCard.module.css';
 
@@ -14,9 +14,32 @@ interface Props {
    * the title link route to /principals/<id> for the detail surface.
    */
   readonly focused?: boolean;
+  /**
+   * Optional per-principal atom counts. When present, the card
+   * renders a stat-strip ("12 plans, 8 observations, 3 decisions")
+   * under the chip row. Absent or zero-total stats render no strip
+   * so a fresh-install never shows a misleading "0 plans" line.
+   */
+  readonly stats?: PrincipalStats;
 }
 
-export function PrincipalCard({ principal, focused = false }: Props) {
+/*
+ * The atom types the chip strip surfaces, in operator-priority order.
+ * Plans + observations + decisions are the three load-bearing kinds
+ * of governance work; everything else (questions, ack, ephemeral)
+ * lives in the activity feed.
+ */
+const SURFACED_TYPES: ReadonlyArray<{ key: string; singular: string; plural: string }> = [
+  { key: 'plan', singular: 'plan', plural: 'plans' },
+  { key: 'observation', singular: 'observation', plural: 'observations' },
+  { key: 'decision', singular: 'decision', plural: 'decisions' },
+];
+
+function formatStatLabel(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+export function PrincipalCard({ principal, focused = false, stats }: Props) {
   // In focus mode, expand permissions automatically so the operator
   // doesn't have to hunt for the second click.
   const [expanded, setExpanded] = useState(focused);
@@ -94,6 +117,20 @@ export function PrincipalCard({ principal, focused = false }: Props) {
           <span className={styles.chip}>signed by: {principal.signed_by}</span>
         )}
       </div>
+
+      {stats && stats.total > 0 && (
+        <div className={styles.stats} data-testid="principal-card-stats">
+          {SURFACED_TYPES.map(({ key, singular, plural }) => {
+            const count = stats.by_type[key] ?? 0;
+            if (count === 0) return null;
+            return (
+              <span key={key} className={styles.statChip} data-stat-type={key}>
+                {formatStatLabel(count, singular, plural)}
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       <button
         type="button"

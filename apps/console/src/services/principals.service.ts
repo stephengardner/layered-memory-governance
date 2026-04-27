@@ -92,3 +92,26 @@ export async function getPrincipalsTree(signal?: AbortSignal): Promise<Principal
     signal ? { signal } : undefined,
   );
 }
+
+/**
+ * Per-principal atom counts. Surfaced on PrincipalCard as a chip row
+ * showing top atom types (plans, observations, decisions). Wire shape
+ * mirrors the server's PrincipalStatsResponse one-to-one.
+ */
+export interface PrincipalStats {
+  readonly total: number;
+  readonly by_type: Readonly<Record<string, number>>;
+}
+
+export interface PrincipalStatsResponse {
+  readonly stats: Readonly<Record<string, PrincipalStats>>;
+  readonly generated_at: string;
+}
+
+export async function getPrincipalsStats(signal?: AbortSignal): Promise<PrincipalStatsResponse> {
+  return transport.call<PrincipalStatsResponse>(
+    'principals.stats',
+    undefined,
+    signal ? { signal } : undefined,
+  );
+}

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { LayoutGrid, GitBranch } from 'lucide-react';
-import { listPrincipals } from '@/services/principals.service';
+import { listPrincipals, getPrincipalsStats } from '@/services/principals.service';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
@@ -21,6 +21,19 @@ export function PrincipalsView() {
     queryKey: ['principals'],
     queryFn: ({ signal }) => listPrincipals(signal),
   });
+  /*
+   * Per-principal atom counts. Independent query so a stale or empty
+   * stats response doesn't block the principal grid from rendering;
+   * the cards fall back to the no-stats shape (no chip strip)
+   * gracefully. 60s refetch keeps the counts roughly fresh without
+   * polling more aggressively than necessary.
+   */
+  const statsQuery = useQuery({
+    queryKey: ['principals', 'stats'],
+    queryFn: ({ signal }) => getPrincipalsStats(signal),
+    refetchInterval: 60_000,
+  });
+  const statsByPrincipal = statsQuery.data?.stats ?? {};
 
   const principals = query.data ?? [];
   /*
@@ -116,14 +129,14 @@ export function PrincipalsView() {
           )}
           {focusId && focused ? (
             <div className={`${styles.grid} ${styles.gridFocused}`}>
-              <PrincipalCard principal={focused} focused={true} />
+              <PrincipalCard principal={focused} focused={true} stats={statsByPrincipal[focused.id]} />
               <PrincipalSkill principalId={focused.id} />
               <PrincipalActivity principalId={focused.id} />
             </div>
           ) : layout === 'grid' ? (
             <div className={styles.grid}>
               {principals.map((p) => (
-                <PrincipalCard key={p.id} principal={p} focused={false} />
+                <PrincipalCard key={p.id} principal={p} focused={false} stats={statsByPrincipal[p.id]} />
               ))}
             </div>
           ) : (
