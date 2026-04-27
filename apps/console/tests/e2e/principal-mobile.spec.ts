@@ -1,36 +1,23 @@
-import { test, expect, devices } from '@playwright/test';
+import { test, expect } from '@playwright/test';
+import { skipUnlessMobile } from './_lib/mobile';
 
 /**
  * Mobile-first assertions for the principal-detail surface.
  *
- * The Playwright config already runs every spec under both desktop
- * and mobile projects (devices['iPhone 13']) per canon
- * `dev-web-mobile-first-required`. This spec adds the assertions
- * that are *specifically* about mobile behaviour: no horizontal
- * scroll at 390px, tap targets >= 44 CSS pixels on the controls
- * an operator actually touches (FocusBanner Clear, activity entry
- * buttons), and the focus-mode card stack reflows to a single
- * column.
+ * Companion to plans-mobile.spec.ts and canon-mobile.spec.ts: same
+ * canon discipline (`dev-web-mobile-first-required`), different
+ * surface. The principal focus mode renders a PrincipalCard +
+ * PrincipalSkill + PrincipalActivity stack under a FocusBanner; on
+ * a 390px viewport the contract is a single column, no horizontal
+ * scroll, and 44 CSS-pixel tap targets on the controls an operator
+ * actually touches.
  *
- * The assertions skip cleanly when the chromium project runs them
- * against a desktop viewport so the spec stays meaningful in the
- * mobile project without producing false negatives in the desktop
- * project. A test.describe.configure pattern would be cleaner once
- * Playwright exposes per-spec project filtering, but the runtime
- * width gate is correct today.
+ * Helpers come from tests/e2e/_lib/mobile.ts (extracted at N=3 in
+ * the canon-mobile PR per canon `dev-extract-at-n-equals-2`). This
+ * spec uses skipUnlessMobile from there; the principal id
+ * (cto-actor) is hardcoded because the principal store always ships
+ * with cto-actor in this repo's fixtures.
  */
-
-const MOBILE_WIDTH = devices['iPhone 13'].viewport.width;
-
-/*
- * Per canon `dev-extract-at-n-equals-2`: the mobile-only guard
- * appears in every assertion in this file, so it lives behind a
- * named helper. Adding a fifth mobile assertion stays a one-line
- * change instead of another copy of the inline expression.
- */
-function skipUnlessMobile(viewport: { width: number } | null | undefined): void {
-  test.skip((viewport?.width ?? 0) > MOBILE_WIDTH, 'mobile-only assertion');
-}
 
 test.describe('principal-detail mobile surface', () => {
   test.beforeEach(async ({ page }) => {
@@ -66,11 +53,11 @@ test.describe('principal-detail mobile surface', () => {
 
     /*
      * Single-column assertion: at 390px the principal panels MUST
-     * stack vertically AND share a column. We verify both: top-edge
-     * ordering (card -> skill -> activity y values strictly increase)
-     * proves vertical sequence, and center-x equality within ±2px
-     * proves they share the same column rather than rendering as
-     * separate columns that happen to be ordered top-to-bottom.
+     * stack vertically AND share a column. Top-edge ordering
+     * (card -> skill -> activity y values strictly increase) proves
+     * vertical sequence, and center-x equality within plus-or-minus
+     * 2px proves they share the same column rather than rendering
+     * as separate columns that happen to be ordered top-to-bottom.
      * The card may render in any of the focus-mode load states, so
      * we resolve which of skill/activity surfaced (content vs empty)
      * before measuring.
@@ -84,13 +71,18 @@ test.describe('principal-detail mobile surface', () => {
     expect(cardBox, 'card must be in the layout flow').not.toBeNull();
     expect(skillBox, 'skill panel must be in the layout flow').not.toBeNull();
     expect(activityBox, 'activity panel must be in the layout flow').not.toBeNull();
-    expect(skillBox!.y, 'skill panel must stack below card').toBeGreaterThan(cardBox!.y);
-    expect(activityBox!.y, 'activity panel must stack below skill').toBeGreaterThan(skillBox!.y);
+    /*
+     * Stacking assertion: each subsequent panel's top edge must be
+     * at or below the previous panel's BOTTOM edge. Top-edge-only
+     * ordering allows overlapping panels to pass; the bottom-edge
+     * comparison rules that out.
+     */
+    expect(skillBox!.y, 'skill panel must stack below card bottom').toBeGreaterThanOrEqual(cardBox!.y + cardBox!.height);
+    expect(activityBox!.y, 'activity panel must stack below skill bottom').toBeGreaterThanOrEqual(skillBox!.y + skillBox!.height);
     /*
      * Center-x comparison defends against a regression where a panel
      * floats into a side-by-side column at the same vertical band as
-     * its predecessor; the y-ordering test would still pass but the
-     * single-column contract would silently break.
+     * its predecessor.
      */
     const centerX = (b: { x: number; width: number }) => Math.round(b.x + b.width / 2);
     const cardCx = centerX(cardBox!);
@@ -111,8 +103,7 @@ test.describe('principal-detail mobile surface', () => {
      * documentElement.scrollWidth > clientWidth is the canonical
      * "page overflows horizontally" signal. iPhone 13 viewport is
      * 390px; any extra horizontal pixel is a layout bug per canon
-     * `dev-web-mobile-first-required` ("horizontal scroll on mobile
-     * width <=400px is always a bug").
+     * `dev-web-mobile-first-required`.
      */
     const overflow = await page.evaluate(() => ({
       scroll: document.documentElement.scrollWidth,
@@ -126,19 +117,13 @@ test.describe('principal-detail mobile surface', () => {
     skipUnlessMobile(viewport);
 
     /*
-     * FocusBanner exposes a clear-focus action; the operator taps it
-     * to leave focus mode. A tap target smaller than 44x44 CSS px
-     * fails Apple HIG and is a canon-bound gate per
-     * `dev-web-mobile-first-required` ("touch targets meet a 44x44
-     * CSS-pixel minimum").
+     * FocusBanner exposes a clear-focus action; the operator taps
+     * it to leave focus mode. A tap target smaller than 44x44 CSS
+     * px fails Apple HIG and is a canon-bound gate per
+     * `dev-web-mobile-first-required`.
      */
     const banner = page.getByTestId('focus-banner');
     await expect(banner).toBeVisible();
-    /*
-     * The clear control has a stable test id (focus-clear) on the
-     * FocusBanner button so we can locate it without depending on the
-     * CSS-module-generated class name.
-     */
     const clear = page.getByTestId('focus-clear');
     const box = await clear.boundingBox();
     expect(box, 'clear-focus button must be in the layout flow').not.toBeNull();
@@ -152,8 +137,9 @@ test.describe('principal-detail mobile surface', () => {
     /*
      * If the principal has activity, the feed renders clickable
      * entries. Each entry is the navigable surface to its atom; the
-     * tap target must satisfy the 44px floor. When no entries exist
-     * (fresh-install fixture), skip rather than false-fail.
+     * tap target must satisfy the 44px floor on both dimensions.
+     * When no entries exist (fresh-install fixture), skip rather
+     * than false-fail.
      */
     const items = page.getByTestId('principal-activity-item');
     const count = await items.count();
