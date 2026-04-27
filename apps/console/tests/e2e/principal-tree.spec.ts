@@ -38,6 +38,29 @@ test.describe('principal hierarchy view', () => {
     await expect(page.getByTestId('nav-hierarchy')).toHaveAttribute('aria-current', 'page');
   });
 
+  test('clicking a row body navigates to that principal page', async ({ page }) => {
+    await page.goto('/hierarchy');
+    await page.getByTestId('principal-tree').waitFor();
+
+    const firstNode = page.locator('[data-testid="principal-tree-node"]').first();
+    await expect(firstNode).toBeVisible();
+    const principalId = await firstNode.getAttribute('data-principal-id');
+    expect(principalId).toBeTruthy();
+
+    await firstNode.getByTestId('principal-tree-row-body').click();
+
+    /*
+     * Body click navigates to /principals/<id>. The principals view
+     * mounts and the corresponding row is the focused/selected one.
+     * URL is the source of truth so we assert against it directly.
+     * Escape regex specials in the id and URL-encode it so the assertion
+     * holds even when the principal id carries '.' or other reserved chars.
+     */
+    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const encoded = encodeURIComponent(principalId!);
+    await expect(page).toHaveURL(new RegExp(`/principals/${escapeRegex(encoded)}$`));
+  });
+
   test('clicking a chevron toggles its subtree visibility', async ({ page }) => {
     await page.goto('/hierarchy');
     await page.getByTestId('principal-tree').waitFor();

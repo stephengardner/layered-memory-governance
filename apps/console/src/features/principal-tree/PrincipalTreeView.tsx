@@ -8,6 +8,7 @@ import {
 } from '@/services/principals.service';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
+import { setRoute } from '@/state/router.store';
 import styles from './PrincipalTreeView.module.css';
 
 /**
@@ -199,7 +200,6 @@ function TreeBranch({
 }) {
   const hasChildren = node.children.length > 0;
   const open = isOpen(node);
-  const isLeaf = !hasChildren;
   const selected = selectedId === node.id;
   const childrenId = `principal-tree-children-${node.id}`;
 
@@ -252,25 +252,16 @@ function TreeBranch({
         <button
           type="button"
           className={styles.bodyButton}
-          /*
-           * The body row is the larger click target operators hit most
-           * often, so on branches it MUST carry the same disclosure
-           * semantics as the chevron button. AT users otherwise hear
-           * "button" with no expansion state even though clicking it
-           * toggles the children container. aria-controls is mirrored
-           * conditionally for the same reason as the chevron above
-           * (children container only mounts when open).
-           */
-          aria-expanded={hasChildren ? open : undefined}
-          aria-controls={hasChildren && open ? childrenId : undefined}
           onClick={() => {
-            // Leaf: select / toggle selection. Branch: clicking the
-            // body also toggles open so the whole row is interactive.
-            if (isLeaf) {
-              onSelect(selected ? null : node.id);
-            } else {
-              onToggleOpen(node);
-            }
+            // Body click navigates to the principal's detail page so
+            // the operator can inspect role/skill/recent-activity. The
+            // chevron button (rendered separately above for branches)
+            // owns the disclosure semantics for open/close; the body is
+            // a navigation target only. The visual selection updates
+            // alongside so the row that drove the navigation stays
+            // highlighted on return.
+            onSelect(node.id);
+            setRoute('principals', node.id);
           }}
           data-testid="principal-tree-row-body"
         >
