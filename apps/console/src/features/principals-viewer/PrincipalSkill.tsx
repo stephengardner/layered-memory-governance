@@ -48,7 +48,14 @@ export function PrincipalSkill({ principalId }: Props) {
     );
   }
 
-  const content = query.data?.content ?? null;
+  /*
+   * Treat empty/whitespace-only content as "no skill yet" so a
+   * zero-byte SKILL.md (a half-finished edit, or `touch` placeholder)
+   * doesn't render an empty markdown block. The empty-state copy is
+   * informative; an empty render is just confusing.
+   */
+  const raw = query.data?.content ?? null;
+  const content = raw !== null && raw.trim().length > 0 ? raw : null;
   if (content === null) {
     return (
       <section className={styles.section} data-testid="principal-skill-empty">
