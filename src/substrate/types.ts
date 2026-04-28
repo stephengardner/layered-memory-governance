@@ -363,6 +363,12 @@ export interface AtomPatch {
   readonly plan_state?: PlanState;
   /** Transition for question atoms. Validated by transitionQuestionState(). */
   readonly question_state?: QuestionState;
+  /**
+   * Transition for pipeline atoms. The valid label set lives with the
+   * pipeline runner; AtomPatch is mechanism-only and does not enumerate
+   * the labels. Mirrors the plan_state field shape.
+   */
+  readonly pipeline_state?: string;
 }
 
 export interface Target {
