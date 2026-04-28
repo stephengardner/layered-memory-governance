@@ -1707,6 +1707,88 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): add pu
 
 ---
 
+## Task 6.5: Bootstrap per-principal tool-policy atoms (precursor for Tasks 7-11)
+
+**Files:**
+- Create: `.lag/atoms/principal-brainstorm-actor.json`
+- Create: `.lag/atoms/principal-spec-author.json`
+- Create: `.lag/atoms/principal-pipeline-auditor.json`
+- Create: `.lag/atoms/principal-plan-dispatcher.json`
+- Create: `.lag/atoms/pol-llm-tool-policy-brainstorm-actor.json`
+- Create: `.lag/atoms/pol-llm-tool-policy-spec-author.json`
+- Create: `.lag/atoms/pol-llm-tool-policy-pipeline-auditor.json`
+- Create: `.lag/atoms/pol-llm-tool-policy-plan-dispatcher.json`
+- Modify: `scripts/bootstrap-decisions-canon.mjs` (append the 8 new atoms to the bootstrap registry so a fresh clone provisions them)
+
+**Security + correctness considerations:**
+- Per `dev-actor-scoped-llm-tool-policy` every LLM-backed actor MUST have a per-principal tool-policy atom, otherwise calls fall through to `pol-llm-tool-policy-fallback-deny-all` and writes are refused. Tasks 7-11 reference adapters call into `host.llm.judge` for these four principals; without this precursor the adapters fail-closed and Tasks 7-11 cannot pass their own tests.
+- Per `inv-governance-before-autonomy` default-deny posture: each policy atom carries an explicit `disallowedTools` list; only Read/Grep/Glob are allowed by omission. brainstorm-actor + spec-author + pipeline-auditor are READ-ONLY (mirror auditor-actor posture); plan-dispatcher is READ-ONLY by virtue of all writes routing through SubActorRegistry.invoke.
+- Per `arch-principal-hierarchy-signed-by` each new principal carries `signed_by: 'claude-agent'` (peer to existing planner-shaped actors); taint cascades correctly under the existing arbitration stack.
+- Provenance: each atom carries `provenance.kind: 'operator-seeded'` and `derived_from: ['operator-intent-deep-planning-pipeline-1777408799112']` so the precursor is auditable as flowing from the operator-intent.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `test/runtime/planning-pipeline/principal-policies.test.ts`:
+
+```typescript
+import { describe, expect, it } from 'vitest';
+import { createMemoryHost } from '../../../src/adapters/memory/index.js';
+import { resolveLlmToolPolicy } from '../../../src/runtime/llm-tool-policy/resolver.js';
+
+describe('planning-pipeline principal tool policies', () => {
+  it.each([
+    'brainstorm-actor',
+    'spec-author',
+    'pipeline-auditor',
+    'plan-dispatcher',
+  ])('resolves a non-fallback policy for %s', async (principal) => {
+    const host = await createMemoryHost();
+    // Bootstrap the precursor atoms (loaded via the bootstrap script in the next steps)
+    const policy = await resolveLlmToolPolicy(host, principal);
+    expect(policy.policy_atom_id).toMatch(/^pol-llm-tool-policy-/);
+    expect(policy.policy_atom_id).not.toBe('pol-llm-tool-policy-fallback-deny-all');
+    expect(policy.disallowedTools).toEqual(expect.arrayContaining(['Bash', 'Edit', 'Write']));
+    // Read-only posture: Read/Grep/Glob NOT in deny-list
+    expect(policy.disallowedTools).not.toContain('Read');
+    expect(policy.disallowedTools).not.toContain('Grep');
+    expect(policy.disallowedTools).not.toContain('Glob');
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npm test -- test/runtime/planning-pipeline/principal-policies.test.ts`
+Expected: FAIL with "policy resolves to fallback-deny-all" for all four principals.
+
+- [ ] **Step 3: Implement minimal**
+
+Use the existing `decide-cli` shape for each atom. Each principal atom is operator-seeded with the canonical principal schema (id, role, signed_by, active, created_at). Each policy atom mirrors the existing `pol-llm-tool-policy-cto-actor.json` shape (kind: directive; metadata.disallowedTools = the standard deny-list; metadata.allowedTools = empty since allow-by-omission is the default).
+
+For the brainstorm-actor / spec-author / pipeline-auditor / plan-dispatcher policy atoms, the disallowedTools list is identical to cto-actor's: `['Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Task', 'Agent', 'TodoWrite', 'SlashCommand']`.
+
+Mint each via `node scripts/decide.mjs --spec-file <path>` per the decide skill convention (each spec.json carries id, type=directive, content prose citing dev-actor-scoped-llm-tool-policy, alternatives_rejected, what_breaks_if_revisited, derived_from chain to operator-intent-deep-planning-pipeline-1777408799112).
+
+Append the 8 atoms to `scripts/bootstrap-decisions-canon.mjs` in the existing `BOOTSTRAP_ATOMS` registry so a fresh clone gets them on `npm run bootstrap`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npm test -- test/runtime/planning-pipeline/principal-policies.test.ts`
+Expected: PASS, all 4 cases green.
+
+- [ ] **Step 5: Canon-audit subagent**
+
+Per `dev-implementation-canon-audit-loop`. Pass: CLAUDE.md + atoms `dev-actor-scoped-llm-tool-policy`, `pol-llm-tool-policy-fallback-deny-all`, `inv-governance-before-autonomy`, `arch-principal-hierarchy-signed-by` + the 8 new atom files + the diff. Reviewer verifies: deny-list matches the canonical 11-tool list; signed_by chain is intact; no operator real name; no AI-attribution; provenance.derived_from chains to the operator-intent. Iterate until Approved.
+
+- [ ] **Step 6: Commit via lag-ceo**
+
+```
+node ../../scripts/git-as.mjs lag-ceo add .lag/atoms/principal-brainstorm-actor.json .lag/atoms/principal-spec-author.json .lag/atoms/principal-pipeline-auditor.json .lag/atoms/principal-plan-dispatcher.json .lag/atoms/pol-llm-tool-policy-brainstorm-actor.json .lag/atoms/pol-llm-tool-policy-spec-author.json .lag/atoms/pol-llm-tool-policy-pipeline-auditor.json .lag/atoms/pol-llm-tool-policy-plan-dispatcher.json scripts/bootstrap-decisions-canon.mjs test/runtime/planning-pipeline/principal-policies.test.ts
+node ../../scripts/git-as.mjs lag-ceo commit -m "feat(planning-pipeline): bootstrap per-principal tool-policy atoms (precursor for Tasks 7-11)"
+```
+
+---
+
 ## Task 7: Reference brainstorm-stage adapter
 
 **Files:**
