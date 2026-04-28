@@ -379,6 +379,38 @@ async function main() {
     2,
   ));
 
+  /*
+   * Routine post-step: resolve outdated review threads on this PR so
+   * the unresolved-threads merge gate clears as soon as CI does.
+   * Outdated threads (the actor's fix-push changed the anchored line)
+   * stay unresolved until someone calls resolveReviewThread; threads
+   * still anchored to live code are LEFT alone for a human or a
+   * CR-side acknowledgement. Per canon
+   * `dev-pr-fix-auto-resolve-outdated-threads` (operator stated
+   * 2026-04-27 'this should never happen again' after multiple PRs
+   * stalled in mergeStateStatus=BLOCKED on outdated threads alone).
+   *
+   * Best-effort: failures here are non-fatal so the actor's exit
+   * code stays driven by report.haltReason. Resolving threads is
+   * idempotent (the helper re-fetches and skips already-resolved
+   * threads), so a retry on the next iteration is safe.
+   *
+   * Skipped in dry-run since dry-run does not push and therefore
+   * does not produce outdated threads worth resolving.
+   */
+  if (args.live) {
+    try {
+      console.log('[pr-fix] running scripts/resolve-outdated-threads.mjs as routine post-step');
+      await execa(
+        'node',
+        [resolve(REPO_ROOT, 'scripts/resolve-outdated-threads.mjs'), String(args.prNumber)],
+        { stdio: 'inherit', cwd: REPO_ROOT },
+      );
+    } catch (err) {
+      console.error('[pr-fix] resolve-outdated-threads failed (non-fatal):', err?.message ?? err);
+    }
+  }
+
   // Exit-code map mirrors run-pr-landing.mjs:
   //   0 = converged or correctly-halted (escalations are surfaced via
   //       the actor-message channel; CI shouldn't double-signal)
