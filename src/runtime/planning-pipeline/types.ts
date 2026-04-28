@@ -5,9 +5,9 @@
  * code. A stage adapter (in examples/planning-stages/) imports these
  * types and exports a value implementing PlanningStage<TIn, TOut>.
  *
- * Mechanism-only per dev-substrate-not-prescription: the interface
- * declares the SHAPE of a stage; concrete prompts and schemas live
- * in stage adapters. The interface is the substrate seam.
+ * Mechanism-only: the interface declares the SHAPE of a stage;
+ * concrete prompts and schemas live in stage adapters. The
+ * interface is the substrate seam.
  */
 
 import type { z } from 'zod';
