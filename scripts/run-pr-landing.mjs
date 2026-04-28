@@ -291,6 +291,37 @@ async function main() {
     2,
   ));
 
+  /*
+   * Routine post-step: resolve outdated review threads on this PR so
+   * the unresolved-threads merge gate clears as soon as CI does. The
+   * pr-landing-actor itself does not push fixes, but observes PRs
+   * that other flows (run-pr-fix, operator-side fix-pushes, future
+   * actors) updated; those updates can leave threads outdated but
+   * unresolved, which alone keeps mergeStateStatus=BLOCKED. Per
+   * canon `dev-pr-fix-auto-resolve-outdated-threads`.
+   *
+   * Threads still anchored to live code are LEFT alone (the human
+   * or CR may still want to act on them); only outdated-and-
+   * unresolved threads are auto-resolved.
+   *
+   * Best-effort: failures here are non-fatal so the actor's exit
+   * code stays driven by report.haltReason. Idempotent on retry.
+   *
+   * Skipped in dry-run; dry-run never mutates GitHub state.
+   */
+  if (args.live) {
+    try {
+      console.log('[pr-landing] running scripts/resolve-outdated-threads.mjs as routine post-step');
+      await execa(
+        'node',
+        [resolve(REPO_ROOT, 'scripts/resolve-outdated-threads.mjs'), String(args.prNumber)],
+        { stdio: 'inherit', cwd: REPO_ROOT },
+      );
+    } catch (err) {
+      console.error('[pr-landing] resolve-outdated-threads failed (non-fatal):', err?.message ?? err);
+    }
+  }
+
   // Escalation path: if the actor halted with anything other than
   // `converged`, OR left items unhandled (policy escalations,
   // body-scoped nits the reviewer posted inside a review body rather
