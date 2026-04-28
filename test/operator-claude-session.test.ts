@@ -263,6 +263,34 @@ describe('acquireSidecarLock', () => {
     expect(order).toEqual(['a-holding', 'b-acquired']);
   });
 
+  it('treats Windows EPERM with existing lock as contention (retry, do not throw)', async () => {
+    /*
+     * On Windows, `open(path, 'wx')` can throw EPERM (not EEXIST)
+     * when a file exists and is held; without this branch, the
+     * acquire would rethrow on the first contended call. Simulate
+     * by writing a fresh lock file directly, then having a second
+     * acquire wait for it. Stat must confirm the file exists
+     * before EPERM is treated as contention; without that, a true
+     * permission error would silently retry forever.
+     */
+    const path = join(tmp, 'session.lock');
+    const a = await acquireSidecarLock(path);
+    let bResolved = false;
+    const bPromise = acquireSidecarLock(path, {
+      backoffMs: 5,
+      maxRetries: 200,
+      staleMs: 60_000,
+    }).then((b) => {
+      bResolved = true;
+      return b.release();
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(bResolved).toBe(false);
+    await a.release();
+    await bPromise;
+    expect(bResolved).toBe(true);
+  });
+
   it('release is best-effort; missing lock file does not throw', async () => {
     const path = join(tmp, 'session.lock');
     const a = await acquireSidecarLock(path);

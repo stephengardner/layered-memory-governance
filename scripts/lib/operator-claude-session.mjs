@@ -255,7 +255,7 @@ export function shouldEmitTurn(lastTurnAtMs, nowMs, throttleMs) {
  * (or equivalent terminal) signal.
  *
  * @param {object} sessionAtom
- * @param {{ completedAt: string, terminalState?: 'completed'|'aborted'|'errored' }} input
+ * @param {{ completedAt: string, terminalState?: 'completed'|'aborted'|'error'|'budget-exhausted' }} input
  */
 export function withSessionCompletion(sessionAtom, input) {
   const terminalState = input.terminalState ?? 'completed';
@@ -356,7 +356,31 @@ export async function acquireSidecarLock(lockPath, opts = {}) {
       };
     } catch (err) {
       lastErr = err;
-      if (err && err.code !== 'EEXIST') throw err;
+      /*
+       * Cross-platform contention codes when `open(path, 'wx')`
+       * hits an existing or held file:
+       *   - POSIX: EEXIST
+       *   - Windows: EEXIST, EPERM, or EBUSY (varies with
+       *     filesystem and how the prior holder closed the file)
+       *
+       * All three are treated as contention -- retry. A true
+       * permission-denied (e.g., the operator lacks write rights
+       * to the sidecar dir) WOULD also surface as EPERM here;
+       * we rely on `maxRetries` (default 50 with 20ms backoff =
+       * ~1s) to bound the loop and surface a clear error rather
+       * than wedge.
+       *
+       * Earlier we tried to distinguish Windows-contention from
+       * permission-denied by stat-ing the lock file: if stat said
+       * the file was absent, treat as permanent. That breaks
+       * under a release-race -- the prior holder's `unlink`
+       * during release lands between our open's EPERM and our
+       * stat, so stat sees ENOENT for what was actually just
+       * contention. The simpler retry-bounded loop is correct.
+       */
+      const code = err && err.code;
+      const isContention = code === 'EEXIST' || code === 'EPERM' || code === 'EBUSY';
+      if (!isContention) throw err;
       /*
        * Stale-lock reclamation: a crashed hook would leave the
        * .lock file behind and block every subsequent acquire
