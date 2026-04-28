@@ -5,8 +5,8 @@
  * 60+ plans across a long session that surface drowns in failed and
  * stale-proposed atoms, which an operator reads as "the system is
  * broken" even when the work shipped. The fix is a render-time bucket
- * filter that defaults to a clean active surface, with explicit chips
- * for the closed buckets so anything filtered remains one click away.
+ * filter with explicit chips so anything filtered remains one click
+ * away; the default bucket is documented near DEFAULT_PLAN_FILTER below.
  *
  * Buckets follow operator mental model rather than the substrate
  * vocabulary one-to-one:
@@ -20,16 +20,18 @@
  *                  and one chip click to triage
  *   - all       -> escape hatch for "I want everything"
  *
- * The default is `active` because that is what the operator wants on
- * page load: open work that needs eyes. The choice is persisted via
- * storage.service so a Failed-triage session does not snap back to
- * Active on the next visit.
+ * The default is `all` so completed work surfaces alongside in-flight
+ * work without an extra click; operator grievance 2026-04-28 was
+ * "plans show as approved, not completed" because the prior `active`
+ * default hid the succeeded bucket entirely. The chips still let the
+ * operator narrow to a specific bucket and the choice persists via
+ * storage.service so a triage session does not snap back on reload.
  */
 
 export type PlanStateBucket = 'active' | 'succeeded' | 'failed' | 'all';
 
 export const PLAN_FILTER_STORAGE_KEY = 'plans-filter-bucket';
-export const DEFAULT_PLAN_FILTER: PlanStateBucket = 'active';
+export const DEFAULT_PLAN_FILTER: PlanStateBucket = 'all';
 
 const ACTIVE_STATES: ReadonlySet<string> = new Set([
   'proposed',
