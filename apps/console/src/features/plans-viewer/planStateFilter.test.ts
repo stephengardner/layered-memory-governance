@@ -73,7 +73,7 @@ describe('normalizeBucket', () => {
     expect(normalizeBucket({ x: 1 })).toBe(DEFAULT_PLAN_FILTER);
   });
 
-  it('default is active', () => {
-    expect(DEFAULT_PLAN_FILTER).toBe('active');
+  it('default is all so succeeded plans are visible without an extra click', () => {
+    expect(DEFAULT_PLAN_FILTER).toBe('all');
   });
 });
