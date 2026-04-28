@@ -1,6 +1,14 @@
 {
   "$schema": "https://claude.ai/schemas/settings.json",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/operator-session-start.mjs" }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
@@ -21,7 +29,16 @@
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "node .claude/hooks/periodic-memory-reflection.mjs" }
+          { "type": "command", "command": "node .claude/hooks/periodic-memory-reflection.mjs" },
+          { "type": "command", "command": "node .claude/hooks/operator-session-heartbeat.mjs" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/operator-session-stop.mjs" }
         ]
       }
     ]
