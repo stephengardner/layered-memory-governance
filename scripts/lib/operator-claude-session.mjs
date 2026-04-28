@@ -223,6 +223,28 @@ export function withSessionCompletion(sessionAtom, input) {
 }
 
 /**
+ * Read the hook's stdin payload to a string. Each Claude Code hook
+ * binary receives a JSON payload on stdin, so all three hooks in
+ * this module need this exact read pattern; per canon
+ * `dev-extract-helpers-at-N-2-plus-one`, the helper lives here and
+ * each hook imports it.
+ *
+ * Resolves with the full utf-8 payload (or '' on EOF without data).
+ * Rejects on stream error so the caller's outer try/catch can
+ * fail-open rather than crash silently.
+ *
+ * @returns {Promise<string>}
+ */
+export function readHookStdin() {
+  return new Promise((resolvePromise, reject) => {
+    const chunks = [];
+    process.stdin.on('data', (c) => chunks.push(c));
+    process.stdin.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')));
+    process.stdin.on('error', reject);
+  });
+}
+
+/**
  * Parse the hook stdin payload. Hooks receive a JSON object on stdin
  * with `session_id`, `cwd`, etc. Returns null on invalid input so
  * callers can fail-open (allow the session to continue) rather than

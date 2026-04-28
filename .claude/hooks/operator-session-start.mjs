@@ -23,6 +23,7 @@ import { mkdir } from 'node:fs/promises';
 import {
   buildOperatorSessionAtom,
   parseHookPayload,
+  readHookStdin,
 } from '../../scripts/lib/operator-claude-session.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -40,7 +41,7 @@ const ADAPTER_ID = 'claude-code-operator-hook';
 const MODEL_ID = process.env.LAG_OPERATOR_MODEL_ID || 'claude-opus-4-7';
 
 async function main() {
-  const raw = await readStdin();
+  const raw = await readHookStdin();
   const payload = parseHookPayload(raw);
   if (payload === null) {
     process.exit(0);
@@ -75,15 +76,6 @@ async function main() {
   }
   await host.atoms.put(atom);
   process.exit(0);
-}
-
-function readStdin() {
-  return new Promise((resolvePromise, reject) => {
-    const chunks = [];
-    process.stdin.on('data', (c) => chunks.push(c));
-    process.stdin.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')));
-    process.stdin.on('error', reject);
-  });
 }
 
 main().catch((err) => {

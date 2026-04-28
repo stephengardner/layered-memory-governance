@@ -27,6 +27,7 @@ import { unlink } from 'node:fs/promises';
 import {
   operatorSessionAtomId,
   parseHookPayload,
+  readHookStdin,
   withSessionCompletion,
 } from '../../scripts/lib/operator-claude-session.mjs';
 
@@ -36,7 +37,7 @@ const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const SIDECAR_DIR = resolve(STATE_DIR, 'operator-session-state');
 
 async function main() {
-  const raw = await readStdin();
+  const raw = await readHookStdin();
   const payload = parseHookPayload(raw);
   if (payload === null) {
     process.exit(0);
@@ -65,15 +66,6 @@ async function main() {
   }
 
   process.exit(0);
-}
-
-function readStdin() {
-  return new Promise((resolvePromise, reject) => {
-    const chunks = [];
-    process.stdin.on('data', (c) => chunks.push(c));
-    process.stdin.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')));
-    process.stdin.on('error', reject);
-  });
 }
 
 main().catch((err) => {
