@@ -157,8 +157,8 @@ const ATOMS = [
       + 'autonomous-loop sessions end at N percent of work landed instead of 100, and the '
       + 'operator must re-state the directive having lost faith in the loop\'s discipline.',
     derived_from: [
-      'dev-pr-fix-actor-resolve-cr-threads-touched-paths',
-      'dev-cr-trigger-via-machine-user-only',
+      'pol-pr-fix-pr-thread-resolve',
+      'dev-cr-triggers-via-machine-user',
       'dev-required-checks-must-cover-all-meaningful-ci',
       'inv-governance-before-autonomy',
     ],
