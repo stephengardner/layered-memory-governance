@@ -173,22 +173,22 @@ describe('listActiveSessions', () => {
   });
 
   it('drops sessions whose latest turn is older than the active window', () => {
-    // Window is ACTIVE_SESSION_TURN_WINDOW_MS (5 minutes). The turn here
-    // is 6 minutes old so it falls outside the window regardless of
+    // Window is ACTIVE_SESSION_TURN_WINDOW_MS (15 minutes). The turn here
+    // is 16 minutes old so it falls outside the window regardless of
     // boundary inclusivity.
     const atoms: LiveOpsAtom[] = [
       atom({
         id: 'agent-session-stale',
         type: 'agent-session',
         principal_id: 'cto-actor',
-        created_at: new Date(NOW - 10 * 60_000).toISOString(),
-        metadata: { session_id: 'stale', started_at: new Date(NOW - 10 * 60_000).toISOString() },
+        created_at: new Date(NOW - 20 * 60_000).toISOString(),
+        metadata: { session_id: 'stale', started_at: new Date(NOW - 20 * 60_000).toISOString() },
       }),
       atom({
         id: 'agent-turn-stale-1',
         type: 'agent-turn',
         principal_id: 'cto-actor',
-        created_at: new Date(NOW - 6 * 60_000).toISOString(),
+        created_at: new Date(NOW - 16 * 60_000).toISOString(),
         metadata: { session_id: 'stale' },
       }),
     ];

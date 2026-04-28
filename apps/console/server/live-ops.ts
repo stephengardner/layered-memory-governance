@@ -45,8 +45,14 @@ const FIVE_MINUTES_MS = 5 * ONE_MINUTE_MS;
 const ONE_HOUR_MS = 60 * ONE_MINUTE_MS;
 const FIFTEEN_MINUTES_MS = 15 * ONE_MINUTE_MS;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
-/** A session is "active" if its latest agent-turn lands inside this window. */
-const ACTIVE_SESSION_TURN_WINDOW_MS = 5 * 60 * 1000;
+/**
+ * A session is "active" if its latest agent-turn lands inside this window.
+ * 15 minutes is wider than the 5/10-minute cron + heartbeat cadences
+ * so the dashboard does not flicker to "no active sessions" between
+ * heartbeat ticks; narrow enough that a genuinely-idle terminal stops
+ * showing as live within an operator-attention span.
+ */
+const ACTIVE_SESSION_TURN_WINDOW_MS = FIFTEEN_MINUTES_MS;
 
 /**
  * Parse an ISO timestamp (UTC) into a numeric epoch ms. Returns NaN
