@@ -33,14 +33,6 @@
           { "type": "command", "command": "node .claude/hooks/operator-session-heartbeat.mjs" }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          { "type": "command", "command": "node .claude/hooks/operator-session-stop.mjs" }
-        ]
-      }
     ]
   }
 }

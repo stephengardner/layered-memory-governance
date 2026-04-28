@@ -8,21 +8,28 @@
  * Throttle (default 60s) keeps atom volume bounded: a session that
  * fires 200 tool calls writes ~3-5 atoms, not 200. The
  * tool_calls_in_window count carries the underlying activity rate
- * for downstream analytics.
+ * for downstream analytics under the canonical
+ * AgentTurnMeta.extra.tool_calls_in_window slot.
  *
- * Sidecar state at `.lag/operator-session-state/<session_id>.json`
- * tracks lastTurnAtMs + lastTurnNumber + toolsSinceLastTurn between
- * hook invocations. The sidecar is gitignored (under .lag/) and
- * cleaned up on Stop.
+ * Concurrency: PostToolUse can fire concurrently when Claude Code
+ * batches independent tool calls. The sidecar read-modify-write at
+ * `.lag/operator-session-state/<session_id>.json` is therefore
+ * serialized via an O_EXCL `.lock` file so two concurrent hook
+ * invocations cannot both increment lastTurnNumber (which would
+ * collide on the same agent-turn-op-<sid>-N atom id).
  *
- * Fail-open per the standard hook contract: any error exits 0 so a
- * hook bug never wedges the session.
+ * Identity: same LAG_OPERATOR_ID guard as the SessionStart hook;
+ * skip-with-warning if missing.
+ *
+ * Fail-open: any error exits 0 so a hook bug never wedges the
+ * session.
  */
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
+  acquireSidecarLock,
   buildOperatorTurnAtom,
   operatorSessionAtomId,
   parseHookPayload,
@@ -35,7 +42,7 @@ const REPO_ROOT = resolve(HERE, '..', '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const SIDECAR_DIR = resolve(STATE_DIR, 'operator-session-state');
 
-const PRINCIPAL_ID = process.env.LAG_OPERATOR_ID || 'apex-agent';
+const PRINCIPAL_ID = process.env.LAG_OPERATOR_ID;
 const MODEL_ID = process.env.LAG_OPERATOR_MODEL_ID || 'claude-opus-4-7';
 /*
  * Throttle window in ms. Tunable via env so a deployment that wants
@@ -52,7 +59,7 @@ async function readSidecar(sessionId) {
     if (parsed === null || typeof parsed !== 'object') return null;
     return {
       lastTurnAtMs: typeof parsed.lastTurnAtMs === 'number' ? parsed.lastTurnAtMs : null,
-      lastTurnNumber: typeof parsed.lastTurnNumber === 'number' ? parsed.lastTurnNumber : 0,
+      lastTurnIndex: typeof parsed.lastTurnIndex === 'number' ? parsed.lastTurnIndex : -1,
       toolsSinceLastTurn: typeof parsed.toolsSinceLastTurn === 'number' ? parsed.toolsSinceLastTurn : 0,
     };
   } catch {
@@ -67,6 +74,11 @@ async function writeSidecar(sessionId, state) {
 }
 
 async function main() {
+  if (!PRINCIPAL_ID || PRINCIPAL_ID.length === 0) {
+    console.error('[operator-session-heartbeat] LAG_OPERATOR_ID not set; skipping heartbeat emission');
+    process.exit(0);
+  }
+
   const raw = await readHookStdin();
   const payload = parseHookPayload(raw);
   if (payload === null) {
@@ -74,50 +86,63 @@ async function main() {
   }
 
   const sessionId = payload.session_id;
-  const nowMs = Date.now();
-  const prior = (await readSidecar(sessionId)) ?? {
-    lastTurnAtMs: null,
-    lastTurnNumber: 0,
-    toolsSinceLastTurn: 0,
-  };
-  const toolsThisWindow = prior.toolsSinceLastTurn + 1;
 
-  if (!shouldEmitTurn(prior.lastTurnAtMs, nowMs, THROTTLE_MS)) {
-    /*
-     * Within the throttle window: no atom. Just bump the in-window
-     * tool count so the next emitted heartbeat carries it.
-     */
-    await writeSidecar(sessionId, {
-      lastTurnAtMs: prior.lastTurnAtMs,
-      lastTurnNumber: prior.lastTurnNumber,
-      toolsSinceLastTurn: toolsThisWindow,
+  await mkdir(SIDECAR_DIR, { recursive: true });
+  const lockPath = resolve(SIDECAR_DIR, `${sessionId}.lock`);
+  const lock = await acquireSidecarLock(lockPath);
+  try {
+    const nowMs = Date.now();
+    const prior = (await readSidecar(sessionId)) ?? {
+      lastTurnAtMs: null,
+      /*
+       * Sentinel -1 so the first emit increments to turnIndex=0
+       * (canonical AgentTurnMeta uses 0-based indexing per
+       * src/substrate/types.ts).
+       */
+      lastTurnIndex: -1,
+      toolsSinceLastTurn: 0,
+    };
+    const toolsThisWindow = prior.toolsSinceLastTurn + 1;
+
+    if (!shouldEmitTurn(prior.lastTurnAtMs, nowMs, THROTTLE_MS)) {
+      /*
+       * Within the throttle window: no atom. Just bump the in-window
+       * tool count so the next emitted heartbeat carries it.
+       */
+      await writeSidecar(sessionId, {
+        lastTurnAtMs: prior.lastTurnAtMs,
+        lastTurnIndex: prior.lastTurnIndex,
+        toolsSinceLastTurn: toolsThisWindow,
+      });
+      return;
+    }
+
+    const turnIndex = prior.lastTurnIndex + 1;
+    const startedAt = new Date(nowMs).toISOString();
+    const atom = buildOperatorTurnAtom({
+      sessionId,
+      sessionAtomId: operatorSessionAtomId(sessionId),
+      principalId: PRINCIPAL_ID,
+      startedAt,
+      completedAt: startedAt,
+      modelId: MODEL_ID,
+      turnIndex,
+      toolCallsInWindow: toolsThisWindow,
     });
-    process.exit(0);
+
+    await mkdir(STATE_DIR, { recursive: true });
+    const { createFileHost } = await import('../../dist/adapters/file/index.js');
+    const host = await createFileHost({ rootDir: STATE_DIR });
+    await host.atoms.put(atom);
+
+    await writeSidecar(sessionId, {
+      lastTurnAtMs: nowMs,
+      lastTurnIndex: turnIndex,
+      toolsSinceLastTurn: 0,
+    });
+  } finally {
+    await lock.release();
   }
-
-  const turnNumber = prior.lastTurnNumber + 1;
-  const startedAt = new Date(nowMs).toISOString();
-  const atom = buildOperatorTurnAtom({
-    sessionId,
-    sessionAtomId: operatorSessionAtomId(sessionId),
-    principalId: PRINCIPAL_ID,
-    startedAt,
-    completedAt: startedAt,
-    modelId: MODEL_ID,
-    turnNumber,
-    toolCallsInWindow: toolsThisWindow,
-  });
-
-  await mkdir(STATE_DIR, { recursive: true });
-  const { createFileHost } = await import('../../dist/adapters/file/index.js');
-  const host = await createFileHost({ rootDir: STATE_DIR });
-  await host.atoms.put(atom);
-
-  await writeSidecar(sessionId, {
-    lastTurnAtMs: nowMs,
-    lastTurnNumber: turnNumber,
-    toolsSinceLastTurn: 0,
-  });
   process.exit(0);
 }
 

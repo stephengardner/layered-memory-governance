@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  acquireSidecarLock,
   buildOperatorSessionAtom,
   buildOperatorTurnAtom,
   operatorSessionAtomId,
@@ -22,7 +26,7 @@ describe('buildOperatorSessionAtom', () => {
     sessionId: SID,
     principalId: 'apex-agent',
     startedAt: '2026-04-28T00:00:00.000Z',
-    workspaceId: '/c/Users/opens/memory-governance',
+    workspaceId: 'C:/Users/opens/memory-governance',
     modelId: 'claude-opus-4-7',
     adapterId: 'claude-code-operator-hook',
   };
@@ -38,13 +42,6 @@ describe('buildOperatorSessionAtom', () => {
   });
 
   it('records human-asserted provenance with the session_id in source', () => {
-    /*
-     * The pulse dashboard does not branch on provenance.kind, but
-     * downstream queries (taint analysis, audit) do. operator-led
-     * sessions are human-asserted (the operator typed); agent-loop
-     * sessions are operator-seeded. Distinguishing here keeps that
-     * provenance ladder load-bearing.
-     */
     const atom = buildOperatorSessionAtom(input);
     expect(atom.provenance.kind).toBe('human-asserted');
     expect(atom.provenance.source.session_id).toBe(SID);
@@ -54,6 +51,17 @@ describe('buildOperatorSessionAtom', () => {
   it('seeds budget_consumed at zero so live-ops aggregations have a baseline', () => {
     const atom = buildOperatorSessionAtom(input);
     expect(atom.metadata.agent_session.budget_consumed).toEqual({ turns: 0, wall_clock_ms: 0 });
+  });
+
+  it('throws on missing principalId so silent-fallback attribution is impossible', () => {
+    /*
+     * Defense in depth: even if a hook caller forgets the env-var
+     * guard, the helper itself rejects empty principal_id rather
+     * than minting an atom under a hardcoded id (the bug class PR
+     * #170 shipped and CR caught).
+     */
+    expect(() => buildOperatorSessionAtom({ ...input, principalId: '' })).toThrow(/principalId is required/);
+    expect(() => buildOperatorSessionAtom({ ...input, principalId: undefined as unknown as string })).toThrow();
   });
 });
 
@@ -65,7 +73,7 @@ describe('buildOperatorTurnAtom', () => {
     startedAt: '2026-04-28T00:01:00.000Z',
     completedAt: '2026-04-28T00:01:00.000Z',
     modelId: 'claude-opus-4-7',
-    turnNumber: 3,
+    turnIndex: 3,
     toolCallsInWindow: 17,
   };
 
@@ -75,18 +83,44 @@ describe('buildOperatorTurnAtom', () => {
     expect(atom.id).toBe(`agent-turn-op-${SID}-3`);
     expect(atom.provenance.derived_from).toEqual([`agent-session-op-${SID}`]);
     expect(atom.metadata.agent_turn.session_atom_id).toBe(`agent-session-op-${SID}`);
-    expect(atom.metadata.agent_turn.turn_number).toBe(3);
   });
 
-  it('preserves tool_calls_in_window in metadata for activity-rate analysis', () => {
+  it('emits canonical AgentTurnMeta shape (turn_index 0-based, llm_input/llm_output/tool_calls/latency_ms)', () => {
+    /*
+     * Without this the substrate's session-tree projection (which
+     * sorts by turn_index) silently breaks. CR caught the
+     * non-canonical shape on round 1; pinning the field set in a
+     * test prevents regression.
+     */
     const atom = buildOperatorTurnAtom(input);
-    expect(atom.metadata.tool_calls_in_window).toBe(17);
+    const meta = atom.metadata.agent_turn;
+    expect(meta.turn_index).toBe(3);
+    expect(meta).toHaveProperty('llm_input');
+    expect(meta).toHaveProperty('llm_output');
+    expect(Array.isArray(meta.tool_calls)).toBe(true);
+    expect(typeof meta.latency_ms).toBe('number');
+    expect(meta.extra.tool_calls_in_window).toBe(17);
+    expect(meta.extra.source).toBe('claude-code-operator-hook');
   });
 
-  it('atom-id is deterministic in (session_id, turn_number) so re-emission is idempotent', () => {
+  it('atom-id is deterministic in (session_id, turn_index) so re-emission is idempotent', () => {
     const a = buildOperatorTurnAtom(input);
     const b = buildOperatorTurnAtom(input);
     expect(a.id).toBe(b.id);
+  });
+
+  it('accepts turn_index=0 as the first valid turn (canonical 0-based indexing)', () => {
+    const atom = buildOperatorTurnAtom({ ...input, turnIndex: 0 });
+    expect(atom.id).toBe(`agent-turn-op-${SID}-0`);
+    expect(atom.metadata.agent_turn.turn_index).toBe(0);
+  });
+
+  it('rejects negative turn_index', () => {
+    expect(() => buildOperatorTurnAtom({ ...input, turnIndex: -1 })).toThrow(/non-negative/);
+  });
+
+  it('throws on missing principalId', () => {
+    expect(() => buildOperatorTurnAtom({ ...input, principalId: '' })).toThrow(/principalId is required/);
   });
 });
 
@@ -96,11 +130,6 @@ describe('shouldEmitTurn', () => {
   });
 
   it('skips when within the throttle window', () => {
-    /*
-     * 30s after the prior turn with a 60s window: the heartbeat
-     * is suppressed. The hook still increments the in-memory
-     * tool_count which the next emitted turn carries.
-     */
     expect(shouldEmitTurn(1_000_000, 1_030_000, 60_000)).toBe(false);
   });
 
@@ -118,7 +147,7 @@ describe('withSessionCompletion', () => {
     sessionId: SID,
     principalId: 'apex-agent',
     startedAt: '2026-04-28T00:00:00.000Z',
-    workspaceId: '/c/Users/opens/memory-governance',
+    workspaceId: 'C:/Users/opens/memory-governance',
     modelId: 'claude-opus-4-7',
     adapterId: 'claude-code-operator-hook',
   });
@@ -134,12 +163,6 @@ describe('withSessionCompletion', () => {
   });
 
   it('does not mutate the input atom', () => {
-    /*
-     * Pure-function contract: callers (the Stop hook) read the
-     * session atom from the FileHost, apply completion, write back.
-     * If withSessionCompletion mutated the input, a re-read of the
-     * atom store would see the mutation regardless of write success.
-     */
     withSessionCompletion(base, {
       completedAt: '2026-04-28T01:00:00.000Z',
     });
@@ -176,3 +199,60 @@ describe('parseHookPayload', () => {
     expect(parseHookPayload(JSON.stringify({ session_id: '' }))).toBeNull();
   });
 });
+
+describe('acquireSidecarLock', () => {
+  /*
+   * Real-fs integration: the lock file is created in a per-test
+   * temp directory and cleaned up at the end so concurrent test
+   * runs do not collide.
+   */
+  let tmp: string;
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'op-session-lock-'));
+  });
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('acquires + releases when no contention', async () => {
+    const lock = await acquireSidecarLock(join(tmp, 'session.lock'));
+    expect(typeof lock.release).toBe('function');
+    await lock.release();
+  });
+
+  it('serializes concurrent acquires (second waits for first to release)', async () => {
+    /*
+     * The two-PostToolUse-fires-at-once case. Without the lock the
+     * sidecar read-modify-write would race and two atoms with the
+     * same id could be minted.
+     */
+    const path = join(tmp, 'session.lock');
+    const a = await acquireSidecarLock(path);
+    const order: string[] = [];
+    const bPromise = acquireSidecarLock(path, { backoffMs: 5, maxRetries: 200 }).then((b) => {
+      order.push('b-acquired');
+      return b.release();
+    });
+    order.push('a-holding');
+    await new Promise((r) => setTimeout(r, 50));
+    await a.release();
+    await bPromise;
+    expect(order).toEqual(['a-holding', 'b-acquired']);
+  });
+
+  it('release is best-effort; missing lock file does not throw', async () => {
+    const path = join(tmp, 'session.lock');
+    const a = await acquireSidecarLock(path);
+    await a.release();
+    /*
+     * Releasing a second time should not blow up: a concurrent
+     * crash may have unlinked the file already.
+     */
+    await a.release();
+  });
+});
+
+// Vitest globals shim (we use describe/it/expect/beforeEach/afterEach without
+// `import { ... } from 'vitest'` for the latter two so Vitest's globals are
+// available; the project's vitest config has globals: false so import them).
+import { beforeEach, afterEach } from 'vitest';

@@ -6,12 +6,18 @@
  *
  * The substrate already has the agent-session/agent-turn primitive
  * (PR1 #166); the operator's terminal session IS an agent-session
- * (apex-agent acting through Claude Code), so we reuse the existing
- * type rather than bifurcate the substrate with a new one.
+ * (operator-principal acting through Claude Code), so we reuse the
+ * existing type rather than bifurcate the substrate with a new one.
  *
  * Idempotent: atom-id is `agent-session-op-<session_id>` so a re-fired
  * SessionStart for the same Claude Code session_id (e.g., on resume)
  * lands on the same atom.
+ *
+ * Identity: requires LAG_OPERATOR_ID. Fails-skip (exit 0 with stderr
+ * warning) when the env var is missing, so an unconfigured deployment
+ * does NOT silently mint atoms under a hardcoded fallback principal.
+ * That class of bug shipped in PR #170 and is now a canon-blocked
+ * pattern.
  *
  * Fail-open: any internal error logs to stderr but exits 0 so the
  * hook never wedges Claude Code.
@@ -30,7 +36,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 
-const PRINCIPAL_ID = process.env.LAG_OPERATOR_ID || 'apex-agent';
+const PRINCIPAL_ID = process.env.LAG_OPERATOR_ID;
 const ADAPTER_ID = 'claude-code-operator-hook';
 /*
  * Best-effort model id. Hooks do not receive the model that the
@@ -41,6 +47,18 @@ const ADAPTER_ID = 'claude-code-operator-hook';
 const MODEL_ID = process.env.LAG_OPERATOR_MODEL_ID || 'claude-opus-4-7';
 
 async function main() {
+  if (!PRINCIPAL_ID || PRINCIPAL_ID.length === 0) {
+    /*
+     * No fallback. Without an operator id, we cannot attribute the
+     * session-start atom to a real principal. Skipping is the
+     * correct behavior; the operator sees a one-line warning and
+     * continues working. Pulse just does not track this session
+     * until LAG_OPERATOR_ID is set.
+     */
+    console.error('[operator-session-start] LAG_OPERATOR_ID not set; skipping session atom emission');
+    process.exit(0);
+  }
+
   const raw = await readHookStdin();
   const payload = parseHookPayload(raw);
   if (payload === null) {
