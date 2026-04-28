@@ -103,6 +103,66 @@ const ATOMS = [
       + "audits of 'who did what' lose their clean operator->bot->action chain.",
     derived_from: ['arch-bot-identity-per-actor', 'inv-provenance-every-write'],
   },
+  {
+    id: 'dev-pr-fix-auto-resolve-outdated-threads',
+    type: 'directive',
+    content:
+      'PR-authoring agents (pr-fix-actor, code-author, run-pr-fix.mjs, run-pr-landing.mjs, '
+      + 'and any direct agent fix-push flow) MUST run '
+      + '`node scripts/resolve-outdated-threads.mjs <pr>` after each fix-push so the '
+      + 'unresolved-review-threads merge gate clears as soon as CI does. Outdated review '
+      + 'threads (where the anchored line was changed by the fix-commit) are a hard merge '
+      + 'gate alongside reviewDecision and CI: branch protection enforces '
+      + 'all-conversations-resolved, and an outdated thread stays in the unresolved bucket '
+      + 'until someone calls `resolveReviewThread` on it. Threads still anchored to live '
+      + 'code (unresolved AND not outdated) are LEFT alone -- those need a human or a '
+      + 'CR-side acknowledgement because the suggestion may still apply. The script routes '
+      + 'through `gh-as.mjs lag-ceo` (operator-proxy bot identity), NOT `LAG_OPS_PAT` '
+      + '(machine user reserved for `@coderabbitai review` triggers per '
+      + 'dev-cr-trigger-via-machine-user-only); thread resolution is a routine PR action, '
+      + 'not a CR trigger. Until the substrate enforces this in actor-loop code (PrFixActor '
+      + 'and successors), it is a per-flow rule that PR-authoring agents must follow at '
+      + 'fix-push time.',
+    alternatives_rejected: [
+      {
+        option: 'Leave thread resolution to humans',
+        reason:
+          'Multiple PRs in a single session stalled in BLOCKED purely on this; the burden '
+          + 'is operator-time-fragmenting and the resolution is mechanical.',
+      },
+      {
+        option: 'Resolve ALL unresolved threads regardless of outdated state',
+        reason:
+          'Non-outdated threads are still anchored to live code where the suggestion may '
+          + 'still apply; auto-resolving them silences feedback that the human or CR may '
+          + 'want to act on.',
+      },
+      {
+        option: 'Wait for CR to resolve threads on its own',
+        reason:
+          'CR does not resolve threads when the anchored diff becomes outdated; only the '
+          + 'author or a programmatic resolveReviewThread mutation closes them.',
+      },
+      {
+        option: 'Build this as a PrFixActor substrate seam now',
+        reason:
+          'Premature: the per-flow rule is the right shape until at least three actor-types '
+          + 'use it; substrate-promotion at N=3 keeps the seam from solidifying around a '
+          + 'one-call-site contract.',
+      },
+    ],
+    what_breaks_if_revisited:
+      'Every PR with more than one round of CR fixes sits in mergeStateStatus=BLOCKED until '
+      + 'a human notices and manually resolves outdated threads; the merge queue stalls, '
+      + 'autonomous-loop sessions end at N percent of work landed instead of 100, and the '
+      + 'operator must re-state the directive having lost faith in the loop\'s discipline.',
+    derived_from: [
+      'pol-pr-fix-pr-thread-resolve',
+      'dev-cr-triggers-via-machine-user',
+      'dev-required-checks-must-cover-all-meaningful-ci',
+      'inv-governance-before-autonomy',
+    ],
+  },
 ];
 
 function atomFromSpec(spec) {
