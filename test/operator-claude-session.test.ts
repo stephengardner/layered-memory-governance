@@ -169,6 +169,23 @@ describe('withSessionCompletion', () => {
     expect(base.metadata.agent_session.completed_at).toBeUndefined();
   });
 
+  it('seeds terminal_state="completed" at session start (placeholder per canonical enum)', () => {
+    /*
+     * The canonical AgentSessionMeta enum is 'completed' |
+     * 'budget-exhausted' | 'error' | 'aborted' (no 'running'
+     * state). The existing claude-code agent-loop also seeds
+     * 'completed' at session start and updates in finally; we
+     * match that pattern for substrate uniformity. Pulse infers
+     * liveness via metadata.ended_at === null, NOT via
+     * terminal_state, so this placeholder does not break the
+     * dashboard's active-session filter. Pinning here so a future
+     * substrate change to the enum (adding e.g. 'running') is
+     * caught loud rather than silently propagating.
+     */
+    expect(base.metadata.agent_session.terminal_state).toBe('completed');
+    expect(base.metadata.ended_at).toBeUndefined();
+  });
+
   it('defaults terminal_state to completed when caller omits it', () => {
     const completed = withSessionCompletion(base, {
       completedAt: '2026-04-28T01:00:00.000Z',

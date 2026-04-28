@@ -16,12 +16,13 @@
  * principal-shape filter on `principal_id`, which is a query concern
  * not a schema concern.
  *
- * This module is pure: no I/O, no env reads, no clock reads at module
- * scope. The hook scripts that call it own all side effects so vitest
- * can exercise the atom shapes without spinning up a host. The one
- * exception is `acquireSidecarLock` and `readHookStdin` which take
- * paths/streams as parameters and return promises -- the I/O is
- * explicit at the call boundary.
+ * This module is mostly pure: most exports take primitives in,
+ * produce data out, and have no I/O. The two exceptions are
+ * `acquireSidecarLock` (takes a path; touches the filesystem) and
+ * `readHookStdin` (takes an optional readable stream parameter,
+ * defaulting to `process.stdin`; consumes the stream). Both surface
+ * the I/O as an explicit parameter so tests can inject fakes; the
+ * hook scripts pass the production defaults.
  */
 
 import { open, stat, unlink } from 'node:fs/promises';
@@ -113,6 +114,20 @@ export function buildOperatorSessionAtom(input) {
         adapter_id: input.adapterId,
         workspace_id: input.workspaceId,
         started_at: input.startedAt,
+        /*
+         * terminal_state is a placeholder at session start. The
+         * canonical AgentSessionMeta enum is
+         * 'completed' | 'budget-exhausted' | 'error' | 'aborted'
+         * (no 'running' state by design: agent-loop sessions are
+         * written ONCE on termination per
+         * src/substrate/types.ts:#agent-session). For the
+         * hook-driven operator path there's no equivalent
+         * finalize step -- pulse infers liveness via
+         * `metadata.ended_at === null`, not via terminal_state --
+         * so we seed 'completed' to match the existing
+         * `examples/agent-loops/claude-code/loop.ts` pattern that
+         * does the same at session start and updates in finally.
+         */
         terminal_state: 'completed',
         replay_tier: 'session',
         budget_consumed: { turns: 0, wall_clock_ms: 0 },
@@ -267,15 +282,18 @@ export function withSessionCompletion(sessionAtom, input) {
  *
  * Extracted at N=2 per canon `dev-extract-helpers-at-N-2-plus-one`
  * (each of the hook scripts otherwise carries an identical copy).
+ * Takes an optional readable stream so tests can inject a fake
+ * (default: `process.stdin` for production hook callers).
  *
+ * @param {NodeJS.ReadableStream} [stream=process.stdin]
  * @returns {Promise<string>}
  */
-export function readHookStdin() {
+export function readHookStdin(stream = process.stdin) {
   return new Promise((resolvePromise, reject) => {
     const chunks = [];
-    process.stdin.on('data', (c) => chunks.push(c));
-    process.stdin.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')));
-    process.stdin.on('error', reject);
+    stream.on('data', (c) => chunks.push(c));
+    stream.on('end', () => resolvePromise(Buffer.concat(chunks).toString('utf8')));
+    stream.on('error', reject);
   });
 }
 
@@ -311,7 +329,10 @@ export function parseHookPayload(raw) {
  * both POSIX and NTFS by Node's `open` syscall.
  *
  * @param {string} lockPath
- * @param {{ maxRetries?: number, backoffMs?: number }} [opts]
+ * @param {{ maxRetries?: number, backoffMs?: number, staleMs?: number }} [opts]
+ *   - maxRetries: how many EEXIST retries before throwing (default 50)
+ *   - backoffMs: ms to sleep between retries (default 20)
+ *   - staleMs: lock files older than this are reclaimed via unlink + retry (default STALE_LOCK_MS)
  * @returns {Promise<{ release: () => Promise<void> }>}
  */
 export async function acquireSidecarLock(lockPath, opts = {}) {
