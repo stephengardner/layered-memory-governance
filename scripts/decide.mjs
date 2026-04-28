@@ -188,7 +188,19 @@ function atomFromSpec(spec, operatorId) {
     type: spec.type,
     layer: 'L3',
     provenance: {
-      kind: 'human-asserted',
+      /*
+       * `/decide` writes operator-asserted live-conversational atoms,
+       * so `'user-directive'` is the canonical kind per the
+       * `ProvenanceKind` union in `src/substrate/types.ts`. Distinct
+       * from `'operator-seeded'`, which is reserved for atoms minted
+       * by bootstrap scripts at initial seed time
+       * (`bootstrap-operator-directives.mjs` uses that kind on the
+       * same shape; the `atomFromSpec` comment there preserves the
+       * same distinction). The earlier `'human-asserted'` value here
+       * was not a member of the canonical union and silently scored
+       * 0 in `PROVENANCE_RANK` source-rank tiebreaks.
+       */
+      kind: 'user-directive',
       source: {
         tool: 'decide-cli',
         agent_id: operatorId,
