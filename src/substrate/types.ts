@@ -111,13 +111,12 @@ export type AtomType =
   // to agree; a future validator may enforce this).
   | 'agent-session'
   | 'agent-turn'
-  // Deep planning pipeline atom types. The six types are emitted by
-  // src/runtime/planning-pipeline/ and consumed by reference stage
-  // adapters in examples/planning-stages/. The 'spec' type is a
-  // looser-shaped sibling of 'plan' (prose-shaped per the superpowers
-  // spec convention); the 'pipeline-*' prefix groups runtime state
-  // and audit projection atoms together so a Console filter can
-  // surface a single pipeline run as a coherent timeline.
+  // Deep planning pipeline atom types. The 'spec' type is a
+  // looser-shaped sibling of 'plan' (prose-shaped, intended as a
+  // design-document atom that precedes a plan); the 'pipeline-*'
+  // prefix groups runtime state and audit projection atoms together
+  // so a Console filter can surface a single pipeline run as a
+  // coherent timeline.
   | 'spec'
   | 'pipeline'
   | 'pipeline-stage-event'
