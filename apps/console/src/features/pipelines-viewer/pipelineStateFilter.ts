@@ -8,6 +8,9 @@
  *   paused    -> hil-paused (operator decision required)
  *   completed -> completed (terminal success)
  *   failed    -> failed (terminal failure)
+ *   unknown   -> any state we do NOT recognize (future state, malformed
+ *                atom, etc.). Bucketed separately so the Running chip
+ *                does not silently inflate when a new state ships.
  *   all       -> everything
  *
  * Default bucket is `all` because pipelines are intentionally rare;
@@ -23,6 +26,7 @@ export type PipelineStateBucket =
   | 'paused'
   | 'completed'
   | 'failed'
+  | 'unknown'
   | 'all';
 
 export const DEFAULT_PIPELINE_FILTER: PipelineStateBucket = 'all';
@@ -34,7 +38,10 @@ export function bucketForPipelineState(
   if (state === 'hil-paused') return 'paused';
   if (state === 'completed') return 'completed';
   if (state === 'failed') return 'failed';
-  return 'running';
+  // Unrecognized / null / future state. Keep it OUT of running so the
+  // Running chip does not over-count a new state like 'cancelled'
+  // before the UI ships a real chip for it.
+  return 'unknown';
 }
 
 export function matchesBucket(
@@ -55,6 +62,7 @@ export function normalizeBucket(value: unknown): PipelineStateBucket | null {
     || value === 'paused'
     || value === 'completed'
     || value === 'failed'
+    || value === 'unknown'
     || value === 'all'
   ) {
     return value;

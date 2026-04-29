@@ -165,6 +165,14 @@
   transform: translateY(-1px);
 }
 
+.card:focus-visible,
+.card:focus-within {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+}
+
 .cardHead {
   display: flex;
   align-items: center;

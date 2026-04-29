@@ -61,7 +61,17 @@ function PipelinesList() {
   const allPipelines = query.data?.pipelines ?? [];
 
   const counts = useMemo(() => {
-    const c = { running: 0, paused: 0, completed: 0, failed: 0, all: allPipelines.length };
+    // `unknown` covers any pipeline_state the UI does not have a chip
+    // for yet (future state, malformed atom). Tracked separately so a
+    // new state never silently inflates the Running count.
+    const c: Record<PipelineStateBucket, number> = {
+      running: 0,
+      paused: 0,
+      completed: 0,
+      failed: 0,
+      unknown: 0,
+      all: allPipelines.length,
+    };
     for (const p of allPipelines) {
       const b = bucketForPipelineState(p.pipeline_state);
       c[b] += 1;

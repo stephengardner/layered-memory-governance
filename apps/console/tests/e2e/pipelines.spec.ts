@@ -115,9 +115,16 @@ test.describe('pipelines list view', () => {
      * Use a fake id that the projection guarantees will never match a
      * real atom. The detail endpoint replies 404; the view collapses
      * to an EmptyState with a Back button instead of a stack trace.
+     * Assert the back button actually navigates so the affordance the
+     * test name calls out is real, not just visible-but-broken.
      */
     await page.goto('/pipelines/pipeline-does-not-exist-zzz');
     await expect(page.getByTestId('pipeline-detail-empty')).toBeVisible({ timeout: 10_000 });
+    const backButton = page.getByRole('button', { name: 'Back to pipelines' });
+    await expect(backButton).toBeVisible();
+    await backButton.click();
+    await expect(page).toHaveURL(/\/pipelines$/);
+    await expect(page.getByTestId('pipelines-view')).toBeVisible({ timeout: 10_000 });
   });
 
   test('mobile (390px) viewport renders without horizontal scroll', async ({ page, viewport }) => {

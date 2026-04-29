@@ -315,6 +315,16 @@
   margin-left: auto;
 }
 
+.resumeButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-warning) 22%, transparent);
+  border-color: color-mix(in srgb, var(--status-warning) 65%, transparent);
+}
+
+.resumeButton:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
 .resumeButton:disabled {
   cursor: not-allowed;
   opacity: 0.6;
@@ -617,4 +627,9 @@
 .clearButton:hover {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent-hover);
+}
+
+.clearButton:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
 }

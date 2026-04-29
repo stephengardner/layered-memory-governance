@@ -48,8 +48,21 @@ export function PipelineDetailView({ pipelineId }: { pipelineId: string }) {
      * larger than the smallest stage to ensure progress visible.
      * Mirrors the live-ops 2s cadence in spirit but at a tier the
      * detail surface justifies (it's not the at-a-glance dashboard).
+     *
+     * Stop polling once the pipeline reaches a terminal state
+     * (succeeded/failed) or the request errors (404/missing). The
+     * org-ceiling case (canon dev-indie-floor-org-ceiling) is several
+     * operators pinning detail tabs on terminal pipelines; an
+     * unconditional 5s poll would waste backend cycles forever.
      */
-    refetchInterval: 5000,
+    refetchInterval: (queryState) => {
+      if (queryState.state.error) return false;
+      const state = queryState.state.data?.pipeline.pipeline_state;
+      if (state === 'pending' || state === 'running' || state === 'hil-paused') {
+        return 5000;
+      }
+      return false;
+    },
     refetchOnWindowFocus: true,
   });
 
