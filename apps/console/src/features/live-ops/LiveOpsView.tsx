@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { Activity, Cpu, Eye, GitMerge, Heart, ShieldAlert, Timer, Users } from 'lucide-react';
+import { Activity, Cpu, Eye, GitMerge, Heart, ShieldAlert, Timer, Users, Workflow } from 'lucide-react';
 import {
   LoadingState,
   ErrorState,
@@ -17,8 +17,13 @@ import {
   type LiveOpsRecentTransition,
   type LiveOpsSnapshot,
 } from '@/services/live-ops.service';
+import {
+  listLiveOpsPipelines,
+  type PipelineLiveOpsRow,
+} from '@/services/pipelines.service';
 import { setRoute } from '@/state/router.store';
 import { planStateTone } from '@/features/plan-state/tones';
+import { pipelineStateTone } from '@/features/pipelines-viewer/tones';
 import styles from './LiveOpsView.module.css';
 
 /**
@@ -103,9 +108,101 @@ function Body({ data }: { data: LiveOpsSnapshot }) {
       <ActiveSessionsTile sessions={data.active_sessions} />
       <LiveDeliberationsTile plans={data.live_deliberations} />
       <InFlightExecutionsTile plans={data.in_flight_executions} />
+      <PipelinesTile />
       <RecentTransitionsTile transitions={data.recent_transitions} />
       <PrActivityTile prs={data.pr_activity} />
     </div>
+  );
+}
+
+function PipelinesTile() {
+  /*
+   * Pipelines tile uses its own TanStack Query keyed off
+   * `pipelines.live-ops`. Mirrors the snapshot's 2s cadence so the
+   * "in flight" tile has the same liveness feel as the rest of the
+   * dashboard. Stitching this into the snapshot endpoint server-side
+   * was the alternative; kept separate so the snapshot endpoint stays
+   * minimal-shape and a future Pulse-tile reorg can drop pipelines
+   * out cheaply.
+   */
+  const query = useQuery({
+    queryKey: ['live-ops.pipelines'],
+    queryFn: ({ signal }) => listLiveOpsPipelines(signal),
+    refetchInterval: REFRESH_INTERVAL_MS,
+    refetchOnWindowFocus: true,
+  });
+  const rows: ReadonlyArray<PipelineLiveOpsRow> = query.data?.pipelines ?? [];
+  return (
+    <Tile
+      icon={Workflow}
+      title="Pipelines in flight"
+      subtitle="Deep planning runs (running + paused)"
+      testId="live-ops-pipelines"
+    >
+      {query.isPending && (
+        <p className={styles.empty} data-testid="live-ops-pipelines-loading">
+          Loading...
+        </p>
+      )}
+      {query.isError && (
+        <p className={styles.empty} data-testid="live-ops-pipelines-error">
+          Could not load pipelines snapshot.
+        </p>
+      )}
+      {query.isSuccess && rows.length === 0 && (
+        <EmptyRow testId="live-ops-pipelines-empty">
+          No pipelines in flight. Trigger a substrate-deep run to see the chain materialize.
+        </EmptyRow>
+      )}
+      {query.isSuccess && rows.length > 0 && (
+        <ul className={styles.list} data-testid="live-ops-pipelines-list">
+          {rows.map((p) => (
+            <PipelineRow key={p.pipeline_id} pipeline={p} />
+          ))}
+        </ul>
+      )}
+    </Tile>
+  );
+}
+
+function PipelineRow({ pipeline }: { pipeline: PipelineLiveOpsRow }) {
+  const tone = pipelineStateTone(pipeline.pipeline_state);
+  const href = `/pipelines/${encodeURIComponent(pipeline.pipeline_id)}`;
+  return (
+    <li
+      className={styles.row}
+      data-testid="live-ops-pipeline-row"
+      data-pipeline-id={pipeline.pipeline_id}
+      data-pipeline-state={pipeline.pipeline_state}
+    >
+      <a
+        className={styles.rowLink}
+        href={href}
+        onClick={(e) => {
+          if (e.defaultPrevented || e.button !== 0) return;
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          e.preventDefault();
+          setRoute('pipelines', pipeline.pipeline_id);
+        }}
+      >
+        <span className={styles.rowPrimary}>
+          <span
+            className={styles.statePill}
+            style={{ borderColor: tone, color: tone }}
+            aria-label={`pipeline state ${pipeline.pipeline_state}`}
+          >
+            {pipeline.pipeline_state}
+          </span>
+          {pipeline.title}
+        </span>
+        <span className={styles.rowSecondary}>
+          {pipeline.current_stage_name
+            ? `${pipeline.current_stage_name} (${pipeline.current_stage_index + 1}/${pipeline.total_stages || '?'})`
+            : 'no stage event yet'}
+          {' '}{'\u00B7'}{' '}{formatRelative(pipeline.last_event_at)}
+        </span>
+      </a>
+    </li>
   );
 }
 

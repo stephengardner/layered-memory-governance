@@ -10,6 +10,7 @@ import { PrincipalsView } from '@/features/principals-viewer/PrincipalsView';
 import { PrincipalTreeView } from '@/features/principal-tree/PrincipalTreeView';
 import { ActivitiesView } from '@/features/activities-viewer/ActivitiesView';
 import { PlansView } from '@/features/plans-viewer/PlansView';
+import { PipelinesView } from '@/features/pipelines-viewer/PipelinesView';
 import { PlanLifecycleView } from '@/features/plan-lifecycle-viewer/PlanLifecycleView';
 import { DeliberationView } from '@/features/deliberation-trail/DeliberationView';
 import { GraphView } from '@/features/graph-viewer/GraphView';
@@ -84,6 +85,7 @@ function renderRoute(r: Route) {
     case 'hierarchy': return <PrincipalTreeView />;
     case 'activities': return <ActivitiesView />;
     case 'plans': return <PlansView />;
+    case 'pipelines': return <PipelinesView />;
     case 'plan-lifecycle': return <PlanLifecycleView />;
     case 'deliberation': return <DeliberationView />;
     case 'graph': return <GraphView />;

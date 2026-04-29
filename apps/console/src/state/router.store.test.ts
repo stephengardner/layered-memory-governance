@@ -45,6 +45,28 @@ describe('routeForAtomId', () => {
       expect(routeForAtomId('q-10be84a49c4b530b-2026-04-26T09-17-47-639Z')).toBe('activities');
       expect(routeForAtomId('q-9d7166ce95959515-2026-04-24T22-54-23-498Z')).toBe('activities');
     });
+
+    it('routes pipeline-stage-event-* descendants to activities (not pipelines)', () => {
+      // The pipelines.detail endpoint does an exact-match lookup on
+      // root pipeline atoms. Routing a descendant id to /pipelines/<id>
+      // would return 404 because descendants are not in pipelinesById.
+      // Activities focus-mode handles arbitrary ids, so descendants
+      // route there until the detail handler resolves descendants to
+      // their parent pipeline.
+      expect(routeForAtomId('pipeline-stage-event-abc-2026-04-26T01-00-00-000Z')).toBe('activities');
+    });
+
+    it('routes pipeline-audit-finding-* descendants to activities', () => {
+      expect(routeForAtomId('pipeline-audit-finding-xyz-2026-04-26T01-00-00-000Z')).toBe('activities');
+    });
+
+    it('routes pipeline-failed-* descendants to activities', () => {
+      expect(routeForAtomId('pipeline-failed-abc-2026-04-26T01-00-00-000Z')).toBe('activities');
+    });
+
+    it('routes pipeline-resume-* descendants to activities', () => {
+      expect(routeForAtomId('pipeline-resume-abc-2026-04-26T01-00-00-000Z')).toBe('activities');
+    });
   });
 
   describe('canon (default)', () => {
@@ -86,6 +108,16 @@ describe('routeForAtomId', () => {
     });
   });
 
+  describe('pipelines', () => {
+    it('routes root pipeline-* ids (not descendants) to the pipelines view', () => {
+      // Root pipeline atom ids look like `pipeline-<correlation-id>`.
+      // The detail handler exact-matches these in `index.pipelinesById`,
+      // so the route lands on a real drill-in.
+      expect(routeForAtomId('pipeline-abc123')).toBe('pipelines');
+      expect(routeForAtomId('pipeline-2026-04-26-deep-plan-run')).toBe('pipelines');
+    });
+  });
+
   describe('order sensitivity', () => {
     it('plan-merge-settled wins against the generic plan- prefix', () => {
       // If the generic `plan-` check ran first, settlement records
@@ -94,6 +126,15 @@ describe('routeForAtomId', () => {
       const id = 'plan-merge-settled-2026-04-26-pr-228';
       expect(routeForAtomId(id)).toBe('activities');
       expect(routeForAtomId(id)).not.toBe('plans');
+    });
+
+    it('pipeline descendants win against the generic pipeline- prefix', () => {
+      // If the generic `pipeline-` check ran first, descendant atoms
+      // would route to /pipelines/<id> and 404 against the detail
+      // endpoint because descendants are not root atoms.
+      const id = 'pipeline-stage-event-abc-2026-04-26T01-00-00-000Z';
+      expect(routeForAtomId(id)).toBe('activities');
+      expect(routeForAtomId(id)).not.toBe('pipelines');
     });
   });
 });

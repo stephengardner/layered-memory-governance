@@ -27,7 +27,7 @@ import { useSyncExternalStore } from 'react';
  * routes by default, so `/canon/my-atom-id` resolves to the SPA bundle.
  */
 
-export type Route = 'dashboard' | 'control' | 'live-ops' | 'canon' | 'principals' | 'hierarchy' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions' | 'actor-activity' | 'deliberation';
+export type Route = 'dashboard' | 'control' | 'live-ops' | 'canon' | 'principals' | 'hierarchy' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions' | 'actor-activity' | 'deliberation' | 'pipelines';
 
 /*
  * `dashboard` is the new home: landing on `/` resolves here so the
@@ -55,6 +55,7 @@ const VALID: ReadonlyArray<Route> = [
   'canon-suggestions',
   'actor-activity',
   'deliberation',
+  'pipelines',
 ];
 const NAV_EVENT = 'lag-console:navigate';
 
@@ -198,6 +199,25 @@ export function routeHref(r: Route, id?: string): string {
  */
 export function routeForAtomId(id: string): Route {
   if (id.startsWith('plan-merge-settled-')) return 'activities';
+  /*
+   * Pipeline atoms route to the pipelines drill-in by ROOT id only.
+   * Descendant prefixes (`pipeline-stage-event-`, `pipeline-audit-finding-`,
+   * `pipeline-failed-`, `pipeline-resume-`) are NOT root pipeline atoms
+   * and would 404 against `/api/pipelines.detail` (which exact-matches
+   * the root id in `index.pipelinesById`). Until the detail handler
+   * resolves a descendant id back to its parent's `pipeline_id`, route
+   * descendant atoms to the activities feed where focus-mode handles
+   * arbitrary atom ids. Order: must precede the generic `plan-` branch
+   * so a future `plan-*` rename of a pipeline descendant doesn't
+   * silently re-route.
+   */
+  if (
+    id.startsWith('pipeline-stage-event-')
+    || id.startsWith('pipeline-audit-finding-')
+    || id.startsWith('pipeline-failed-')
+    || id.startsWith('pipeline-resume-')
+  ) return 'activities';
+  if (id.startsWith('pipeline-')) return 'pipelines';
   if (id.startsWith('plan-')) return 'plans';
   if (
     id.startsWith('op-action-')

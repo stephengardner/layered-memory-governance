@@ -67,6 +67,17 @@ import {
   listPrActivity as listLiveOpsPrActivity,
 } from './live-ops';
 import type { LiveOpsAtom, LiveOpsSnapshot } from './live-ops-types';
+import {
+  getPipelineDetail,
+  listLiveOpsPipelines,
+  listPipelineSummaries,
+} from './pipelines';
+import type {
+  PipelineDetail,
+  PipelineListResult,
+  PipelineLiveOpsResult,
+  PipelineSourceAtom,
+} from './pipelines-types';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -1429,6 +1440,43 @@ async function handleLiveOpsSnapshot(): Promise<LiveOpsSnapshot> {
 }
 
 // ---------------------------------------------------------------------------
+// Pipelines: deep planning pipeline projections.
+//
+// The runtime emits a chain per pipeline run (one root pipeline atom +
+// N pipeline-stage-event atoms + M pipeline-audit-finding atoms +
+// optional pipeline-failed + optional pipeline-resume). Three handlers
+// project that chain into wire shapes the Console consumes:
+//   - /api/pipelines.list      : grid view; pre-rolled stats per pipeline
+//   - /api/pipelines.detail    : drill-in for one pipeline (full chain)
+//   - /api/pipelines.live-ops  : narrowed view for the Pulse tile
+// ---------------------------------------------------------------------------
+
+// Cast through the narrow shape the pipeline projection consumes; the
+// helper-side type elides fields they don't touch (provenance,
+// supersedes), same pattern as live-ops. Extracted at N=2 per canon
+// `dev-extract-at-n=2` so the three handlers don't drift on future
+// guard additions.
+async function readPipelineSourceAtoms(): Promise<ReadonlyArray<PipelineSourceAtom>> {
+  const all = await readAllAtoms();
+  return all as unknown as ReadonlyArray<PipelineSourceAtom>;
+}
+
+async function handlePipelinesList(): Promise<PipelineListResult> {
+  const sourceAtoms = await readPipelineSourceAtoms();
+  return listPipelineSummaries(sourceAtoms, Date.now());
+}
+
+async function handlePipelineDetail(pipelineId: string): Promise<PipelineDetail | null> {
+  const sourceAtoms = await readPipelineSourceAtoms();
+  return getPipelineDetail(sourceAtoms, pipelineId);
+}
+
+async function handlePipelinesLiveOps(): Promise<PipelineLiveOpsResult> {
+  const sourceAtoms = await readPipelineSourceAtoms();
+  return listLiveOpsPipelines(sourceAtoms, Date.now());
+}
+
+// ---------------------------------------------------------------------------
 // Plan lifecycle: end-to-end timeline of a single plan's autonomous-loop
 // chain. Stitches together the five (sometimes six) state-transition
 // atoms that a `plan` traverses from operator-intent through to merged:
@@ -2385,6 +2433,46 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'live-ops-snapshot-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipelines.list' && req.method === 'POST') {
+    try {
+      const data = await handlePipelinesList();
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pipelines-list-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipelines.detail' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
+    if (!pipelineId) {
+      sendErr(req, res, 400, 'missing-pipeline-id', 'pipelines.detail requires { pipeline_id: string }');
+      return;
+    }
+    try {
+      const data = await handlePipelineDetail(pipelineId);
+      if (data === null) {
+        sendErr(req, res, 404, 'pipeline-not-found', `no pipeline atom with id ${pipelineId}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pipeline-detail-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipelines.live-ops' && req.method === 'POST') {
+    try {
+      const data = await handlePipelinesLiveOps();
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pipelines-live-ops-failed', (err as Error).message);
     }
     return;
   }
