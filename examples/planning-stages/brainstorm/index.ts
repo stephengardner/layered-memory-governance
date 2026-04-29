@@ -94,13 +94,44 @@ function extractCitedAtomIds(text: string): ReadonlyArray<string> {
   return out;
 }
 
-const BRAINSTORM_SYSTEM_PROMPT = `You are the brainstorm stage of a deep-planning pipeline.
+/**
+ * Brainstorm system prompt.
+ *
+ * Exported so the contract-tests can assert on the citation-grounding
+ * language. Tightened (substrate-fix in this PR) so the LLM does not
+ * fabricate plausible-but-invented atom-ids: the e2e of the deep
+ * planning pipeline halted 100% of the time on first try because the
+ * unconstrained prompt invited citations like
+ * "atom:stage-responsibility-brainstorm" and "atom:stage-isolation"
+ * that the post-stage auditor had to reject. Constraining citations
+ * to the verified seed-atom set passed via the templated DATA block
+ * (data.verified_seed_atom_ids) reduces the halt rate without a
+ * structural retry-with-feedback loop. Retry-with-feedback is a
+ * separate substrate change.
+ */
+export const BRAINSTORM_SYSTEM_PROMPT = `You are the brainstorm stage of a deep-planning pipeline.
 Survey alternatives, surface open questions, and identify decision points
-for the seeded operator-intent. Cite atoms with the explicit prefix
-"atom:" inside rejection_reason (e.g. "atom:dev-no-claude-attribution"),
-NOT bare hyphenated tokens, so the auditor can distinguish citations from
-prose. Emit ONLY a payload that matches the provided schema; no prose
-outside the schema fields.`;
+for the seeded operator-intent. Emit ONLY a payload that matches the
+provided schema; no prose outside the schema fields.
+
+Citation grounding (HARD CONSTRAINT):
+- The DATA block contains a "verified seed atom set" under
+  data.verified_seed_atom_ids. This array is the ONLY authoritative
+  list of atom-ids you have been shown.
+- When you cite an atom inside an alternative's rejection_reason, you
+  MUST cite ONLY ids that appear in data.verified_seed_atom_ids.
+- Citations use the explicit prefix "atom:" (e.g.
+  "atom:dev-no-claude-attribution"), NOT bare hyphenated tokens, so
+  the post-stage auditor can distinguish citations from prose.
+- If you cannot ground a claim in an id from the verified seed atom
+  set, OMIT the citation rather than guess. A rejection_reason
+  without a citation is preferable to a fabricated atom-id.
+
+Self-check (REQUIRED before emitting):
+- Walk every atom-id appearing in your output (rejection_reason
+  fields, decision_points, open_questions). For each, verify the id
+  appears literally in data.verified_seed_atom_ids. If it does not,
+  rewrite the field to omit the citation before emitting.`;
 
 async function runBrainstorm(
   input: StageInput<unknown>,
@@ -140,7 +171,17 @@ async function runBrainstorm(
     BRAINSTORM_SYSTEM_PROMPT,
     {
       pipeline_id: String(input.pipelineId),
+      // Legacy key: kept for backwards-compatible consumers that may
+      // be reading this DATA block from prompt-fingerprint logs. The
+      // load-bearing key for the prompt's citation-grounding contract
+      // is verified_seed_atom_ids below.
       seed_atom_ids: input.seedAtomIds.map(String),
+      // Citation-grounding fence: the LLM is constrained by the
+      // BRAINSTORM_SYSTEM_PROMPT to cite ONLY atom-ids that appear in
+      // this array. Mirrors seed_atom_ids today; the separate name
+      // makes the contract obvious to downstream prompt-edit
+      // reviewers and gives the test suite a stable assertion target.
+      verified_seed_atom_ids: input.seedAtomIds.map(String),
       correlation_id: input.correlationId,
     },
     {
@@ -165,11 +206,59 @@ async function runBrainstorm(
   };
 }
 
+/**
+ * Read the verified seed-atom set from the pipeline atom's
+ * derived_from chain. The runner constructs the pipeline atom via
+ * mkPipelineAtom which stamps seedAtomIds onto provenance.derived_from
+ * exactly. Audit reads through the pipeline atom rather than the
+ * StageContext because StageContext is a substrate type (changes there
+ * affect every stage adapter); deriving the set from the existing
+ * pipeline atom keeps this change adapter-local.
+ *
+ * Fail-closed on a missing pipeline atom or empty provenance: the seed
+ * set is the authoritative input to the citation-grounding fence, and
+ * a silent fall-through to "no constraint" lets out-of-set citations
+ * pass when the pipeline atom is unreadable. The runner converts the
+ * thrown error into an exit-failure event + pipeline-failed atom via
+ * its existing stage-error machinery; the audit function never
+ * silently degrades. Per inv-governance-before-autonomy.
+ */
+async function readVerifiedSeedSetFromPipelineAtom(
+  ctx: StageContext,
+): Promise<ReadonlySet<string>> {
+  const pipelineAtom = await ctx.host.atoms.get(ctx.pipelineId);
+  if (pipelineAtom === null) {
+    throw new Error(
+      `brainstorm-stage audit: pipeline atom "${String(ctx.pipelineId)}" `
+      + 'not found in host.atoms; cannot resolve verified seed-atom set. '
+      + 'Failing closed rather than skipping the citation-grounding fence.',
+    );
+  }
+  const derived = pipelineAtom.provenance?.derived_from ?? [];
+  if (derived.length === 0) {
+    throw new Error(
+      `brainstorm-stage audit: pipeline atom "${String(ctx.pipelineId)}" `
+      + 'has empty provenance.derived_from; the verified seed-atom set is '
+      + 'the authoritative input for the citation-grounding fence and '
+      + 'cannot be empty. Failing closed.',
+    );
+  }
+  return new Set(derived.map((id) => String(id)));
+}
+
 async function auditBrainstorm(
   output: BrainstormPayload,
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
   const findings: AuditFinding[] = [];
+  // Read the verified seed-atom set up front so each cited id is
+  // checked against the same snapshot. Per the brainstorm prompt's
+  // citation-grounding contract, an atom cited in rejection_reason
+  // MUST appear in this set even if it resolves through host.atoms.get;
+  // a bare resolvable atom that is NOT in the seed set is treated as
+  // a fabricated-cited-atom with the same critical severity, because
+  // the model has no provenance for choosing it.
+  const verifiedSeedSet = await readVerifiedSeedSetFromPipelineAtom(ctx);
   for (const alt of output.alternatives_surveyed) {
     const cited = extractCitedAtomIds(alt.rejection_reason);
     for (const id of cited) {
@@ -183,6 +272,29 @@ async function auditBrainstorm(
             + `atom id "${id}" which does not resolve via host.atoms.get. `
             + 'Mitigates the drafter-citation-verification failure mode at '
             + 'the substrate level.',
+          cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
+        continue;
+      }
+      // Resolves but is NOT in the verified seed-atom set: the LLM
+      // grounded a citation on an atom outside the input contract.
+      // Flag with the same critical severity so the runner halts;
+      // the prompt explicitly tells the LLM to cite ONLY ids from
+      // verified_seed_atom_ids. The size>0 guard from an earlier
+      // iteration was removed because readVerifiedSeedSetFromPipelineAtom
+      // now fails closed on an empty / missing pipeline atom; reaching
+      // this point implies a non-empty verified set.
+      if (!verifiedSeedSet.has(String(id))) {
+        findings.push({
+          severity: 'critical',
+          category: 'non-seed-cited-atom',
+          message:
+            `Brainstorm rejection_reason for option "${alt.option}" cites `
+            + `atom id "${id}" which resolves but is NOT in the verified `
+            + 'seed-atom set passed via the pipeline atom. The brainstorm '
+            + 'prompt restricts citations to the seed set; an out-of-set '
+            + 'citation is treated as ungrounded and halts the stage.',
           cited_atom_ids: [id as AtomId],
           cited_paths: [],
         });

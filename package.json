@@ -15,6 +15,12 @@
     "lag-tg": "./bin/lag-tg.mjs",
     "lag-actors": "./bin/lag-actors.js"
   },
+  "imports": {
+    "#runtime/actor-message": {
+      "types": "./src/runtime/actor-message/index.ts",
+      "default": "./dist/runtime/actor-message/index.js"
+    }
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",

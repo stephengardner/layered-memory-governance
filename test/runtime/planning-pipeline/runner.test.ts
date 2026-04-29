@@ -28,6 +28,24 @@ function mkStage<TIn, TOut>(
 }
 
 /**
+ * Build a stage whose run() throws synchronously. Test fixtures use
+ * this to drive the failure path through failPipeline + the
+ * exit-failure event emit. Extracted at N=2+ per the duplication-floor
+ * canon (`dev-extract-helper-at-n2`).
+ */
+function mkThrowingStage(
+  name = 'fail-stage',
+  message = 'boom',
+): PlanningStage<unknown, unknown> {
+  return {
+    name,
+    async run() {
+      throw new Error(message);
+    },
+  };
+}
+
+/**
  * Seed pause_mode='never' policy atoms for the supplied stage names so
  * the runner does not halt on the fail-closed HIL default. Test
  * fixtures inline the policy because production deployments author it
@@ -116,12 +134,7 @@ describe('runPipeline', () => {
 
   it('writes pipeline-failed atom when a stage throws', async () => {
     const host = createMemoryHost();
-    const failingStage: PlanningStage<unknown, unknown> = {
-      name: 'fail-stage',
-      async run() {
-        throw new Error('boom');
-      },
-    };
+    const failingStage = mkThrowingStage();
     const result = await runPipeline([failingStage], host, {
       principal: 'cto-actor' as PrincipalId,
       correlationId: 'corr-3',
@@ -216,5 +229,169 @@ describe('runPipeline', () => {
       ['b', 'enter'],
       ['b', 'exit-success'],
     ]);
+  });
+
+  // Terminal-transition timestamp parity. Substrate-fix in this PR:
+  // failPipeline marked pipeline_state='failed' but never stamped
+  // metadata.completed_at, leaving the field at its mkPipelineAtom
+  // initial value of null. The completed path stamped it correctly.
+  // Audit consumers projecting pipeline duration ("how long did this
+  // run before failing") couldn't tell from the atom alone; they had
+  // to derive the time from the chain of pipeline-stage-event atoms.
+  // Mirror the started_at pattern: stamp completed_at on every
+  // terminal transition (failed or completed).
+  describe('terminal-transition completed_at stamp', () => {
+    it('stamps metadata.completed_at on successful completion', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['stage-a']);
+      const stages = [mkStage<unknown, unknown>('stage-a', () => ({}))];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-completed-at-success',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('completed');
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-completed-at-success` as AtomId,
+      );
+      expect(pipelineAtom).not.toBeNull();
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      expect(meta.completed_at).toBe(NOW);
+      expect(pipelineAtom!.pipeline_state).toBe('completed');
+    });
+
+    it('stamps metadata.completed_at on stage-thrown failure', async () => {
+      const host = createMemoryHost();
+      const failingStage = mkThrowingStage();
+      const result = await runPipeline([failingStage], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-completed-at-fail',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('failed');
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-completed-at-fail` as AtomId,
+      );
+      expect(pipelineAtom).not.toBeNull();
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      // Mirrors the started_at pattern in mkPipelineAtom: terminal
+      // transitions stamp completed_at to the run's terminal time.
+      expect(meta.completed_at).toBe(NOW);
+      expect(pipelineAtom!.pipeline_state).toBe('failed');
+    });
+
+    it('stamps metadata.completed_at on critical-audit-finding failure', async () => {
+      const host = createMemoryHost();
+      const auditedStage: PlanningStage<unknown, { x: number }> = {
+        name: 'audited-stage',
+        async run() {
+          return { value: { x: 1 }, cost_usd: 0, duration_ms: 0, atom_type: 'spec' };
+        },
+        async audit() {
+          return [
+            {
+              severity: 'critical',
+              category: 'cite-fail',
+              message: 'fabricated path',
+              cited_atom_ids: [],
+              cited_paths: ['nope.ts'],
+            },
+          ];
+        },
+      };
+      const result = await runPipeline([auditedStage], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-completed-at-audit',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('failed');
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-completed-at-audit` as AtomId,
+      );
+      expect(pipelineAtom).not.toBeNull();
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      expect(meta.completed_at).toBe(NOW);
+      expect(pipelineAtom!.pipeline_state).toBe('failed');
+    });
+
+    it('preserves started_at when stamping completed_at on failure', async () => {
+      // Regression guard: the metadata patch must be a shallow-merge,
+      // not a clobber. mkPipelineAtom initialises started_at + null
+      // completed_at + total_cost_usd; failPipeline must not erase
+      // started_at when it stamps completed_at.
+      const host = createMemoryHost();
+      const failingStage = mkThrowingStage();
+      await runPipeline([failingStage], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-completed-at-merge',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-completed-at-merge` as AtomId,
+      );
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      expect(meta.started_at).toBe(NOW);
+      expect(meta.completed_at).toBe(NOW);
+      // Confirm the mode + stage_policy fields from mkPipelineAtom
+      // survive the failure-path metadata write too.
+      expect(meta.stage_policy_atom_id).toBe('pol-test');
+      expect(meta.mode).toBe('substrate-deep');
+    });
+
+    // CR PR #244 #4195194861 nit: timestamp-parity guard. The earlier
+    // tests used a constant now() and could not distinguish "single
+    // now() call shared between writes" from "two now() calls that
+    // happen to return the same value". This test uses an
+    // incrementing clock so the assertion catches a future regression
+    // that splits the terminal timestamp across two now() invocations.
+    it('reuses a single now() across pipeline-failed and pipeline atom writes', async () => {
+      const host = createMemoryHost();
+      // Closure that returns a distinct ISO timestamp on each call.
+      // The runner currently calls now() at: mkPipelineAtom (start),
+      // each emitStageEvent, the terminal failPipeline (single
+      // shared call), and one trailing pipeline-stage-event 'enter'
+      // emit. A regression that introduces a second now() call
+      // between the pipeline-failed atom and the pipeline atom
+      // metadata write would shift completed_at off pipeline-failed
+      // .created_at; this assertion would catch that.
+      let i = 0;
+      const incNow = () =>
+        new Date(Date.UTC(2026, 3, 28, 12, 0, i++)).toISOString() as Time;
+      const failingStage = mkThrowingStage();
+      await runPipeline([failingStage], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-parity-test',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: incNow,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-parity-test` as AtomId,
+      );
+      const failedAtom = await host.atoms.get(
+        `pipeline-failed-pipeline-corr-parity-test-0` as AtomId,
+      );
+      expect(pipelineAtom).not.toBeNull();
+      expect(failedAtom).not.toBeNull();
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      // Parity invariant: the pipeline-failed atom's created_at is
+      // the same terminalNow used to stamp the pipeline atom's
+      // metadata.completed_at. A regression that splits these into
+      // two now() calls would surface as drift here.
+      expect(meta.completed_at).toBe(failedAtom!.created_at);
+    });
   });
 });
