@@ -43,7 +43,10 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { runPipeline } from '../../../src/runtime/planning-pipeline/runner.js';
-import { createMemoryHost } from '../../../src/adapters/memory/index.js';
+import {
+  createMemoryHost,
+  type MemoryHost,
+} from '../../../src/adapters/memory/index.js';
 import type { PlanningStage } from '../../../src/runtime/planning-pipeline/types.js';
 import type {
   Atom,
@@ -108,8 +111,7 @@ interface StubPayloads {
  * downstream.
  */
 function stubLlm(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  host: any,
+  host: MemoryHost,
   payloads: StubPayloads = {},
 ): void {
   vi.spyOn(host.llm, 'judge').mockImplementation(
