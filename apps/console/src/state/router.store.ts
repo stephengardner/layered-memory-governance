@@ -27,7 +27,7 @@ import { useSyncExternalStore } from 'react';
  * routes by default, so `/canon/my-atom-id` resolves to the SPA bundle.
  */
 
-export type Route = 'dashboard' | 'control' | 'live-ops' | 'canon' | 'principals' | 'hierarchy' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions' | 'actor-activity' | 'deliberation';
+export type Route = 'dashboard' | 'control' | 'live-ops' | 'canon' | 'principals' | 'hierarchy' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions' | 'actor-activity' | 'deliberation' | 'pipelines';
 
 /*
  * `dashboard` is the new home: landing on `/` resolves here so the
@@ -55,6 +55,7 @@ const VALID: ReadonlyArray<Route> = [
   'canon-suggestions',
   'actor-activity',
   'deliberation',
+  'pipelines',
 ];
 const NAV_EVENT = 'lag-console:navigate';
 
@@ -198,6 +199,18 @@ export function routeHref(r: Route, id?: string): string {
  */
 export function routeForAtomId(id: string): Route {
   if (id.startsWith('plan-merge-settled-')) return 'activities';
+  /*
+   * Pipeline atoms (root + every emitted descendant) route to the
+   * pipelines drill-in. The descendant prefixes (`pipeline-stage-event-`,
+   * `pipeline-audit-finding-`, `pipeline-failed-`, `pipeline-resume-`)
+   * resolve to the parent pipeline via the detail endpoint, so for now
+   * we collapse them all to the root view; the drill-in scrolls the
+   * matching event/finding into focus when the id is on the path.
+   * Order: must precede the generic `plan-` branch even though the
+   * prefixes don't currently overlap, so a future `plan-*` rename of a
+   * pipeline descendant doesn't silently re-route.
+   */
+  if (id.startsWith('pipeline-')) return 'pipelines';
   if (id.startsWith('plan-')) return 'plans';
   if (
     id.startsWith('op-action-')

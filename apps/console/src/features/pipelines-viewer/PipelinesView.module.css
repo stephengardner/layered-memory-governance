@@ -1,0 +1,306 @@
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+}
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.heroTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+}
+
+.heroSubtitle {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+  max-width: 56rem;
+}
+
+/*
+ * Two-stack masonry grid (per arch-masonry-two-stack-pattern).
+ * Cards distributed by index parity into left/right flex columns;
+ * card-height variation grows only its own column instead of
+ * triggering CSS-columns rebalance jumps.
+ */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (min-width: 60rem) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+.filterChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.filterChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  min-height: var(--size-touch-target-min);
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard),
+              border-color var(--duration-fast) var(--easing-standard);
+}
+
+.filterChip:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.filterChip:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.filterChipSelected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.filterChipSelected:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-hover);
+}
+
+.filterChipLabel {
+  letter-spacing: 0.04em;
+}
+
+.filterChipCount {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+  opacity: 0.75;
+}
+
+.filterChipSelected .filterChipCount {
+  opacity: 1;
+}
+
+.inlineLink {
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  border-bottom: var(--stroke-hairline) dashed color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.inlineLink:hover {
+  color: var(--accent-hover);
+}
+
+.inlineLink:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+  border-radius: var(--radius-xs);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  background-color: var(--surface-base);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-overlay) 35%, transparent) 0%,
+    transparent 45%
+  );
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--easing-standard),
+              box-shadow var(--duration-fast) var(--easing-standard),
+              transform var(--duration-fast) var(--easing-standard);
+  position: relative;
+  isolation: isolate;
+}
+
+.card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.statePill {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.modeChip {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-xs);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.cardId {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  word-break: break-all;
+  margin-left: auto;
+}
+
+.cardTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -0.02em;
+  line-height: var(--line-height-tight);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.titleLink {
+  color: inherit;
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--easing-standard);
+}
+
+.titleLink:hover {
+  color: var(--accent);
+}
+
+.titleLink:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+  border-radius: var(--radius-xs);
+}
+
+.progressBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.progressLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.progressBar {
+  height: var(--space-2);
+  background: var(--surface-raised);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  border: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  transition: width var(--duration-normal) var(--easing-standard);
+}
+
+.metaRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.metaIcon {
+  display: inline-flex;
+  color: var(--text-tertiary);
+}
+
+.metaDanger {
+  color: var(--status-danger);
+}
+
+.metaDanger .metaIcon {
+  color: var(--status-danger);
+}
+
+.metaWarning {
+  color: var(--status-warning);
+}
+
+.metaWarning .metaIcon {
+  color: var(--status-warning);
+}
+
+.cardFoot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
