@@ -76,7 +76,8 @@ export type PlanningClassificationKind =
   | 'reversal'
   | 'research'
   | 'emergency'
-  | 'ambiguous';
+  | 'ambiguous'
+  | 'requires-deep-pipeline';
 
 export interface PlanningClassification {
   readonly kind: PlanningClassificationKind;
