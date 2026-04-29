@@ -200,16 +200,23 @@ export function routeHref(r: Route, id?: string): string {
 export function routeForAtomId(id: string): Route {
   if (id.startsWith('plan-merge-settled-')) return 'activities';
   /*
-   * Pipeline atoms (root + every emitted descendant) route to the
-   * pipelines drill-in. The descendant prefixes (`pipeline-stage-event-`,
-   * `pipeline-audit-finding-`, `pipeline-failed-`, `pipeline-resume-`)
-   * resolve to the parent pipeline via the detail endpoint, so for now
-   * we collapse them all to the root view; the drill-in scrolls the
-   * matching event/finding into focus when the id is on the path.
-   * Order: must precede the generic `plan-` branch even though the
-   * prefixes don't currently overlap, so a future `plan-*` rename of a
-   * pipeline descendant doesn't silently re-route.
+   * Pipeline atoms route to the pipelines drill-in by ROOT id only.
+   * Descendant prefixes (`pipeline-stage-event-`, `pipeline-audit-finding-`,
+   * `pipeline-failed-`, `pipeline-resume-`) are NOT root pipeline atoms
+   * and would 404 against `/api/pipelines.detail` (which exact-matches
+   * the root id in `index.pipelinesById`). Until the detail handler
+   * resolves a descendant id back to its parent's `pipeline_id`, route
+   * descendant atoms to the activities feed where focus-mode handles
+   * arbitrary atom ids. Order: must precede the generic `plan-` branch
+   * so a future `plan-*` rename of a pipeline descendant doesn't
+   * silently re-route.
    */
+  if (
+    id.startsWith('pipeline-stage-event-')
+    || id.startsWith('pipeline-audit-finding-')
+    || id.startsWith('pipeline-failed-')
+    || id.startsWith('pipeline-resume-')
+  ) return 'activities';
   if (id.startsWith('pipeline-')) return 'pipelines';
   if (id.startsWith('plan-')) return 'plans';
   if (

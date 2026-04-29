@@ -51,7 +51,7 @@ const ROUTE_META: Record<Route, RouteMeta> = {
   },
   pipelines: {
     title: 'Pipelines',
-    subtitle: 'Deep planning runs — brainstorm, spec, plan, review, dispatch with per-stage audit findings',
+    subtitle: 'Deep planning runs: brainstorm, spec, plan, review, dispatch with per-stage audit findings',
   },
   'plan-lifecycle': {
     title: 'Plan Lifecycle',
