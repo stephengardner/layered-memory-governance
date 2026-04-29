@@ -37,13 +37,27 @@ const STAGE_DIRS = [
 ] as const;
 
 describe('public surface: built planning-stage adapters', () => {
+  // Skip the WHOLE block when dist/examples/planning-stages is absent
+  // (pre-build manual run). Once that directory exists, every stage
+  // entry is required to load: a per-stage skip would let a missing
+  // dist/examples/planning-stages/<stage>/index.js silently pass and
+  // defeat the build-validation contract this file enforces. CR
+  // PR #244 #3159516693.
+  if (!existsSync(DIST_DIR)) {
+    it.skip('skips before first build when dist artifacts are absent', () => {});
+    return;
+  }
   for (const dir of STAGE_DIRS) {
-    it(`dist/examples/planning-stages/${dir}/index.js loads`, async (ctx) => {
+    it(`dist/examples/planning-stages/${dir}/index.js loads`, async () => {
       const entry = resolve(DIST_DIR, dir, 'index.js');
-      if (!existsSync(entry)) {
-        ctx.skip();
-        return;
-      }
+      // Once DIST_DIR exists, every named stage entry MUST exist too.
+      // An assertion here (rather than a per-test skip) loudly fails
+      // if a stage was renamed without updating STAGE_DIRS or the
+      // build dropped an artifact.
+      expect(
+        existsSync(entry),
+        `missing build artifact: ${entry}`,
+      ).toBe(true);
       const url = pathToFileURL(entry).href;
       const mod = await import(url);
       expect(mod).toBeDefined();

@@ -108,78 +108,103 @@ export function parseRunCtoActorArgs(argv) {
       i += 1;
       return { ok: true, value: argv[i] };
     };
-    if (a === '--request') {
+    /**
+     * Read a required string value for the current flag and route a
+     * uniform reason on missing-value. Centralises the consumeValue +
+     * ok-check pattern that previously appeared in every per-flag
+     * branch. Returns either { ok: true, value } or { ok: false, reason }.
+     */
+    const readRequiredValue = (reason) => {
       const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--request "<text>" is required' };
+      if (!v.ok) return { ok: false, reason };
+      return { ok: true, value: v.value };
+    };
+    /**
+     * Read a numeric value for the current flag, validate via the
+     * supplied predicate, and route a uniform reason on either a
+     * missing value or a predicate failure. The predicate receives the
+     * parsed Number and returns true when the value is acceptable.
+     */
+    const readNumber = (reason, predicate) => {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason };
+      const n = Number(v.value);
+      if (!predicate(n)) return { ok: false, reason };
+      return { ok: true, value: n };
+    };
+    if (a === '--request') {
+      const v = readRequiredValue('--request "<text>" is required');
+      if (!v.ok) return v;
       args.request = v.value;
     } else if (a === '--dry-run') {
       args.dryRun = true;
     } else if (a === '--stub') {
       args.stub = true;
     } else if (a === '--classify-model') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--classify-model expects a value' };
+      const v = readRequiredValue('--classify-model expects a value');
+      if (!v.ok) return v;
       args.classifyModel = v.value;
     } else if (a === '--draft-model') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--draft-model expects a value' };
+      const v = readRequiredValue('--draft-model expects a value');
+      if (!v.ok) return v;
       args.draftModel = v.value;
     } else if (a === '--max-budget-usd') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--max-budget-usd expects a positive number' };
-      const n = Number(v.value);
-      if (!Number.isFinite(n) || n <= 0) {
-        return { ok: false, reason: '--max-budget-usd expects a positive number' };
-      }
-      args.maxBudgetUsdPerCall = n;
+      const v = readNumber(
+        '--max-budget-usd expects a positive number',
+        (n) => Number.isFinite(n) && n > 0,
+      );
+      if (!v.ok) return v;
+      args.maxBudgetUsdPerCall = v.value;
     } else if (a === '--timeout-ms') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--timeout-ms expects a positive number' };
-      const n = Number(v.value);
-      if (!Number.isFinite(n) || n <= 0) {
-        return { ok: false, reason: '--timeout-ms expects a positive number' };
-      }
-      args.timeoutMs = n;
+      const v = readNumber(
+        '--timeout-ms expects a positive number',
+        (n) => Number.isFinite(n) && n > 0,
+      );
+      if (!v.ok) return v;
+      args.timeoutMs = v.value;
     } else if (a === '--min-confidence') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--min-confidence expects a number in [0,1]' };
-      const n = Number(v.value);
-      if (!Number.isFinite(n) || n < 0 || n > 1) {
-        return { ok: false, reason: '--min-confidence expects a number in [0,1]' };
-      }
-      args.minConfidence = n;
+      const v = readNumber(
+        '--min-confidence expects a number in [0,1]',
+        (n) => Number.isFinite(n) && n >= 0 && n <= 1,
+      );
+      if (!v.ok) return v;
+      args.minConfidence = v.value;
     } else if (a === '--max-iterations') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--max-iterations expects a positive integer' };
-      const n = Number(v.value);
-      if (!Number.isInteger(n) || n < 1) {
-        return { ok: false, reason: '--max-iterations expects a positive integer' };
-      }
-      args.maxIterations = n;
+      const v = readNumber(
+        '--max-iterations expects a positive integer',
+        (n) => Number.isInteger(n) && n >= 1,
+      );
+      if (!v.ok) return v;
+      args.maxIterations = v.value;
     } else if (a === '--principal') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--principal expects a value' };
+      const v = readRequiredValue('--principal expects a value');
+      if (!v.ok) return v;
       args.principalId = v.value;
     } else if (a === '--origin') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--origin expects a value' };
+      const v = readRequiredValue('--origin expects a value');
+      if (!v.ok) return v;
       args.origin = v.value;
     } else if (a === '--intent-id') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--intent-id expects a value' };
+      const v = readRequiredValue('--intent-id expects a value');
+      if (!v.ok) return v;
       args.intentId = v.value;
     } else if (a === '--delegate-to') {
-      const v = consumeValue();
-      if (!v.ok) return { ok: false, reason: '--delegate-to expects a non-empty principal id' };
-      if (typeof v.value !== 'string' || v.value.trim().length === 0) {
+      const v = readRequiredValue('--delegate-to expects a non-empty principal id');
+      if (!v.ok) return v;
+      // Trim before persistence: a quoted argv slot like "code-author "
+      // would otherwise misroute identity matching downstream. Normalise
+      // here so every consumer sees the canonical principal id.
+      const trimmed =
+        typeof v.value === 'string' ? v.value.trim() : v.value;
+      if (typeof trimmed !== 'string' || trimmed.length === 0) {
         return { ok: false, reason: '--delegate-to expects a non-empty principal id' };
       }
-      args.delegateTo = v.value;
+      args.delegateTo = trimmed;
     } else if (a === '--mode') {
-      const v = consumeValue();
-      if (!v.ok) {
-        return { ok: false, reason: `--mode expects one of: ${VALID_MODES.join(', ')}` };
-      }
+      const v = readRequiredValue(
+        `--mode expects one of: ${VALID_MODES.join(', ')}`,
+      );
+      if (!v.ok) return v;
       if (!VALID_MODES.includes(v.value)) {
         return {
           ok: false,

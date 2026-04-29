@@ -206,11 +206,40 @@ async function runBrainstorm(
   };
 }
 
+/**
+ * Read the verified seed-atom set from the pipeline atom's
+ * derived_from chain. The runner constructs the pipeline atom via
+ * mkPipelineAtom which stamps seedAtomIds onto provenance.derived_from
+ * exactly. Audit reads through the pipeline atom rather than the
+ * StageContext because StageContext is a substrate type (changes there
+ * affect every stage adapter); deriving the set from the existing
+ * pipeline atom keeps this change adapter-local. Returns an empty set
+ * when the pipeline atom is unreadable so the auditor degrades to its
+ * resolvability-only behaviour rather than failing closed on a
+ * read error.
+ */
+async function readVerifiedSeedSetFromPipelineAtom(
+  ctx: StageContext,
+): Promise<ReadonlySet<string>> {
+  const pipelineAtom = await ctx.host.atoms.get(ctx.pipelineId);
+  if (pipelineAtom === null) return new Set<string>();
+  const derived = pipelineAtom.provenance?.derived_from ?? [];
+  return new Set(derived.map((id) => String(id)));
+}
+
 async function auditBrainstorm(
   output: BrainstormPayload,
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
   const findings: AuditFinding[] = [];
+  // Read the verified seed-atom set up front so each cited id is
+  // checked against the same snapshot. Per the brainstorm prompt's
+  // citation-grounding contract, an atom cited in rejection_reason
+  // MUST appear in this set even if it resolves through host.atoms.get;
+  // a bare resolvable atom that is NOT in the seed set is treated as
+  // a fabricated-cited-atom with the same critical severity, because
+  // the model has no provenance for choosing it.
+  const verifiedSeedSet = await readVerifiedSeedSetFromPipelineAtom(ctx);
   for (const alt of output.alternatives_surveyed) {
     const cited = extractCitedAtomIds(alt.rejection_reason);
     for (const id of cited) {
@@ -224,6 +253,26 @@ async function auditBrainstorm(
             + `atom id "${id}" which does not resolve via host.atoms.get. `
             + 'Mitigates the drafter-citation-verification failure mode at '
             + 'the substrate level.',
+          cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
+        continue;
+      }
+      // Resolves but is NOT in the verified seed-atom set: the LLM
+      // grounded a citation on an atom outside the input contract.
+      // Flag with the same critical severity so the runner halts;
+      // the prompt explicitly tells the LLM to cite ONLY ids from
+      // verified_seed_atom_ids.
+      if (verifiedSeedSet.size > 0 && !verifiedSeedSet.has(String(id))) {
+        findings.push({
+          severity: 'critical',
+          category: 'non-seed-cited-atom',
+          message:
+            `Brainstorm rejection_reason for option "${alt.option}" cites `
+            + `atom id "${id}" which resolves but is NOT in the verified `
+            + 'seed-atom set passed via the pipeline atom. The brainstorm '
+            + 'prompt restricts citations to the seed set; an out-of-set '
+            + 'citation is treated as ungrounded and halts the stage.',
           cited_atom_ids: [id as AtomId],
           cited_paths: [],
         });

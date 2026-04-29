@@ -346,5 +346,54 @@ describe('runPipeline', () => {
       expect(meta.stage_policy_atom_id).toBe('pol-test');
       expect(meta.mode).toBe('substrate-deep');
     });
+
+    // CR PR #244 #4195194861 nit: timestamp-parity guard. The earlier
+    // tests used a constant now() and could not distinguish "single
+    // now() call shared between writes" from "two now() calls that
+    // happen to return the same value". This test uses an
+    // incrementing clock so the assertion catches a future regression
+    // that splits the terminal timestamp across two now() invocations.
+    it('reuses a single now() across pipeline-failed and pipeline atom writes', async () => {
+      const host = createMemoryHost();
+      // Closure that returns a distinct ISO timestamp on each call.
+      // The runner currently calls now() at: mkPipelineAtom (start),
+      // each emitStageEvent, the terminal failPipeline (single
+      // shared call), and one trailing pipeline-stage-event 'enter'
+      // emit. A regression that introduces a second now() call
+      // between the pipeline-failed atom and the pipeline atom
+      // metadata write would shift completed_at off pipeline-failed
+      // .created_at; this assertion would catch that.
+      let i = 0;
+      const incNow = () =>
+        new Date(Date.UTC(2026, 3, 28, 12, 0, i++)).toISOString() as Time;
+      const failingStage: PlanningStage<unknown, unknown> = {
+        name: 'fail-stage',
+        async run() {
+          throw new Error('boom');
+        },
+      };
+      await runPipeline([failingStage], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-parity-test',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: incNow,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-parity-test` as AtomId,
+      );
+      const failedAtom = await host.atoms.get(
+        `pipeline-failed-pipeline-corr-parity-test-0` as AtomId,
+      );
+      expect(pipelineAtom).not.toBeNull();
+      expect(failedAtom).not.toBeNull();
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      // Parity invariant: the pipeline-failed atom's created_at is
+      // the same terminalNow used to stamp the pipeline atom's
+      // metadata.completed_at. A regression that splits these into
+      // two now() calls would surface as drift here.
+      expect(meta.completed_at).toBe(failedAtom!.created_at);
+    });
   });
 });

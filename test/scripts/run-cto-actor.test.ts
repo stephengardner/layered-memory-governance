@@ -169,4 +169,45 @@ describe('parseRunCtoActorArgs', () => {
     const r = parseRunCtoActorArgs(['--request', 'x', '--dry-run=true']);
     expect(r.ok).toBe(false);
   });
+
+  // BOOL_FLAGS parity: --stub and --help must behave identically to
+  // --dry-run for the =-form rejection (CR PR #244 #4195194861 nit).
+  it('rejects =-form on --stub', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--stub=true']);
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects =-form on --help', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--help=true']);
+    expect(r.ok).toBe(false);
+  });
+
+  // CR PR #244 #3159516688: trim trailing whitespace on --delegate-to
+  // before persistence so a quoted shell argv like "code-author " does
+  // not misroute identity matching.
+  it('trims --delegate-to value before persistence (space-form)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--delegate-to', 'code-author  ',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.delegateTo).toBe('code-author');
+  });
+
+  it('trims --delegate-to value before persistence (=-form)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--delegate-to=  code-author',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.delegateTo).toBe('code-author');
+  });
+
+  it('rejects --delegate-to whose entire value is whitespace', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--delegate-to', '   ',
+    ]);
+    expect(r.ok).toBe(false);
+  });
 });
