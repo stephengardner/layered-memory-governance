@@ -108,4 +108,65 @@ describe('parseRunCtoActorArgs', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/unknown/i);
   });
+
+  // GNU-style --key=value form. Keep parity with --key value: the
+  // operator types either form interchangeably from shell history,
+  // make scripts, and CI yaml. A parser that rejects the =-form is a
+  // cosmetic friction point that surfaced when the deep-planning
+  // pipeline e2e test ran `--mode=substrate-deep`.
+  it('accepts --mode=substrate-deep (=-form)', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--mode=substrate-deep']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.mode).toBe('substrate-deep');
+  });
+
+  it('accepts --mode=single-pass (=-form)', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--mode=single-pass']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.mode).toBe('single-pass');
+  });
+
+  it('rejects unknown =-form value', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--mode=turbo']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--mode/);
+  });
+
+  it('accepts --request="..." (=-form on string flag)', () => {
+    const r = parseRunCtoActorArgs(['--request=ship the auditor role']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.request).toBe('ship the auditor role');
+  });
+
+  it('accepts --max-iterations=3 (=-form on numeric flag)', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--max-iterations=3']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.maxIterations).toBe(3);
+  });
+
+  it('rejects =-form numeric flag with non-numeric value', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--max-iterations=abc']);
+    expect(r.ok).toBe(false);
+  });
+
+  it('accepts --intent-id=... (=-form on string flag)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--intent-id=intent-abc',
+      '--mode=substrate-deep',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.intentId).toBe('intent-abc');
+      expect(r.args.mode).toBe('substrate-deep');
+    }
+  });
+
+  it('rejects =-form on a boolean flag (--dry-run=true is not standard)', () => {
+    // --dry-run is a boolean toggle; an =-suffix is malformed under
+    // GNU-style conventions for boolean flags. Keep the parser strict
+    // here so a typo like --dry-run=ok does not silently get accepted.
+    const r = parseRunCtoActorArgs(['--request', 'x', '--dry-run=true']);
+    expect(r.ok).toBe(false);
+  });
 });

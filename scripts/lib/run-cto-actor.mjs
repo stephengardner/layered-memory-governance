@@ -29,6 +29,28 @@ const VALID_MODES = Object.freeze(['single-pass', 'substrate-deep']);
 export const DEFAULT_MODE = 'single-pass';
 
 /**
+ * Names of boolean flags that cannot accept an =-form value. The
+ * GNU-style helper rejects `--dry-run=true` so a typo like
+ * `--dry-run=ok` does not silently flip the toggle.
+ */
+const BOOL_FLAGS = Object.freeze(['--dry-run', '--stub', '-h', '--help']);
+
+/**
+ * Split a single argv entry into its flag name and inline value.
+ * Returns the inline value when the entry is `--key=value`, otherwise
+ * `null` to signal the legacy space-form `--key value` and let the
+ * caller consume the next argv slot.
+ */
+function splitFlagAndValue(arg) {
+  if (typeof arg !== 'string' || !arg.startsWith('--')) {
+    return { flag: arg, inline: null };
+  }
+  const eq = arg.indexOf('=');
+  if (eq < 0) return { flag: arg, inline: null };
+  return { flag: arg.slice(0, eq), inline: arg.slice(eq + 1) };
+}
+
+/**
  * Parse the run-cto-actor CLI flag set. Mirrors the surface of the
  * inline parseArgs that previously lived in scripts/run-cto-actor.mjs;
  * extracted into this lib so the --mode flag (and future driver flags)
@@ -36,6 +58,12 @@ export const DEFAULT_MODE = 'single-pass';
  *
  * Returns { ok: false, reason } on missing-required and unknown-flag
  * errors so the caller decides between a usage hint and a fatal exit.
+ *
+ * Accepts both `--key value` (space-form) and `--key=value` (=-form,
+ * GNU-style) for value-bearing flags. Boolean flags (--dry-run, --stub,
+ * --help) reject the =-form per the BOOL_FLAGS guard, so a typo like
+ * `--dry-run=ok` is caught loudly instead of silently flipping the
+ * toggle.
  *
  * Note: numeric / range validation for --max-budget-usd, --timeout-ms,
  * --min-confidence, --max-iterations remains in the driver itself for
@@ -61,65 +89,104 @@ export function parseRunCtoActorArgs(argv) {
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--request' && i + 1 < argv.length) {
-      args.request = argv[++i];
+    const raw = argv[i];
+    const { flag: a, inline } = splitFlagAndValue(raw);
+    // Boolean flags must not carry an inline value. Catch typos like
+    // `--dry-run=true` loudly rather than silently accepting.
+    if (inline !== null && BOOL_FLAGS.includes(a)) {
+      return { ok: false, reason: `boolean flag ${a} does not accept a value` };
+    }
+    /**
+     * Consume the value for the current flag. Inline form returns the
+     * captured string in one step; space form advances the cursor. The
+     * helper centralises the pre-read length check so individual flag
+     * branches stay focused on validation.
+     */
+    const consumeValue = () => {
+      if (inline !== null) return { ok: true, value: inline };
+      if (i + 1 >= argv.length) return { ok: false };
+      i += 1;
+      return { ok: true, value: argv[i] };
+    };
+    if (a === '--request') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--request "<text>" is required' };
+      args.request = v.value;
     } else if (a === '--dry-run') {
       args.dryRun = true;
     } else if (a === '--stub') {
       args.stub = true;
-    } else if (a === '--classify-model' && i + 1 < argv.length) {
-      args.classifyModel = argv[++i];
-    } else if (a === '--draft-model' && i + 1 < argv.length) {
-      args.draftModel = argv[++i];
-    } else if (a === '--max-budget-usd' && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
+    } else if (a === '--classify-model') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--classify-model expects a value' };
+      args.classifyModel = v.value;
+    } else if (a === '--draft-model') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--draft-model expects a value' };
+      args.draftModel = v.value;
+    } else if (a === '--max-budget-usd') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--max-budget-usd expects a positive number' };
+      const n = Number(v.value);
       if (!Number.isFinite(n) || n <= 0) {
         return { ok: false, reason: '--max-budget-usd expects a positive number' };
       }
       args.maxBudgetUsdPerCall = n;
-    } else if (a === '--timeout-ms' && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
+    } else if (a === '--timeout-ms') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--timeout-ms expects a positive number' };
+      const n = Number(v.value);
       if (!Number.isFinite(n) || n <= 0) {
         return { ok: false, reason: '--timeout-ms expects a positive number' };
       }
       args.timeoutMs = n;
-    } else if (a === '--min-confidence' && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
+    } else if (a === '--min-confidence') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--min-confidence expects a number in [0,1]' };
+      const n = Number(v.value);
       if (!Number.isFinite(n) || n < 0 || n > 1) {
         return { ok: false, reason: '--min-confidence expects a number in [0,1]' };
       }
       args.minConfidence = n;
-    } else if (a === '--max-iterations' && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
+    } else if (a === '--max-iterations') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--max-iterations expects a positive integer' };
+      const n = Number(v.value);
       if (!Number.isInteger(n) || n < 1) {
         return { ok: false, reason: '--max-iterations expects a positive integer' };
       }
       args.maxIterations = n;
-    } else if (a === '--principal' && i + 1 < argv.length) {
-      args.principalId = argv[++i];
-    } else if (a === '--origin' && i + 1 < argv.length) {
-      args.origin = argv[++i];
-    } else if (a === '--intent-id' && i + 1 < argv.length) {
-      args.intentId = argv[++i];
-    } else if (a === '--delegate-to' && i + 1 < argv.length) {
-      const v = argv[++i];
-      if (typeof v !== 'string' || v.trim().length === 0) {
+    } else if (a === '--principal') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--principal expects a value' };
+      args.principalId = v.value;
+    } else if (a === '--origin') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--origin expects a value' };
+      args.origin = v.value;
+    } else if (a === '--intent-id') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--intent-id expects a value' };
+      args.intentId = v.value;
+    } else if (a === '--delegate-to') {
+      const v = consumeValue();
+      if (!v.ok) return { ok: false, reason: '--delegate-to expects a non-empty principal id' };
+      if (typeof v.value !== 'string' || v.value.trim().length === 0) {
         return { ok: false, reason: '--delegate-to expects a non-empty principal id' };
       }
-      args.delegateTo = v;
+      args.delegateTo = v.value;
     } else if (a === '--mode') {
-      if (i + 1 >= argv.length) {
+      const v = consumeValue();
+      if (!v.ok) {
         return { ok: false, reason: `--mode expects one of: ${VALID_MODES.join(', ')}` };
       }
-      const v = argv[++i];
-      if (!VALID_MODES.includes(v)) {
+      if (!VALID_MODES.includes(v.value)) {
         return {
           ok: false,
-          reason: `--mode expects one of: ${VALID_MODES.join(', ')}; got "${v}"`,
+          reason: `--mode expects one of: ${VALID_MODES.join(', ')}; got "${v.value}"`,
         };
       }
-      args.mode = v;
+      args.mode = v.value;
     } else if (a === '-h' || a === '--help') {
       args.help = true;
     } else if (typeof a === 'string' && a.startsWith('--')) {
