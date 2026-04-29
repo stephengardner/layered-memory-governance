@@ -1451,24 +1451,28 @@ async function handleLiveOpsSnapshot(): Promise<LiveOpsSnapshot> {
 //   - /api/pipelines.live-ops  : narrowed view for the Pulse tile
 // ---------------------------------------------------------------------------
 
-async function handlePipelinesList(): Promise<PipelineListResult> {
+// Cast through the narrow shape the pipeline projection consumes; the
+// helper-side type elides fields they don't touch (provenance,
+// supersedes), same pattern as live-ops. Extracted at N=2 per canon
+// `dev-extract-at-n=2` so the three handlers don't drift on future
+// guard additions.
+async function readPipelineSourceAtoms(): Promise<ReadonlyArray<PipelineSourceAtom>> {
   const all = await readAllAtoms();
-  // Cast through the narrow shape the helpers consume; helper-side
-  // type elides fields they don't touch (provenance, supersedes), same
-  // pattern as live-ops.
-  const sourceAtoms = all as unknown as ReadonlyArray<PipelineSourceAtom>;
+  return all as unknown as ReadonlyArray<PipelineSourceAtom>;
+}
+
+async function handlePipelinesList(): Promise<PipelineListResult> {
+  const sourceAtoms = await readPipelineSourceAtoms();
   return listPipelineSummaries(sourceAtoms, Date.now());
 }
 
 async function handlePipelineDetail(pipelineId: string): Promise<PipelineDetail | null> {
-  const all = await readAllAtoms();
-  const sourceAtoms = all as unknown as ReadonlyArray<PipelineSourceAtom>;
+  const sourceAtoms = await readPipelineSourceAtoms();
   return getPipelineDetail(sourceAtoms, pipelineId);
 }
 
 async function handlePipelinesLiveOps(): Promise<PipelineLiveOpsResult> {
-  const all = await readAllAtoms();
-  const sourceAtoms = all as unknown as ReadonlyArray<PipelineSourceAtom>;
+  const sourceAtoms = await readPipelineSourceAtoms();
   return listLiveOpsPipelines(sourceAtoms, Date.now());
 }
 

@@ -253,6 +253,94 @@ describe('listLiveOpsPipelines', () => {
     expect(ids).not.toContain('p-done');
     expect(ids).not.toContain('p-fail');
   });
+
+  it('surfaces active pipelines even when terminal pipelines push past the list cap', () => {
+    /*
+     * Regression for the org-ceiling case (canon dev-indie-floor-org-ceiling):
+     * 100 newer completed pipelines and 1 older still-running pipeline.
+     * The list endpoint slices at MAX_PIPELINE_LIST_ITEMS (100) so the
+     * running row falls out of `listPipelineSummaries` entirely. Live-ops
+     * must filter for active states BEFORE applying its own cap so the
+     * Pulse tile keeps showing the active row.
+     */
+    const completed: PipelineSourceAtom[] = [];
+    for (let i = 0; i < 100; i++) {
+      const id = `p-done-${String(i).padStart(3, '0')}`;
+      const createdAt = new Date(NOW - (10 * 60 * 1000) - (i * 60 * 1000)).toISOString();
+      completed.push(pipelineAtom({ id, state: 'completed', createdAt }));
+    }
+    // Older active pipeline; would be pushed past the 100-row cap by the
+    // newer completed runs above.
+    const olderActive = pipelineAtom({
+      id: 'p-active-older',
+      state: 'running',
+      createdAt: new Date(NOW - 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const result = listLiveOpsPipelines([...completed, olderActive], NOW);
+    const ids = result.pipelines.map((p) => p.pipeline_id);
+    expect(ids).toContain('p-active-older');
+    // None of the completed pipelines should leak into live-ops.
+    expect(ids.every((id) => !id.startsWith('p-done-'))).toBe(true);
+  });
+});
+
+describe('isCleanLive (via listLiveOpsPipelines)', () => {
+  /*
+   * `isCleanLive` is internal but its observable behavior is what the
+   * sibling projections rely on. Any truthy taint disqualifies a row;
+   * the previous `taint !== 'clean'` form treated unknown taint values
+   * as live and disagreed with `apps/console/server/actor-activity.ts`.
+   * This mirrors the actor-activity posture so projections agree on
+   * which atoms are live.
+   */
+  it('drops a pipeline whose root atom carries any truthy taint value', () => {
+    const tainted: PipelineSourceAtom = {
+      ...pipelineAtom({ id: 'p-tainted', state: 'running' }),
+      // Future taint values (`compromised`, `quarantined`, etc.) MUST also
+      // disqualify; the previous `!== 'clean'` form would allow an
+      // unknown value `'clean-but-flagged'` through which is wrong.
+      taint: 'compromised',
+    };
+    const cleanRunning = pipelineAtom({ id: 'p-clean', state: 'running' });
+    const result = listLiveOpsPipelines([tainted, cleanRunning], NOW);
+    const ids = result.pipelines.map((p) => p.pipeline_id);
+    expect(ids).toContain('p-clean');
+    expect(ids).not.toContain('p-tainted');
+  });
+});
+
+describe('foldStageEvents - equal-timestamp tie-break', () => {
+  /*
+   * Regression for the equal-timestamp collapse bug: enter + exit-success
+   * at the SAME `at` value must collapse to `succeeded`, not stick at
+   * `running`. The fold's outer sort breaks ties by atom_id ascending,
+   * so the later atom_id wins; the assertion is shaped so swapping the
+   * id ordering would flip the result.
+   */
+  it('collapses equal-timestamp enter -> exit-success to succeeded', () => {
+    const sameTs = new Date(NOW - 10 * 60 * 1000).toISOString();
+    const pipeline = pipelineAtom({ id: 'pipeline-tie', state: 'completed' });
+    // atom_id ascending tie-break: 'enter' < 'exit' so exit-success
+    // sorts after enter and must override the running state.
+    const enterEvent = stageEventAtom({
+      pipelineId: 'pipeline-tie',
+      stageName: 'plan',
+      transition: 'enter',
+      at: sameTs,
+    });
+    const exitEvent = stageEventAtom({
+      pipelineId: 'pipeline-tie',
+      stageName: 'plan',
+      transition: 'exit-success',
+      at: sameTs,
+      durationMs: 0,
+      costUsd: 0,
+    });
+    const result = getPipelineDetail([pipeline, enterEvent, exitEvent], 'pipeline-tie');
+    expect(result).not.toBeNull();
+    expect(result!.stages).toHaveLength(1);
+    expect(result!.stages[0]!.state).toBe('succeeded');
+  });
 });
 
 describe('getPipelineDetail', () => {

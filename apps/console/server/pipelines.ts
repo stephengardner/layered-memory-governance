@@ -111,7 +111,12 @@ function readStringArray(meta: Record<string, unknown>, key: string): ReadonlyAr
 }
 
 function isCleanLive(atom: PipelineSourceAtom): boolean {
-  if (atom.taint && atom.taint !== 'clean') return false;
+  // Match the live-atom posture used by sibling projections (e.g.
+  // `apps/console/server/actor-activity.ts:120-130`): any truthy taint
+  // disqualifies the atom from "live" status. The earlier
+  // `taint !== 'clean'` form treated unknown taint values as live and
+  // disagreed with the rest of the projections.
+  if (atom.taint) return false;
   if (atom.superseded_by && atom.superseded_by.length > 0) return false;
   return true;
 }
@@ -222,7 +227,12 @@ function foldStageEvents(events: ReadonlyArray<PipelineStageEvent>): {
     }
     entry.duration_ms += event.duration_ms;
     entry.cost_usd += event.cost_usd;
-    if (ts > entry.last_event_ts) {
+    // `>=` (not `>`) so equal-timestamp events still update state. The
+    // outer `ordered` sort guarantees deterministic order at equal `at`
+    // values (atom_id ascending), so iterating later in the loop means
+    // later in time-resolved logical order: e.g. `enter` followed by
+    // `exit-success` at the same instant must collapse to `succeeded`.
+    if (ts >= entry.last_event_ts) {
       entry.last_event_ts = ts;
       entry.last_event_iso = event.at;
       // Latest-event-wins state collapse. `enter` lifts to running;
@@ -547,13 +557,16 @@ function round6(n: number): number {
 }
 
 /**
- * `/api/pipelines.list` projection. Sorts by last_event_at desc so
- * recently-active pipelines top the grid.
+ * Build the full sorted set of pipeline summaries with NO cap applied.
+ * The list endpoint slices to MAX_PIPELINE_LIST_ITEMS for grid render,
+ * but live-ops needs to filter for active states first and then slice;
+ * otherwise a busy workspace with 100+ recent terminal pipelines
+ * pushes still-running pipelines out of the Pulse tile entirely.
+ * Internal helper extracted at N=2 per canon `dev-extract-at-n=2`.
  */
-export function listPipelineSummaries(
+function sortedPipelineSummaries(
   atoms: ReadonlyArray<PipelineSourceAtom>,
-  now: number,
-): PipelineListResult {
+): ReadonlyArray<PipelineSummary> {
   const index = buildPipelineIndex(atoms);
   const summaries: PipelineSummary[] = [];
   for (const pipeline of index.pipelinesById.values()) {
@@ -565,6 +578,18 @@ export function listPipelineSummaries(
     if (aTs === bTs) return a.pipeline_id.localeCompare(b.pipeline_id);
     return bTs - aTs;
   });
+  return summaries;
+}
+
+/**
+ * `/api/pipelines.list` projection. Sorts by last_event_at desc so
+ * recently-active pipelines top the grid.
+ */
+export function listPipelineSummaries(
+  atoms: ReadonlyArray<PipelineSourceAtom>,
+  now: number,
+): PipelineListResult {
+  const summaries = sortedPipelineSummaries(atoms);
   return {
     computed_at: new Date(now).toISOString(),
     pipelines: summaries.slice(0, MAX_PIPELINE_LIST_ITEMS),
@@ -573,15 +598,19 @@ export function listPipelineSummaries(
 
 /**
  * `/api/pipelines.live-ops` projection. Narrowed to running/paused
- * pipelines for the Pulse tile.
+ * pipelines for the Pulse tile. Filter BEFORE the live-ops cap so the
+ * still-active rows always survive even when the general list overflows.
+ * Indie defaults rarely hit the cap; the org-ceiling case (50+ concurrent
+ * actors emitting pipelines) is where this ordering decision matters
+ * per canon `dev-indie-floor-org-ceiling`.
  */
 export function listLiveOpsPipelines(
   atoms: ReadonlyArray<PipelineSourceAtom>,
   now: number,
 ): PipelineLiveOpsResult {
-  const full = listPipelineSummaries(atoms, now);
+  const all = sortedPipelineSummaries(atoms);
   const live: PipelineLiveOpsRow[] = [];
-  for (const p of full.pipelines) {
+  for (const p of all) {
     if (p.pipeline_state !== 'running' && p.pipeline_state !== 'hil-paused') continue;
     live.push({
       pipeline_id: p.pipeline_id,
@@ -595,7 +624,7 @@ export function listLiveOpsPipelines(
     });
   }
   return {
-    computed_at: full.computed_at,
+    computed_at: new Date(now).toISOString(),
     pipelines: live.slice(0, MAX_LIVE_OPS_PIPELINES),
   };
 }
