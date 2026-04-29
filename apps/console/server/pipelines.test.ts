@@ -45,6 +45,11 @@ function pipelineAtom(opts: {
     principal_id: 'cto-actor',
     created_at: opts.createdAt ?? new Date(NOW - 60 * 60 * 1000).toISOString(),
     pipeline_state: opts.state ?? 'pending',
+    // Real pipeline atoms on disk carry `taint: 'clean'` per the
+    // canonical Atom envelope. Older test fixtures omitted this field,
+    // which masked the isCleanLive bug where any truthy taint dropped
+    // the row (and 'clean' is truthy). Fixture now matches disk shape.
+    taint: 'clean',
     metadata: {
       mode: opts.mode ?? 'substrate-deep',
       seed_atom_ids: opts.seedIds ?? ['operator-intent-test'],

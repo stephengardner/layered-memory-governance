@@ -111,12 +111,16 @@ function readStringArray(meta: Record<string, unknown>, key: string): ReadonlyAr
 }
 
 function isCleanLive(atom: PipelineSourceAtom): boolean {
-  // Match the live-atom posture used by sibling projections (e.g.
-  // `apps/console/server/actor-activity.ts:120-130`): any truthy taint
-  // disqualifies the atom from "live" status. The earlier
-  // `taint !== 'clean'` form treated unknown taint values as live and
-  // disagreed with the rest of the projections.
-  if (atom.taint) return false;
+  // Live atoms have an unset taint or the canonical 'clean' sentinel.
+  // Any other taint value (tainted, quarantined, future enum members)
+  // disqualifies. Mirrors the sibling projection at
+  // apps/console/server/actor-activity.ts. Earlier shape
+  // `if (atom.taint) return false` was wrong because every well-formed
+  // atom carries `taint: 'clean'` (a truthy string) and was therefore
+  // filtered out, causing the entire pipelines list + Pulse
+  // pipelines-in-flight tile to render empty even with valid pipeline
+  // atoms on disk.
+  if (atom.taint && atom.taint !== 'clean') return false;
   if (atom.superseded_by && atom.superseded_by.length > 0) return false;
   return true;
 }
