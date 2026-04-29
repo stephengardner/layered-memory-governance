@@ -76,7 +76,8 @@ export type PlanningClassificationKind =
   | 'reversal'
   | 'research'
   | 'emergency'
-  | 'ambiguous';
+  | 'ambiguous'
+  | 'requires-deep-pipeline';
 
 export interface PlanningClassification {
   readonly kind: PlanningClassificationKind;
@@ -84,7 +85,10 @@ export interface PlanningClassification {
   readonly rationale: string;
   /**
    * Directive atom ids this classification triggers as mandatory
-   * constraints for propose. Empty for `research`/`ambiguous`.
+   * constraints for propose. Empty for `research` / `ambiguous` /
+   * `requires-deep-pipeline` (the deep-pipeline path defers
+   * classification semantics to the pipeline stages themselves; the
+   * single-pass propose() does not run for this kind).
    */
   readonly applicableDirectives: ReadonlyArray<AtomId>;
 }

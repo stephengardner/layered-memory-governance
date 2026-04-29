@@ -110,7 +110,19 @@ export type AtomType =
   // for projection-scoped queries (the two pointers are required
   // to agree; a future validator may enforce this).
   | 'agent-session'
-  | 'agent-turn';
+  | 'agent-turn'
+  // Deep planning pipeline atom types. The 'spec' type is a
+  // looser-shaped sibling of 'plan' (prose-shaped, intended as a
+  // design-document atom that precedes a plan); the 'pipeline-*'
+  // prefix groups runtime state and audit projection atoms together
+  // so a Console filter can surface a single pipeline run as a
+  // coherent timeline.
+  | 'spec'
+  | 'pipeline'
+  | 'pipeline-stage-event'
+  | 'pipeline-audit-finding'
+  | 'pipeline-failed'
+  | 'pipeline-resume';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
@@ -232,6 +244,13 @@ export interface Atom {
    * non-question atoms. Mutable via AtomStore.update. See QuestionState.
    */
   readonly question_state?: QuestionState;
+  /**
+   * Execution state for atoms with `type: 'pipeline'`. Undefined on
+   * non-pipeline atoms. Mutable (transitions via AtomStore.update).
+   * Mirrors the plan_state field shape so consumers read it as a
+   * top-level field, never via metadata.
+   */
+  readonly pipeline_state?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +363,12 @@ export interface AtomPatch {
   readonly plan_state?: PlanState;
   /** Transition for question atoms. Validated by transitionQuestionState(). */
   readonly question_state?: QuestionState;
+  /**
+   * Transition for pipeline atoms. The valid label set lives with the
+   * pipeline runner; AtomPatch is mechanism-only and does not enumerate
+   * the labels. Mirrors the plan_state field shape.
+   */
+  readonly pipeline_state?: string;
 }
 
 export interface Target {

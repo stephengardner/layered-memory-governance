@@ -38,6 +38,7 @@ import {
 import { loadLlmToolPolicy } from '../dist/llm-tool-policy.js';
 import { askQuestion } from '../dist/runtime/questions/index.js';
 import { runPlanApprovalTick } from '../dist/actor-message/index.js';
+import { parseRunCtoActorArgs } from './lib/run-cto-actor.mjs';
 
 // Instance configuration lives here, NOT in src/. Framework code
 // stays mechanism-focused; vendor model ids are the caller's choice.
@@ -75,97 +76,26 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
 const STOP_SENTINEL = resolve(STATE_DIR, 'STOP');
 
-function parseArgs(argv) {
-  const args = {
-    request: null,
-    dryRun: false,
-    maxIterations: 2,
-    principalId: 'cto-actor',
-    origin: 'operator',
-    stub: false,
-    classifyModel: undefined,
-    draftModel: undefined,
-    maxBudgetUsdPerCall: undefined,
-    timeoutMs: undefined,
-    minConfidence: undefined,
-    delegateTo: undefined,
-    intentId: null,
-  };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--request' && i + 1 < argv.length) args.request = argv[++i];
-    else if (a === '--dry-run') args.dryRun = true;
-    else if (a === '--stub') args.stub = true;
-    else if (a === '--classify-model' && i + 1 < argv.length) args.classifyModel = argv[++i];
-    else if (a === '--draft-model' && i + 1 < argv.length) args.draftModel = argv[++i];
-    else if (a === '--max-budget-usd' && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
-      if (!Number.isFinite(n) || n <= 0) {
-        console.error('ERROR: --max-budget-usd expects a positive number');
-        process.exit(2);
-      }
-      args.maxBudgetUsdPerCall = n;
-    } else if (a === '--timeout-ms' && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
-      if (!Number.isFinite(n) || n <= 0) {
-        console.error('ERROR: --timeout-ms expects a positive number');
-        process.exit(2);
-      }
-      args.timeoutMs = n;
-    } else if (a === '--min-confidence' && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
-      if (!Number.isFinite(n) || n < 0 || n > 1) {
-        console.error('ERROR: --min-confidence expects a number in [0,1]');
-        process.exit(2);
-      }
-      args.minConfidence = n;
-    } else if (a === '--max-iterations' && i + 1 < argv.length) {
-      const n = Number(argv[++i]);
-      if (!Number.isInteger(n) || n < 1) {
-        console.error('ERROR: --max-iterations expects a positive integer');
-        process.exit(2);
-      }
-      args.maxIterations = n;
-    } else if (a === '--principal' && i + 1 < argv.length) args.principalId = argv[++i];
-    else if (a === '--origin' && i + 1 < argv.length) args.origin = argv[++i];
-    else if (a === '--intent-id' && i + 1 < argv.length) args.intentId = argv[++i];
-    else if (a === '--delegate-to' && i + 1 < argv.length) {
-      const v = argv[++i];
-      if (typeof v !== 'string' || v.trim().length === 0) {
-        console.error('ERROR: --delegate-to expects a non-empty principal id');
-        process.exit(2);
-      }
-      args.delegateTo = v;
-    }
-    else if (a === '-h' || a === '--help') {
-      console.log([
-        'Usage: node scripts/run-cto-actor.mjs --request "<text>" [options]',
-        '',
-        'Options:',
-        '  --request "<text>"       Required. The operator question.',
-        '  --stub                   Use the deterministic stub judgment (no LLM call).',
-        '  --classify-model <name>  Override the classify-step model. Default claude-opus-4-7.',
-        '  --draft-model <name>     Override the draft-step model. Default claude-opus-4-7.',
-        '  --max-budget-usd <n>     Per-call budget cap. Default 50.00 (instance "spare-no-tokens" posture on Claude Code subscription; the CLI treats this as a synthetic effort counter, not a real charge on subscription).',
-        '  --timeout-ms <n>         Per-call LLM timeout (ms). Default 1800000 (30 min) for Opus rich drafts.',
-        '  --min-confidence <n>     Drop plans below this confidence. Default 0.55.',
-        '  --max-iterations <n>     runActor iteration cap. Default 2.',
-        '  --principal <id>         Principal to run as. Default cto-actor.',
-        '  --origin <id>            runActor origin tag. Default operator.',
-        '  --intent-id <id>         Intent atom id that triggered this planning run. When set, appended to the produced plan atom\'s provenance.derived_from so the provenance chain traces back to the triggering intent. Omit when no intent atom exists. Example: --intent-id intent-abc123.',
-        '  --delegate-to <id>       Declared target sub-actor principal for any plan produced this run. Stamps metadata.delegation.sub_actor_principal_id on the plan atom for the auto-approve dispatcher to read, gated by its own policy.allowed_sub_actors. Omit to leave the plan unrouted. Example: --delegate-to code-author.',
-      ].join('\n'));
-      process.exit(0);
-    } else {
-      console.error(`Unknown argument: ${a}`);
-      process.exit(2);
-    }
-  }
-  if (args.request === null) {
-    console.error('ERROR: --request "<text>" is required.');
-    process.exit(2);
-  }
-  return args;
+function printUsageAndExit() {
+  console.log([
+    'Usage: node scripts/run-cto-actor.mjs --request "<text>" [options]',
+    '',
+    'Options:',
+    '  --request "<text>"       Required. The operator question.',
+    '  --stub                   Use the deterministic stub judgment (no LLM call).',
+    '  --classify-model <name>  Override the classify-step model. Default claude-opus-4-7.',
+    '  --draft-model <name>     Override the draft-step model. Default claude-opus-4-7.',
+    '  --max-budget-usd <n>     Per-call budget cap. Default 50.00 (instance "spare-no-tokens" posture on Claude Code subscription; the CLI treats this as a synthetic effort counter, not a real charge on subscription).',
+    '  --timeout-ms <n>         Per-call LLM timeout (ms). Default 1800000 (30 min) for Opus rich drafts.',
+    '  --min-confidence <n>     Drop plans below this confidence. Default 0.55.',
+    '  --max-iterations <n>     runActor iteration cap. Default 2.',
+    '  --principal <id>         Principal to run as. Default cto-actor.',
+    '  --origin <id>            runActor origin tag. Default operator.',
+    '  --intent-id <id>         Intent atom id that triggered this planning run. When set, appended to the produced plan atom\'s provenance.derived_from so the provenance chain traces back to the triggering intent. Omit when no intent atom exists. Example: --intent-id intent-abc123.',
+    '  --delegate-to <id>       Declared target sub-actor principal for any plan produced this run. Stamps metadata.delegation.sub_actor_principal_id on the plan atom for the auto-approve dispatcher to read, gated by its own policy.allowed_sub_actors. Omit to leave the plan unrouted. Example: --delegate-to code-author.',
+    '  --mode <single-pass|substrate-deep>  Planning mode. Default single-pass (indie floor). substrate-deep routes through the multi-stage planning pipeline (brainstorm + spec + plan + review + dispatch); requires the bootstrap canon for the pipeline stage policy to be present.',
+  ].join('\n'));
+  process.exit(0);
 }
 
 /**
@@ -237,8 +167,191 @@ function stubJudgment() {
   };
 }
 
+/**
+ * Substrate-deep planning entry-point.
+ *
+ * Composes the planning-pipeline runner with the canon-resolved stage
+ * descriptors. The driver reads pol-planning-pipeline-stages-default
+ * to discover stage names + per-stage principals, then walks them
+ * sequentially via runPipeline. State is fully atom-projected per
+ * the planning-pipeline spec section 11.
+ *
+ * Pre-flight halts on:
+ *   - missing pol-planning-pipeline-stages-default (Task 13 bootstrap
+ *     not yet applied);
+ *   - missing --intent-id when the substrate requires an authorizing
+ *     operator-intent for the deep mode (per spec section 14.5);
+ *   - empty stage list (malformed canon).
+ *
+ * Stage-actor composition (the concrete brainstorm/spec/plan/review/
+ * dispatch adapter set under examples/planning-stages/) wires through
+ * a follow-up invoker registry; this driver halts loud rather than
+ * silently degrading.
+ */
+async function runDeepPipeline(args) {
+  // dist/runtime/planning-pipeline must be present; guarded so a
+  // dev who runs the script before npm run build sees a clear
+  // diagnostic instead of a module-not-found stacktrace.
+  let runPipeline;
+  let readPipelineStagesPolicy;
+  try {
+    const mod = await import('../dist/runtime/planning-pipeline/index.js');
+    ({ runPipeline, readPipelineStagesPolicy } = mod);
+  } catch (err) {
+    console.error(
+      'ERROR: --mode substrate-deep requires the planning-pipeline build. ' +
+      `Run "npm run build" first. Underlying error: ${err?.message ?? err}`,
+    );
+    process.exit(2);
+  }
+  if (!args.intentId) {
+    console.error(
+      'ERROR: --mode substrate-deep requires an authorizing --intent-id. ' +
+      'A deep-pipeline run is gated on a fresh operator-intent atom whose ' +
+      'trust envelope authorizes the multi-stage cost. Re-run with ' +
+      '--intent-id <operator-intent-atom-id>.',
+    );
+    process.exit(2);
+  }
+
+  // Wire an LLM into the deep-mode host because the reference brainstorm,
+  // spec, plan, and review adapters call host.llm.judge. Without this,
+  // the first stage that reaches host.llm.judge fails at runtime. Use
+  // ClaudeCliLLM (the same default the single-pass path uses) with the
+  // operator-tunable per-call timeout. Per-call budget cap is forwarded
+  // by the runner via stage.budget_cap_usd / pol-pipeline-stage-cost-cap.
+  const llm = new ClaudeCliLLM({
+    defaultTimeoutMs: args.timeoutMs ?? INSTANCE_JUDGE_TIMEOUT_MS,
+  });
+  const host = await createFileHost({ rootDir: STATE_DIR, llm });
+  const principal = await host.principals.get(args.principalId);
+  if (!principal) {
+    console.error(
+      `ERROR: principal '${args.principalId}' not found. Run scripts/bootstrap-cto-actor-canon.mjs first.`,
+    );
+    process.exit(1);
+  }
+
+  // Validate the supplied intent atom is the right type and carries a
+  // fresh trust envelope before consuming pipeline budget. Failing
+  // closed here keeps a stale or malformed intent from authorising a
+  // multi-stage run; the autonomous-intent canon surface is the
+  // load-bearing approval gate, not the intent-id flag itself.
+  const intentAtom = await host.atoms.get(args.intentId);
+  if (intentAtom === null) {
+    console.error(
+      `ERROR: --intent-id '${args.intentId}' does not resolve via host.atoms.get.`,
+    );
+    process.exit(2);
+  }
+  if (intentAtom.type !== 'operator-intent') {
+    console.error(
+      `ERROR: --intent-id '${args.intentId}' resolves to atom type `
+      + `'${intentAtom.type}', not 'operator-intent'. The substrate-deep `
+      + 'gate requires an operator-authored intent atom.',
+    );
+    process.exit(2);
+  }
+  if (intentAtom.taint !== 'clean') {
+    console.error(
+      `ERROR: --intent-id '${args.intentId}' is tainted ('${intentAtom.taint}') `
+      + 'and cannot authorise a substrate-deep run.',
+    );
+    process.exit(2);
+  }
+  if (intentAtom.expires_at !== null && intentAtom.expires_at !== undefined) {
+    const expiry = new Date(intentAtom.expires_at).getTime();
+    if (Number.isFinite(expiry) && expiry < Date.now()) {
+      console.error(
+        `ERROR: --intent-id '${args.intentId}' expired at `
+        + `${intentAtom.expires_at}; the trust envelope is no longer fresh.`,
+      );
+      process.exit(2);
+    }
+  }
+  const trustEnvelope = intentAtom.metadata?.trust_envelope;
+  if (trustEnvelope === undefined || trustEnvelope === null
+      || typeof trustEnvelope !== 'object') {
+    console.error(
+      `ERROR: --intent-id '${args.intentId}' is missing a trust_envelope `
+      + 'on metadata; substrate-deep requires an operator-signed envelope.',
+    );
+    process.exit(2);
+  }
+
+  const stages = await readPipelineStagesPolicy(host, { scope: 'project' });
+  if (stages.atomId === null || stages.stages.length === 0) {
+    console.error(
+      'ERROR: pol-planning-pipeline-stages-default is missing or empty. ' +
+      'Run scripts/bootstrap-deep-planning-pipeline-canon.mjs to seed the ' +
+      'pipeline canon, then retry --mode substrate-deep.',
+    );
+    process.exit(2);
+  }
+
+  // Resolve stage adapters from the reference set shipped in
+  // examples/planning-stages/. Each canon-listed stage name must map
+  // to an adapter; an unmapped stage halts the driver rather than
+  // silently truncating the pipeline. Custom org stages drop in by
+  // adding entries to this map (the registry-wiring follow-up may
+  // replace this in-script literal with a per-stage canon-driven
+  // resolver, which is mechanism, not policy).
+  const { brainstormStage } = await import('../dist/examples/planning-stages/brainstorm/index.js');
+  const { specStage } = await import('../dist/examples/planning-stages/spec/index.js');
+  const { planStage } = await import('../dist/examples/planning-stages/plan/index.js');
+  const { reviewStage } = await import('../dist/examples/planning-stages/review/index.js');
+  const { createDispatchStage } = await import('../dist/examples/planning-stages/dispatch/index.js');
+  const { SubActorRegistry } = await import('../dist/runtime/actor-message/index.js');
+  const stageRegistry = new Map([
+    ['brainstorm-stage', brainstormStage],
+    ['spec-stage', specStage],
+    ['plan-stage', planStage],
+    ['review-stage', reviewStage],
+    ['dispatch-stage', createDispatchStage(new SubActorRegistry())],
+  ]);
+  const stageAdapters = [];
+  const unresolvedStages = [];
+  for (const s of stages.stages) {
+    const adapter = stageRegistry.get(s.name);
+    if (adapter === undefined) {
+      unresolvedStages.push(s.name);
+    } else {
+      stageAdapters.push(adapter);
+    }
+  }
+  if (unresolvedStages.length > 0) {
+    console.error(
+      `ERROR: no stage adapters resolved for stages [${unresolvedStages.join(', ')}]. ` +
+      'Each canon-listed stage requires a registered adapter. Add the ' +
+      'adapter to the in-script stageRegistry map in run-cto-actor.mjs ' +
+      'or override the stages list via the canon policy.',
+    );
+    process.exit(2);
+  }
+
+  const correlationId = `cto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const result = await runPipeline(stageAdapters, host, {
+    principal: principal.id,
+    correlationId,
+    seedAtomIds: [args.intentId],
+    stagePolicyAtomId: stages.atomId,
+    mode: 'substrate-deep',
+  });
+  console.log('[cto-actor] --- DEEP-PIPELINE REPORT ---');
+  console.log(JSON.stringify(result, null, 2));
+  if (result.kind === 'completed') process.exit(0);
+  if (result.kind === 'hil-paused') process.exit(0);
+  process.exit(1);
+}
+
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const parsed = parseRunCtoActorArgs(process.argv.slice(2));
+  if (!parsed.ok) {
+    console.error(`ERROR: ${parsed.reason}`);
+    process.exit(2);
+  }
+  const args = parsed.args;
+  if (args.help) printUsageAndExit();
 
   // --dry-run is not yet wired: atom writes + notifier calls still
   // happen through the Host. A "dry-run" that silently mutated the
@@ -254,6 +367,22 @@ async function main() {
       'to execute a live run under the cto-actor policy atoms.',
     );
     process.exit(2);
+  }
+
+  // Mode-gated branch. --mode substrate-deep routes through the
+  // multi-stage planning pipeline (brainstorm + spec + plan + review
+  // + dispatch). The default single-pass mode keeps the existing
+  // PlanningActor path unchanged; tactical clarifications and
+  // small-scope plans amortize their cost there.
+  //
+  // The substrate-deep path requires the bootstrap canon to seed
+  // the pipeline stage policy (pol-planning-pipeline-stages-default)
+  // and the per-stage HIL policies. When the canon is not yet
+  // present, the runner halts at pre-flight with a malformed-stages
+  // failure rather than degrading silently.
+  if (args.mode === 'substrate-deep') {
+    await runDeepPipeline(args);
+    return;
   }
 
   // LLM adapter: ClaudeCliLLM uses the user's existing Claude Code

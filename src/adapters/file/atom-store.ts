@@ -150,6 +150,11 @@ export class FileAtomStore implements AtomStore {
         : existing.question_state !== undefined
           ? { question_state: existing.question_state }
           : {}),
+      ...(patch.pipeline_state !== undefined
+        ? { pipeline_state: patch.pipeline_state }
+        : existing.pipeline_state !== undefined
+          ? { pipeline_state: existing.pipeline_state }
+          : {}),
     };
     await atomicWriteFile(this.pathFor(id), JSON.stringify(updated, null, 2));
     return updated;

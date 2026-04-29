@@ -72,6 +72,21 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // purge (after N months) lives in a follow-up policy atom.
   'agent-session': 365 * 24 * 60 * 60 * 1000,    // ~1 year
   'agent-turn': 365 * 24 * 60 * 60 * 1000,       // ~1 year
+  // Deep planning pipeline atom types. Specs are prose artifacts
+  // that may be referenced for months across follow-up work, so
+  // their stated confidence stays stable like a directive. Pipeline
+  // runtime state and audit projection atoms are historical records
+  // tied to a specific run; their value comes from later forensic
+  // re-reading rather than arbitration, so a long half-life keeps
+  // them stable during the useful window. Operational purge after
+  // N months belongs in a follow-up policy atom, not on the
+  // substrate decay axis.
+  spec: 365 * 24 * 60 * 60 * 1000,                       // ~1 year
+  pipeline: 365 * 24 * 60 * 60 * 1000,                   // ~1 year
+  'pipeline-stage-event': 365 * 24 * 60 * 60 * 1000,     // ~1 year
+  'pipeline-audit-finding': 365 * 24 * 60 * 60 * 1000,   // ~1 year
+  'pipeline-failed': 365 * 24 * 60 * 60 * 1000,          // ~1 year
+  'pipeline-resume': 365 * 24 * 60 * 60 * 1000,          // ~1 year
 });
 
 export interface LoopOptions {

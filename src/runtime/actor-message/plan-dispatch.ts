@@ -58,7 +58,20 @@ export interface DispatchTickResult {
 export async function runDispatchTick(
   host: Host,
   registry: SubActorRegistry,
-  options: { readonly now?: () => number } = {},
+  options: {
+    readonly now?: () => number;
+    /**
+     * Optional caller-supplied predicate that further narrows the
+     * approved-plans candidate set. Used by pipeline-scoped callers
+     * (e.g. the planning-pipeline dispatch-stage) to prevent a tick
+     * from claiming approved plans that belong to a different
+     * pipeline run. Default: accept every candidate. The base
+     * approved + clean + has-delegation filter still applies first;
+     * this predicate is an additional narrowing layer, not a way to
+     * widen authority.
+     */
+    readonly planFilter?: (plan: Atom) => boolean;
+  } = {},
 ): Promise<DispatchTickResult> {
   const now = options.now ?? (() => Date.now());
   const page = await host.atoms.query({ type: ['plan'] }, 500);
@@ -66,7 +79,9 @@ export async function runDispatchTick(
     if (atom.superseded_by.length > 0) return false;
     if (atom.taint !== 'clean') return false;
     if (atom.plan_state !== 'approved') return false;
-    return hasDelegationDescriptor(atom);
+    if (!hasDelegationDescriptor(atom)) return false;
+    if (options.planFilter !== undefined && !options.planFilter(atom)) return false;
+    return true;
   });
 
   let dispatched = 0;

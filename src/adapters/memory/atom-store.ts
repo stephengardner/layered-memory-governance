@@ -126,6 +126,11 @@ export class MemoryAtomStore implements AtomStore {
         : existing.question_state !== undefined
           ? { question_state: existing.question_state }
           : {}),
+      ...(patch.pipeline_state !== undefined
+        ? { pipeline_state: patch.pipeline_state }
+        : existing.pipeline_state !== undefined
+          ? { pipeline_state: existing.pipeline_state }
+          : {}),
     };
     this.atoms.set(id, updated);
     return updated;

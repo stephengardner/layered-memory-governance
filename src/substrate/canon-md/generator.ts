@@ -50,6 +50,18 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   // tooling path explicitly dumps non-L3 atoms.
   'agent-session',
   'agent-turn',
+  // Deep planning pipeline atom types. Spec atoms are L0/L1 prose
+  // artifacts; pipeline-* atoms are L0/L1 runtime state and audit
+  // projections. The canon applier filters to L3 so none of these
+  // appear in the rendered target; they are listed here for
+  // deterministic ordering when a debug tooling path renders a
+  // non-L3 atom set.
+  'spec',
+  'pipeline',
+  'pipeline-stage-event',
+  'pipeline-audit-finding',
+  'pipeline-failed',
+  'pipeline-resume',
 ];
 
 const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
@@ -78,6 +90,18 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   // explicitly dumps non-L3 atoms (e.g. a session-replay debugger).
   'agent-session': 'Agent Sessions',
   'agent-turn': 'Agent Turns',
+  // Deep planning pipeline atom types. Spec atoms are looser-shaped
+  // prose artifacts; pipeline-* atoms are runtime state and audit
+  // projections from the planning-pipeline runner. None reach the
+  // rendered canon target (the applier filters to L3); headings
+  // exist for deterministic ordering when a debug tool explicitly
+  // dumps non-L3 atoms.
+  spec: 'Specs',
+  pipeline: 'Pipelines',
+  'pipeline-stage-event': 'Pipeline Stage Events',
+  'pipeline-audit-finding': 'Pipeline Audit Findings',
+  'pipeline-failed': 'Pipeline Failures',
+  'pipeline-resume': 'Pipeline Resumes',
 };
 
 export interface RenderOptions {
