@@ -6,6 +6,7 @@ import type {
   AuditFinding,
   RetryStrategy,
 } from '../../../src/runtime/planning-pipeline/types.js';
+import * as PipelineExports from '../../../src/runtime/planning-pipeline/index.js';
 
 describe('PlanningStage type', () => {
   it('compiles a minimal stage', () => {
@@ -39,5 +40,14 @@ describe('PlanningStage type', () => {
     const b: RetryStrategy = { kind: 'with-jitter', max_attempts: 3, base_delay_ms: 500 };
     expect(a.kind).toBe('no-retry');
     expect(b.kind).toBe('with-jitter');
+  });
+});
+
+describe('planning-pipeline barrel', () => {
+  it('exports the public surface', () => {
+    expect(typeof PipelineExports.runPipeline).toBe('function');
+    expect(typeof PipelineExports.mkPipelineAtom).toBe('function');
+    expect(typeof PipelineExports.mkPipelineStageEventAtom).toBe('function');
+    expect(typeof PipelineExports.readPipelineStagesPolicy).toBe('function');
   });
 });
