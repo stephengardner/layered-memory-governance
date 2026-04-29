@@ -213,17 +213,36 @@ async function runBrainstorm(
  * exactly. Audit reads through the pipeline atom rather than the
  * StageContext because StageContext is a substrate type (changes there
  * affect every stage adapter); deriving the set from the existing
- * pipeline atom keeps this change adapter-local. Returns an empty set
- * when the pipeline atom is unreadable so the auditor degrades to its
- * resolvability-only behaviour rather than failing closed on a
- * read error.
+ * pipeline atom keeps this change adapter-local.
+ *
+ * Fail-closed on a missing pipeline atom or empty provenance: the seed
+ * set is the authoritative input to the citation-grounding fence, and
+ * a silent fall-through to "no constraint" lets out-of-set citations
+ * pass when the pipeline atom is unreadable. The runner converts the
+ * thrown error into an exit-failure event + pipeline-failed atom via
+ * its existing stage-error machinery; the audit function never
+ * silently degrades. Per inv-governance-before-autonomy.
  */
 async function readVerifiedSeedSetFromPipelineAtom(
   ctx: StageContext,
 ): Promise<ReadonlySet<string>> {
   const pipelineAtom = await ctx.host.atoms.get(ctx.pipelineId);
-  if (pipelineAtom === null) return new Set<string>();
+  if (pipelineAtom === null) {
+    throw new Error(
+      `brainstorm-stage audit: pipeline atom "${String(ctx.pipelineId)}" `
+      + 'not found in host.atoms; cannot resolve verified seed-atom set. '
+      + 'Failing closed rather than skipping the citation-grounding fence.',
+    );
+  }
   const derived = pipelineAtom.provenance?.derived_from ?? [];
+  if (derived.length === 0) {
+    throw new Error(
+      `brainstorm-stage audit: pipeline atom "${String(ctx.pipelineId)}" `
+      + 'has empty provenance.derived_from; the verified seed-atom set is '
+      + 'the authoritative input for the citation-grounding fence and '
+      + 'cannot be empty. Failing closed.',
+    );
+  }
   return new Set(derived.map((id) => String(id)));
 }
 
@@ -262,8 +281,11 @@ async function auditBrainstorm(
       // grounded a citation on an atom outside the input contract.
       // Flag with the same critical severity so the runner halts;
       // the prompt explicitly tells the LLM to cite ONLY ids from
-      // verified_seed_atom_ids.
-      if (verifiedSeedSet.size > 0 && !verifiedSeedSet.has(String(id))) {
+      // verified_seed_atom_ids. The size>0 guard from an earlier
+      // iteration was removed because readVerifiedSeedSetFromPipelineAtom
+      // now fails closed on an empty / missing pipeline atom; reaching
+      // this point implies a non-empty verified set.
+      if (!verifiedSeedSet.has(String(id))) {
         findings.push({
           severity: 'critical',
           category: 'non-seed-cited-atom',

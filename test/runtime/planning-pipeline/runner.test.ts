@@ -28,6 +28,24 @@ function mkStage<TIn, TOut>(
 }
 
 /**
+ * Build a stage whose run() throws synchronously. Test fixtures use
+ * this to drive the failure path through failPipeline + the
+ * exit-failure event emit. Extracted at N=2+ per the duplication-floor
+ * canon (`dev-extract-helper-at-n2`).
+ */
+function mkThrowingStage(
+  name = 'fail-stage',
+  message = 'boom',
+): PlanningStage<unknown, unknown> {
+  return {
+    name,
+    async run() {
+      throw new Error(message);
+    },
+  };
+}
+
+/**
  * Seed pause_mode='never' policy atoms for the supplied stage names so
  * the runner does not halt on the fail-closed HIL default. Test
  * fixtures inline the policy because production deployments author it
@@ -116,12 +134,7 @@ describe('runPipeline', () => {
 
   it('writes pipeline-failed atom when a stage throws', async () => {
     const host = createMemoryHost();
-    const failingStage: PlanningStage<unknown, unknown> = {
-      name: 'fail-stage',
-      async run() {
-        throw new Error('boom');
-      },
-    };
+    const failingStage = mkThrowingStage();
     const result = await runPipeline([failingStage], host, {
       principal: 'cto-actor' as PrincipalId,
       correlationId: 'corr-3',
@@ -252,12 +265,7 @@ describe('runPipeline', () => {
 
     it('stamps metadata.completed_at on stage-thrown failure', async () => {
       const host = createMemoryHost();
-      const failingStage: PlanningStage<unknown, unknown> = {
-        name: 'fail-stage',
-        async run() {
-          throw new Error('boom');
-        },
-      };
+      const failingStage = mkThrowingStage();
       const result = await runPipeline([failingStage], host, {
         principal: 'cto-actor' as PrincipalId,
         correlationId: 'corr-completed-at-fail',
@@ -321,12 +329,7 @@ describe('runPipeline', () => {
       // completed_at + total_cost_usd; failPipeline must not erase
       // started_at when it stamps completed_at.
       const host = createMemoryHost();
-      const failingStage: PlanningStage<unknown, unknown> = {
-        name: 'fail-stage',
-        async run() {
-          throw new Error('boom');
-        },
-      };
+      const failingStage = mkThrowingStage();
       await runPipeline([failingStage], host, {
         principal: 'cto-actor' as PrincipalId,
         correlationId: 'corr-completed-at-merge',
@@ -366,12 +369,7 @@ describe('runPipeline', () => {
       let i = 0;
       const incNow = () =>
         new Date(Date.UTC(2026, 3, 28, 12, 0, i++)).toISOString() as Time;
-      const failingStage: PlanningStage<unknown, unknown> = {
-        name: 'fail-stage',
-        async run() {
-          throw new Error('boom');
-        },
-      };
+      const failingStage = mkThrowingStage();
       await runPipeline([failingStage], host, {
         principal: 'cto-actor' as PrincipalId,
         correlationId: 'corr-parity-test',

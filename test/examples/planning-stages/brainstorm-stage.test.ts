@@ -17,7 +17,48 @@ import {
   brainstormStage,
 } from '../../../examples/planning-stages/brainstorm/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
-import type { AtomId, PrincipalId } from '../../../src/types.js';
+import type { AtomId, PrincipalId, Time } from '../../../src/types.js';
+
+/**
+ * Seed a pipeline atom whose provenance.derived_from is the supplied
+ * verified seed-atom set. Brainstorm audit() reads through this atom
+ * to recover the authoritative seed set; the helper centralises the
+ * boilerplate at N=2 per the duplication-floor canon.
+ */
+async function seedPipelineAtom(
+  host: ReturnType<typeof createMemoryHost>,
+  pipelineId: AtomId,
+  verifiedSeedAtomIds: ReadonlyArray<AtomId>,
+): Promise<void> {
+  await host.atoms.put({
+    schema_version: 1,
+    id: pipelineId,
+    content: 'pipeline',
+    type: 'pipeline',
+    layer: 'L0',
+    provenance: {
+      kind: 'agent-observed',
+      source: { agent_id: 'cto-actor' },
+      derived_from: verifiedSeedAtomIds,
+    },
+    confidence: 1.0,
+    created_at: '2026-04-28T00:00:00.000Z' as Time,
+    last_reinforced_at: '2026-04-28T00:00:00.000Z' as Time,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: 'cto-actor' as PrincipalId,
+    taint: 'clean',
+    metadata: {},
+  });
+}
 
 describe('brainstormStage', () => {
   it('exports a PlanningStage with name "brainstorm-stage"', () => {
@@ -26,6 +67,11 @@ describe('brainstormStage', () => {
 
   it('audit() flags a fabricated cited atom id as critical', async () => {
     const host = createMemoryHost();
+    const pipelineId = 'p-fabricated' as AtomId;
+    // Seed a pipeline atom with a non-empty seed set so the
+    // fail-closed read does not throw. The cited id is unrelated
+    // and unresolvable: the auditor's resolvability check fires.
+    await seedPipelineAtom(host, pipelineId, ['seed-atom-x' as AtomId]);
     const findings = await brainstormStage.audit?.(
       {
         open_questions: [],
@@ -39,11 +85,63 @@ describe('brainstormStage', () => {
         host,
         principal: 'brainstorm-actor' as PrincipalId,
         correlationId: 'corr',
-        pipelineId: 'p' as AtomId,
+        pipelineId,
         stageName: 'brainstorm-stage',
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
+  });
+
+  // CR PR #244 #3159616312: audit() must fail closed when the pipeline
+  // atom is unreadable / missing. Returning an empty seed set silently
+  // would let out-of-set citations pass when the authoritative state
+  // is unavailable.
+  it('audit() fails closed when the pipeline atom is missing', async () => {
+    const host = createMemoryHost();
+    await expect(
+      brainstormStage.audit?.(
+        {
+          open_questions: [],
+          alternatives_surveyed: [
+            { option: 'foo', rejection_reason: 'cited atom:something' },
+          ],
+          decision_points: [],
+          cost_usd: 0,
+        },
+        {
+          host,
+          principal: 'brainstorm-actor' as PrincipalId,
+          correlationId: 'corr',
+          pipelineId: 'p-missing' as AtomId,
+          stageName: 'brainstorm-stage',
+        },
+      ),
+    ).rejects.toThrow(/pipeline atom .* not found/);
+  });
+
+  it('audit() fails closed when the pipeline atom has empty derived_from', async () => {
+    const host = createMemoryHost();
+    const pipelineId = 'p-empty-derived' as AtomId;
+    await seedPipelineAtom(host, pipelineId, []);
+    await expect(
+      brainstormStage.audit?.(
+        {
+          open_questions: [],
+          alternatives_surveyed: [
+            { option: 'foo', rejection_reason: 'cited atom:something' },
+          ],
+          decision_points: [],
+          cost_usd: 0,
+        },
+        {
+          host,
+          principal: 'brainstorm-actor' as PrincipalId,
+          correlationId: 'corr',
+          pipelineId,
+          stageName: 'brainstorm-stage',
+        },
+      ),
+    ).rejects.toThrow(/empty provenance.derived_from/);
   });
 
   it('outputSchema rejects a negative cost', () => {
@@ -146,19 +244,21 @@ describe('brainstormStage', () => {
     }
   });
 
-  // Runtime enforcement (CR PR #244 #3159516661): the audit() must
-  // reject a citation that resolves but is NOT in the verified seed-
-  // atom set. Prompt-only restraint is insufficient because a model
-  // can choose any existing atom and pass resolvability while still
-  // ignoring the seed-set contract.
-  it('audit() flags a cited atom that resolves but is NOT in the seed set', async () => {
-    const host = createMemoryHost();
-    // Seed an atom that resolves but is NOT in the pipeline's seed set.
-    const outOfSetId = 'atom-resolvable-but-out-of-seed' as AtomId;
+  /**
+   * Seed a content atom for citation tests at N=2 use-sites
+   * (out-of-set + in-set). Centralised per the duplication-floor
+   * canon; keeps each test's body focused on the assertion shape
+   * rather than the atom-fixture boilerplate.
+   */
+  async function seedContentAtom(
+    host: ReturnType<typeof createMemoryHost>,
+    atomId: AtomId,
+    content: string,
+  ): Promise<void> {
     await host.atoms.put({
       schema_version: 1,
-      id: outOfSetId,
-      content: 'out-of-set seed',
+      id: atomId,
+      content,
       type: 'observation',
       layer: 'L0',
       provenance: {
@@ -167,8 +267,8 @@ describe('brainstormStage', () => {
         derived_from: [],
       },
       confidence: 1.0,
-      created_at: '2026-04-28T00:00:00.000Z',
-      last_reinforced_at: '2026-04-28T00:00:00.000Z',
+      created_at: '2026-04-28T00:00:00.000Z' as Time,
+      last_reinforced_at: '2026-04-28T00:00:00.000Z' as Time,
       expires_at: null,
       supersedes: [],
       superseded_by: [],
@@ -183,39 +283,20 @@ describe('brainstormStage', () => {
       taint: 'clean',
       metadata: {},
     });
-    // Seed a pipeline atom whose derived_from is the verified seed set;
-    // this atom does NOT include outOfSetId, so the audit must catch
-    // a citation of outOfSetId as non-seed.
+  }
+
+  // Runtime enforcement (CR PR #244 #3159516661): the audit() must
+  // reject a citation that resolves but is NOT in the verified seed-
+  // atom set. Prompt-only restraint is insufficient because a model
+  // can choose any existing atom and pass resolvability while still
+  // ignoring the seed-set contract.
+  it('audit() flags a cited atom that resolves but is NOT in the seed set', async () => {
+    const host = createMemoryHost();
+    const outOfSetId = 'atom-resolvable-but-out-of-seed' as AtomId;
+    await seedContentAtom(host, outOfSetId, 'out-of-set seed');
     const inSetId = 'atom-in-the-seed-set' as AtomId;
     const pipelineId = 'pipeline-corr-non-seed-test' as AtomId;
-    await host.atoms.put({
-      schema_version: 1,
-      id: pipelineId,
-      content: 'pipeline',
-      type: 'pipeline',
-      layer: 'L0',
-      provenance: {
-        kind: 'agent-observed',
-        source: { agent_id: 'cto-actor' },
-        derived_from: [inSetId],
-      },
-      confidence: 1.0,
-      created_at: '2026-04-28T00:00:00.000Z',
-      last_reinforced_at: '2026-04-28T00:00:00.000Z',
-      expires_at: null,
-      supersedes: [],
-      superseded_by: [],
-      scope: 'project',
-      signals: {
-        agrees_with: [],
-        conflicts_with: [],
-        validation_status: 'unchecked',
-        last_validated_at: null,
-      },
-      principal_id: 'cto-actor' as PrincipalId,
-      taint: 'clean',
-      metadata: {},
-    });
+    await seedPipelineAtom(host, pipelineId, [inSetId]);
 
     const findings = await brainstormStage.audit?.(
       {
@@ -242,63 +323,9 @@ describe('brainstormStage', () => {
   it('audit() lets a cited atom in the verified seed set pass', async () => {
     const host = createMemoryHost();
     const inSetId = 'atom-in-seed-and-resolves' as AtomId;
-    await host.atoms.put({
-      schema_version: 1,
-      id: inSetId,
-      content: 'in-set seed',
-      type: 'observation',
-      layer: 'L0',
-      provenance: {
-        kind: 'agent-observed',
-        source: { agent_id: 'test' },
-        derived_from: [],
-      },
-      confidence: 1.0,
-      created_at: '2026-04-28T00:00:00.000Z',
-      last_reinforced_at: '2026-04-28T00:00:00.000Z',
-      expires_at: null,
-      supersedes: [],
-      superseded_by: [],
-      scope: 'project',
-      signals: {
-        agrees_with: [],
-        conflicts_with: [],
-        validation_status: 'unchecked',
-        last_validated_at: null,
-      },
-      principal_id: 'apex-agent' as PrincipalId,
-      taint: 'clean',
-      metadata: {},
-    });
+    await seedContentAtom(host, inSetId, 'in-set seed');
     const pipelineId = 'pipeline-corr-in-seed-test' as AtomId;
-    await host.atoms.put({
-      schema_version: 1,
-      id: pipelineId,
-      content: 'pipeline',
-      type: 'pipeline',
-      layer: 'L0',
-      provenance: {
-        kind: 'agent-observed',
-        source: { agent_id: 'cto-actor' },
-        derived_from: [inSetId],
-      },
-      confidence: 1.0,
-      created_at: '2026-04-28T00:00:00.000Z',
-      last_reinforced_at: '2026-04-28T00:00:00.000Z',
-      expires_at: null,
-      supersedes: [],
-      superseded_by: [],
-      scope: 'project',
-      signals: {
-        agrees_with: [],
-        conflicts_with: [],
-        validation_status: 'unchecked',
-        last_validated_at: null,
-      },
-      principal_id: 'cto-actor' as PrincipalId,
-      taint: 'clean',
-      metadata: {},
-    });
+    await seedPipelineAtom(host, pipelineId, [inSetId]);
     const findings = await brainstormStage.audit?.(
       {
         open_questions: [],
@@ -319,38 +346,12 @@ describe('brainstormStage', () => {
     expect(findings?.length).toBe(0);
   });
 
-  it('audit() returns no findings when every cited id resolves', async () => {
+  it('audit() returns no findings when every cited id resolves and is in the seed set', async () => {
     const host = createMemoryHost();
-    // Seed an atom that the brainstorm rejection_reason will cite.
     const seededId = 'observation-real-atom' as AtomId;
-    await host.atoms.put({
-      schema_version: 1,
-      id: seededId,
-      content: 'seed',
-      type: 'observation',
-      layer: 'L0',
-      provenance: {
-        kind: 'agent-observed',
-        source: { agent_id: 'test' },
-        derived_from: [],
-      },
-      confidence: 1.0,
-      created_at: '2026-04-28T00:00:00.000Z',
-      last_reinforced_at: '2026-04-28T00:00:00.000Z',
-      expires_at: null,
-      supersedes: [],
-      superseded_by: [],
-      scope: 'project',
-      signals: {
-        agrees_with: [],
-        conflicts_with: [],
-        validation_status: 'unchecked',
-        last_validated_at: null,
-      },
-      principal_id: 'apex-agent' as PrincipalId,
-      taint: 'clean',
-      metadata: {},
-    });
+    await seedContentAtom(host, seededId, 'seed');
+    const pipelineId = 'p-resolves-and-in-seed' as AtomId;
+    await seedPipelineAtom(host, pipelineId, [seededId]);
     const findings = await brainstormStage.audit?.(
       {
         open_questions: [],
@@ -364,7 +365,7 @@ describe('brainstormStage', () => {
         host,
         principal: 'brainstorm-actor' as PrincipalId,
         correlationId: 'corr',
-        pipelineId: 'p' as AtomId,
+        pipelineId,
         stageName: 'brainstorm-stage',
       },
     );
