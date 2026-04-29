@@ -455,12 +455,17 @@ async function failPipeline(
       + `or wire a pipeline-scoped query before retrying.`,
     );
   }
+  // Reuse a single timestamp for both writes so the failure atom and
+  // the pipeline atom's terminal stamp agree to the millisecond. A
+  // separate now() call between the two would emit drift the audit
+  // chain has to reconcile.
+  const terminalNow = now();
   await host.atoms.put(
     mkPipelineFailedAtom({
       pipelineId,
       principalId: options.principal,
       correlationId: options.correlationId,
-      now: now(),
+      now: terminalNow,
       failedStageName: stageName,
       failedStageIndex: failedIndex,
       cause,
@@ -468,7 +473,16 @@ async function failPipeline(
       recoveryHint: `re-run from stage '${stageName}' after addressing the failure cause`,
     }),
   );
-  await host.atoms.update(pipelineId, { pipeline_state: 'failed' });
+  // Mirror the completed-path metadata write: stamp completed_at on
+  // every terminal transition so audit consumers can read pipeline
+  // duration from the atom alone (no walk through pipeline-stage-event
+  // chain required). The metadata patch is shallow-merged by the
+  // AtomStore implementations, preserving started_at, mode,
+  // stage_policy_atom_id, and total_cost_usd from mkPipelineAtom.
+  await host.atoms.update(pipelineId, {
+    pipeline_state: 'failed',
+    metadata: { completed_at: terminalNow },
+  });
   return {
     kind: 'failed',
     pipelineId,

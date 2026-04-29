@@ -217,4 +217,134 @@ describe('runPipeline', () => {
       ['b', 'exit-success'],
     ]);
   });
+
+  // Terminal-transition timestamp parity. Substrate-fix in this PR:
+  // failPipeline marked pipeline_state='failed' but never stamped
+  // metadata.completed_at, leaving the field at its mkPipelineAtom
+  // initial value of null. The completed path stamped it correctly.
+  // Audit consumers projecting pipeline duration ("how long did this
+  // run before failing") couldn't tell from the atom alone; they had
+  // to derive the time from the chain of pipeline-stage-event atoms.
+  // Mirror the started_at pattern: stamp completed_at on every
+  // terminal transition (failed or completed).
+  describe('terminal-transition completed_at stamp', () => {
+    it('stamps metadata.completed_at on successful completion', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['stage-a']);
+      const stages = [mkStage<unknown, unknown>('stage-a', () => ({}))];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-completed-at-success',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('completed');
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-completed-at-success` as AtomId,
+      );
+      expect(pipelineAtom).not.toBeNull();
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      expect(meta.completed_at).toBe(NOW);
+      expect(pipelineAtom!.pipeline_state).toBe('completed');
+    });
+
+    it('stamps metadata.completed_at on stage-thrown failure', async () => {
+      const host = createMemoryHost();
+      const failingStage: PlanningStage<unknown, unknown> = {
+        name: 'fail-stage',
+        async run() {
+          throw new Error('boom');
+        },
+      };
+      const result = await runPipeline([failingStage], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-completed-at-fail',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('failed');
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-completed-at-fail` as AtomId,
+      );
+      expect(pipelineAtom).not.toBeNull();
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      // Mirrors the started_at pattern in mkPipelineAtom: terminal
+      // transitions stamp completed_at to the run's terminal time.
+      expect(meta.completed_at).toBe(NOW);
+      expect(pipelineAtom!.pipeline_state).toBe('failed');
+    });
+
+    it('stamps metadata.completed_at on critical-audit-finding failure', async () => {
+      const host = createMemoryHost();
+      const auditedStage: PlanningStage<unknown, { x: number }> = {
+        name: 'audited-stage',
+        async run() {
+          return { value: { x: 1 }, cost_usd: 0, duration_ms: 0, atom_type: 'spec' };
+        },
+        async audit() {
+          return [
+            {
+              severity: 'critical',
+              category: 'cite-fail',
+              message: 'fabricated path',
+              cited_atom_ids: [],
+              cited_paths: ['nope.ts'],
+            },
+          ];
+        },
+      };
+      const result = await runPipeline([auditedStage], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-completed-at-audit',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('failed');
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-completed-at-audit` as AtomId,
+      );
+      expect(pipelineAtom).not.toBeNull();
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      expect(meta.completed_at).toBe(NOW);
+      expect(pipelineAtom!.pipeline_state).toBe('failed');
+    });
+
+    it('preserves started_at when stamping completed_at on failure', async () => {
+      // Regression guard: the metadata patch must be a shallow-merge,
+      // not a clobber. mkPipelineAtom initialises started_at + null
+      // completed_at + total_cost_usd; failPipeline must not erase
+      // started_at when it stamps completed_at.
+      const host = createMemoryHost();
+      const failingStage: PlanningStage<unknown, unknown> = {
+        name: 'fail-stage',
+        async run() {
+          throw new Error('boom');
+        },
+      };
+      await runPipeline([failingStage], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-completed-at-merge',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      const pipelineAtom = await host.atoms.get(
+        `pipeline-corr-completed-at-merge` as AtomId,
+      );
+      const meta = pipelineAtom!.metadata as Record<string, unknown>;
+      expect(meta.started_at).toBe(NOW);
+      expect(meta.completed_at).toBe(NOW);
+      // Confirm the mode + stage_policy fields from mkPipelineAtom
+      // survive the failure-path metadata write too.
+      expect(meta.stage_policy_atom_id).toBe('pol-test');
+      expect(meta.mode).toBe('substrate-deep');
+    });
+  });
 });
