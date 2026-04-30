@@ -114,24 +114,19 @@ Survey alternatives, surface open questions, and identify decision points
 for the seeded operator-intent. Emit ONLY a payload that matches the
 provided schema; no prose outside the schema fields.
 
-Citation grounding (HARD CONSTRAINT):
-- The DATA block contains a "verified seed atom set" under
-  data.verified_seed_atom_ids. This array is the ONLY authoritative
-  list of atom-ids you have been shown.
-- When you cite an atom inside an alternative's rejection_reason, you
-  MUST cite ONLY ids that appear in data.verified_seed_atom_ids.
-- Citations use the explicit prefix "atom:" (e.g.
-  "atom:dev-no-claude-attribution"), NOT bare hyphenated tokens, so
-  the post-stage auditor can distinguish citations from prose.
-- If you cannot ground a claim in an id from the verified seed atom
-  set, OMIT the citation rather than guess. A rejection_reason
-  without a citation is preferable to a fabricated atom-id.
+Brainstorm is exploratory and generative. Rejection_reason fields are
+prose only; do NOT include literal atom-id citations like
+"atom:foo-bar" inside any field. The downstream review-stage
+re-walks every cited path and atom-id from the spec/plan output for
+provenance verification, so the citation-grounding fence belongs
+there (per the dev-deep-planning-pipeline canon directive), not at
+the exploratory stage.
 
-Self-check (REQUIRED before emitting):
-- Walk every atom-id appearing in your output (rejection_reason
-  fields, decision_points, open_questions). For each, verify the id
-  appears literally in data.verified_seed_atom_ids. If it does not,
-  rewrite the field to omit the citation before emitting.`;
+The post-stage auditor flags any literal "atom:<id>" citation that
+did not come from the verified seed set as a 'major' finding
+(advisory, non-blocking) so a stray citation does not halt the
+pipeline at the exploratory stage; the run continues to spec-stage
+where citation correctness is load-bearing.`;
 
 async function runBrainstorm(
   input: StageInput<unknown>,
@@ -265,13 +260,20 @@ async function auditBrainstorm(
       const atom = await ctx.host.atoms.get(id as AtomId);
       if (atom === null) {
         findings.push({
-          severity: 'critical',
+          // 'major' (not 'critical') so the pipeline continues to spec-stage
+          // where citation correctness is load-bearing. Brainstorm is
+          // exploratory; the prompt instructs the LLM to omit citations
+          // entirely. A stray fabricated citation here is a quality signal
+          // (logged as a finding atom for audit) but not a halt-stage
+          // condition. The downstream review-stage re-walks every cited
+          // atom-id from the spec/plan and IS the citation-grounding fence.
+          severity: 'major',
           category: 'fabricated-cited-atom',
           message:
             `Brainstorm rejection_reason for option "${alt.option}" cites `
             + `atom id "${id}" which does not resolve via host.atoms.get. `
-            + 'Mitigates the drafter-citation-verification failure mode at '
-            + 'the substrate level.',
+            + 'Surfaced as a quality signal at the exploratory stage; the '
+            + 'review-stage carries the load-bearing citation fence.',
           cited_atom_ids: [id as AtomId],
           cited_paths: [],
         });
@@ -279,22 +281,20 @@ async function auditBrainstorm(
       }
       // Resolves but is NOT in the verified seed-atom set: the LLM
       // grounded a citation on an atom outside the input contract.
-      // Flag with the same critical severity so the runner halts;
-      // the prompt explicitly tells the LLM to cite ONLY ids from
-      // verified_seed_atom_ids. The size>0 guard from an earlier
-      // iteration was removed because readVerifiedSeedSetFromPipelineAtom
-      // now fails closed on an empty / missing pipeline atom; reaching
-      // this point implies a non-empty verified set.
+      // Flag at 'major' to preserve the audit trail without halting the
+      // pipeline; the brainstorm prompt instructs the LLM to omit
+      // citations rather than fabricate, and the review-stage carries
+      // the load-bearing fence for citation correctness.
       if (!verifiedSeedSet.has(String(id))) {
         findings.push({
-          severity: 'critical',
+          severity: 'major',
           category: 'non-seed-cited-atom',
           message:
             `Brainstorm rejection_reason for option "${alt.option}" cites `
             + `atom id "${id}" which resolves but is NOT in the verified `
-            + 'seed-atom set passed via the pipeline atom. The brainstorm '
-            + 'prompt restricts citations to the seed set; an out-of-set '
-            + 'citation is treated as ungrounded and halts the stage.',
+            + 'seed-atom set. Surfaced as a quality signal at the '
+            + 'exploratory stage; review-stage carries the load-bearing '
+            + 'citation fence.',
           cited_atom_ids: [id as AtomId],
           cited_paths: [],
         });

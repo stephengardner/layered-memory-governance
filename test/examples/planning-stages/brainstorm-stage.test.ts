@@ -65,7 +65,7 @@ describe('brainstormStage', () => {
     expect(brainstormStage.name).toBe('brainstorm-stage');
   });
 
-  it('audit() flags a fabricated cited atom id as critical', async () => {
+  it('audit() flags a fabricated cited atom id as a major (non-blocking) finding', async () => {
     const host = createMemoryHost();
     const pipelineId = 'p-fabricated' as AtomId;
     // Seed a pipeline atom with a non-empty seed set so the
@@ -89,7 +89,12 @@ describe('brainstormStage', () => {
         stageName: 'brainstorm-stage',
       },
     );
-    expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
+    expect(findings?.some(
+      (f) => f.severity === 'major' && f.category === 'fabricated-cited-atom',
+    )).toBe(true);
+    // Pipeline does NOT halt on a brainstorm citation finding -- the
+    // review-stage carries the load-bearing citation fence.
+    expect(findings?.some((f) => f.severity === 'critical')).toBe(false);
   });
 
   // CR PR #244 #3159616312: audit() must fail closed when the pipeline
@@ -181,20 +186,20 @@ describe('brainstormStage', () => {
   // atom-ids (stage-responsibility-brainstorm, stage-isolation, etc.)
   // that the auditor caught. Tightening the prompt is the cheapest
   // mitigation; structural retry-with-feedback is a separate change.
-  describe('BRAINSTORM_SYSTEM_PROMPT (citation-grounding)', () => {
-    it('mentions a verified seed atom set the LLM is constrained to', () => {
-      // The exact wording is intentional surface: a follow-up that
-      // weakens this guidance must update both the prompt AND this
-      // assertion. The pair is the gate.
-      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/verified seed atom set/i);
+  describe('BRAINSTORM_SYSTEM_PROMPT (citation guidance)', () => {
+    // Brainstorm is exploratory; the prompt instructs the LLM to omit
+    // literal atom-id citations entirely. The downstream review-stage
+    // carries the load-bearing citation fence (per dev-deep-planning-pipeline).
+    it('instructs the LLM that brainstorm is exploratory, not citation-load-bearing', () => {
+      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/exploratory/i);
     });
 
-    it('instructs the LLM to omit a citation rather than guess', () => {
-      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/omit/i);
+    it('instructs the LLM not to include literal atom-id citations', () => {
+      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/do not include literal atom-id citations|do not include.*atom-id|do NOT include literal atom-id/i);
     });
 
-    it('asks the LLM to walk every emitted atom-id against the verified set', () => {
-      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/walk|verify|self-check/i);
+    it('points the citation-grounding fence at the review-stage', () => {
+      expect(BRAINSTORM_SYSTEM_PROMPT).toMatch(/review-stage/i);
     });
   });
 
@@ -231,16 +236,22 @@ describe('brainstormStage', () => {
       pipelineId: 'p' as AtomId,
       seedAtomIds: seedIds,
     });
-    // Prompt-grounding contract: the data block carries the verified
-    // seed-atom set under a stable key so the LLM has a templated
-    // DATA reference for the prompt's "verified seed atom set"
-    // language.
+    // Audit-trail contract: the data block still carries the verified
+    // seed-atom set under a stable key so the post-stage auditor can
+    // re-walk citations the LLM may emit despite the prompt's
+    // instruction. The prompt itself no longer references a "verified
+    // seed atom set" because brainstorm is exploratory and the
+    // citation fence has moved to the review-stage.
     expect(captured).not.toBeNull();
     if (captured !== null) {
       const c = captured as { system: string; data: Record<string, unknown> };
       expect(Array.isArray(c.data.verified_seed_atom_ids)).toBe(true);
       expect(c.data.verified_seed_atom_ids).toEqual(seedIds.map(String));
-      expect(c.system).toMatch(/verified seed atom set/i);
+      expect(c.system).toMatch(/exploratory/i);
+      // Regression guard: the prompt MUST NOT re-introduce the old
+      // hard-constraint "verified seed atom set" wording. The fence
+      // moved to the review-stage; brainstorm prose stays exploratory.
+      expect(c.system).not.toMatch(/verified seed atom set/i);
     }
   });
 
@@ -316,7 +327,7 @@ describe('brainstormStage', () => {
       },
     );
     expect(findings?.length).toBeGreaterThan(0);
-    expect(findings?.[0]?.severity).toBe('critical');
+    expect(findings?.[0]?.severity).toBe('major');
     expect(findings?.[0]?.category).toBe('non-seed-cited-atom');
   });
 
