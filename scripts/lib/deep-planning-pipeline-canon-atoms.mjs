@@ -1,5 +1,5 @@
-// Pure builders for the eight L3 / L0-pending atoms the deep planning
-// pipeline seeds into canon. The CLI wrapper
+// Pure builders for the seven L3 policy + ordering atoms the deep
+// planning pipeline seeds into canon. The CLI wrapper
 // (scripts/bootstrap-deep-planning-pipeline-canon.mjs) shells out to
 // this module so the test suite can build atoms off the same data
 // without spawning the script.
@@ -15,13 +15,12 @@
 //     'single-pass' so a solo developer does not pay the multi-stage
 //     cost on a one-line README fix. Read by
 //     readPipelineDefaultModePolicy.
-//   - dev-deep-planning-pipeline: L3 substrate-shape directive
-//     describing the pipeline. Operator-gated per the human-required
-//     L3 promotion invariant. The seed ships at L0 with
-//     validation_status=pending_review so the operator confirms via
-//     /decide post-merge; auto-writing at L3 from a bootstrap script
-//     would bypass the human gate that the three-layer architecture
-//     is built around.
+//
+// The substrate-shape directive `dev-deep-planning-pipeline` lived
+// here as an L0 pending_review stub before operator promotion. After
+// the operator ratified it via /decide, the canonical home moved to
+// scripts/bootstrap-operator-directives.mjs (alongside the other
+// /decide-captured directives), so this module no longer seeds it.
 //
 // Mechanism (the data + atom builder) lives here; environment and
 // host side effects stay in the script. Mirrors the autonomous-intent
@@ -199,43 +198,6 @@ export function buildDeepPlanningPipelineSpecs(operatorId) {
         'Sound at 3 months: a deployment that wants substrate-deep by default writes a '
         + 'higher-priority canon atom; arbitration resolves it via the existing source-rank '
         + 'formula. The default-mode atom is a feature flag with a deterministic default.',
-      derived_from: sharedDerivedFrom,
-    },
-    {
-      id: 'dev-deep-planning-pipeline',
-      // The substrate-shape directive ships at L0 with
-      // validation_status=pending_review so the operator promotes to
-      // L3 via /decide post-merge per the human-required L3 promotion
-      // invariant. Auto-writing at L3 from a bootstrap script would
-      // bypass the human gate that the three-layer architecture is
-      // built around.
-      type: 'directive',
-      layer: 'L0',
-      validation_status: 'pending_review',
-      content:
-        'The deep planning pipeline replaces the single-pass HostLlmPlanningJudgment with '
-        + 'a pluggable, atom-projected, per-stage-audited pipeline. Default 5-stage '
-        + 'composition: brainstorm-stage -> spec-stage -> plan-stage -> review-stage -> '
-        + 'dispatch-stage; org-ceiling deployments compose additional stages via canon '
-        + 'policy atoms per dev-substrate-not-prescription. Each stage emits its output as '
-        + 'an atom carrying provenance.derived_from chain back to the seed operator-intent; '
-        + 'the review-stage runs a read-only auditor that re-walks every cited path and atom '
-        + 'id from the upstream plan, closing the dev-drafter-citation-verification-required '
-        + 'gap at the substrate level. Mode-gated via --mode=substrate-deep on '
-        + 'run-cto-actor.mjs; the indie floor default is single-pass so a solo developer does '
-        + 'not surprise-pay the multi-stage cost on a one-line README fix. Resumability and '
-        + 'kill-switch posture inherit from the existing actor-message passes.',
-      alternatives_rejected: [
-        'Extend HostLlmPlanningJudgment with a multi-step prompt; loses pluggability and per-stage auditing',
-        'Build a separate planning pipeline framework outside src/runtime/; fragments the substrate',
-        'Encode stages as a directed graph from day one; over-engineers before the second consumer arrives',
-      ],
-      what_breaks_if_revisit:
-        'Sound at 3 months: stages are atom-projected and policy-arbitrated; adding a '
-        + 'stage is a canon edit. The trust-envelope authorization model from autonomous-'
-        + 'intent inherits via derived_from chain. The DAG forward-compat seam (depends_on '
-        + 'on stage entries) is mentioned in spec section 15 as the next step when a '
-        + 'concrete consumer needs parallel stages.',
       derived_from: sharedDerivedFrom,
     },
   ];
