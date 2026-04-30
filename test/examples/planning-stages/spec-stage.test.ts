@@ -21,6 +21,12 @@ import {
 } from '../../../examples/planning-stages/spec/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
+import {
+  captureStageRunPrompt,
+  expectCitationFencePrompt,
+  expectVerifiedCitedAtomIdsForwarded,
+  mkPromptContractStageInput,
+} from './citation-fence-helpers.js';
 
 describe('specStage', () => {
   it('exports a PlanningStage with name "spec-stage"', () => {
@@ -92,6 +98,7 @@ describe('specStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'spec-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -114,6 +121,7 @@ describe('specStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'spec-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -125,75 +133,34 @@ describe('specStage', () => {
   // structurally; the dogfeed of 2026-04-30 happened to halt on
   // plan-stage but the same gap holds here, and a follow-on dogfeed
   // would surface it the moment a non-trivial spec is asked for.
-  describe('SPEC_SYSTEM_PROMPT (citation guidance)', () => {
-    it('instructs the LLM to ground every atom-id citation in data.verified_cited_atom_ids', () => {
-      expect(SPEC_SYSTEM_PROMPT).toMatch(/verified_cited_atom_ids/);
-    });
-
-    it('uses "HARD CONSTRAINT" wording so the LLM treats the fence as load-bearing', () => {
-      expect(SPEC_SYSTEM_PROMPT).toMatch(/HARD CONSTRAINT/);
-    });
-
-    it('instructs the LLM to omit a citation rather than guess', () => {
-      // The "OMIT the citation\nrather than guess" wording wraps over a
-      // line break in SPEC_SYSTEM_PROMPT so the regex tolerates any
-      // whitespace (including \n) between the two halves.
-      expect(SPEC_SYSTEM_PROMPT).toMatch(/OMIT the citation\s+rather than guess/i);
-    });
-
-    it('warns the LLM that an out-of-set citation halts the stage', () => {
-      expect(SPEC_SYSTEM_PROMPT).toMatch(
-        /critical audit finding|halts the stage/i,
-      );
-    });
+  // Assertion bodies live in citation-fence-helpers.ts so a prompt-
+  // contract change lands in ONE file, not N synchronized stage-test
+  // edits.
+  it('SPEC_SYSTEM_PROMPT carries the citation-fence contract', () => {
+    expectCitationFencePrompt(SPEC_SYSTEM_PROMPT);
   });
 
   it('runSpec passes the verified-cited-atom-ids set through to the LLM data block', async () => {
     const host = createMemoryHost();
-    let captured: { system: string; data: Record<string, unknown> } | null = null;
-    host.llm.judge = (async (
-      _schema: unknown,
-      system: unknown,
-      data: unknown,
-      _options: unknown,
-    ) => {
-      captured = {
-        system: system as string,
-        data: data as Record<string, unknown>,
-      };
-      return {
-        output: {
-          goal: 'design X',
-          body: 'short body',
-          cited_paths: [],
-          cited_atom_ids: [],
-          alternatives_rejected: [],
-          cost_usd: 0,
-        },
-        metadata: { latency_ms: 1, cost_usd: 0 },
-      };
-    }) as typeof host.llm.judge;
-
     const verifiedIds = ['atom-one', 'atom-two', 'atom-three'] as ReadonlyArray<AtomId>;
-    await specStage.run({
-      host,
-      principal: 'spec-author' as PrincipalId,
-      correlationId: 'corr',
-      priorOutput: null,
-      pipelineId: 'p' as AtomId,
-      seedAtomIds: ['intent-foo' as AtomId],
-      verifiedCitedAtomIds: verifiedIds,
+    const captured = await captureStageRunPrompt({
+      stage: specStage,
+      stubOutput: {
+        goal: 'design X',
+        body: 'short body',
+        cited_paths: [],
+        cited_atom_ids: [],
+        alternatives_rejected: [],
+        cost_usd: 0,
+      },
+      stageInput: mkPromptContractStageInput<unknown>({
+        host,
+        principal: 'spec-author',
+        priorOutput: null,
+        verifiedCitedAtomIds: verifiedIds,
+      }),
     });
-    expect(captured).not.toBeNull();
-    if (captured !== null) {
-      const c = captured as { system: string; data: Record<string, unknown> };
-      expect(Array.isArray(c.data.verified_cited_atom_ids)).toBe(true);
-      expect(c.data.verified_cited_atom_ids).toEqual(verifiedIds.map(String));
-      // The system prompt MUST reference the data field by exact name
-      // so a downstream prompt-edit reviewer can see the contract
-      // wired end-to-end.
-      expect(c.system).toMatch(/verified_cited_atom_ids/);
-    }
+    expectVerifiedCitedAtomIdsForwarded(captured, verifiedIds);
   });
 
   it('audit() returns no findings when every cited atom and path resolves', async () => {
@@ -251,6 +218,7 @@ describe('specStage', () => {
           correlationId: 'corr',
           pipelineId: 'p' as AtomId,
           stageName: 'spec-stage',
+          verifiedCitedAtomIds: [],
         },
       );
       expect(findings?.length).toBe(0);

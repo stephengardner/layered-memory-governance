@@ -50,6 +50,7 @@ function ctx(host: ReturnType<typeof createMemoryHost>) {
     correlationId: 'corr',
     pipelineId: 'p' as AtomId,
     stageName: 'review-stage',
+    verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
   };
 }
 

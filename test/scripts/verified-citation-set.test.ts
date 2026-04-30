@@ -164,6 +164,37 @@ describe('computeVerifiedCitedAtomIds', () => {
     expect(result).toContain('dev-canon-five');
   });
 
+  // CR PR #251 finding: a malformed adapter that returns zero atoms
+  // with a non-null nextCursor would spin the pagination loop forever
+  // because totalSeen never advances. Guard with an explicit
+  // empty-page break.
+  it('does not hang when the adapter returns an empty page with a non-null cursor', async () => {
+    let calls = 0;
+    const host = {
+      atoms: {
+        query: async (
+          _filter: { type?: string[]; layer?: string[] },
+          _limit: number,
+          _cursor?: string,
+        ) => {
+          calls += 1;
+          // Always return zero atoms but pretend there is more.
+          return { atoms: [], nextCursor: 'next-page' };
+        },
+      },
+    };
+    const result = await computeVerifiedCitedAtomIds(host, {
+      seedAtomIds: ['intent-foo'],
+      scope: 'project',
+    });
+    // Result is just the seed; the canon scan exited on the first
+    // empty page rather than looping.
+    expect(result).toEqual(['intent-foo']);
+    // Bounded call count: the loop must NOT have iterated thousands
+    // of times.
+    expect(calls).toBeLessThanOrEqual(2);
+  });
+
   it('deduplicates a seed atom that ALSO appears in the canon scan', async () => {
     const host = mkHostStub([mkDirective('dev-canon-one', 'project')]);
     const result = await computeVerifiedCitedAtomIds(host, {

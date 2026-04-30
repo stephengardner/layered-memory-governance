@@ -60,6 +60,18 @@ export interface StageContext {
   readonly correlationId: string;
   readonly pipelineId: AtomId;
   readonly stageName: string;
+  /**
+   * Verified citation set the stage's audit() may use to reject
+   * resolvable-but-out-of-set citations. Mirrored from the
+   * StageInput field of the same name; the runner threads it through
+   * unchanged so an audit walks against the same set the LLM was
+   * prompted with. Empty when the runner is invoked without a
+   * computed set; audits that depend on a non-empty grounding
+   * contract should treat the empty case the same way the prompts
+   * do (a citation against an empty set is a citation against
+   * nothing, so resolvability alone may be the audit's only signal).
+   */
+  readonly verifiedCitedAtomIds: ReadonlyArray<AtomId>;
 }
 
 export type RetryStrategy =

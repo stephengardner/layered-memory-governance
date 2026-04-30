@@ -338,17 +338,47 @@ async function auditPlan(
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
   const findings: AuditFinding[] = [];
+  // Build a Set view of the verified citation set for O(1) membership
+  // checks below. Empty set => skip the closure-of-citations check
+  // and fall back to resolvability-only (legacy callers, including
+  // direct audit() invocations from tests, do not compute a verified
+  // set; they rely on the existing fabricated-cited-atom check
+  // alone).
+  const verifiedSet = new Set(ctx.verifiedCitedAtomIds.map(String));
+  const enforceVerifiedSet = verifiedSet.size > 0;
   for (const plan of output.plans) {
     // Verify every derived_from atom-id is authoritative: present,
     // untainted, and not superseded. Any failure is a critical finding;
     // the runner halts the stage. A tainted or superseded citation is
     // equivalent to a fabricated id because the LLM cited a state that
     // does not hold under arbitration.
+    const derivedFromSet = new Set(plan.derived_from.map(String));
     for (const id of plan.derived_from) {
       const atom = await ctx.host.atoms.get(id as AtomId);
       const status = classifyAtomAuthority(atom);
       if (status !== 'authoritative') {
         findings.push(citationFinding(plan.title, 'derived_from', id, status));
+        continue;
+      }
+      // Closure-of-citations: a derived_from id that resolves but
+      // is NOT in the verified set means the LLM grounded a citation
+      // outside the input contract, which is the same failure mode
+      // as fabrication (the auditor cannot distinguish "LLM made up
+      // a plausible id that accidentally exists" from "LLM honestly
+      // cited an in-set atom" without the verified set as a
+      // referent).
+      if (enforceVerifiedSet && !verifiedSet.has(String(id))) {
+        findings.push({
+          severity: 'critical',
+          category: 'non-verified-cited-atom',
+          message:
+            `Plan "${plan.title}" cites atom id "${id}" in derived_from `
+            + 'which resolves but is NOT in the verified citation set. The '
+            + 'plan-stage citation fence enforces the closure-of-citations '
+            + 'property at the audit layer, not just the prompt layer.',
+          cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
       }
     }
     // Verify every principles_applied atom-id resolves authoritatively.
@@ -362,6 +392,40 @@ async function auditPlan(
         findings.push(
           citationFinding(plan.title, 'principles_applied', id, status),
         );
+        continue;
+      }
+      // Subset-rule enforcement: the prompt promises
+      // principles_applied is a subset of derived_from, but neither
+      // the schema nor the audit checked it before. A clean atom in
+      // principles_applied that is NOT in derived_from breaks the
+      // plan's provenance contract.
+      if (!derivedFromSet.has(String(id))) {
+        findings.push({
+          severity: 'critical',
+          category: 'principles-not-in-derived-from',
+          message:
+            `Plan "${plan.title}" cites atom id "${id}" in `
+            + 'principles_applied which is NOT present in derived_from. '
+            + 'principles_applied must be a subset of derived_from per '
+            + 'the plan-stage provenance contract.',
+          cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
+        continue;
+      }
+      if (enforceVerifiedSet && !verifiedSet.has(String(id))) {
+        findings.push({
+          severity: 'critical',
+          category: 'non-verified-cited-atom',
+          message:
+            `Plan "${plan.title}" cites atom id "${id}" in `
+            + 'principles_applied which resolves but is NOT in the '
+            + 'verified citation set. The plan-stage citation fence '
+            + 'enforces the closure-of-citations property at the audit '
+            + 'layer, not just the prompt layer.',
+          cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
       }
     }
   }

@@ -20,6 +20,12 @@ import {
 } from '../../../examples/planning-stages/plan/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
+import {
+  captureStageRunPrompt,
+  expectCitationFencePrompt,
+  expectVerifiedCitedAtomIdsForwarded,
+  mkPromptContractStageInput,
+} from './citation-fence-helpers.js';
 
 const samplePlan = {
   title: 'design the plan stage',
@@ -104,6 +110,7 @@ describe('planStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'plan-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -157,6 +164,7 @@ describe('planStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'plan-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -168,72 +176,27 @@ describe('planStage', () => {
   // ids" without giving the LLM a positive grounding signal; the
   // LLM hallucinated four plausible principle ids in
   // principles_applied that the auditor caught and surfaced as
-  // critical findings.
-  describe('PLAN_SYSTEM_PROMPT (citation guidance)', () => {
-    it('instructs the LLM to ground every atom-id citation in data.verified_cited_atom_ids', () => {
-      expect(PLAN_SYSTEM_PROMPT).toMatch(/verified_cited_atom_ids/);
-    });
-
-    it('uses "HARD CONSTRAINT" wording so the LLM treats the fence as load-bearing', () => {
-      expect(PLAN_SYSTEM_PROMPT).toMatch(/HARD CONSTRAINT/);
-    });
-
-    it('instructs the LLM to omit a citation rather than guess', () => {
-      // The "OMIT the citation\nrather than guess" wording wraps over a
-      // line break in PLAN_SYSTEM_PROMPT so the regex tolerates any
-      // whitespace (including \n) between the two halves.
-      expect(PLAN_SYSTEM_PROMPT).toMatch(/OMIT the citation\s+rather than guess/i);
-    });
-
-    it('warns the LLM that an out-of-set citation halts the stage', () => {
-      expect(PLAN_SYSTEM_PROMPT).toMatch(
-        /critical audit finding|halts the stage/i,
-      );
-    });
+  // critical findings. Assertion bodies live in
+  // citation-fence-helpers.ts so a prompt-contract change lands in
+  // ONE file, not N synchronized stage-test edits.
+  it('PLAN_SYSTEM_PROMPT carries the citation-fence contract', () => {
+    expectCitationFencePrompt(PLAN_SYSTEM_PROMPT);
   });
 
   it('runPlan passes the verified-cited-atom-ids set through to the LLM data block', async () => {
     const host = createMemoryHost();
-    let captured: { system: string; data: Record<string, unknown> } | null = null;
-    host.llm.judge = (async (
-      _schema: unknown,
-      system: unknown,
-      data: unknown,
-      _options: unknown,
-    ) => {
-      captured = {
-        system: system as string,
-        data: data as Record<string, unknown>,
-      };
-      return {
-        output: {
-          plans: [samplePlan],
-          cost_usd: 0,
-        },
-        metadata: { latency_ms: 1, cost_usd: 0 },
-      };
-    }) as typeof host.llm.judge;
-
     const verifiedIds = ['atom-one', 'atom-two', 'atom-three'] as ReadonlyArray<AtomId>;
-    await planStage.run({
-      host,
-      principal: 'plan-author' as PrincipalId,
-      correlationId: 'corr',
-      priorOutput: null,
-      pipelineId: 'p' as AtomId,
-      seedAtomIds: ['intent-foo' as AtomId],
-      verifiedCitedAtomIds: verifiedIds,
+    const captured = await captureStageRunPrompt({
+      stage: planStage,
+      stubOutput: { plans: [samplePlan], cost_usd: 0 },
+      stageInput: mkPromptContractStageInput<unknown>({
+        host,
+        principal: 'plan-author',
+        priorOutput: null,
+        verifiedCitedAtomIds: verifiedIds,
+      }),
     });
-    expect(captured).not.toBeNull();
-    if (captured !== null) {
-      const c = captured as { system: string; data: Record<string, unknown> };
-      expect(Array.isArray(c.data.verified_cited_atom_ids)).toBe(true);
-      expect(c.data.verified_cited_atom_ids).toEqual(verifiedIds.map(String));
-      // The system prompt MUST reference the data field by exact name
-      // so a downstream prompt-edit reviewer can see the contract
-      // wired end-to-end.
-      expect(c.system).toMatch(/verified_cited_atom_ids/);
-    }
+    expectVerifiedCitedAtomIdsForwarded(captured, verifiedIds);
   });
 
   it('audit() returns no findings when every cited atom resolves', async () => {
@@ -284,6 +247,7 @@ describe('planStage', () => {
         correlationId: 'corr',
         pipelineId: 'p' as AtomId,
         stageName: 'plan-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.length).toBe(0);

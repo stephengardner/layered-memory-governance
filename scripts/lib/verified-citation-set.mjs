@@ -60,6 +60,15 @@ export async function computeVerifiedCitedAtomIds(host, opts) {
       Math.min(PAGE_SIZE, remaining),
       cursor,
     );
+    // Defensive: a page with zero atoms but a non-null nextCursor
+    // would never advance totalSeen and the loop would spin forever.
+    // Treat any empty page as the end of the iteration regardless of
+    // the cursor; a malformed adapter that paginates infinitely with
+    // zero-atom pages is a fail-closed condition (the verified set is
+    // partial, but the loop returns).
+    if (page.atoms.length === 0) {
+      break;
+    }
     for (const atom of page.atoms) {
       if (atom.taint !== 'clean') continue;
       if (Array.isArray(atom.superseded_by) && atom.superseded_by.length > 0) continue;

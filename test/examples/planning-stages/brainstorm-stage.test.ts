@@ -87,6 +87,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.some(
@@ -325,6 +326,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.length).toBeGreaterThan(0);
@@ -353,6 +355,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.length).toBe(0);
@@ -379,6 +382,7 @@ describe('brainstormStage', () => {
         correlationId: 'corr',
         pipelineId,
         stageName: 'brainstorm-stage',
+        verifiedCitedAtomIds: [],
       },
     );
     expect(findings?.length).toBe(0);
