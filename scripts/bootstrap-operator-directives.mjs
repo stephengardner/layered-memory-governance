@@ -163,6 +163,63 @@ const ATOMS = [
       'inv-governance-before-autonomy',
     ],
   },
+  {
+    id: 'dev-deep-planning-pipeline',
+    type: 'directive',
+    content:
+      'The deep planning pipeline replaces the single-pass HostLlmPlanningJudgment with a '
+      + 'pluggable, atom-projected, per-stage-audited pipeline. Default 5-stage composition: '
+      + 'brainstorm-stage -> spec-stage -> plan-stage -> review-stage -> dispatch-stage; '
+      + 'org-ceiling deployments compose additional stages via canon policy atoms per '
+      + 'dev-substrate-not-prescription. Each stage emits its output as an atom carrying '
+      + 'provenance.derived_from chain back to the seed operator-intent; the review-stage '
+      + 'runs a read-only auditor that re-walks every cited path and atom id from the '
+      + 'upstream plan, closing the dev-drafter-citation-verification-required gap at the '
+      + 'substrate level. Mode-gated via --mode=substrate-deep on run-cto-actor.mjs; the '
+      + 'indie floor default is single-pass so a solo developer does not surprise-pay the '
+      + 'multi-stage cost on a one-line README fix. Resumability and kill-switch posture '
+      + 'inherit from the existing actor-message passes.',
+    alternatives_rejected: [
+      {
+        option: 'Extend HostLlmPlanningJudgment with a multi-step prompt',
+        reason:
+          'Loses pluggability and per-stage auditing; concentrates judgment in a single LLM '
+          + 'call that cannot be policy-gated or partially-resumed.',
+      },
+      {
+        option: 'Build a separate planning pipeline framework outside src/runtime',
+        reason:
+          'Fragments the substrate; consumers would have to compose two seam systems with '
+          + 'overlapping concerns (atom store, kill-switch, provenance).',
+      },
+      {
+        option: 'Encode stages as a directed graph from day one',
+        reason:
+          'Over-engineers before the second consumer arrives; the depends_on forward-compat '
+          + 'seam preserves the option without paying the complexity cost now.',
+      },
+    ],
+    what_breaks_if_revisited:
+      'Sound at 3 months: stages are atom-projected and policy-arbitrated, adding a stage is '
+      + 'a canon edit, the trust-envelope authorization model from autonomous-intent inherits '
+      + 'via derived_from chain, and the DAG forward-compat seam (depends_on on stage entries) '
+      + 'is reserved in spec section 15 as the next step when a concrete consumer needs '
+      + 'parallel stages.',
+    derived_from: [
+      'inv-l3-requires-human',
+      'inv-governance-before-autonomy',
+      'inv-kill-switch-first',
+      'inv-provenance-every-write',
+      'arch-atomstore-source-of-truth',
+      'arch-host-interface-boundary',
+      'dev-substrate-not-prescription',
+      'dev-indie-floor-org-ceiling',
+      'dev-canon-is-strategic-not-tactical',
+      'dev-judgment-ladder-required-for-llm-actors',
+      'dev-drafter-citation-verification-required',
+      'operator-intent-deep-planning-pipeline-1777408799112',
+    ],
+  },
 ];
 
 function atomFromSpec(spec) {
