@@ -2,7 +2,7 @@
 /**
  * Canon bootstrap for the deep planning pipeline substrate.
  *
- * Seeds eight atoms into the .lag/atoms store:
+ * Seeds seven L3 policy + ordering atoms into the .lag/atoms store:
  *
  *   pol-planning-pipeline-stages-default      L3 directive: 5-stage default ordering
  *   pol-pipeline-stage-hil-brainstorm-stage   L3 directive: pause_mode='never'
@@ -11,20 +11,21 @@
  *   pol-pipeline-stage-hil-review-stage       L3 directive: pause_mode='never'
  *   pol-pipeline-stage-hil-dispatch-stage     L3 directive: pause_mode='on-critical-finding'
  *   pol-planning-pipeline-default-mode        L3 directive: mode='single-pass'
- *   dev-deep-planning-pipeline                L0 pending_review (operator promotes via /decide)
  *
- * The substrate-shape directive ships at L0 with
- * validation_status='pending_review' so the operator gates the L3
- * promotion via /decide post-merge. Auto-writing at L3 from a
- * bootstrap script would bypass the human gate that the three-layer
- * architecture is built around.
+ * The substrate-shape directive `dev-deep-planning-pipeline` lived
+ * here as an L0 pending_review stub before operator promotion. After
+ * the operator ratified it via /decide, the canonical home moved to
+ * scripts/bootstrap-operator-directives.mjs alongside the other
+ * /decide-captured directives. Fresh checkouts get the L3 directive
+ * via that bootstrap; this script only seeds the policy + ordering
+ * atoms it owns.
  *
  * Atom data lives in scripts/lib/deep-planning-pipeline-canon-atoms.mjs
  * so the test suite can drive the same builder. This wrapper handles
  * argument parsing, env discovery, the file-host write, and the
  * drift-check.
  *
- * --dry-run prints the eight atoms that would be written without
+ * --dry-run prints the seven atoms that would be written without
  * persisting them. Useful for inspecting the seed before committing.
  *
  * Idempotent per atom id; drift against the stored shape fails loud

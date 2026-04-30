@@ -59,9 +59,10 @@ const OP = 'test-operator';
 
 describe('bootstrap-deep-planning-pipeline-canon specs', () => {
   it('returns the expected stable set of atom ids', () => {
+    // dev-deep-planning-pipeline moved to scripts/bootstrap-operator-directives.mjs
+    // after operator promotion via /decide; this module seeds policy + ordering only.
     const ids = buildDeepPlanningPipelineSpecs(OP).map((s) => s.id).sort();
     expect(ids).toEqual([
-      'dev-deep-planning-pipeline',
       'pol-pipeline-stage-hil-brainstorm-stage',
       'pol-pipeline-stage-hil-dispatch-stage',
       'pol-pipeline-stage-hil-plan-stage',
@@ -172,21 +173,14 @@ describe('bootstrap-deep-planning-pipeline-canon atom shapes', () => {
     expect(result.mode).toBe('single-pass');
   });
 
-  it('dev-deep-planning-pipeline ships as L0 pending_review awaiting operator promotion', () => {
-    const atom = findAtom(buildDeepPlanningPipelineAtoms(OP), 'dev-deep-planning-pipeline');
-    expect(atom.type).toBe('directive');
-    // L3 promotion is operator-gated per inv-l3-requires-human; the seed
-    // ships at L0 so the operator confirms via /decide post-merge.
-    expect(atom.layer).toBe('L0');
-    expect(atom.signals.validation_status).toBe('pending_review');
-    expect(atom.principal_id).toBe(OP);
-    expect(atom.taint).toBe('clean');
-    expect(atom.provenance.derived_from.length).toBeGreaterThan(0);
-  });
-
   it('every emitted atom carries operator-seeded provenance with derived_from', () => {
+    // The substrate-shape directive `dev-deep-planning-pipeline` lived here as
+    // an L0 stub before promotion; after the operator ratified it via /decide,
+    // it moved to scripts/bootstrap-operator-directives.mjs (see that file's
+    // ATOMS array). The 7 atoms below are the policy + ordering atoms the
+    // pipeline substrate needs at the seed-time of any deployment.
     const atoms = buildDeepPlanningPipelineAtoms(OP);
-    expect(atoms.length).toBe(8);
+    expect(atoms.length).toBe(7);
     for (const atom of atoms) {
       expect(atom.provenance.kind).toBe('operator-seeded');
       expect(atom.provenance.derived_from.length).toBeGreaterThan(0);
