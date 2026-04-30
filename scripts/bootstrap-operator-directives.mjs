@@ -163,6 +163,71 @@ const ATOMS = [
       'inv-governance-before-autonomy',
     ],
   },
+  {
+    id: 'dev-cr-missing-verdict-recovery-playbook',
+    type: 'directive',
+    content:
+      "When a PR is BLOCKED with cr_verdict='missing' for more than 15 minutes, "
+      + 'the agent MUST take an unsticking action or escalate; holding pattern with '
+      + "cr_verdict='missing' is a discipline failure. The mandatory playbook: "
+      + '(1) Always run `scripts/pr-status.mjs <pr>` FIRST as the canonical composite '
+      + 'multi-surface read per dev-multi-surface-review-observation -- never '
+      + 'single-surface query gh pr view / pr list / api comments. (2) Read the '
+      + "cr_verdict field: 'approved' (mergeable), 'requested_changes' (fix loop), "
+      + "'commented' (review present, no verdict), 'missing' (CR did not engage). "
+      + "(3) On cr_verdict='missing' AND PR age > 15 minutes, the agent MUST take "
+      + 'exactly one unsticking action per loop tick, in this preference order: '
+      + '(a) cr-trigger.mjs if LAG_OPS_PAT in env, (b) push an empty commit '
+      + "`git commit --allow-empty -m 'chore: empty-commit to nudge CR (silent-skip recovery)'` "
+      + "to retrigger CR's webhook, (c) surface the gap to operator with the "
+      + 'pr-status.mjs output and the diagnostics tried. (4) The loop must always '
+      + "converge on an action. Sitting in 'queue-buildup discipline' while PRs "
+      + 'accumulate is the failure mode this directive prevents. Rationale: '
+      + '2026-04-30 autonomous loop session sat for 12+ hours with 4 PRs (#246-#249) '
+      + "BLOCKED on cr_verdict='missing'. The agent claimed queue-buildup discipline "
+      + 'but never investigated -- never ran pr-status.mjs, never tried the '
+      + 'empty-commit nudge documented in feedback_cr_auto_re_review_on_push, never '
+      + 'even attempted to use the machine-user identity. The operator had to call '
+      + 'out the failure. Empty-commit nudge woke CR on all four PRs within minutes; '
+      + 'the right unsticking was a 5-second action withheld for 12+ hours.',
+    alternatives_rejected: [
+      {
+        option: 'Allow agent to hold indefinitely if LAG_OPS_PAT unset',
+        reason:
+          "Accepts unbounded queue-buildup; fails the operator's 'never sit on stuck "
+          + "PRs' invariant. The empty-commit nudge is canon-honoring (no bypass of "
+          + 'the CR gate; just a fresh push event for the same diff) and does not '
+          + 'require LAG_OPS_PAT, so there is no excuse to hold.',
+      },
+      {
+        option: 'Auto-merge bypass when CR does not engage in N minutes',
+        reason:
+          'Violates dev-coderabbit-required-status-check-non-negotiable. The CR gate '
+          + 'stays load-bearing; this directive only mandates reactive nudging within '
+          + 'the gate, not bypass.',
+      },
+      {
+        option: 'Blame the operator for not setting LAG_OPS_PAT',
+        reason:
+          "Does not fix the agent's reactive-vs-investigative posture. The structural "
+          + 'fix is making the agent always investigate first via pr-status.mjs and '
+          + 'then attempt every available unsticking path before escalating.',
+      },
+    ],
+    what_breaks_if_revisited:
+      'Sound at 3 months: the playbook is bounded (single action per tick), preserves '
+      + 'the CR gate, and matches the operator expectation that any PR open for >15min '
+      + 'without CR engagement is a deviation that requires action; the empty-commit '
+      + "nudge is mechanically how CR's auto-review-on-push hook fires, so this is not "
+      + 'a hack but the documented retrigger path.',
+    derived_from: [
+      'dev-multi-surface-review-observation',
+      'dev-coderabbit-required-status-check-non-negotiable',
+      'dev-cr-triggers-via-machine-user',
+      'dev-autonomous-no-premature-stop',
+      'inv-governance-before-autonomy',
+    ],
+  },
 ];
 
 function atomFromSpec(spec) {
