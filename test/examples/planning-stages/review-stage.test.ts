@@ -331,6 +331,9 @@ describe('reviewStage', () => {
         },
         pipelineId: 'p' as AtomId,
         seedAtomIds: [specId],
+        verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       });
       // Oversized but existing file: no critical finding for that path.
       const oversizeFindings = output.value.findings.filter((f) =>
@@ -403,6 +406,9 @@ describe('reviewStage', () => {
         },
         pipelineId: 'p' as AtomId,
         seedAtomIds: [specId],
+        verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       });
       expect(output.value.total_bytes_read).toBeLessThanOrEqual(
         1024 * 1024,

@@ -215,7 +215,13 @@ export async function runPipeline(
   // a string but the contract signals intent) cannot skew downstream
   // stages mid-walk. Default to empty string when the caller did not
   // compute a value; stage adapters treat empty as "no anchor" and
-  // fall back to prior-stage output.
+  // fall back to prior-stage output. The empty default is intentional
+  // and mirrors verifiedCitedAtomIds / verifiedSubActorPrincipalIds
+  // (those default to []): the runner is mechanism, the canonical
+  // caller (e.g. run-cto-actor.mjs) is responsible for computing the
+  // anchor and forwarding it. Failing closed here would break legacy
+  // test-only callers and direct stage invocations from tests, which
+  // are the load-bearing users of the empty-default path.
   const operatorIntentContent: string = options.operatorIntentContent ?? '';
 
   const pipelineId = `pipeline-${options.correlationId}` as AtomId;
