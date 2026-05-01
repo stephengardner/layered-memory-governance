@@ -168,16 +168,22 @@ export function evaluatePipelinePlanAutoApproval(
   if (intent.taint !== 'clean') {
     return { kind: 'rejected', reason: 'tainted-intent', intentId: intent.id };
   }
-  // Fail-closed expiry check: missing or malformed metadata.expires_at
-  // is treated the same as expired. The autonomous-intent contract is
-  // "fresh non-expired intent authorizes approval"; a falsy/non-string
-  // expires_at, or one that does not parse to a finite ms timestamp,
-  // breaks that gate and must reject. Without this, an intent atom
-  // missing the field could authorize approval indefinitely.
+  // Permissive expiry check: only reject when metadata.expires_at is a
+  // string that parses to a past timestamp. A missing or non-string
+  // expires_at is treated as fresh, matching intent-approve.ts byte-
+  // for-byte (search "Expired intent -> reject" in
+  // src/runtime/actor-message/intent-approve.ts). The autonomous-intent
+  // contract is "fresh non-expired intent authorizes approval"; an
+  // intent without an explicit expiry is fresh by default in the
+  // single-pass tick, and the pipeline path must agree or operator-
+  // intent atoms shippable through one tick get rejected by the other
+  // (substrate divergence; surfaced by dogfeed-5 2026-04-30). A
+  // malformed expires_at string (Date.parse -> NaN) also falls through
+  // as fresh because NaN < nowMs is false; the strict "must be
+  // parseable" gate is intentionally not enforced here for parity with
+  // the canonical check.
   const expiresRaw = (intent.metadata as Record<string, unknown>)?.expires_at;
-  const expiresMs =
-    typeof expiresRaw === 'string' ? Date.parse(expiresRaw) : Number.NaN;
-  if (!Number.isFinite(expiresMs) || expiresMs < nowMs) {
+  if (typeof expiresRaw === 'string' && Date.parse(expiresRaw) < nowMs) {
     return { kind: 'rejected', reason: 'expired-intent', intentId: intent.id };
   }
   if (!intentCreationPolicy.allowed_principal_ids.includes(String(intent.principal_id))) {

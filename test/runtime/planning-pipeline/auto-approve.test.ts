@@ -280,7 +280,13 @@ describe('evaluatePipelinePlanAutoApproval (pure)', () => {
     }
   });
 
-  it('rejects when intent has no expires_at metadata (fail-closed)', () => {
+  it('does NOT reject when intent has no expires_at metadata (permissive parity with intent-approve.ts)', () => {
+    // Regression: PR #256 originally fail-closed on missing expires_at,
+    // but the canonical single-pass check in intent-approve.ts treats
+    // missing expires_at as fresh (only rejects when the string parses
+    // as a past timestamp). Operator-intent atoms shipped without
+    // metadata.expires_at must be honored by both paths or the
+    // substrate splits (dogfeed-5 finding 2026-04-30).
     const intentNoExpiry: Atom = {
       ...intentAtom('intent-1'),
       metadata: {
@@ -300,13 +306,18 @@ describe('evaluatePipelinePlanAutoApproval (pure)', () => {
       intentCreationPolicy: HAPPY_INTENT_CREATION_POLICY,
       nowMs: NOW_MS,
     });
-    expect(verdict.kind).toBe('rejected');
-    if (verdict.kind === 'rejected') {
-      expect(verdict.reason).toBe('expired-intent');
-    }
+    // Should pass the expiry gate and proceed to the envelope checks.
+    // With the happy fixtures (allowed_sub_actors: ['code-author'],
+    // matching delegation), the verdict should be 'approved'.
+    expect(verdict.kind).toBe('approved');
   });
 
-  it('rejects when intent has malformed expires_at (fail-closed)', () => {
+  it('does NOT reject when intent has malformed expires_at (permissive parity)', () => {
+    // Regression: a non-parseable expires_at string yields Date.parse
+    // -> NaN; the canonical check in intent-approve.ts (Date.parse(s) <
+    // nowMs) is false for NaN, so the intent is treated as fresh. The
+    // pipeline path must match this semantic so no operator-intent atom
+    // is rejected on one path but accepted on the other.
     const intentBadExpiry: Atom = {
       ...intentAtom('intent-1'),
       metadata: {
@@ -326,10 +337,35 @@ describe('evaluatePipelinePlanAutoApproval (pure)', () => {
       intentCreationPolicy: HAPPY_INTENT_CREATION_POLICY,
       nowMs: NOW_MS,
     });
-    expect(verdict.kind).toBe('rejected');
-    if (verdict.kind === 'rejected') {
-      expect(verdict.reason).toBe('expired-intent');
-    }
+    expect(verdict.kind).toBe('approved');
+  });
+
+  it('does NOT reject when intent.metadata.expires_at is null (permissive parity)', () => {
+    // Regression: explicit null was the original divergence symptom in
+    // dogfeed-5: operator-intent atoms whose metadata had expires_at
+    // omitted (which serializes as undefined / absent key) flowed
+    // cleanly through single-pass but were rejected by the pipeline.
+    // typeof null === 'object', so the typeof-string guard suffices.
+    const intentNullExpiry: Atom = {
+      ...intentAtom('intent-1'),
+      metadata: {
+        trust_envelope: {
+          max_blast_radius: 'tooling',
+          min_plan_confidence: 0.55,
+          allowed_sub_actors: ['code-author'],
+        },
+        expires_at: null,
+      },
+    };
+    const plan = planAtom('plan-1', 'intent-1');
+    const verdict = evaluatePipelinePlanAutoApproval({
+      plan,
+      intent: intentNullExpiry,
+      intentApprovePolicy: HAPPY_INTENT_APPROVE_POLICY,
+      intentCreationPolicy: HAPPY_INTENT_CREATION_POLICY,
+      nowMs: NOW_MS,
+    });
+    expect(verdict.kind).toBe('approved');
   });
 
   it('rejects an intent from a non-whitelisted principal', () => {
@@ -533,6 +569,82 @@ describe('evaluatePipelinePlanAutoApproval (pure)', () => {
     expect(verdict.kind).toBe('skipped');
     if (verdict.kind === 'skipped') {
       expect(verdict.reason).toBe(SkipReason.RADIUS_UNKNOWN);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Byte-for-byte parity with intent-approve.ts expiry semantics.
+  //
+  // The canonical single-pass tick at
+  // src/runtime/actor-message/intent-approve.ts uses:
+  //
+  //   const expiresRaw = (intent.metadata as Record<string, unknown>)
+  //     ?.expires_at;
+  //   if (typeof expiresRaw === 'string' && Date.parse(expiresRaw) < nowMs) {
+  //     rejected++;
+  //     continue;
+  //   }
+  //
+  // The deep-pipeline path MUST behave identically on every (expiresRaw,
+  // nowMs) pair so an operator-intent atom is never accepted by one
+  // path and rejected by the other (substrate divergence). This table
+  // pins the truth values; any future drift trips here.
+  // -------------------------------------------------------------------------
+  describe('expiry-semantic parity with intent-approve.ts', () => {
+    const expiryParityTable: ReadonlyArray<{
+      readonly label: string;
+      readonly expires_at: unknown;
+      readonly expectsRejection: boolean;
+    }> = [
+      // Past timestamp: rejected on both paths.
+      { label: 'past ISO timestamp string', expires_at: PAST_EXPIRY, expectsRejection: true },
+      // Future timestamp: accepted on both paths.
+      { label: 'future ISO timestamp string', expires_at: FUTURE_EXPIRY, expectsRejection: false },
+      // Field missing: typeof undefined !== 'string' -> permissive on both.
+      { label: 'undefined (field absent)', expires_at: undefined, expectsRejection: false },
+      // Explicit null: typeof null !== 'string' -> permissive on both.
+      { label: 'null', expires_at: null, expectsRejection: false },
+      // Non-string scalar: typeof number !== 'string' -> permissive on both.
+      { label: 'number (non-string scalar)', expires_at: 0, expectsRejection: false },
+      // Malformed string: Date.parse -> NaN; NaN < nowMs is false -> permissive on both.
+      { label: 'malformed string', expires_at: 'not-a-date', expectsRejection: false },
+      // Empty string: Date.parse -> NaN -> permissive on both.
+      { label: 'empty string', expires_at: '', expectsRejection: false },
+    ];
+
+    for (const row of expiryParityTable) {
+      it(`mirrors intent-approve.ts on ${row.label}`, () => {
+        const intent: Atom = {
+          ...intentAtom('intent-1'),
+          metadata: {
+            trust_envelope: {
+              max_blast_radius: 'tooling',
+              min_plan_confidence: 0.55,
+              allowed_sub_actors: ['code-author'],
+            },
+            ...(row.expires_at === undefined ? {} : { expires_at: row.expires_at }),
+          },
+        };
+        const plan = planAtom('plan-1', 'intent-1');
+        const verdict = evaluatePipelinePlanAutoApproval({
+          plan,
+          intent,
+          intentApprovePolicy: HAPPY_INTENT_APPROVE_POLICY,
+          intentCreationPolicy: HAPPY_INTENT_CREATION_POLICY,
+          nowMs: NOW_MS,
+        });
+        if (row.expectsRejection) {
+          expect(verdict.kind).toBe('rejected');
+          if (verdict.kind === 'rejected') {
+            expect(verdict.reason).toBe('expired-intent');
+          }
+        } else {
+          // Permissive path: must NOT be 'rejected' with reason
+          // 'expired-intent'. The exact downstream verdict is
+          // 'approved' under the happy fixtures.
+          expect(verdict.kind).toBe('approved');
+        }
+      });
     }
   });
 });
