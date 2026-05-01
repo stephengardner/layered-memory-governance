@@ -8,6 +8,8 @@
 
 A framework for multi-agent systems where memory has to stay true over time, authority has to cascade through a hierarchy, disagreements have to resolve without a human in every write, and humans stay in the loop for anything consequential. Built for **autonomous organizations of agents**, not one-shot chatbots.
 
+See [docs/framework.md](docs/framework.md) for the LAG governance architecture.
+
 > **If RAG brings knowledge into an agent, LAG governs knowledge across agents.** Retrieval makes one agent smarter; governance keeps a hundred agents coherent.
 
 **Live demo:** [stephengardner.github.io/layered-autonomous-governance](https://stephengardner.github.io/layered-autonomous-governance/) - the LAG Console rendered against a fictional autonomous AI research collective ("Helix Collective" building "Cuttlefish", a self-modifying compiler whose agents rewrite their own optimization passes under a formal-proof + kill-switch-adjacency fence). The demo atoms/principals/plans are synthetic so the substrate can be explored without any real-org context leaking in.
