@@ -383,5 +383,5 @@ Each row shows a tone-coded badge + a human label + an expandable detail pane (e
 - Conventional Commits PR title.
 - No Claude attribution in any commit / PR body.
 - No emdashes anywhere in tracked files.
-- Pre-push grep checklist (per `feedback_pre_push_grep_checklist`): `grep -nE 'em-dash|—|design/|adr-|atom:[a-z]|Co-Authored-By' src/ scripts/ test/`.
+- Pre-push grep checklist (per `feedback_pre_push_grep_checklist`): grep for emdashes (the U+2014 character), design/ refs, adr- refs, atom-id citations, and Co-Authored-By lines across src/ scripts/ test/.
 - Bot identity: `git-as.mjs` for commits, `gh-as.mjs lag-ceo` for PR ops, `cr-trigger.mjs` (machine user) for CR triggers.
