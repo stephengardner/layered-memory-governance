@@ -358,7 +358,7 @@ const REMOTE_GIT_VERBS = new Set([
  * The detector is intentionally narrow. It matches the literal
  * status-code marker the gh CLI emits (`HTTP 504`, `HTTP/1.1 504`,
  * `status code 504`, etc.) rather than attempting to recognise
- * every flavour of "transient" — a 401/403 would be a token /
+ * every flavour of "transient": a 401/403 would be a token /
  * scope issue and probing for an orphaned PR is the wrong remedy
  * (the token cannot read the listing either, so the probe fails
  * with the same auth error). 4xx errors are always treated as
