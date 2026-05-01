@@ -68,18 +68,29 @@ describe('routeForAtomId', () => {
       expect(routeForAtomId('pipeline-resume-abc-2026-04-26T01-00-00-000Z')).toBe('activities');
     });
 
-    // Stage-output atoms are pipeline descendants persisted per-stage
-    // by the deep planning pipeline (see PR #252). Without explicit
-    // routing they fall through to canon and dead-end in focus mode
-    // because the canon list is filtered to canon atom types. Table-
-    // driven so adding the next descendant prefix is one line of data.
+  });
+
+  describe('atom-detail (pipeline stage outputs)', () => {
+    /*
+     * Stage-output atoms are pipeline descendants persisted per-stage
+     * by the deep planning pipeline. Each is a first-class atom with
+     * a rich type-specific renderer in the atom-detail viewer; the
+     * activity-feed focus mode would collapse the body to a one-line
+     * preview and hide the structured view (open questions,
+     * alternatives, audit findings, ...). Per operator directive
+     * 2026-05-01 ("we want to actually be able to see the full atom
+     * details when we click on it") these route to /atom/<id>.
+     *
+     * Table-driven so adding the next stage-output prefix is one
+     * line of data.
+     */
     it.each([
       ['brainstorm-output-*', 'brainstorm-output-abc-2026-04-30T01-00-00-000Z'],
       ['spec-output-*', 'spec-output-xyz-2026-04-30T01-00-00-000Z'],
       ['review-report-*', 'review-report-abc-2026-04-30T01-00-00-000Z'],
       ['dispatch-record-*', 'dispatch-record-abc-2026-04-30T01-00-00-000Z'],
-    ])('routes %s stage-output atoms to activities', (_label, atomId) => {
-      expect(routeForAtomId(atomId)).toBe('activities');
+    ])('routes %s stage-output atoms to /atom/<id>', (_label, atomId) => {
+      expect(routeForAtomId(atomId)).toBe('atom');
     });
   });
 
@@ -152,12 +163,12 @@ describe('routeForAtomId', () => {
       expect(routeForAtomId('operator-intent-canon-scout-1777358233934')).toBe('atom');
     });
 
-    it('routes spec-output-* (without pipeline-output prefix collision) to atom-detail', () => {
-      // The pipeline-descendant list catches `spec-output-` already
-      // (test case in the activities block). This test covers a
-      // hypothetical bare `spec-output` id without the trailing dash:
-      // the prefix list match is `'spec-output-'`, so an id without
-      // the dash falls through to the generic fallback.
+    it('routes a bare `spec-output` id (without trailing dash) to atom-detail via fallback', () => {
+      // The PIPELINE_STAGE_OUTPUT_PREFIXES list matches `'spec-output-'`,
+      // so an id without the trailing dash does not match that prefix
+      // and falls through to the generic fallback. (Both paths end at
+      // /atom/<id>, but the test pins the fallback path explicitly so a
+      // future re-shuffle of the prefix lists doesn't silently re-route.)
       expect(routeForAtomId('spec-output')).toBe('atom');
     });
   });

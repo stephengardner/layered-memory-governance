@@ -179,18 +179,12 @@ export function routeHref(r: Route, id?: string): string {
 }
 
 /*
- * Atom-id prefixes that belong in the activities feed even though they
- * sit under a sibling root prefix (e.g. `pipeline-`). These are NOT
- * root pipeline atoms and would 404 against `/api/pipelines.detail`
- * (which exact-matches the root id in `index.pipelinesById`); until
- * the detail handler resolves a descendant id back to its parent's
- * `pipeline_id`, route the descendants to the activities feed where
- * focus-mode handles arbitrary atom ids.
- *
- * The four `pipeline-*` entries are the original pipeline-descendants;
- * the four `*-output-` / `review-report-` / `dispatch-record-` entries
- * are persisted per-stage outputs introduced when the deep-planning
- * pipeline started writing each stage's result as its own atom.
+ * Pipeline-descendant atom-id prefixes that belong in the activities
+ * feed because they are STREAMING TRANSCRIPT entries (lifecycle events,
+ * audit findings, terminal-failure markers, resume points). The
+ * activities focus mode is the right home for transcript-shaped data
+ * because the operator's mental model is "scroll back through
+ * what happened"; each entry is small, self-contained, and ordered.
  *
  * Order matters at the call site: this list is matched BEFORE the
  * generic `pipeline-` branch so a future descendant rename does not
@@ -201,6 +195,26 @@ const PIPELINE_DESCENDANT_ACTIVITY_PREFIXES = [
   'pipeline-audit-finding-',
   'pipeline-failed-',
   'pipeline-resume-',
+] as const;
+
+/*
+ * Pipeline stage-OUTPUT atoms - the brainstorm prose, the spec body,
+ * the review report, the dispatch record. These differ from the
+ * streaming transcript entries above: each is a first-class atom with
+ * a rich type-specific renderer in the atom-detail viewer
+ * (apps/console/src/features/atom-detail-viewer/renderers/*.tsx).
+ * Routing them to /activities/<id> would land the operator on the
+ * activity-feed focus mode where the body collapses to a one-line
+ * preview + raw JSON, hiding the dedicated renderer's structured
+ * view (open questions, alternatives, audit findings, ...).
+ *
+ * Per the operator-stated bar "we want to actually be able to see the
+ * full atom details when we click on it. basically we want the
+ * console to have really really great observability" (2026-05-01),
+ * these atoms route to /atom/<id> so the dispatched renderer is
+ * what the operator sees.
+ */
+const PIPELINE_STAGE_OUTPUT_PREFIXES = [
   'brainstorm-output-',
   'spec-output-',
   'review-report-',
@@ -244,13 +258,15 @@ function hasAnyPrefix(value: string, prefixes: readonly string[]): boolean {
 /*
  * Given an atom id, pick the view it belongs to. The order is precise:
  *
- *   1. plan-merge-settled-*           -> activities (settlement records)
- *   2. pipeline descendant prefixes   -> activities (per-stage children)
- *   3. pipeline-*                     -> pipelines  (root pipeline atoms)
- *   4. plan-*                         -> plans      (plan documents)
- *   5. activity prefixes              -> activities (operator + messaging)
- *   6. canon prefixes                 -> canon      (L3 governance atoms)
- *   7. anything else                  -> atom      (generic detail viewer)
+ *   1. plan-merge-settled-*                -> activities (settlement records)
+ *   2. pipeline-stage-event-*, audit-*,
+ *      failed-*, resume-*                  -> activities (streaming transcript)
+ *   3. brainstorm/spec/review/dispatch-*   -> atom       (rich stage-output renderers)
+ *   4. pipeline-*                          -> pipelines  (root pipeline atoms)
+ *   5. plan-*                              -> plans      (plan documents)
+ *   6. activity prefixes                   -> activities (operator + messaging)
+ *   7. canon prefixes                      -> canon      (L3 governance atoms)
+ *   8. anything else                       -> atom       (generic detail viewer)
  *
  * The trailing `'atom'` fallback (introduced 2026-05-01) replaces an
  * earlier `return 'canon'` default. The substrate writes atoms of
@@ -262,10 +278,16 @@ function hasAnyPrefix(value: string, prefixes: readonly string[]): boolean {
  * grid and rendered an empty page. The generic atom-detail viewer at
  * `/atom/<id>` handles every atom type via a type-dispatch table with
  * a generic fallback for unknown types.
+ *
+ * Step 3 (PIPELINE_STAGE_OUTPUT_PREFIXES -> 'atom') was added
+ * 2026-05-01 after the audit found stage-output chips on
+ * /pipelines/<id> routed to /activities/<id> instead of the new
+ * rich renderers; see PIPELINE_STAGE_OUTPUT_PREFIXES JSDoc.
  */
 export function routeForAtomId(id: string): Route {
   if (id.startsWith('plan-merge-settled-')) return 'activities';
   if (hasAnyPrefix(id, PIPELINE_DESCENDANT_ACTIVITY_PREFIXES)) return 'activities';
+  if (hasAnyPrefix(id, PIPELINE_STAGE_OUTPUT_PREFIXES)) return 'atom';
   if (id.startsWith('pipeline-')) return 'pipelines';
   if (id.startsWith('plan-')) return 'plans';
   if (hasAnyPrefix(id, ACTIVITY_PREFIXES)) return 'activities';

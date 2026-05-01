@@ -27,6 +27,17 @@ export interface LiveOpsAtom {
   readonly metadata?: Record<string, unknown>;
   readonly taint?: string;
   readonly superseded_by?: ReadonlyArray<string>;
+  /*
+   * Provenance.derived_from is a load-bearing field for the PR-activity
+   * title-resolution ladder: older pr-observation atoms predate the
+   * metadata.plan_id field but still chain via derived_from to a plan
+   * atom whose metadata.title is the operator-meaningful PR title.
+   * Only the fields the helpers narrow are typed; the wider provenance
+   * shape stays opaque.
+   */
+  readonly provenance?: {
+    readonly derived_from?: ReadonlyArray<string>;
+  };
 }
 
 export interface LiveOpsHeartbeat {

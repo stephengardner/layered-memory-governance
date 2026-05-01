@@ -718,4 +718,113 @@ describe('listPrActivity', () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.state).toBe('merged');
   });
+
+  /*
+   * Title-resolution ladder regression: pr-observation atoms today do
+   * NOT carry pr_title in metadata (the upstream PrReviewStatus shape
+   * predates the field), so the Pulse "PR activity" tile rendered
+   * "(no title)" for every entry until the live-ops aggregator
+   * gained the plan-id / derived_from fallback.
+   */
+  it('falls back to the plan atom title via metadata.plan_id when pr_title is absent', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-add-readme-pointer',
+        type: 'plan',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: { title: 'Add README pointer to design/target-architecture.md' },
+      }),
+      atom({
+        id: 'pr-observation-300',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { number: 300 },
+          pr_state: 'OPEN',
+          plan_id: 'plan-add-readme-pointer',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pr_number).toBe(300);
+    expect(out[0]?.title).toBe('Add README pointer to design/target-architecture.md');
+  });
+
+  it('falls back to the plan atom title via provenance.derived_from when plan_id is absent', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-legacy-no-plan-id',
+        type: 'plan',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: { title: 'Legacy plan (no metadata.plan_id on observation)' },
+      }),
+      atom({
+        id: 'pr-observation-301',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        provenance: { derived_from: ['plan-legacy-no-plan-id'] },
+        metadata: {
+          kind: 'pr-observation',
+          pr: { number: 301 },
+          pr_state: 'OPEN',
+          /* no plan_id field; older atoms predated it */
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.title).toBe('Legacy plan (no metadata.plan_id on observation)');
+  });
+
+  it('prefers metadata.pr_title over the plan-title fallback when both exist', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-fallback-title',
+        type: 'plan',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: { title: 'fallback plan title' },
+      }),
+      atom({
+        id: 'pr-observation-302',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { number: 302 },
+          pr_state: 'OPEN',
+          pr_title: 'live PR title from GitHub',
+          plan_id: 'plan-fallback-title',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.title).toBe('live PR title from GitHub');
+  });
+
+  it('returns null title when no fallback resolves (plan atom missing)', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-303',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { number: 303 },
+          pr_state: 'OPEN',
+          plan_id: 'plan-does-not-exist',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.title).toBeNull();
+  });
 });

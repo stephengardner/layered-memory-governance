@@ -413,8 +413,26 @@ export function computeDaemonPosture(
 /**
  * PR activity: recent pr-observation and plan-merge-settled atoms in
  * the last 24h. Each row carries pr_number (when extractable),
- * title (best-effort from the pr-observation metadata), state
- * (open|merged|closed), and the at timestamp.
+ * title (best-effort), state (open|merged|closed), and the at
+ * timestamp.
+ *
+ * Title resolution ladder (first match wins):
+ *   1. metadata.pr_title on the observation (rare; pr-observation
+ *      atoms today do NOT capture the GitHub PR title in metadata
+ *      because the upstream PrReviewStatus shape predates the field)
+ *   2. metadata.title of the plan atom referenced by metadata.plan_id
+ *      (the plan name is the operator-meaningful label and matches
+ *      how the dispatch actor titled the PR)
+ *   3. metadata.title of the plan atom referenced by
+ *      provenance.derived_from[0] (older observation atoms predate
+ *      the metadata.plan_id field but still chain via derived_from)
+ *   4. null  -- the UI renders "PR #<n>" without a title fallback
+ *
+ * The plan-title fallback closes a real operator-visible gap: pre-fix,
+ * the Pulse "PR activity" tile rendered "(no title)" for every entry
+ * because (1) was always missing. Substrate-level fix is to extend
+ * pr-observation to capture the live PR title; this is the
+ * intermediate that makes the dashboard tile readable today.
  *
  * v1 best-effort: pr-observation atoms carry rich payload shape
  * differences across producers (pr-landing-agent vs code-author);
@@ -426,6 +444,19 @@ export function listPrActivity(
   now: number,
 ): LiveOpsSnapshot['pr_activity'] {
   const start = now - TWENTY_FOUR_HOURS_MS;
+  // Plan-id -> plan-title lookup, prebuilt once so the inner loop
+  // resolves the title in O(1). Every plan atom carries
+  // metadata.title per the planning-actor contract; missing entries
+  // simply leave the title as null, which the UI handles.
+  const planTitleById = new Map<string, string>();
+  for (const atom of atoms) {
+    if (atom.type !== 'plan') continue;
+    const meta = (atom.metadata ?? {}) as Record<string, unknown>;
+    const t = meta['title'];
+    if (typeof t === 'string' && t.length > 0) {
+      planTitleById.set(atom.id, t);
+    }
+  }
   // Map pr_number -> latest observation. Multiple pr-observation
   // atoms per PR (one per HEAD update) are noisy; the latest carries
   // the freshest state. The plan-merge-settled atom adds a "merged"
@@ -462,7 +493,28 @@ export function listPrActivity(
     const state = atom.type === 'plan-merge-settled'
       ? 'merged'
       : (stateRaw ? stateRaw.toLowerCase() : 'unknown');
-    const title = typeof meta['pr_title'] === 'string' ? (meta['pr_title'] as string) : null;
+    // Title resolution ladder; see JSDoc above.
+    let title: string | null = typeof meta['pr_title'] === 'string'
+      ? (meta['pr_title'] as string)
+      : null;
+    if (title === null) {
+      const planId = typeof meta['plan_id'] === 'string'
+        ? (meta['plan_id'] as string)
+        : null;
+      if (planId !== null) {
+        title = planTitleById.get(planId) ?? null;
+      }
+    }
+    if (title === null) {
+      const derived = atom.provenance?.derived_from ?? [];
+      for (const refId of derived) {
+        const t = planTitleById.get(refId);
+        if (t !== undefined) {
+          title = t;
+          break;
+        }
+      }
+    }
     const isSettled = atom.type === 'plan-merge-settled';
     const existing = byPr.get(prNumber);
     // Sticky-merged invariant: once `plan-merge-settled` is observed
