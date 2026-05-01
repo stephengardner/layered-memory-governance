@@ -86,6 +86,7 @@ export function parseRunCtoActorArgs(argv) {
     delegateTo: undefined,
     intentId: null,
     mode: DEFAULT_MODE,
+    invokersPath: null,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -212,6 +213,19 @@ export function parseRunCtoActorArgs(argv) {
         };
       }
       args.mode = v.value;
+    } else if (a === '--invokers') {
+      // Path to an .mjs module whose default export is
+      // `async (host, registry) => void`. Mirrors run-approval-cycle.mjs
+      // so the substrate-deep dispatch-stage shares the SAME registrar
+      // module the approval-cycle daemon uses; no parallel wiring,
+      // no parallel maintenance burden. Indie-floor default is null
+      // (auditor-only registry); org-ceiling deployments wire
+      // scripts/invokers/autonomous-dispatch.mjs to register code-author
+      // and any other sub-actors. Validated at consume time (driver
+      // resolves the path and exit(2) on missing-file / wrong-shape).
+      const v = readRequiredValue('--invokers expects a path to an .mjs module');
+      if (!v.ok) return v;
+      args.invokersPath = v.value;
     } else if (a === '-h' || a === '--help') {
       args.help = true;
     } else if (typeof a === 'string' && a.startsWith('--')) {

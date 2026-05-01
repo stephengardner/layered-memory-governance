@@ -210,4 +210,61 @@ describe('parseRunCtoActorArgs', () => {
     ]);
     expect(r.ok).toBe(false);
   });
+
+  // --invokers wires the SubActorRegistry the deep-pipeline dispatch-stage
+  // hands plans to. Mirrors the surface of run-approval-cycle.mjs so the
+  // canonical registrar module (scripts/invokers/autonomous-dispatch.mjs)
+  // works for both. Defaults to null; the driver registers auditor-actor
+  // unconditionally and only invokes a registrar module when a path is
+  // supplied. Without this flag, dogfeed-6 (2026-04-30) hit
+  // "principal code-author is not registered" when dispatch claimed an
+  // approved plan delegating to code-author.
+  it('defaults --invokers to null', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.invokersPath).toBeNull();
+  });
+
+  it('accepts --invokers <path> (space-form)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', './scripts/invokers/autonomous-dispatch.mjs',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.invokersPath).toBe('./scripts/invokers/autonomous-dispatch.mjs');
+    }
+  });
+
+  it('accepts --invokers=<path> (=-form)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers=./scripts/invokers/autonomous-dispatch.mjs',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.invokersPath).toBe('./scripts/invokers/autonomous-dispatch.mjs');
+    }
+  });
+
+  it('rejects --invokers without a value', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--invokers']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  it('preserves --invokers alongside --mode substrate-deep', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--mode', 'substrate-deep',
+      '--invokers', './scripts/invokers/autonomous-dispatch.mjs',
+      '--intent-id', 'intent-abc',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.mode).toBe('substrate-deep');
+      expect(r.args.invokersPath).toBe('./scripts/invokers/autonomous-dispatch.mjs');
+      expect(r.args.intentId).toBe('intent-abc');
+    }
+  });
 });

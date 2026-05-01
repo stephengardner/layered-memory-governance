@@ -365,4 +365,78 @@ describe('dispatchStage', () => {
     );
     expect(findings?.length).toBe(0);
   });
+
+  // The deep-pipeline dogfeed-6 (pipeline-cto-1777608728292-k5u0yc,
+  // 2026-04-30) hit "principal code-author is not registered" because
+  // run-cto-actor.mjs constructed the SubActorRegistry empty. The fix
+  // wires the registry the same way run-approval-cycle.mjs does (an
+  // --invokers seam pointing at scripts/invokers/autonomous-dispatch.mjs).
+  // This test pins the contract on the dispatch-stage side: when a
+  // code-author invoker IS registered AND a code-author-delegated plan
+  // is approved + scoped to the current pipeline, dispatch routes
+  // through the registered invoker instead of failing with
+  // "principal X is not registered". Mirrors the production wire that
+  // closes the substrate-deep pipeline end-to-end.
+  it('run() invokes a registered code-author invoker when the plan delegates to code-author', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    let invokedWithPayload: unknown = null;
+    let invokedWithCorrelation: string | null = null;
+    registry.register('code-author', async (payload, correlationId) => {
+      invokedWithPayload = payload;
+      invokedWithCorrelation = correlationId;
+      return {
+        kind: 'completed',
+        producedAtomIds: ['code-author-invoked-test' as AtomId],
+        summary: 'code-author invoked',
+      };
+    });
+    await seedPlanForDispatch(host, 'plan-code-author-1', 'code-author');
+
+    const stage = createDispatchStage(registry);
+    const output = await stage.run(makeStageRunInput(host));
+    expect(output.value.dispatch_status).toBe('completed');
+    expect(output.value.dispatched).toBe(1);
+    expect(output.value.failed).toBe(0);
+    expect(invokedWithCorrelation).not.toBeNull();
+    // The dispatcher synthesizes payload as { plan_id } when the plan's
+    // delegation envelope carries no payload, which matches the
+    // CodeAuthorPayload contract.
+    expect(invokedWithPayload).toMatchObject({ plan_id: 'plan-code-author-1' });
+  });
+
+  it('run() marks the plan as failed when code-author is NOT registered (regression for dogfeed-6)', async () => {
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    // Deliberately do NOT register code-author. The dispatcher should
+    // throw ValidationError from registry.invoke, catch it, mark the
+    // plan failed, and write an escalation actor-message. The
+    // dispatch-stage's run() returns dispatch_status='completed' with
+    // failed=1 -- the gate is "did the tick run", not "did every plan
+    // succeed". This is the failure mode the dogfeed-6 run hit; the
+    // wiring fix populates the registry so this branch does not trip.
+    const planId = await seedPlanForDispatch(host, 'plan-code-author-2', 'code-author');
+
+    const stage = createDispatchStage(registry);
+    const output = await stage.run(makeStageRunInput(host));
+    expect(output.value.dispatch_status).toBe('completed');
+    expect(output.value.scanned).toBe(1);
+    expect(output.value.failed).toBe(1);
+    expect(output.value.dispatched).toBe(0);
+
+    // The dispatcher claimed the plan (approved -> executing) and then
+    // flipped it to failed when registry.invoke threw. Pin both the
+    // final state and the dispatch_result.kind so a future change that
+    // accidentally drops the failure branch fails this test.
+    const updated = await host.atoms.get(planId);
+    expect(updated).not.toBeNull();
+    if (updated === null) return;
+    expect(updated.plan_state).toBe('failed');
+    const dispatchMeta = (updated.metadata as Record<string, unknown>).dispatch_result as
+      | Record<string, unknown>
+      | undefined;
+    expect(dispatchMeta?.kind).toBe('error');
+    expect(typeof dispatchMeta?.message).toBe('string');
+    expect(String(dispatchMeta?.message)).toMatch(/code-author is not registered/);
+  });
 });
