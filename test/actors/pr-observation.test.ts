@@ -66,23 +66,50 @@ function mkStatus(overrides: Partial<PrReviewStatus> = {}): PrReviewStatus {
 }
 
 describe('mkPrObservationAtomId', () => {
-  it('is deterministic on (owner, repo, number, headSha-prefix-12)', () => {
-    const a = mkPrObservationAtomId('o', 'r', 42, 'abcdef1234567890abcdef');
-    const b = mkPrObservationAtomId('o', 'r', 42, 'abcdef1234567890feedface');
-    // Same first 12 chars of SHA -> same id. This is a deliberate
-    // collision on SHA prefix: if Git ever produces two distinct
-    // SHAs with the same 12-char prefix on the same PR, we want the
-    // second observation to overwrite the first (same git state).
+  const T = '2026-05-01T17:11:34.681Z' as Time;
+
+  it('is deterministic on (owner, repo, number, headSha-prefix-12, observedAt-minute)', () => {
+    const a = mkPrObservationAtomId('o', 'r', 42, 'abcdef1234567890abcdef', T);
+    const b = mkPrObservationAtomId('o', 'r', 42, 'abcdef1234567890feedface', T);
+    // Same first 12 chars of SHA + same observedAt-minute -> same id.
     expect(a).toBe(b);
-    expect(a).toBe('pr-observation-o-r-42-abcdef123456');
+    expect(a).toBe('pr-observation-o-r-42-abcdef123456-202605011711');
   });
 
   it('varies when any key component varies', () => {
-    const base = mkPrObservationAtomId('o', 'r', 42, 'abc123def456');
-    expect(mkPrObservationAtomId('o2', 'r', 42, 'abc123def456')).not.toBe(base);
-    expect(mkPrObservationAtomId('o', 'r2', 42, 'abc123def456')).not.toBe(base);
-    expect(mkPrObservationAtomId('o', 'r', 43, 'abc123def456')).not.toBe(base);
-    expect(mkPrObservationAtomId('o', 'r', 42, 'zzz111aaa222')).not.toBe(base);
+    const base = mkPrObservationAtomId('o', 'r', 42, 'abc123def456', T);
+    expect(mkPrObservationAtomId('o2', 'r', 42, 'abc123def456', T)).not.toBe(base);
+    expect(mkPrObservationAtomId('o', 'r2', 42, 'abc123def456', T)).not.toBe(base);
+    expect(mkPrObservationAtomId('o', 'r', 43, 'abc123def456', T)).not.toBe(base);
+    expect(mkPrObservationAtomId('o', 'r', 42, 'zzz111aaa222', T)).not.toBe(base);
+    // Different observedAt-minute -> different id.
+    const T2 = '2026-05-01T17:12:00.000Z' as Time;
+    expect(mkPrObservationAtomId('o', 'r', 42, 'abc123def456', T2)).not.toBe(base);
+  });
+
+  it('truncates observedAt to UTC minute (collapses sub-minute jitter)', () => {
+    const tStart = '2026-05-01T17:11:00.000Z' as Time;
+    const tMid = '2026-05-01T17:11:34.681Z' as Time;
+    const tEnd = '2026-05-01T17:11:59.999Z' as Time;
+    const id1 = mkPrObservationAtomId('foo', 'bar', 273, 'aabbccddeeff', tStart);
+    const id2 = mkPrObservationAtomId('foo', 'bar', 273, 'aabbccddeeff', tMid);
+    const id3 = mkPrObservationAtomId('foo', 'bar', 273, 'aabbccddeeff', tEnd);
+    expect(id1).toBe(id2);
+    expect(id2).toBe(id3);
+  });
+
+  it('produces a different id across the minute boundary', () => {
+    const t1 = '2026-05-01T17:11:59.999Z' as Time;
+    const t2 = '2026-05-01T17:12:00.000Z' as Time;
+    expect(mkPrObservationAtomId('foo', 'bar', 273, 'aabbccddeeff', t1)).not.toBe(
+      mkPrObservationAtomId('foo', 'bar', 273, 'aabbccddeeff', t2),
+    );
+  });
+
+  it('id has no spaces or filesystem-hostile characters', () => {
+    const t = '2026-05-01T17:11:34.681Z' as Time;
+    const id = mkPrObservationAtomId('foo', 'bar', 273, 'aabbccddeeff', t);
+    expect(/^[a-zA-Z0-9-]+$/.test(String(id))).toBe(true);
   });
 });
 
