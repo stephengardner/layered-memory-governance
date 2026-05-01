@@ -294,7 +294,13 @@ export async function runDispatchTick(
         correlation_id: envelope.correlation_id,
         error_message: errorMessage,
       });
-      await writeEscalationMessage(host, plan, envelope, result.message, now);
+      // Pass the truncated errorMessage (not the raw result.message) so a
+      // runaway sub-actor's stack trace cannot pollute the escalation
+      // actor-message body and its inbox-rendered cousin. The legacy
+      // dispatch_result.message above keeps the verbatim payload for
+      // back-compat consumers; everywhere else the bounded form is the
+      // contract.
+      await writeEscalationMessage(host, plan, envelope, errorMessage, now);
       failed += 1;
     }
   }

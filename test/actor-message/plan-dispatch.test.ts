@@ -697,6 +697,37 @@ describe('runDispatchTick state-lifecycle metadata + audit emission', () => {
     // top-level error_message field that bounds dashboard payloads.
     const dr = updated!.metadata.dispatch_result as { message: string };
     expect(dr.message).toBe(longMessage);
+
+    // The audit-event payload uses the SAME truncated errorMessage as
+    // the atom metadata; without this assertion a regression that
+    // passes result.message into emitDispatchAudit would slip through
+    // (the metadata cap alone would still pass the suite).
+    const failedEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-failed'] },
+      10,
+    );
+    expect(failedEvents).toHaveLength(1);
+    expect(failedEvents[0]!.details.error_message).toBe(errMsg);
+
+    // The escalation actor-message body must also use the truncated
+    // form: the failed-dispatch path historically passed result.message
+    // raw, which let an unbounded sub-actor error pollute the inbox.
+    // Asserting on the inbox-rendered cousin closes the gap CR flagged
+    // on this same PR.
+    const replies = await host.atoms.query({ type: ['actor-message'] }, 100);
+    const escalation = replies.atoms.find(
+      (a) => (a.metadata as { actor_message?: { correlation_id?: string } })?.actor_message?.correlation_id === 'corr-long',
+    );
+    expect(escalation).toBeDefined();
+    const body = (escalation!.metadata as { actor_message: { body: string } }).actor_message.body;
+    // The escalation body wraps the error string with surrounding
+    // template prose, so the bounded message + 'truncated' marker is
+    // present rather than the raw repeated 'X' string.
+    expect(body).toContain('...truncated');
+    // Conservative upper-bound: the surrounding template adds a small
+    // prefix + suffix; the body must not approach the 5000-char raw
+    // length and the truncation marker is the load-bearing assertion.
+    expect(body.length).toBeLessThan(2048);
   });
 
   it('emits a plan.dispatch-in-flight audit event when invoker returns dispatched (async)', async () => {
