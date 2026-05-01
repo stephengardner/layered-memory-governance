@@ -86,9 +86,9 @@ Refresh-then-reconcile is the same fixed-order claim that makes auto-approve-the
 ### 4.1 `src/runtime/plans/pr-observation-refresh.ts` (new framework module)
 
 Mechanism:
-- `runPlanObservationRefreshTick(host, refresher, options)` — the tick
-- `PrObservationRefresher` — interface with one method: `refresh({ pr, plan_id }) -> Promise<void>`
-- `PrRef` — structured type `{owner: string, repo: string, number: number}` read from each observation atom's `metadata.pr` field
+- `runPlanObservationRefreshTick(host, refresher, options)` - the tick
+- `PrObservationRefresher` - interface with one method: `refresh({ pr, plan_id }) -> Promise<void>`
+- `PrRef` - structured type `{owner: string, repo: string, number: number}` read from each observation atom's `metadata.pr` field
 
 The framework module never imports `execa`, `gh`, GitHub SDK, or any string-parsing of PR numbers from summaries. `pr` is a structured object read from the canonical source (`metadata.pr`); no string-parsing path exists inside `src/`.
 
@@ -136,7 +136,7 @@ The atom's `value` is the freshness window in milliseconds. Read via `host.canon
 
 The tick filters `obs.metadata.pr_state in TERMINAL_PR_STATES` BEFORE calling refresher.refresh(). If the observation already shows MERGED or CLOSED, no refresh is needed; the reconciler will pick it up.
 
-If a refresh produces an observation that is identical to the prior one (same head SHA, same surface counts), the deterministic atom-id makes the put a no-op — `runObserveOnly` already handles `existing !== null` case (`scripts/run-pr-landing.mjs:615-648`), and a second observation re-key by SHA collides with the first. **The fix below addresses this.**
+If a refresh produces an observation that is identical to the prior one (same head SHA, same surface counts), the deterministic atom-id makes the put a no-op - `runObserveOnly` already handles `existing !== null` case (`scripts/run-pr-landing.mjs:615-648`), and a second observation re-key by SHA collides with the first. **The fix below addresses this.**
 
 ### 6.1 Atom-id stability is the failure mode; supersedes is the fix
 
@@ -249,7 +249,7 @@ If a future maintainer wants to reconsider this design (e.g. swap polling for we
 
 The freshness threshold being a canon atom means a deployment can disable the polling-side cost (set threshold to `Infinity`) without code changes; combined with a webhook-driven refresher, the polling becomes a fallback rather than the primary path.
 
-The minute-truncated atom-id suffix is a permanent contract — once observations are landing under the new id format, the reconciler ignores the older format implicitly (different ids; old atoms still readable but no new ones get written under them). Any future revisit that wants per-second granularity, hash-only ids, or time-free ids ships as a new id-formula version that coexists; the reconciler does not need to know about the format.
+The minute-truncated atom-id suffix is a permanent contract - once observations are landing under the new id format, the reconciler ignores the older format implicitly (different ids; old atoms still readable but no new ones get written under them). Any future revisit that wants per-second granularity, hash-only ids, or time-free ids ships as a new id-formula version that coexists; the reconciler does not need to know about the format.
 
 ## 11. Principles applied
 

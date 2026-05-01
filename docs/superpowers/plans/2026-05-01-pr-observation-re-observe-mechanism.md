@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close substrate gap #8 — plans stuck in `executing` after their PR merges/closes — by adding a periodic re-observe tick that writes a fresh `pr-observation` atom whose terminal `pr_state` is then picked up by the existing `pr-merge-reconcile` tick.
+**Goal:** Close substrate gap #8 - plans stuck in `executing` after their PR merges/closes - by adding a periodic re-observe tick that writes a fresh `pr-observation` atom whose terminal `pr_state` is then picked up by the existing `pr-merge-reconcile` tick.
 
 **Architecture:** New mechanism-only framework module `src/runtime/plans/pr-observation-refresh.ts` exposing `runPlanObservationRefreshTick(host, refresher, options)`. The framework module never touches GitHub or shells; the deployment-side adapter `scripts/lib/pr-observation-refresher.mjs` spawns `run-pr-landing.mjs --observe-only` to do the actual fresh observation. Atom-id revision (minute-truncated suffix) so the new observation lands under a fresh deterministic id and supersedes the prior one.
 
@@ -117,7 +117,7 @@ Expected: FAIL with "Cannot find module '../../../src/runtime/plans/pr-observati
 /**
  * PR-observation refresh tick.
  *
- * Closes substrate gap #8 — plans stuck in plan_state='executing'
+ * Closes substrate gap #8 - plans stuck in plan_state='executing'
  * after their PR merges or closes because the only pr-observation
  * atom for the PR was written ONCE at PR-creation time and carries
  * `pr_state='OPEN'`. This module's tick scans pr-observation atoms
@@ -189,7 +189,7 @@ node scripts/git-as.mjs lag-ceo commit -m "feat(plans): add pr-observation fresh
 - Modify: `test/runtime/plans/pr-observation-refresh.test.ts` (add tick tests)
 
 **Security + correctness considerations:**
-- The pr object from `metadata.pr` MUST be validated before being passed to refresher.refresh — a malformed metadata payload (missing `owner`, non-numeric `number`) should be skipped, not crash the tick.
+- The pr object from `metadata.pr` MUST be validated before being passed to refresher.refresh - a malformed metadata payload (missing `owner`, non-numeric `number`) should be skipped, not crash the tick.
 - Refresher.refresh failures must not halt the whole tick (one bad PR should not block 50 healthy ones). Wrap each refresh in try/catch, count in `skipped['refresh-failed']`, continue.
 - maxRefreshes bound is checked BEFORE the refresh call so a runaway list does not flood GitHub.
 - Fresh check uses `nowFn()` to allow test injection of deterministic time.
@@ -535,7 +535,7 @@ node scripts/git-as.mjs lag-ceo commit -m "feat(plans): runPlanObservationRefres
 - Modify: `test/actors/pr-landing.test.ts` (or create a focused id test)
 
 **Security + correctness considerations:**
-- The new id formula MUST stay deterministic — two calls with the same (owner, repo, number, sha, observedAt-truncated-to-minute) produce the same id.
+- The new id formula MUST stay deterministic - two calls with the same (owner, repo, number, sha, observedAt-truncated-to-minute) produce the same id.
 - The minute truncation must use UTC to avoid host-timezone variance.
 - The new id must be syntactically valid as an AtomId (no spaces, no special characters that would break filesystem paths in the file adapter).
 - Backward compatibility: a legacy atom written under the SHA-only id is still readable by `host.atoms.get(legacyId)`. The reconciler's superseded_by guard handles supersession when the new id replaces it.
@@ -590,7 +590,7 @@ describe('mkPrObservationAtomId', () => {
 - [ ] **Step 3.2: Verify the tests fail**
 
 Run: `npx vitest run test/actors/pr-landing.test.ts -t mkPrObservationAtomId`
-Expected: FAIL — current `mkPrObservationAtomId` signature does not accept observedAt.
+Expected: FAIL - current `mkPrObservationAtomId` signature does not accept observedAt.
 
 - [ ] **Step 3.3: Update the id formula**
 
@@ -1070,7 +1070,7 @@ node scripts/git-as.mjs lag-ceo commit -m "feat(canon): seed pr-observation fres
 
 ### Task 8: Pre-push CR CLI gate + final cleanup
 
-**Files:** N/A — verification only.
+**Files:** N/A - verification only.
 
 **Security + correctness considerations:** Per `dev-coderabbit-cli-pre-push`, run the CR CLI on the diff before the final push.
 
