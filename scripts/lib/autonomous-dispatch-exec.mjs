@@ -344,6 +344,113 @@ const REMOTE_GIT_VERBS = new Set([
   'ls-remote',
 ]);
 
+/**
+ * Recognise a transient `gh REST pulls create` 5xx error in an
+ * executor failure's `reason` string. Returns true for the 5xx
+ * shapes the dispatch flow has observed in production:
+ *
+ *   - 504 Gateway Timeout (today's dogfeed-13 evidence: PR is
+ *     sometimes created server-side anyway but the gh CLI returns
+ *     non-zero before reading the response).
+ *   - 502 Bad Gateway (same shape, observed less often; recovery
+ *     is identical).
+ *
+ * The detector is intentionally narrow. It matches the literal
+ * status-code marker the gh CLI emits (`HTTP 504`, `HTTP/1.1 504`,
+ * `status code 504`, etc.) rather than attempting to recognise
+ * every flavour of "transient" — a 401/403 would be a token /
+ * scope issue and probing for an orphaned PR is the wrong remedy
+ * (the token cannot read the listing either, so the probe fails
+ * with the same auth error). 4xx errors are always treated as
+ * structural and short-circuit; 5xx is the narrow recovery
+ * surface.
+ *
+ * Pure: takes a string, returns a boolean. Callers compose the
+ * detection with the orphaned-PR probe themselves.
+ */
+const TRANSIENT_5XX_RE = /\b50[24]\b/;
+
+export function isTransientPrCreationGatewayError(reason) {
+  if (typeof reason !== 'string' || reason.length === 0) return false;
+  return TRANSIENT_5XX_RE.test(reason);
+}
+
+/**
+ * Probe for an orphaned PR by branch head via `gh pr list --head`,
+ * spawning the supplied execImpl so callers (production +
+ * tests) share one wire-shape. Returns `{ number, htmlUrl }` on
+ * exact-one-match or null otherwise:
+ *
+ *   - branch null/undefined/empty: no probe, returns null. The
+ *     executor failed before the branch reached the remote;
+ *     there is nothing to recover.
+ *   - gh CLI exits non-zero: returns null. A failed probe is
+ *     indistinguishable from "no PR exists" at this layer; the
+ *     caller (the dispatch wrapper) logs the underlying gh
+ *     stderr and falls through to the original 5xx error.
+ *   - empty array result: returns null. No orphaned PR; the
+ *     5xx must have been an actual create-side failure, not a
+ *     create-then-server-error race.
+ *   - exactly-one PR: returns its number + htmlUrl. The dispatch
+ *     wrapper treats this as success and continues with labels.
+ *   - multiple matching PRs: returns null. Two PRs on the same
+ *     head branch is anomalous (GitHub disallows it on the same
+ *     base branch but a refspec edge case could in principle
+ *     produce it); fail-closed and let the operator inspect.
+ *
+ * The repo slug is required because `gh pr list --head` is repo-
+ * scoped and a missing slug would default to the working-dir
+ * repo, which is correct in normal operation but wrong when the
+ * dispatcher is invoked from a worktree pointing at a different
+ * upstream. Callers always pass the dispatch-resolved owner/repo.
+ *
+ * The execImpl is the same authed-git/gh shim the dispatch flow
+ * builds; threading it here keeps the bot-identity discipline
+ * uniform (the probe runs as the dispatch bot, never the
+ * operator's PAT).
+ */
+export async function probeOrphanedPrByBranch({
+  branch,
+  owner,
+  repo,
+  execImpl,
+}) {
+  if (typeof branch !== 'string' || branch.length === 0) return null;
+  if (typeof owner !== 'string' || owner.length === 0) return null;
+  if (typeof repo !== 'string' || repo.length === 0) return null;
+  if (typeof execImpl !== 'function') return null;
+  let result;
+  try {
+    result = await execImpl('gh', [
+      'pr', 'list',
+      '--repo', `${owner}/${repo}`,
+      '--head', branch,
+      '--state', 'open',
+      '--json', 'number,url',
+    ], { reject: false });
+  } catch {
+    return null;
+  }
+  if (!result || result.exitCode !== 0) return null;
+  const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+  if (stdout.length === 0) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 1) return null;
+  const entry = parsed[0];
+  if (!entry || typeof entry !== 'object') return null;
+  const number = entry.number;
+  const url = entry.url;
+  if (typeof number !== 'number' || typeof url !== 'string' || url.length === 0) {
+    return null;
+  }
+  return { number, htmlUrl: url };
+}
+
 function rewriteGitRemoteArg(args, token, repoOwner, repoName) {
   if (!Array.isArray(args)) return null;
   const valueTaking = new Set(['-c', '-C']);

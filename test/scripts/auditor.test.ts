@@ -47,10 +47,29 @@ describe('isPrAuthorTrustedForEmbedded', () => {
     expect(isPrAuthorTrustedForEmbedded('lag-ceo[bot]', '')).toBe(true);
   });
 
+  it('accepts the default app/lag-ceo slug-form author when no allowlist override is supplied', () => {
+    // The GraphQL `author { login }` resolver returns App PR-authors
+    // as `app/<slug>` (what `gh pr view --jq '.author.login'` surfaces)
+    // even though commit authorship and most other gh CLI surfaces use
+    // `<slug>[bot]`. Both forms refer to the same lag-ceo App identity;
+    // the indie-floor default ships both so the auditor's authorial
+    // gate does not reject a legitimate dispatch-bot PR purely on
+    // surface mismatch. Today's dogfeed-13 evidence: gh pr view
+    // returned `app/lag-ceo` for an autonomously-dispatched PR and
+    // the auditor refused to read the embedded snapshots.
+    expect(isPrAuthorTrustedForEmbedded('app/lag-ceo', undefined)).toBe(true);
+    expect(isPrAuthorTrustedForEmbedded('app/lag-ceo', '')).toBe(true);
+  });
+
   it('rejects an unrelated author under the default allowlist', () => {
     expect(isPrAuthorTrustedForEmbedded('mallory', undefined)).toBe(false);
     expect(isPrAuthorTrustedForEmbedded('coderabbitai[bot]', undefined)).toBe(false);
     expect(isPrAuthorTrustedForEmbedded('stephengardner', undefined)).toBe(false);
+    // A different App's slug-form login does not bypass the gate even
+    // though it uses the same `app/<slug>` shape; only the allowlist
+    // entries match.
+    expect(isPrAuthorTrustedForEmbedded('app/lag-cto', undefined)).toBe(false);
+    expect(isPrAuthorTrustedForEmbedded('app/dependabot', undefined)).toBe(false);
   });
 
   it('honours a comma-separated env-style override allowlist', () => {

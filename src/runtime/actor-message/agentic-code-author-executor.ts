@@ -226,7 +226,17 @@ export function buildAgenticCodeAuthorExecutor(
             touchedPaths: agentResult.artifacts?.touchedPaths ?? [],
           };
         } catch (err) {
-          return { kind: 'error', stage: 'agentic/pr-creation', reason: errorMessage(err) };
+          // Surface `branchName` so the dispatch wrapper can probe
+          // for an orphaned PR on transient `gh REST pulls create`
+          // 5xx (e.g. 504 with the PR created server-side anyway).
+          // Symmetric with the diff-based path; see that branchName
+          // comment for the recovery flow rationale.
+          return {
+            kind: 'error',
+            stage: 'agentic/pr-creation',
+            reason: errorMessage(err),
+            branchName,
+          };
         }
       } finally {
         // 6. Always release the workspace, even on throw. Swallow any

@@ -365,6 +365,11 @@ describe('AgenticCodeAuthorExecutor failure mapping', () => {
     if (result.kind !== 'error') throw new Error('unreachable');
     expect(result.stage).toBe('agentic/pr-creation');
     expect(result.reason).toContain('gh-api 422');
+    // The branch reached the remote before pr-creation failed; the
+    // failure surfaces `branchName` so the dispatch wrapper can
+    // probe `gh pr list --head <branch>` for an orphaned PR on a
+    // transient `gh REST pulls create` 5xx.
+    expect(result.branchName).toBe('br');
   });
 
   it('always releases the workspace, even on adapter throw', async () => {

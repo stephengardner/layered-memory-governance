@@ -36,12 +36,28 @@ export function computeVerdict({ diffRadius, envelopeMax }) {
  *
  * Returns true when the PR's author login matches the
  * configured trusted-author allowlist (`allowlistRaw`,
- * comma-separated). Defaults to `lag-ceo[bot]` because that is
- * the bot identity the dispatch flow uses to open
- * autonomous-intent PRs in this codebase, but the parameter
- * override exists so a deployment that opens autonomous PRs
- * under a different role (e.g. `lag-cto[bot]` or a custom App
- * slug) can re-point the gate without a code change.
+ * comma-separated). Defaults to the two surface forms the
+ * lag-ceo App identity appears under in this codebase:
+ *
+ *   - `lag-ceo[bot]`: the commit-author / git-trailer form
+ *     used when the bot writes commits (matches the on-disk
+ *     identity App tokens mint).
+ *   - `app/lag-ceo`: the slug-style form `gh pr view --jq
+ *     '.author.login'` returns when the PR was opened by a
+ *     GitHub App. The GraphQL `author { login }` resolver maps
+ *     App PR-authors to this `app/<slug>` shape rather than the
+ *     `<slug>[bot]` form gh CLI uses elsewhere, so the auditor
+ *     sees a different string than the commit-author surfaces.
+ *
+ * Both forms refer to the same bot principal; including both in
+ * the indie-floor default keeps the gate from rejecting
+ * legitimate dispatch-bot PRs purely because the surface that
+ * supplied the login string used a different vocabulary. A
+ * deployment that opens autonomous PRs under a different role
+ * (e.g. `lag-cto[bot]` / `app/lag-cto`) re-points the gate via
+ * the `allowlistRaw` parameter (production threads
+ * `process.env.LAG_AUDITOR_TRUSTED_PR_AUTHOR`) without a code
+ * change.
  *
  * Returns false on null/undefined login or any unrecognised
  * identity; the caller fails-closed (refuses to read embedded
@@ -65,7 +81,7 @@ export function isPrAuthorTrustedForEmbedded(authorLogin, allowlistRaw) {
   if (typeof authorLogin !== 'string' || authorLogin.length === 0) return false;
   const raw = typeof allowlistRaw === 'string' && allowlistRaw.length > 0
     ? allowlistRaw
-    : 'lag-ceo[bot]';
+    : 'lag-ceo[bot],app/lag-ceo';
   const allowed = raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
   return allowed.includes(authorLogin);
 }

@@ -309,6 +309,13 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     if (result.kind !== 'error') throw new Error('unreachable');
     expect(result.stage).toBe('pr-creation/gh-api-failed');
     expect(result.reason).toMatch(/gh boom/);
+    // The pushed branch reached the remote before pr-creation failed;
+    // the failure surfaces `branchName` so the dispatch wrapper can
+    // probe `gh pr list --head <branch>` for an orphaned PR on a
+    // transient `gh REST pulls create` 5xx (e.g. 504 with the PR
+    // created server-side anyway).
+    expect(typeof result.branchName).toBe('string');
+    expect(result.branchName?.length ?? 0).toBeGreaterThan(0);
   });
 
   it('plan id with unsafe git-ref chars is sanitized in branch name', async () => {

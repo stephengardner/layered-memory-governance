@@ -469,17 +469,28 @@ export function buildDiffBasedCodeAuthorExecutor(
           draft,
         });
       } catch (err) {
+        // Surface `branchName` on pr-creation failures so the dispatch
+        // wrapper can recover from transient `gh REST pulls create`
+        // 5xx (e.g. 504 with the PR created server-side anyway): the
+        // wrapper probes `gh pr list --head <branchName>` and, if it
+        // finds the orphaned PR, re-attaches the labels + observe
+        // step instead of leaving the LAG-auditor gate unfired. The
+        // branch already reached the remote (apply-branch succeeded
+        // before this catch); failures BEFORE that point omit the
+        // field so the probe returns null cleanly.
         if (err instanceof PrCreationError) {
           return {
             kind: 'error',
             stage: `pr-creation/${err.reason}`,
             reason: `${err.message} (stage=${err.stage})`,
+            branchName: gitResult.branchName,
           };
         }
         return {
           kind: 'error',
           stage: 'pr-creation/unexpected',
           reason: err instanceof Error ? err.message : String(err),
+          branchName: gitResult.branchName,
         };
       }
 

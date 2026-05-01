@@ -25,10 +25,12 @@ import { createHash } from 'node:crypto';
 import {
   EMBEDDED_ATOMS_HEADING,
   buildAuthedGitInvocation,
+  isTransientPrCreationGatewayError,
   looksLikeGitPush,
   parseEmbeddedAtomFromPrBody,
   parsePlanIdFromPrBody,
   parseRepoSlug,
+  probeOrphanedPrByBranch,
   truncatePlanIdLabel,
 } from '../../scripts/lib/autonomous-dispatch-exec.mjs';
 
@@ -685,5 +687,201 @@ describe('buildAuthedGitInvocation', () => {
     expect(out.args).toEqual(['push']);
     // Read-only env still pinned (no askpass, no helper).
     expect(out.env.GIT_TERMINAL_PROMPT).toBe('0');
+  });
+});
+
+describe('isTransientPrCreationGatewayError', () => {
+  // The detector's job is narrow: recognise a 5xx-shaped
+  // `gh REST pulls create` failure where the dispatch wrapper's
+  // probe-by-branch recovery is the right response. 4xx and other
+  // shapes short-circuit because probing for an orphaned PR on a
+  // structural failure (auth, validation, conflict) is the wrong
+  // remedy.
+  it('detects 504 Gateway Timeout in the executor failure reason', () => {
+    // Today's dogfeed-13 evidence: PR was created server-side
+    // anyway but the gh CLI exited non-zero before reading the
+    // response. The literal 504 token in the wrapped error message
+    // is the recovery trigger.
+    expect(isTransientPrCreationGatewayError(
+      'gh REST pulls create failed: HTTP 504: Gateway Timeout',
+    )).toBe(true);
+    expect(isTransientPrCreationGatewayError(
+      'Error: status code 504',
+    )).toBe(true);
+  });
+
+  it('detects 502 Bad Gateway (same recovery, less common in practice)', () => {
+    expect(isTransientPrCreationGatewayError(
+      'gh REST pulls create failed: HTTP/1.1 502 Bad Gateway',
+    )).toBe(true);
+  });
+
+  it('rejects 4xx and other structural failures', () => {
+    // 422 = validation error (typically a duplicate head branch);
+    // 401 = token revoked; 403 = scope insufficient. Probing the
+    // PR list with the same token will fail the same way; the
+    // recovery is the wrong remedy and the wrapper short-circuits
+    // to error.
+    expect(isTransientPrCreationGatewayError(
+      'gh REST pulls create failed: HTTP 422: Validation Failed',
+    )).toBe(false);
+    expect(isTransientPrCreationGatewayError('HTTP 401 Unauthorized')).toBe(false);
+    expect(isTransientPrCreationGatewayError('HTTP 403 Forbidden')).toBe(false);
+    // 503 is technically a 5xx but is not in the recovery surface
+    // today (the regex matches 502 and 504 only). If a 503
+    // recovery path is added later, the test pins the current
+    // shape so the change is intentional.
+    expect(isTransientPrCreationGatewayError('HTTP 503 Service Unavailable')).toBe(false);
+  });
+
+  it('rejects three-digit substrings that are not 502/504 (no false positives)', () => {
+    // A reason mentioning literal `5040` or `1504` should not
+    // match; the boundary anchor on the regex prevents false
+    // positives in error messages that happen to contain a 5xx-
+    // looking substring.
+    expect(isTransientPrCreationGatewayError('error code 5040 from gh')).toBe(false);
+    expect(isTransientPrCreationGatewayError('1504 retries')).toBe(false);
+  });
+
+  it('returns false on null/undefined/non-string inputs (fail-closed)', () => {
+    expect(isTransientPrCreationGatewayError(undefined as unknown as string)).toBe(false);
+    expect(isTransientPrCreationGatewayError(null as unknown as string)).toBe(false);
+    expect(isTransientPrCreationGatewayError('')).toBe(false);
+    expect(isTransientPrCreationGatewayError(42 as unknown as string)).toBe(false);
+  });
+});
+
+describe('probeOrphanedPrByBranch', () => {
+  // The probe runs `gh pr list --head <branch>` through the
+  // dispatch-supplied execImpl so the token attribution stays
+  // bot-bound. The test stubs execImpl directly to assert the
+  // wire-shape and the result-decoding contract.
+
+  function stubExecImpl(reply: { exitCode: number; stdout: string }) {
+    const calls: Array<{ file: string; args: ReadonlyArray<string> }> = [];
+    const impl = (async (file: string, args: ReadonlyArray<string>) => {
+      calls.push({ file, args: [...args] });
+      return { exitCode: reply.exitCode, stdout: reply.stdout, stderr: '' };
+    }) as unknown as Parameters<typeof probeOrphanedPrByBranch>[0]['execImpl'];
+    return { impl, calls };
+  }
+
+  it('returns the PR number + url on exact-one-match', async () => {
+    const { impl, calls } = stubExecImpl({
+      exitCode: 0,
+      stdout: JSON.stringify([{ number: 271, url: 'https://github.com/o/r/pull/271' }]),
+    });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/plan-x-abc123',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toEqual({ number: 271, htmlUrl: 'https://github.com/o/r/pull/271' });
+    // Wire-shape: gh CLI invocation routes through the dispatch
+    // bot's execImpl, scoped to the resolved repo slug, filtered
+    // to open PRs on the named head branch. The full argv pins
+    // the contract so a future refactor cannot silently drop a
+    // flag (e.g. `--state open`) that changes the recovery
+    // semantics.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].file).toBe('gh');
+    expect(calls[0].args).toEqual([
+      'pr', 'list',
+      '--repo', 'o/r',
+      '--head', 'code-author/plan-x-abc123',
+      '--state', 'open',
+      '--json', 'number,url',
+    ]);
+  });
+
+  it('returns null on empty array (no orphaned PR)', async () => {
+    const { impl } = stubExecImpl({ exitCode: 0, stdout: '[]' });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/no-orphan',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null when more than one PR matches (anomalous; fail-closed)', async () => {
+    // Two PRs on the same head branch is anomalous; recovering
+    // to either one would be a guess. Fail-closed and let the
+    // operator inspect.
+    const { impl } = stubExecImpl({
+      exitCode: 0,
+      stdout: JSON.stringify([
+        { number: 1, url: 'https://github.com/o/r/pull/1' },
+        { number: 2, url: 'https://github.com/o/r/pull/2' },
+      ]),
+    });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/duplicate',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null when gh CLI exits non-zero', async () => {
+    // A non-zero gh exit is indistinguishable from "no PR exists"
+    // at the recovery layer; the wrapper logs the underlying gh
+    // stderr and falls through to the original 5xx error.
+    const { impl } = stubExecImpl({ exitCode: 1, stdout: '' });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/auth-fail',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null on malformed JSON output', async () => {
+    const { impl } = stubExecImpl({ exitCode: 0, stdout: 'not json' });
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/garbled',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null when execImpl throws', async () => {
+    const impl = (async () => { throw new Error('spawn failed'); }) as unknown as Parameters<typeof probeOrphanedPrByBranch>[0]['execImpl'];
+    const result = await probeOrphanedPrByBranch({
+      branch: 'code-author/spawn-fail',
+      owner: 'o',
+      repo: 'r',
+      execImpl: impl,
+    });
+    expect(result).toBe(null);
+  });
+
+  it('returns null on missing required arguments without spawning gh', async () => {
+    // Defensive guards on the input arguments: an empty or
+    // missing branch / owner / repo is a programming error in
+    // the caller; do not spawn gh with a degenerate query that
+    // could match unrelated PRs.
+    const { impl, calls } = stubExecImpl({ exitCode: 0, stdout: '[]' });
+    expect(await probeOrphanedPrByBranch({ branch: '', owner: 'o', repo: 'r', execImpl: impl })).toBe(null);
+    expect(await probeOrphanedPrByBranch({ branch: 'b', owner: '', repo: 'r', execImpl: impl })).toBe(null);
+    expect(await probeOrphanedPrByBranch({ branch: 'b', owner: 'o', repo: '', execImpl: impl })).toBe(null);
+    // None of those reached the gh spawn step.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('returns null when execImpl is not a function', async () => {
+    const result = await probeOrphanedPrByBranch({
+      branch: 'b',
+      owner: 'o',
+      repo: 'r',
+      execImpl: undefined as unknown as Parameters<typeof probeOrphanedPrByBranch>[0]['execImpl'],
+    });
+    expect(result).toBe(null);
   });
 });
