@@ -1591,11 +1591,17 @@ interface PlanLifecycle {
   /*
    * Focused four-step plan_state timeline (proposed -> approved ->
    * executing -> terminal) projected from the dispatcher metadata
-   * stamps in src/runtime/actor-message/plan-dispatch.ts. Always
-   * present (the four-step shape is fixed); each step carries a
+   * stamps in src/runtime/actor-message/plan-dispatch.ts. The
+   * four-step shape is fixed when present; each step carries a
    * status field saying whether the plan reached, is pending, or
-   * skipped that boundary. See plan-state-lifecycle.ts for the
-   * projection details.
+   * skipped that boundary.
+   *
+   * Nullability: this field is null when the input plan atom is
+   * not found (a `plan-not-found` lifecycle response). Callers
+   * MUST handle null before reading `.steps` to avoid a runtime
+   * undefined access. See plan-state-lifecycle.ts for the
+   * projection details, and the buildPlanStateLifecycle call site
+   * in handlePlanLifecycle for the null-vs-projection branching.
    */
   readonly plan_state_lifecycle: PlanStateLifecycle | null;
 }

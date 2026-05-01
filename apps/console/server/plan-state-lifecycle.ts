@@ -100,15 +100,18 @@ function readString(meta: Readonly<Record<string, unknown>>, key: string): strin
 }
 
 /*
- * Plan_state vocabulary that signals the plan never advanced past the
- * proposed step. These collapse to "skipped" downstream so the UI
- * renders the unreached steps as visually-distinct from "pending".
+ * Plan_state vocabulary that always means the plan never advanced past
+ * the proposed step. 'rejected' and 'abandoned' are legitimate terminal
+ * states for plans that never crossed approved; they should NOT show
+ * approved/executing as still-pending (that misleads the operator into
+ * thinking the plan is still in flight).
  *
- * 'rejected' / 'abandoned' are legitimate terminal states for plans
- * that never crossed approved; they should NOT show approved/executing
- * as still-pending (that misleads the operator into thinking the plan
- * is still in flight). 'failed' before approved (rare but possible if
- * approval itself errors) is treated the same.
+ * 'failed' is intentionally NOT in this set: a plan can fail AFTER
+ * being approved (the dispatcher stamps approved_at, then registry.invoke
+ * errors out and terminal_kind='failed'). Whether a 'failed' plan is
+ * "terminated before approved" depends on whether approved_at was
+ * stamped. The buildPlanStateLifecycle resolver checks that condition
+ * directly rather than collapsing 'failed' into this set.
  */
 const TERMINATED_BEFORE_APPROVED = new Set(['rejected', 'abandoned']);
 
@@ -160,9 +163,11 @@ export function buildPlanStateLifecycle(plan: PlanAtomSlice): PlanStateLifecycle
 
   /*
    * Step 2: approved. Reached when metadata.approved_at is present.
-   * Skipped when the plan terminated without ever passing approval
-   * (rejected, abandoned -- see TERMINATED_BEFORE_APPROVED). Pending
-   * otherwise. The 'by' for approved is intentionally null in the v0:
+   * Skipped when the plan terminated without ever passing approval:
+   *   - state is 'rejected' or 'abandoned' (per TERMINATED_BEFORE_APPROVED), OR
+   *   - state is 'failed' AND approved_at was never stamped (a pre-approval
+   *     halt, e.g. an approval-flow error before envelope match).
+   * Pending otherwise. The 'by' for approved is intentionally null in v0:
    * the substrate has multiple approval paths (operator-intent envelope,
    * multi-reviewer policy, manual /decide) and the metadata stamp does
    * not carry a single "approver" field today; surfacing a fabricated
@@ -170,9 +175,10 @@ export function buildPlanStateLifecycle(plan: PlanAtomSlice): PlanStateLifecycle
    * approval row without a principal pill rather than guess.
    */
   const approvedReached = approvedAt !== null;
+  const failedBeforeApproved = state === 'failed' && !approvedReached;
   const approvedSkipped = !approvedReached
     && state !== null
-    && TERMINATED_BEFORE_APPROVED.has(state);
+    && (TERMINATED_BEFORE_APPROVED.has(state) || failedBeforeApproved);
   const approved: PlanStateLifecycleStep = {
     kind: 'approved',
     status: approvedReached ? 'reached' : approvedSkipped ? 'skipped' : 'pending',

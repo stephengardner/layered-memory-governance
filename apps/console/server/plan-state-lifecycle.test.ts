@@ -181,6 +181,63 @@ describe('buildPlanStateLifecycle', () => {
     });
   });
 
+  describe('failed plan without approved_at (pre-approval halt)', () => {
+    /*
+     * A plan that hits 'failed' state but never had approved_at stamped
+     * means the approval flow itself halted (envelope mismatch error,
+     * intent expired between read and write, etc.). Approved should
+     * read 'skipped' so the operator does not see a misleading "still
+     * pending" state when the plan has already terminated upstream of
+     * approval.
+     */
+    const lifecycle = buildPlanStateLifecycle(fixture({
+      plan_state: 'failed',
+      metadata: {
+        terminal_at: TERMINAL_AT,
+        terminal_kind: 'failed',
+        error_message: 'approval-flow halted before envelope match',
+      },
+    }));
+
+    it('marks approved as skipped (failed without approved_at is a pre-approval halt)', () => {
+      const approved = lifecycle.steps.find((s) => s.kind === 'approved')!;
+      expect(approved.status).toBe('skipped');
+      expect(approved.at).toBeNull();
+    });
+
+    it('terminal still reaches with the failed kind + error_message', () => {
+      const terminal = lifecycle.steps.find((s) => s.kind === 'terminal')!;
+      expect(terminal.status).toBe('reached');
+      expect(terminal.terminal_kind).toBe('failed');
+    });
+  });
+
+  describe('failed plan WITH approved_at (post-approval failure)', () => {
+    /*
+     * A plan that hits 'failed' AFTER being approved should NOT have
+     * approved rendered as skipped -- the approval step did happen.
+     * This is the canonical failure path: dispatcher claims approved,
+     * stamps executing_at, then registry.invoke errors out.
+     */
+    const lifecycle = buildPlanStateLifecycle(fixture({
+      plan_state: 'failed',
+      metadata: {
+        approved_at: APPROVED_AT,
+        executing_at: EXECUTING_AT,
+        executing_invoker: INVOKER,
+        terminal_at: TERMINAL_AT,
+        terminal_kind: 'failed',
+        error_message: 'sub-actor crashed',
+      },
+    }));
+
+    it('approved stays reached even though plan_state is failed', () => {
+      const approved = lifecycle.steps.find((s) => s.kind === 'approved')!;
+      expect(approved.status).toBe('reached');
+      expect(approved.at).toBe(APPROVED_AT);
+    });
+  });
+
   describe('rejected plan (terminated before approval)', () => {
     const lifecycle = buildPlanStateLifecycle(fixture({
       plan_state: 'rejected',
@@ -193,7 +250,7 @@ describe('buildPlanStateLifecycle', () => {
       expect(approved.at).toBeNull();
     });
 
-    it('marks executing as skipped because terminal landed pre-dispatch', () => {
+    it('keeps executing pending because terminal_at is absent and rejected is not in TERMINAL_STATES', () => {
       const executing = lifecycle.steps.find((s) => s.kind === 'executing')!;
       // Without terminal_at and without TERMINAL_STATES membership for
       // 'rejected' the executing step renders as pending today; this
@@ -225,7 +282,7 @@ describe('buildPlanStateLifecycle', () => {
       expect(terminal.at).toBeNull();
     });
 
-    it('approved + executing also render as skipped because terminal already landed', () => {
+    it('approved stays pending and executing renders skipped on legacy succeeded atoms', () => {
       const approved = lifecycle.steps.find((s) => s.kind === 'approved')!;
       const executing = lifecycle.steps.find((s) => s.kind === 'executing')!;
       // Approved without approved_at and without rejected/abandoned
