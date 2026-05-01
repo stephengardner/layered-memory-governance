@@ -65,6 +65,59 @@ export const brainstormPayloadSchema = z.object({
 export type BrainstormPayload = z.infer<typeof brainstormPayloadSchema>;
 
 /**
+ * JSON-schema shape passed to host.llm.judge. The zod schema above is
+ * the source of truth for runtime validation; this constant is its
+ * derivative used to constrain the LLM at generation time.
+ *
+ * Every bounded string field carries a `maxLength` matching the zod
+ * `.max(N)` constant, and every bounded array carries a `maxItems`
+ * matching the zod array cap. Without these bounds the LLM accepts
+ * the type-only schema and produces over-length strings the
+ * JSON-schema validator passes but the zod schema rejects
+ * post-generation. The schema-parity test in
+ * test/examples/planning-stages/schema-parity.test.ts walks both
+ * schemas to assert agreement and flags any future drift.
+ *
+ * Exported for the parity test; the runStage function below references
+ * this same constant so a single edit lands in both the LLM-time fence
+ * and the parity assertion.
+ */
+export const BRAINSTORM_JUDGE_SCHEMA = {
+  type: 'object',
+  properties: {
+    open_questions: {
+      type: 'array',
+      items: { type: 'string', maxLength: MAX_STR },
+      maxItems: MAX_LIST,
+    },
+    alternatives_surveyed: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          option: { type: 'string', maxLength: MAX_STR },
+          rejection_reason: { type: 'string', maxLength: MAX_STR },
+        },
+        required: ['option', 'rejection_reason'],
+      },
+      maxItems: MAX_LIST,
+    },
+    decision_points: {
+      type: 'array',
+      items: { type: 'string', maxLength: MAX_STR },
+      maxItems: MAX_LIST,
+    },
+    cost_usd: { type: 'number' },
+  },
+  required: [
+    'open_questions',
+    'alternatives_surveyed',
+    'decision_points',
+    'cost_usd',
+  ],
+} as const;
+
+/**
  * Atom-id citation regex.
  *
  * LAG atom ids are kebab-case lowercase identifiers with at least one
@@ -136,33 +189,10 @@ async function runBrainstorm(
   // per-principal LLM tool-policy atom and forwarding via LlmOptions;
   // this module does not hardcode tool-policy.
   const result = await input.host.llm.judge<BrainstormPayload>(
-    // JsonSchema shape; the runtime validation runs against
-    // brainstormPayloadSchema in the runner via stage.outputSchema.
-    {
-      type: 'object',
-      properties: {
-        open_questions: { type: 'array', items: { type: 'string' } },
-        alternatives_surveyed: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              option: { type: 'string' },
-              rejection_reason: { type: 'string' },
-            },
-            required: ['option', 'rejection_reason'],
-          },
-        },
-        decision_points: { type: 'array', items: { type: 'string' } },
-        cost_usd: { type: 'number' },
-      },
-      required: [
-        'open_questions',
-        'alternatives_surveyed',
-        'decision_points',
-        'cost_usd',
-      ],
-    },
+    // BRAINSTORM_JUDGE_SCHEMA mirrors the zod brainstormPayloadSchema's
+    // bounds at the LLM-time fence. See the constant declaration for
+    // the parity contract.
+    BRAINSTORM_JUDGE_SCHEMA,
     BRAINSTORM_SYSTEM_PROMPT,
     {
       pipeline_id: String(input.pipelineId),

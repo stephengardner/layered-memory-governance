@@ -97,6 +97,63 @@ export const specPayloadSchema = z.object({
 export type SpecPayload = z.infer<typeof specPayloadSchema>;
 
 /**
+ * JSON-schema shape passed to host.llm.judge. The zod schema above is
+ * the source of truth for runtime validation; this constant is its
+ * derivative used to constrain the LLM at generation time.
+ *
+ * Every bounded string field carries a `maxLength` matching the zod
+ * `.max(N)` constant, and every bounded array carries a `maxItems`
+ * matching the zod array cap. Without these bounds the LLM accepts
+ * the type-only schema and produces over-length strings the
+ * JSON-schema validator passes but the zod schema rejects
+ * post-generation. The schema-parity test in
+ * test/examples/planning-stages/schema-parity.test.ts walks both
+ * schemas to assert agreement and flags any future drift.
+ *
+ * Exported for the parity test; the runStage function below references
+ * this same constant so a single edit lands in both the LLM-time
+ * fence and the parity assertion.
+ */
+export const SPEC_JUDGE_SCHEMA = {
+  type: 'object',
+  properties: {
+    goal: { type: 'string', maxLength: MAX_STR },
+    body: { type: 'string', maxLength: MAX_BODY },
+    cited_paths: {
+      type: 'array',
+      items: { type: 'string', maxLength: MAX_STR },
+      maxItems: MAX_LIST,
+    },
+    cited_atom_ids: {
+      type: 'array',
+      items: { type: 'string', maxLength: MAX_STR },
+      maxItems: MAX_LIST,
+    },
+    alternatives_rejected: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          option: { type: 'string', maxLength: MAX_STR },
+          reason: { type: 'string', maxLength: MAX_STR },
+        },
+        required: ['option', 'reason'],
+      },
+      maxItems: MAX_LIST,
+    },
+    cost_usd: { type: 'number' },
+  },
+  required: [
+    'goal',
+    'body',
+    'cited_paths',
+    'cited_atom_ids',
+    'alternatives_rejected',
+    'cost_usd',
+  ],
+} as const;
+
+/**
  * Spec system prompt.
  *
  * Exported so the contract-tests can assert on the citation-grounding
@@ -136,37 +193,10 @@ async function runSpec(
   // per-principal LLM tool-policy atom and forwarding via LlmOptions;
   // this module does not hardcode tool-policy.
   const result = await input.host.llm.judge<SpecPayload>(
-    // JsonSchema shape; the runtime validation runs against
-    // specPayloadSchema in the runner via stage.outputSchema.
-    {
-      type: 'object',
-      properties: {
-        goal: { type: 'string' },
-        body: { type: 'string' },
-        cited_paths: { type: 'array', items: { type: 'string' } },
-        cited_atom_ids: { type: 'array', items: { type: 'string' } },
-        alternatives_rejected: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              option: { type: 'string' },
-              reason: { type: 'string' },
-            },
-            required: ['option', 'reason'],
-          },
-        },
-        cost_usd: { type: 'number' },
-      },
-      required: [
-        'goal',
-        'body',
-        'cited_paths',
-        'cited_atom_ids',
-        'alternatives_rejected',
-        'cost_usd',
-      ],
-    },
+    // SPEC_JUDGE_SCHEMA mirrors the zod specPayloadSchema's bounds at
+    // the LLM-time fence. See the constant declaration for the parity
+    // contract.
+    SPEC_JUDGE_SCHEMA,
     SPEC_SYSTEM_PROMPT,
     {
       pipeline_id: String(input.pipelineId),
