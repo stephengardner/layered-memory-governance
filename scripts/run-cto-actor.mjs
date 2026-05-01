@@ -27,7 +27,7 @@
 
 import { resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { ClaudeCliLLM } from '../dist/adapters/claude-cli/index.js';
 import { runActor } from '../dist/actors/index.js';
@@ -95,6 +95,7 @@ function printUsageAndExit() {
     '  --intent-id <id>         Intent atom id that triggered this planning run. When set, appended to the produced plan atom\'s provenance.derived_from so the provenance chain traces back to the triggering intent. Omit when no intent atom exists. Example: --intent-id intent-abc123.',
     '  --delegate-to <id>       Declared target sub-actor principal for any plan produced this run. Stamps metadata.delegation.sub_actor_principal_id on the plan atom for the auto-approve dispatcher to read, gated by its own policy.allowed_sub_actors. Omit to leave the plan unrouted. Example: --delegate-to code-author.',
     '  --mode <single-pass|substrate-deep>  Planning mode. Default single-pass (indie floor). substrate-deep routes through the multi-stage planning pipeline (brainstorm + spec + plan + review + dispatch); requires the bootstrap canon for the pipeline stage policy to be present.',
+    "  --invokers <path>        Optional. Path to an .mjs module whose default export is `async (host, registry) => void` and registers sub-actor invokers (e.g. code-author) on the SubActorRegistry the dispatch-stage hands plans to. Mirrors run-approval-cycle.mjs's --invokers seam so the deep-pipeline dispatch-stage and the approval-cycle daemon share one canonical wiring path. Without it the registry ships with auditor-actor only; plans that delegate to code-author or another unregistered sub-actor will fail-loud at dispatch.",
   ].join('\n'));
   process.exit(0);
 }
@@ -302,13 +303,62 @@ async function runDeepPipeline(args) {
   const { planStage } = await import('../dist/examples/planning-stages/plan/index.js');
   const { reviewStage } = await import('../dist/examples/planning-stages/review/index.js');
   const { createDispatchStage } = await import('../dist/examples/planning-stages/dispatch/index.js');
-  const { SubActorRegistry } = await import('../dist/runtime/actor-message/index.js');
+  const { SubActorRegistry, runAuditor } = await import('../dist/runtime/actor-message/index.js');
+
+  // Wire the SubActorRegistry the dispatch-stage hands plans to.
+  // V0 ships the auditor invoker (read-only, always safe to invoke);
+  // additional invokers (code-author, future actors) are registered
+  // via the same `--invokers` seam run-approval-cycle.mjs uses, so
+  // the deep-pipeline dispatch-stage and the approval-cycle daemon
+  // share one canonical wiring path. Without this, the dispatch
+  // stage would invoke into an empty registry and every plan that
+  // delegates to code-author would fail with "principal X is not
+  // registered" -- the exact failure observed on dogfeed-6
+  // (pipeline-cto-1777608728292-k5u0yc, 2026-04-30) where dispatch
+  // claimed an approved plan and then errored at registry.invoke.
+  const subActorRegistry = new SubActorRegistry();
+  subActorRegistry.register(
+    'auditor-actor',
+    async (payload, corr) => runAuditor(host, payload, corr),
+  );
+  if (args.invokersPath !== null) {
+    const modPath = resolve(args.invokersPath);
+    if (!existsSync(modPath)) {
+      console.error(`ERROR: --invokers ${modPath} does not exist.`);
+      process.exit(2);
+    }
+    // Cross-platform-safe: pathToFileURL() handles Windows drive
+    // letters AND POSIX absolute paths uniformly. The manual
+    // `new URL('file:///' + path)` shape that ships in
+    // run-approval-cycle.mjs leaks the leading `/` on POSIX (an
+    // absolute path /a/b becomes file:////a/b) and is the kind of
+    // platform drift this seam should not carry; pathToFileURL is
+    // the official Node helper for exactly this conversion.
+    const mod = await import(pathToFileURL(modPath).href);
+    if (typeof mod.default !== 'function') {
+      console.error(
+        'ERROR: --invokers module must default-export '
+        + `\`async (host, registry) => void\` (got ${typeof mod.default}).`,
+      );
+      process.exit(2);
+    }
+    await mod.default(host, subActorRegistry);
+    console.log(
+      `[cto-actor] sub-actor registry populated via ${args.invokersPath}; `
+      + `registered=[${subActorRegistry.list().join(', ')}]`,
+    );
+  } else {
+    console.log(
+      '[cto-actor] sub-actor registry populated with auditor-actor only; '
+      + 'pass --invokers <path> to register code-author or other sub-actors.',
+    );
+  }
   const stageRegistry = new Map([
     ['brainstorm-stage', brainstormStage],
     ['spec-stage', specStage],
     ['plan-stage', planStage],
     ['review-stage', reviewStage],
-    ['dispatch-stage', createDispatchStage(new SubActorRegistry())],
+    ['dispatch-stage', createDispatchStage(subActorRegistry)],
   ]);
   const stageAdapters = [];
   const unresolvedStages = [];

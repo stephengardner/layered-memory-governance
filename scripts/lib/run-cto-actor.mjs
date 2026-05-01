@@ -86,6 +86,7 @@ export function parseRunCtoActorArgs(argv) {
     delegateTo: undefined,
     intentId: null,
     mode: DEFAULT_MODE,
+    invokersPath: null,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -212,6 +213,36 @@ export function parseRunCtoActorArgs(argv) {
         };
       }
       args.mode = v.value;
+    } else if (a === '--invokers') {
+      // Path to an .mjs module whose default export is
+      // `async (host, registry) => void`. Mirrors run-approval-cycle.mjs
+      // so the substrate-deep dispatch-stage shares the SAME registrar
+      // module the approval-cycle daemon uses; no parallel wiring,
+      // no parallel maintenance burden. Indie-floor default is null
+      // (auditor-only registry); org-ceiling deployments wire
+      // scripts/invokers/autonomous-dispatch.mjs to register code-author
+      // and any other sub-actors. Validated at consume time (driver
+      // resolves the path and exit(2) on missing-file / wrong-shape).
+      //
+      // Guard against `--invokers=` (empty inline), `--invokers --mode`
+      // (long-flag consumed as value), and `--invokers -h` (short-flag
+      // consumed as value): readRequiredValue would otherwise assign
+      // '' / '--mode' / '-h' to invokersPath, and the failure mode
+      // would surface much later as a less-actionable path-resolution
+      // error in the driver. Reject any leading-dash value; trim before
+      // persistence so a quoted argv like " ./path " normalises here.
+      const v = readRequiredValue('--invokers expects a path to an .mjs module');
+      if (!v.ok) return v;
+      const trimmed =
+        typeof v.value === 'string' ? v.value.trim() : v.value;
+      if (
+        typeof trimmed !== 'string'
+        || trimmed.length === 0
+        || trimmed.startsWith('-')
+      ) {
+        return { ok: false, reason: '--invokers expects a path to an .mjs module' };
+      }
+      args.invokersPath = trimmed;
     } else if (a === '-h' || a === '--help') {
       args.help = true;
     } else if (typeof a === 'string' && a.startsWith('--')) {

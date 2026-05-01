@@ -210,4 +210,114 @@ describe('parseRunCtoActorArgs', () => {
     ]);
     expect(r.ok).toBe(false);
   });
+
+  // --invokers wires the SubActorRegistry the deep-pipeline dispatch-stage
+  // hands plans to. Mirrors the surface of run-approval-cycle.mjs so the
+  // canonical registrar module (scripts/invokers/autonomous-dispatch.mjs)
+  // works for both. Defaults to null; the driver registers auditor-actor
+  // unconditionally and only invokes a registrar module when a path is
+  // supplied. Without this flag, dogfeed-6 (2026-04-30) hit
+  // "principal code-author is not registered" when dispatch claimed an
+  // approved plan delegating to code-author.
+  it('defaults --invokers to null', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x']);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.invokersPath).toBeNull();
+  });
+
+  it('accepts --invokers <path> (space-form)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', './scripts/invokers/autonomous-dispatch.mjs',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.invokersPath).toBe('./scripts/invokers/autonomous-dispatch.mjs');
+    }
+  });
+
+  it('accepts --invokers=<path> (=-form)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers=./scripts/invokers/autonomous-dispatch.mjs',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.invokersPath).toBe('./scripts/invokers/autonomous-dispatch.mjs');
+    }
+  });
+
+  it('rejects --invokers without a value', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--invokers']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  // CR PR #259 review: reject empty + flag-like values. Without these
+  // guards, `--invokers=` would set invokersPath to `''` and
+  // `--invokers --mode substrate-deep` would set invokersPath to
+  // `'--mode'`, both of which fail later at path resolution with a
+  // less actionable diagnostic.
+  it('rejects --invokers= (empty inline value)', () => {
+    const r = parseRunCtoActorArgs(['--request', 'x', '--invokers=']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  it('rejects --invokers <next-flag> (consumes a flag as value)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', '--mode', 'substrate-deep',
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  it('rejects --invokers with an all-whitespace value', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', '   ',
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  // CR PR #259 round-2 review: broaden flag-like rejection to also
+  // catch single-dash short flags like `-h`. The previous
+  // startsWith('--') guard let `--invokers -h` through and the
+  // failure surfaced later at path resolution.
+  it('rejects --invokers with a short-flag value (-h)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', '-h',
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  it('trims --invokers value before persistence (space-form)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', '  ./scripts/invokers/autonomous-dispatch.mjs  ',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.invokersPath).toBe('./scripts/invokers/autonomous-dispatch.mjs');
+    }
+  });
+
+  it('preserves --invokers alongside --mode substrate-deep', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--mode', 'substrate-deep',
+      '--invokers', './scripts/invokers/autonomous-dispatch.mjs',
+      '--intent-id', 'intent-abc',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.mode).toBe('substrate-deep');
+      expect(r.args.invokersPath).toBe('./scripts/invokers/autonomous-dispatch.mjs');
+      expect(r.args.intentId).toBe('intent-abc');
+    }
+  });
 });
