@@ -97,9 +97,13 @@ export async function readPrObservationFreshnessMs(host: Host): Promise<number> 
       const meta = atom.metadata as Record<string, unknown>;
       const policy = meta['policy'] as Record<string, unknown> | undefined;
       if (!policy || policy['subject'] !== 'pr-observation-freshness-threshold-ms') continue;
-      const value = policy['value'];
-      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
-      return value;
+      // Named field follows the convention of pol-actor-message-rate +
+      // pol-inbox-poll-cadence. Back-compat read on `value` keeps an
+      // older bootstrap shape readable while the named-field shape is
+      // canonical going forward.
+      const fresh = policy['freshness_ms'] ?? policy['value'];
+      if (typeof fresh !== 'number' || !Number.isFinite(fresh) || fresh <= 0) continue;
+      return fresh;
     }
     cursor = page.nextCursor === null ? undefined : page.nextCursor;
   } while (cursor !== undefined);

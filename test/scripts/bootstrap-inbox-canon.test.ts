@@ -50,6 +50,7 @@ describe('bootstrap-inbox-canon POLICIES', () => {
       'pol-judgment-fallback-ladder',
       'pol-plan-auto-approve-low-stakes',
       'pol-plan-multi-reviewer-approval',
+      'pol-pr-observation-freshness-threshold-ms',
     ]);
   });
 

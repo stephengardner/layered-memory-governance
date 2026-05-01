@@ -46,7 +46,7 @@ function policyAtom(id: string, value: unknown): Atom {
     principal_id: 'apex-agent' as PrincipalId,
     taint: 'clean',
     metadata: {
-      policy: { subject: 'pr-observation-freshness-threshold-ms', value },
+      policy: { subject: 'pr-observation-freshness-threshold-ms', freshness_ms: value },
     },
   };
 }
