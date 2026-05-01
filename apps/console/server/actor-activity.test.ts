@@ -133,16 +133,34 @@ describe('buildActorActivityResponse', () => {
     expect(excerpt.endsWith('\u2026')).toBe(true);
   });
 
-  it('maps atom types to human verbs', () => {
-    const atoms: ActorActivityAtom[] = [
-      atom({ id: 'a', type: 'plan', principal_id: 'p1', created_at: '2026-04-26T11:00:00.000Z' }),
-      atom({ id: 'b', type: 'directive', principal_id: 'p1', created_at: '2026-04-26T10:59:00.000Z' }),
-      atom({ id: 'c', type: 'observation', principal_id: 'p1', created_at: '2026-04-26T10:58:00.000Z' }),
-      atom({ id: 'd', type: 'something-novel', principal_id: 'p1', created_at: '2026-04-26T10:57:00.000Z' }),
-    ];
-    const r = buildActorActivityResponse(atoms, {}, NOW);
-    const verbs = r.groups[0]!.entries.map((e) => e.verb);
-    expect(verbs).toEqual(['drafted a plan', 'declared a directive', 'observed', 'wrote']);
+  /*
+   * Shared helper for verb-mapping cases. Extracted at N=2 (per the
+   * 'Code duplication beyond the second instance is a bug' canon
+   * directive) once the third group of mappings landed; rows are
+   * data-only, all atoms share principal_id 'p1' so they collapse
+   * into a single group whose entries can be read in DESC order.
+   */
+  function expectVerbMap(
+    rows: ReadonlyArray<{ id: string; type: string; created_at: string }>,
+    expectedVerbs: ReadonlyArray<string>,
+  ): void {
+    const atoms: ActorActivityAtom[] = rows.map((r) =>
+      atom({ id: r.id, type: r.type, principal_id: 'p1', created_at: r.created_at }),
+    );
+    const result = buildActorActivityResponse(atoms, {}, NOW);
+    expect(result.groups[0]!.entries.map((e) => e.verb)).toEqual(expectedVerbs);
+  }
+
+  it('maps atom types to human verbs (with default fallback)', () => {
+    expectVerbMap(
+      [
+        { id: 'a', type: 'plan', created_at: '2026-04-26T11:00:00.000Z' },
+        { id: 'b', type: 'directive', created_at: '2026-04-26T10:59:00.000Z' },
+        { id: 'c', type: 'observation', created_at: '2026-04-26T10:58:00.000Z' },
+        { id: 'd', type: 'something-novel', created_at: '2026-04-26T10:57:00.000Z' },
+      ],
+      ['drafted a plan', 'declared a directive', 'observed', 'wrote'],
+    );
   });
 
   it('maps operator-governance atom types to human verbs', () => {
@@ -153,24 +171,57 @@ describe('buildActorActivityResponse', () => {
      * actor-message-ack, plan-merge-settled, circuit-breaker-trip,
      * circuit-breaker-reset, and ephemeral.
      */
-    const atoms: ActorActivityAtom[] = [
-      atom({ id: 'a', type: 'operator-intent', principal_id: 'p1', created_at: '2026-04-26T11:06:00.000Z' }),
-      atom({ id: 'b', type: 'actor-message-ack', principal_id: 'p1', created_at: '2026-04-26T11:05:00.000Z' }),
-      atom({ id: 'c', type: 'plan-merge-settled', principal_id: 'p1', created_at: '2026-04-26T11:04:00.000Z' }),
-      atom({ id: 'd', type: 'circuit-breaker-trip', principal_id: 'p1', created_at: '2026-04-26T11:03:00.000Z' }),
-      atom({ id: 'e', type: 'circuit-breaker-reset', principal_id: 'p1', created_at: '2026-04-26T11:02:00.000Z' }),
-      atom({ id: 'f', type: 'ephemeral', principal_id: 'p1', created_at: '2026-04-26T11:01:00.000Z' }),
-    ];
-    const r = buildActorActivityResponse(atoms, {}, NOW);
-    const verbs = r.groups[0]!.entries.map((e) => e.verb);
-    expect(verbs).toEqual([
-      'expressed intent',
-      'acknowledged a message',
-      'settled a merge',
-      'tripped a circuit breaker',
-      'reset a circuit breaker',
-      'noted ephemerally',
-    ]);
+    expectVerbMap(
+      [
+        { id: 'a', type: 'operator-intent', created_at: '2026-04-26T11:06:00.000Z' },
+        { id: 'b', type: 'actor-message-ack', created_at: '2026-04-26T11:05:00.000Z' },
+        { id: 'c', type: 'plan-merge-settled', created_at: '2026-04-26T11:04:00.000Z' },
+        { id: 'd', type: 'circuit-breaker-trip', created_at: '2026-04-26T11:03:00.000Z' },
+        { id: 'e', type: 'circuit-breaker-reset', created_at: '2026-04-26T11:02:00.000Z' },
+        { id: 'f', type: 'ephemeral', created_at: '2026-04-26T11:01:00.000Z' },
+      ],
+      [
+        'expressed intent',
+        'acknowledged a message',
+        'settled a merge',
+        'tripped a circuit breaker',
+        'reset a circuit breaker',
+        'noted ephemerally',
+      ],
+    );
+  });
+
+  it('maps deep-planning-pipeline atom types to human verbs', () => {
+    /*
+     * Guards the verbs for the 9 atom types shipped in the pipeline
+     * substrate + pipelines view + stage-output persistence rounds.
+     * Without explicit entries these fell through to the default
+     * 'wrote' verb and the activity feed lost the pipeline narrative.
+     */
+    expectVerbMap(
+      [
+        { id: 'a', type: 'pipeline', created_at: '2026-04-26T11:09:00.000Z' },
+        { id: 'b', type: 'pipeline-stage-event', created_at: '2026-04-26T11:08:00.000Z' },
+        { id: 'c', type: 'pipeline-audit-finding', created_at: '2026-04-26T11:07:00.000Z' },
+        { id: 'd', type: 'pipeline-failed', created_at: '2026-04-26T11:06:00.000Z' },
+        { id: 'e', type: 'pipeline-resume', created_at: '2026-04-26T11:05:00.000Z' },
+        { id: 'f', type: 'brainstorm-output', created_at: '2026-04-26T11:04:00.000Z' },
+        { id: 'g', type: 'spec-output', created_at: '2026-04-26T11:03:00.000Z' },
+        { id: 'h', type: 'review-report', created_at: '2026-04-26T11:02:00.000Z' },
+        { id: 'i', type: 'dispatch-record', created_at: '2026-04-26T11:01:00.000Z' },
+      ],
+      [
+        'started a pipeline',
+        'transitioned a stage',
+        'flagged an audit finding',
+        'recorded pipeline failure',
+        'resumed a pipeline',
+        'brainstormed alternatives',
+        'drafted a spec',
+        'reviewed pipeline output',
+        'dispatched plan',
+      ],
+    );
   });
 
   it('counts distinct principals across consecutive runs', () => {
