@@ -198,6 +198,24 @@ alternatives_rejected list with one-line reasons, a
 what_breaks_if_revisit sentence, a confidence score in [0,1], and a
 delegation object naming the sub-actor that will implement the plan.
 
+HARD CONSTRAINT on semantic faithfulness to operator-intent: the
+literal text of the operator's seed request is supplied in
+data.operator_intent_content, and the upstream spec output is
+supplied in data.spec_output. The plan title and body MUST be
+semantically faithful to data.operator_intent_content -- the
+literal request is the source of truth. Do NOT abstract beyond it,
+do NOT generalise into a meta-task, do NOT plan work the operator
+did not ask for. If the literal request is "add a one-line README
+note", the plan title must describe a one-line README addition and
+the body's "Concrete steps" must specify the README edit concretely;
+the plan must NOT propose a meta-task about the pipeline itself,
+must NOT pivot to "research-then-propose mode", must NOT propose
+adding fences, dials, or process changes the operator did not ask
+for. The spec_output is context, not a re-mandate; when the spec
+has drifted, anchor back to the literal intent. When
+data.operator_intent_content is empty the caller did not compute an
+anchor; fall back to data.spec_output for context.
+
 HARD CONSTRAINT on atom-id citations: every atom-id you place in
 derived_from and principles_applied MUST appear in
 data.verified_cited_atom_ids. If a principle or supporting atom you
@@ -263,6 +281,21 @@ async function runPlan(
       // finding on out-of-set ids.
       verified_sub_actor_principal_ids:
         input.verifiedSubActorPrincipalIds.map(String),
+      // Semantic-faithfulness anchor: the literal operator-intent
+      // content the runner read at preflight. The HARD-CONSTRAINT
+      // block in PLAN_SYSTEM_PROMPT instructs the LLM to keep the
+      // plan title and body semantically faithful to this string,
+      // anchoring back when the spec drifted. Without the anchor, the
+      // plan compounds the brainstorm + spec abstractions; dogfeed-8
+      // of 2026-04-30 produced a plan title "Dogfeed deep-planning
+      // pipeline in research-then-propose mode under default-deny +
+      // advisory citations + $1 cap" when the literal request was
+      // "Add a one-line note to the README explaining what the deep
+      // planning pipeline does" -- a docs-only change. Empty string
+      // when the runner caller did not compute a value; the prompt
+      // instructs the LLM to fall back to data.spec_output in that
+      // case.
+      operator_intent_content: input.operatorIntentContent,
       correlation_id: input.correlationId,
       // Forward the upstream spec-stage payload so the plan synthesises
       // against the goal, body, cited_paths, and cited_atom_ids the

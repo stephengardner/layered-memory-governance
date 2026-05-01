@@ -421,6 +421,20 @@ async function runDeepPipeline(args) {
     + `intent.metadata.trust_envelope.allowed_sub_actors: `
     + `${verifiedSubActorPrincipalIds.length} principal-id(s)`,
   );
+  // Read the literal operator-intent.content the runner threads into
+  // every stage as a semantic-faithfulness anchor. The intentAtom is
+  // already loaded above for envelope verification, so this is a
+  // free read. Defensive coercion: intent.content is typed as string
+  // on the substrate, but a malformed atom-on-disk could carry a
+  // non-string here, in which case the empty-default falls through
+  // and the stage prompts treat the missing anchor as "fall back to
+  // prior-stage output" rather than fail-closed.
+  const operatorIntentContent =
+    typeof intentAtom.content === 'string' ? intentAtom.content : '';
+  console.log(
+    `[cto-actor] operator-intent.content threaded into pipeline as `
+    + `semantic-faithfulness anchor: ${operatorIntentContent.length} chars`,
+  );
   const result = await runPipeline(stageAdapters, host, {
     principal: principal.id,
     correlationId,
@@ -429,6 +443,7 @@ async function runDeepPipeline(args) {
     mode: 'substrate-deep',
     verifiedCitedAtomIds,
     verifiedSubActorPrincipalIds,
+    operatorIntentContent,
   });
   console.log('[cto-actor] --- DEEP-PIPELINE REPORT ---');
   console.log(JSON.stringify(result, null, 2));

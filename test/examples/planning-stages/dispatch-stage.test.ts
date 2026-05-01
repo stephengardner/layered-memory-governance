@@ -33,6 +33,7 @@ function ctx(host: ReturnType<typeof createMemoryHost>) {
     stageName: 'dispatch-stage',
     verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
     verifiedSubActorPrincipalIds: [] as ReadonlyArray<PrincipalId>,
+    operatorIntentContent: '',
   };
 }
 
@@ -123,9 +124,12 @@ function makeStageRunInput(
     // structural type matches without changing the dispatch-stage's
     // gating semantics. Same rationale for verifiedSubActorPrincipalIds:
     // the field is present for substrate symmetry; the dispatch-stage
-    // does not consume it.
+    // does not consume it. Same rationale for operatorIntentContent:
+    // present for substrate symmetry; the dispatch-stage does not
+    // consume the operator-intent anchor (no LLM call).
     verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
     verifiedSubActorPrincipalIds: [] as ReadonlyArray<PrincipalId>,
+    operatorIntentContent: '',
   };
 }
 

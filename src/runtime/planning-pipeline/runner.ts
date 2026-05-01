@@ -145,6 +145,27 @@ export interface RunPipelineOptions {
    * audit() invocations from tests, do not compute a verified set).
    */
   readonly verifiedSubActorPrincipalIds?: ReadonlyArray<PrincipalId>;
+  /**
+   * Literal seed operator-intent content forwarded to every stage's
+   * StageInput and StageContext. The caller (e.g. a deep-pipeline
+   * driver) reads this from the seed operator-intent atom's `content`
+   * field at preflight; the runner threads it through to each stage
+   * unchanged so every LLM-driven stage anchors its output to the
+   * ORIGINAL operator request rather than the prior stage's
+   * abstraction. Without this anchor downstream stages drift
+   * semantically -- brainstorm sees the literal intent, spec sees the
+   * brainstorm's interpretation, plan sees the spec's framing, and by
+   * the time plan runs the work it describes is N abstractions removed
+   * from what the operator asked for.
+   *
+   * Defaults to the empty string when the runner is invoked without a
+   * computed value (legacy callers and direct test invocations); stage
+   * adapters treat an empty string as "no anchor available; fall back
+   * to prior-stage output" rather than fail-closed. Mirrors the
+   * empty-default pattern of verifiedCitedAtomIds /
+   * verifiedSubActorPrincipalIds.
+   */
+  readonly operatorIntentContent?: string;
 }
 
 export async function runPipeline(
@@ -184,6 +205,24 @@ export async function runPipeline(
   const verifiedSubActorPrincipalIds = Object.freeze(
     [...(options.verifiedSubActorPrincipalIds ?? [])],
   ) as ReadonlyArray<PrincipalId>;
+  // Literal operator-intent content. Threaded uniformly into every
+  // StageInput + StageContext so the LLM at every stage anchors to the
+  // ORIGINAL operator request rather than the prior stage's
+  // abstraction. Strings are immutable in JavaScript, so a defensive
+  // freeze is unnecessary; the read here pins the value once per run
+  // for symmetry with the verified-set fields above and so a malformed
+  // caller that mutates options.operatorIntentContent (impossible for
+  // a string but the contract signals intent) cannot skew downstream
+  // stages mid-walk. Default to empty string when the caller did not
+  // compute a value; stage adapters treat empty as "no anchor" and
+  // fall back to prior-stage output. The empty default is intentional
+  // and mirrors verifiedCitedAtomIds / verifiedSubActorPrincipalIds
+  // (those default to []): the runner is mechanism, the canonical
+  // caller (e.g. run-cto-actor.mjs) is responsible for computing the
+  // anchor and forwarding it. Failing closed here would break legacy
+  // test-only callers and direct stage invocations from tests, which
+  // are the load-bearing users of the empty-default path.
+  const operatorIntentContent: string = options.operatorIntentContent ?? '';
 
   const pipelineId = `pipeline-${options.correlationId}` as AtomId;
   // First-run vs resume: only seed a fresh pipeline atom when none
@@ -350,6 +389,7 @@ export async function runPipeline(
         seedAtomIds: options.seedAtomIds,
         verifiedCitedAtomIds,
         verifiedSubActorPrincipalIds,
+        operatorIntentContent,
       };
       output = await stage.run(stageInput);
     } catch (err) {
@@ -480,6 +520,7 @@ export async function runPipeline(
         stageName: stage.name,
         verifiedCitedAtomIds,
         verifiedSubActorPrincipalIds,
+        operatorIntentContent,
       });
       for (const finding of findings) {
         await host.atoms.put(

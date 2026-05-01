@@ -138,6 +138,22 @@ Synthesize the brainstorm-stage output into a prose-shaped specification:
 state the goal, describe the design with citations to verifiable atom
 ids and repository paths, and capture the alternatives you rejected.
 
+HARD CONSTRAINT on semantic faithfulness to operator-intent: the
+literal text of the operator's seed request is supplied in
+data.operator_intent_content, and the upstream brainstorm output is
+supplied in data.brainstorm_output. The spec's goal and body MUST
+be semantically faithful to data.operator_intent_content -- the
+literal request is the source of truth. Do NOT abstract beyond it,
+do NOT generalise into a meta-task, do NOT describe work the
+operator did not ask for. If the literal request is "add a one-line
+README note", the spec's goal must describe a one-line README
+addition and the body must specify the README change concretely;
+the spec must NOT describe a meta-task about the pipeline itself.
+The brainstorm output is context, not a re-mandate; when the
+brainstorm has drifted, anchor back to the literal intent. When
+data.operator_intent_content is empty the caller did not compute an
+anchor; fall back to data.brainstorm_output for context.
+
 HARD CONSTRAINT on atom-id citations: the cited_atom_ids array, and
 any atom-id citation embedded in body or alternatives_rejected, MUST
 contain ONLY atom-ids that appear in data.verified_cited_atom_ids.
@@ -177,6 +193,18 @@ async function runSpec(
       // continues to verify each citation against host.atoms.get and
       // emits a critical finding on fabrication.
       verified_cited_atom_ids: input.verifiedCitedAtomIds.map(String),
+      // Semantic-faithfulness anchor: the literal operator-intent
+      // content the runner read at preflight. The HARD-CONSTRAINT
+      // block in SPEC_SYSTEM_PROMPT instructs the LLM to keep the
+      // spec's goal and body semantically faithful to this string,
+      // anchoring back when the brainstorm drifted. Without the
+      // anchor, the spec compounds the brainstorm's abstraction;
+      // dogfeed-8 of 2026-04-30 surfaced this when the spec's framing
+      // turned a docs-only one-line README change into a meta-task
+      // about the pipeline. Empty string when the runner caller did
+      // not compute a value; the prompt instructs the LLM to fall
+      // back to data.brainstorm_output in that case.
+      operator_intent_content: input.operatorIntentContent,
       correlation_id: input.correlationId,
       // Forward the upstream brainstorm-stage payload so the spec
       // synthesises against the open_questions, alternatives_surveyed,

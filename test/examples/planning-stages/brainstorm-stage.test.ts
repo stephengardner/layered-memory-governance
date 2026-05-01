@@ -18,6 +18,12 @@ import {
 } from '../../../examples/planning-stages/brainstorm/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
 import type { AtomId, PrincipalId, Time } from '../../../src/types.js';
+import {
+  captureStageRunPrompt,
+  expectOperatorIntentContentForwarded,
+  expectSemanticFaithfulnessFencePrompt,
+  mkPromptContractStageInput,
+} from './citation-fence-helpers.js';
 
 /**
  * Seed a pipeline atom whose provenance.derived_from is the supplied
@@ -89,6 +95,7 @@ describe('brainstormStage', () => {
         stageName: 'brainstorm-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.some(
@@ -239,6 +246,7 @@ describe('brainstormStage', () => {
       seedAtomIds: seedIds,
       verifiedCitedAtomIds: seedIds,
       verifiedSubActorPrincipalIds: [],
+      operatorIntentContent: '',
     });
     // Audit-trail contract: the data block still carries the verified
     // seed-atom set under a stable key so the post-stage auditor can
@@ -330,6 +338,7 @@ describe('brainstormStage', () => {
         stageName: 'brainstorm-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.length).toBeGreaterThan(0);
@@ -360,6 +369,7 @@ describe('brainstormStage', () => {
         stageName: 'brainstorm-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.length).toBe(0);
@@ -388,8 +398,47 @@ describe('brainstormStage', () => {
         stageName: 'brainstorm-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.length).toBe(0);
+  });
+
+  // Substrate-design fix (dogfeed-8 of 2026-04-30): the brainstorm
+  // prompt MUST anchor on the literal operator-intent content so the
+  // first stage's output stays semantically faithful to the original
+  // request. The original prompt only said "for the seeded operator-
+  // intent" without giving the LLM the literal text; by stage 3 the
+  // request had drifted from "Add a one-line note to the README" into
+  // a meta-task about the pipeline itself. Threading
+  // operator_intent_content into the data block plus a HARD-CONSTRAINT
+  // block in the prompt closes the gap. Assertion bodies live in
+  // citation-fence-helpers.ts so a prompt-contract change lands in
+  // ONE file, not N synchronized stage-test edits.
+  it('BRAINSTORM_SYSTEM_PROMPT carries the semantic-faithfulness fence contract', () => {
+    expectSemanticFaithfulnessFencePrompt(BRAINSTORM_SYSTEM_PROMPT);
+  });
+
+  it('runBrainstorm passes the operator-intent content through to the LLM data block', async () => {
+    const host = createMemoryHost();
+    const literalIntent =
+      'Add a one-line note to the README explaining what the deep planning pipeline does.';
+    const captured = await captureStageRunPrompt({
+      stage: brainstormStage,
+      stubOutput: {
+        open_questions: [],
+        alternatives_surveyed: [],
+        decision_points: [],
+        cost_usd: 0,
+      },
+      stageInput: mkPromptContractStageInput<unknown>({
+        host,
+        principal: 'brainstorm-actor',
+        priorOutput: null,
+        verifiedCitedAtomIds: [],
+        operatorIntentContent: literalIntent,
+      }),
+    });
+    expectOperatorIntentContentForwarded(captured, literalIntent);
   });
 });

@@ -274,6 +274,99 @@ describe('runPipeline', () => {
     expect(observed).toEqual([]);
   });
 
+  it('forwards options.operatorIntentContent to every stage StageInput and StageContext', async () => {
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
+    // Capture both StageInput.operatorIntentContent (run side) AND
+    // StageContext.operatorIntentContent (audit side) per stage. The
+    // runner MUST forward the same string into both surfaces so the
+    // prompt-side semantic-faithfulness anchor and the audit-side check
+    // walk the same value; a mismatch would silently let an LLM ground
+    // on one anchor while the auditor checked another. Closes the
+    // dogfeed-8 gap surfaced 2026-04-30 where the literal intent
+    // ("Add a one-line note to the README ...") drifted into a meta-
+    // task plan ("Dogfeed deep-planning pipeline in research-then-
+    // propose mode ...") because only the brainstorm-stage saw the
+    // original request.
+    const captured: Array<{
+      name: string;
+      input: string;
+      context: string;
+    }> = [];
+    const mkCapturingStage = (
+      name: string,
+    ): PlanningStage<unknown, { ok: true }> => ({
+      name,
+      async run(input) {
+        captured.push({
+          name,
+          input: input.operatorIntentContent,
+          context: '',
+        });
+        return {
+          value: { ok: true },
+          cost_usd: 0,
+          duration_ms: 0,
+          atom_type: 'spec',
+        };
+      },
+      async audit(_value, ctx) {
+        const last = captured[captured.length - 1];
+        if (last !== undefined) {
+          captured[captured.length - 1] = {
+            ...last,
+            context: ctx.operatorIntentContent,
+          };
+        }
+        return [];
+      },
+    });
+    const literalIntent =
+      'Add a one-line note to the README explaining what the deep planning pipeline does.';
+    const result = await runPipeline(
+      [mkCapturingStage('stage-a'), mkCapturingStage('stage-b')],
+      host,
+      {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-intent-content-fanout',
+        seedAtomIds: ['intent-foo' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+        operatorIntentContent: literalIntent,
+      },
+    );
+    expect(result.kind).toBe('completed');
+    expect(captured.length).toBe(2);
+    expect(captured[0]?.input).toBe(literalIntent);
+    expect(captured[0]?.context).toBe(literalIntent);
+    expect(captured[1]?.input).toBe(literalIntent);
+    expect(captured[1]?.context).toBe(literalIntent);
+  });
+
+  it('forwards an empty operatorIntentContent default when the option is omitted', async () => {
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a']);
+    let observed: string | null = null;
+    const stage: PlanningStage<unknown, unknown> = {
+      name: 'stage-a',
+      async run(input) {
+        observed = input.operatorIntentContent;
+        return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec' };
+      },
+    };
+    await runPipeline([stage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-intent-content-default',
+      seedAtomIds: ['intent-foo' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(observed).not.toBeNull();
+    expect(observed).toBe('');
+  });
+
   it('halts on kill-switch before the first stage', async () => {
     const host = createMemoryHost();
     vi.spyOn(host.scheduler, 'killswitchCheck').mockReturnValue(true);

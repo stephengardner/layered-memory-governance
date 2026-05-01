@@ -539,6 +539,7 @@ function mkRunInput<TIn>(
     seedAtomIds: [],
     verifiedCitedAtomIds: [],
     verifiedSubActorPrincipalIds: [],
+    operatorIntentContent: '',
   };
 }
 

@@ -52,6 +52,7 @@ function ctx(host: ReturnType<typeof createMemoryHost>) {
     stageName: 'review-stage',
     verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
     verifiedSubActorPrincipalIds: [] as ReadonlyArray<PrincipalId>,
+    operatorIntentContent: '',
   };
 }
 
@@ -171,6 +172,7 @@ describe('reviewStage', () => {
       seedAtomIds: [],
       verifiedCitedAtomIds: [],
       verifiedSubActorPrincipalIds: [],
+      operatorIntentContent: '',
     });
     expect(output.atom_type).toBe('review-report');
     expect(output.value.audit_status).toBe('findings');
@@ -200,6 +202,7 @@ describe('reviewStage', () => {
       seedAtomIds: [],
       verifiedCitedAtomIds: [],
       verifiedSubActorPrincipalIds: [],
+      operatorIntentContent: '',
     });
     expect(output.value.audit_status).toBe('clean');
     expect(output.value.findings.length).toBe(0);
@@ -259,6 +262,7 @@ describe('reviewStage', () => {
       seedAtomIds: [specId],
       verifiedCitedAtomIds: [],
       verifiedSubActorPrincipalIds: [],
+      operatorIntentContent: '',
     });
     expect(
       output.value.findings.some(
@@ -327,6 +331,9 @@ describe('reviewStage', () => {
         },
         pipelineId: 'p' as AtomId,
         seedAtomIds: [specId],
+        verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       });
       // Oversized but existing file: no critical finding for that path.
       const oversizeFindings = output.value.findings.filter((f) =>
@@ -399,6 +406,9 @@ describe('reviewStage', () => {
         },
         pipelineId: 'p' as AtomId,
         seedAtomIds: [specId],
+        verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       });
       expect(output.value.total_bytes_read).toBeLessThanOrEqual(
         1024 * 1024,

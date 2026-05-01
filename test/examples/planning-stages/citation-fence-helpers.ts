@@ -19,6 +19,60 @@ import type {
 } from '../../../src/runtime/planning-pipeline/types.js';
 
 /**
+ * Assert a stage's exported system prompt carries the load-bearing
+ * markers of the semantic-faithfulness fence:
+ *
+ *   1. references the data field name `operator_intent_content`
+ *   2. uses the literal "HARD CONSTRAINT" wording (shared with the
+ *      citation fence; the spec/plan/brainstorm prompts now host
+ *      both fences and both must use the same wording so a regression
+ *      that drops one is caught uniformly)
+ *   3. names "semantically faithful" as the contract the LLM must
+ *      uphold
+ *   4. tells the LLM NOT to abstract beyond the literal intent (the
+ *      concrete failure mode dogfeed-8 surfaced)
+ *
+ * Call sites pass the imported prompt constant; a regression in any
+ * of the four shapes is a single-test failure with the file/line
+ * traced back to the call site, not buried in a copy of the helper.
+ */
+export function expectSemanticFaithfulnessFencePrompt(prompt: string): void {
+  expect(prompt).toMatch(/operator_intent_content/);
+  expect(prompt).toMatch(/HARD CONSTRAINT/);
+  // The "semantically faithful" wording wraps over a line break in
+  // PROMPT constants ("MUST be semantically\nfaithful") so the regex
+  // tolerates any whitespace (including \n) between the two halves.
+  expect(prompt).toMatch(/semantically\s+faithful/i);
+  // The "Do NOT abstract beyond it" wording wraps over a line break
+  // in PROMPT constants so the regex tolerates any whitespace
+  // (including \n) between the two halves.
+  expect(prompt).toMatch(/Do NOT abstract\s+beyond it/i);
+}
+
+/**
+ * Assert that a captured (system, data) pair forwarded the literal
+ * operator-intent content into the LLM data block under the stable
+ * `operator_intent_content` key, and that the system prompt
+ * references the same key by name (so a downstream prompt-edit
+ * reviewer sees the contract wired end-to-end).
+ *
+ * Throws via expect when the captured pair is null (the test caught
+ * a stage that did not call host.llm.judge at all).
+ */
+export function expectOperatorIntentContentForwarded(
+  captured: { system: string; data: Record<string, unknown> } | null,
+  literal: string,
+): void {
+  expect(captured).not.toBeNull();
+  if (captured === null) return;
+  expect(captured.data.operator_intent_content).toBe(literal);
+  // The system prompt MUST reference the data field by exact name
+  // so a downstream prompt-edit reviewer can see the contract
+  // wired end-to-end.
+  expect(captured.system).toMatch(/operator_intent_content/);
+}
+
+/**
  * Assert a stage's exported system prompt carries the four
  * load-bearing markers of the citation-grounding fence:
  *
@@ -112,6 +166,11 @@ export function expectVerifiedCitedAtomIdsForwarded(
  * supplied so the citation-fence-only tests do not need to know
  * about the delegation fence; tests that exercise the delegation
  * fence pass `verifiedSubActorPrincipalIds` explicitly.
+ *
+ * The operator-intent-content anchor defaults to the empty string
+ * when not supplied so citation-fence-only tests do not need to
+ * know about the semantic-faithfulness fence; tests that exercise
+ * that fence pass `operatorIntentContent` explicitly.
  */
 export function mkPromptContractStageInput<TIn>(args: {
   readonly host: ReturnType<typeof createMemoryHost>;
@@ -119,6 +178,7 @@ export function mkPromptContractStageInput<TIn>(args: {
   readonly priorOutput: TIn;
   readonly verifiedCitedAtomIds: ReadonlyArray<AtomId>;
   readonly verifiedSubActorPrincipalIds?: ReadonlyArray<PrincipalId>;
+  readonly operatorIntentContent?: string;
 }): StageInput<TIn> {
   return {
     host: args.host,
@@ -129,5 +189,6 @@ export function mkPromptContractStageInput<TIn>(args: {
     seedAtomIds: ['intent-foo' as AtomId],
     verifiedCitedAtomIds: args.verifiedCitedAtomIds,
     verifiedSubActorPrincipalIds: args.verifiedSubActorPrincipalIds ?? [],
+    operatorIntentContent: args.operatorIntentContent ?? '',
   };
 }

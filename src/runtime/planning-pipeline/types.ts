@@ -54,6 +54,27 @@ export interface StageInput<T> {
    * non-empty grounding contract should fail closed in that case.
    */
   readonly verifiedSubActorPrincipalIds: ReadonlyArray<PrincipalId>;
+  /**
+   * Literal seed operator-intent content the runner read at preflight.
+   * Threaded uniformly into every stage's StageInput so an LLM-driven
+   * stage anchors its output to the ORIGINAL request rather than the
+   * prior stage's abstraction. Without this anchor, downstream stages
+   * drift semantically: each stage sees the prior stage's
+   * interpretation rather than the seed text, and by the time the
+   * terminal stage runs the work it describes is N abstractions
+   * removed from what the operator asked for.
+   *
+   * Concrete stage adapters pass this into the LLM `data` block under
+   * the stable key `operator_intent_content` and instruct the LLM in
+   * the system prompt to stay semantically faithful to it. Mirrors the
+   * `verifiedCitedAtomIds` pattern: substrate carries the field, stage
+   * adapters consume it. Defaults to the empty string when the runner
+   * is invoked without a value; stage adapters treat empty as "no
+   * anchor available; fall back to prior-stage output for context"
+   * rather than fail-closed (legacy callers and direct test
+   * invocations rely on the empty-default).
+   */
+  readonly operatorIntentContent: string;
 }
 
 export interface StageOutput<T> {
@@ -102,6 +123,19 @@ export interface StageContext {
    * signal in that path).
    */
   readonly verifiedSubActorPrincipalIds: ReadonlyArray<PrincipalId>;
+  /**
+   * Literal seed operator-intent content the runner read at preflight.
+   * Mirrored from the StageInput field of the same name so the audit
+   * side has access to the same anchor the LLM was prompted with;
+   * audits that want to flag a stage output as suspiciously meta-
+   * referential (output mentions concepts absent from the literal
+   * intent) can compare against ctx.operatorIntentContent. Defaults to
+   * the empty string when the runner is invoked without a value;
+   * audits with a non-empty grounding contract should treat the empty
+   * case the same way the prompts do (no anchor available means the
+   * heuristic check is skipped).
+   */
+  readonly operatorIntentContent: string;
 }
 
 export type RetryStrategy =

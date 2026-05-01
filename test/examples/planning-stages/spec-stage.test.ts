@@ -24,6 +24,8 @@ import type { AtomId, PrincipalId } from '../../../src/types.js';
 import {
   captureStageRunPrompt,
   expectCitationFencePrompt,
+  expectOperatorIntentContentForwarded,
+  expectSemanticFaithfulnessFencePrompt,
   expectVerifiedCitedAtomIdsForwarded,
   mkPromptContractStageInput,
 } from './citation-fence-helpers.js';
@@ -100,6 +102,7 @@ describe('specStage', () => {
         stageName: 'spec-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -124,6 +127,7 @@ describe('specStage', () => {
         stageName: 'spec-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -163,6 +167,41 @@ describe('specStage', () => {
       }),
     });
     expectVerifiedCitedAtomIdsForwarded(captured, verifiedIds);
+  });
+
+  // Substrate-design fix (dogfeed-8 of 2026-04-30): the spec prompt
+  // MUST anchor on the literal operator-intent content so the spec's
+  // goal and body stay semantically faithful to the original request.
+  // Without this fence the spec compounds the brainstorm's
+  // abstraction; the dogfeed surfaced a docs-only one-line change
+  // turning into a meta-task by the time plan-stage ran.
+  it('SPEC_SYSTEM_PROMPT carries the semantic-faithfulness fence contract', () => {
+    expectSemanticFaithfulnessFencePrompt(SPEC_SYSTEM_PROMPT);
+  });
+
+  it('runSpec passes the operator-intent content through to the LLM data block', async () => {
+    const host = createMemoryHost();
+    const literalIntent =
+      'Add a one-line note to the README explaining what the deep planning pipeline does.';
+    const captured = await captureStageRunPrompt({
+      stage: specStage,
+      stubOutput: {
+        goal: 'design X',
+        body: 'short body',
+        cited_paths: [],
+        cited_atom_ids: [],
+        alternatives_rejected: [],
+        cost_usd: 0,
+      },
+      stageInput: mkPromptContractStageInput<unknown>({
+        host,
+        principal: 'spec-author',
+        priorOutput: null,
+        verifiedCitedAtomIds: [],
+        operatorIntentContent: literalIntent,
+      }),
+    });
+    expectOperatorIntentContentForwarded(captured, literalIntent);
   });
 
   it('audit() returns no findings when every cited atom and path resolves', async () => {
@@ -222,6 +261,7 @@ describe('specStage', () => {
           stageName: 'spec-stage',
           verifiedCitedAtomIds: [],
           verifiedSubActorPrincipalIds: [],
+          operatorIntentContent: '',
         },
       );
       expect(findings?.length).toBe(0);

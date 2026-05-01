@@ -23,6 +23,8 @@ import type { AtomId, PrincipalId } from '../../../src/types.js';
 import {
   captureStageRunPrompt,
   expectCitationFencePrompt,
+  expectOperatorIntentContentForwarded,
+  expectSemanticFaithfulnessFencePrompt,
   expectVerifiedCitedAtomIdsForwarded,
   mkPromptContractStageInput,
 } from './citation-fence-helpers.js';
@@ -112,6 +114,7 @@ describe('planStage', () => {
         stageName: 'plan-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -167,6 +170,7 @@ describe('planStage', () => {
         stageName: 'plan-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -199,6 +203,37 @@ describe('planStage', () => {
       }),
     });
     expectVerifiedCitedAtomIdsForwarded(captured, verifiedIds);
+  });
+
+  // Substrate-design fix (dogfeed-8 of 2026-04-30): the plan prompt
+  // MUST anchor on the literal operator-intent content. The dogfeed
+  // produced a plan title "Dogfeed deep-planning pipeline in research-
+  // then-propose mode under default-deny + advisory citations + $1
+  // cap" when the literal request was "Add a one-line note to the
+  // README explaining what the deep planning pipeline does." Without
+  // the anchor, the plan compounds the brainstorm + spec abstractions
+  // and the dispatched code-author gets no concrete diff -- git apply
+  // --check rejected the diff, dispatch failed.
+  it('PLAN_SYSTEM_PROMPT carries the semantic-faithfulness fence contract', () => {
+    expectSemanticFaithfulnessFencePrompt(PLAN_SYSTEM_PROMPT);
+  });
+
+  it('runPlan passes the operator-intent content through to the LLM data block', async () => {
+    const host = createMemoryHost();
+    const literalIntent =
+      'Add a one-line note to the README explaining what the deep planning pipeline does.';
+    const captured = await captureStageRunPrompt({
+      stage: planStage,
+      stubOutput: { plans: [samplePlan], cost_usd: 0 },
+      stageInput: mkPromptContractStageInput<unknown>({
+        host,
+        principal: 'plan-author',
+        priorOutput: null,
+        verifiedCitedAtomIds: [],
+        operatorIntentContent: literalIntent,
+      }),
+    });
+    expectOperatorIntentContentForwarded(captured, literalIntent);
   });
 
   it('audit() returns no findings when every cited atom resolves', async () => {
@@ -251,6 +286,7 @@ describe('planStage', () => {
         stageName: 'plan-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.length).toBe(0);
@@ -362,6 +398,7 @@ describe('planStage', () => {
         stageName: 'plan-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: ['code-author' as PrincipalId],
+        operatorIntentContent: '',
       },
     );
     expect(findings?.length).toBeGreaterThan(0);
@@ -432,6 +469,7 @@ describe('planStage', () => {
         stageName: 'plan-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: ['code-author' as PrincipalId],
+        operatorIntentContent: '',
       },
     );
     const critical = findings?.find(
@@ -498,6 +536,7 @@ describe('planStage', () => {
         stageName: 'plan-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: ['code-author' as PrincipalId, 'auditor-actor' as PrincipalId],
+        operatorIntentContent: '',
       },
     );
     const critical = findings?.find(
@@ -567,6 +606,7 @@ describe('planStage', () => {
         stageName: 'plan-stage',
         verifiedCitedAtomIds: [],
         verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
       },
     );
     const critical = findings?.find(

@@ -137,6 +137,19 @@ Survey alternatives, surface open questions, and identify decision points
 for the seeded operator-intent. Emit ONLY a payload that matches the
 provided schema; no prose outside the schema fields.
 
+HARD CONSTRAINT on semantic faithfulness to operator-intent: the
+literal text of the operator's seed request is supplied in
+data.operator_intent_content. Your output MUST be semantically
+faithful to that text. Do NOT abstract beyond it, do NOT generalise
+the request into a meta-task, do NOT pivot to discussing the
+pipeline itself when the request is about something else. If the
+literal request is "add a one-line README note", the alternatives
+you survey and the decision points you surface must describe a
+one-line README addition and its trade-offs -- not a meta-task
+about the pipeline. When data.operator_intent_content is empty the
+caller did not compute an anchor; fall back to the seed atom set
+for context.
+
 Brainstorm is exploratory and generative. Rejection_reason fields are
 prose only; do NOT include literal atom-id citations like
 "atom:foo-bar" inside any field. The downstream review-stage
@@ -189,6 +202,17 @@ async function runBrainstorm(
       // substrate symmetry so an org-ceiling brainstorm-actor that
       // chooses to cite can ground on the broader set.
       verified_cited_atom_ids: input.verifiedCitedAtomIds.map(String),
+      // Semantic-faithfulness anchor: the literal operator-intent
+      // content the runner read at preflight. The HARD-CONSTRAINT
+      // block in BRAINSTORM_SYSTEM_PROMPT instructs the LLM to keep
+      // its output semantically faithful to this string. Without the
+      // anchor, the brainstorm pivots to abstractions (dogfeed-8 of
+      // 2026-04-30 produced a meta-task about the pipeline itself
+      // when the literal request was a one-line README docs change).
+      // Empty string when the runner caller did not compute a value;
+      // the prompt instructs the LLM to fall back to the seed set
+      // for context in that case.
+      operator_intent_content: input.operatorIntentContent,
       correlation_id: input.correlationId,
     },
     {
