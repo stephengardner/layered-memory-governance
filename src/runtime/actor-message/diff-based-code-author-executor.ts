@@ -38,6 +38,7 @@ import {
   type GitIdentity,
 } from '../actors/code-author/git-ops.js';
 import {
+  buildEmbeddedAtomSnapshots,
   createDraftPr,
   renderPrBody,
   PrCreationError,
@@ -435,6 +436,15 @@ export function buildDiffBasedCodeAuthorExecutor(
         };
       }
 
+      // Embed plan + operator-intent atom snapshots in the body
+      // so the LAG-auditor workflow on a CI runner (no
+      // .lag/atoms/ disk access, no named tunnel back to the
+      // operator's API surface) can resolve the atoms it needs
+      // from the carrier the dispatch signed into the PR. See
+      // pr-creation.ts:buildEmbeddedAtomSnapshots and
+      // scripts/lib/autonomous-dispatch-exec.mjs:parseEmbeddedAtomFromPrBody
+      // for the consumer-side parser + integrity check.
+      const embeddedAtoms = await buildEmbeddedAtomSnapshots(config.host, plan);
       let prResult;
       try {
         prResult = await createDraftPr({
@@ -454,6 +464,7 @@ export function buildDiffBasedCodeAuthorExecutor(
             costUsd: draftResult.totalCostUsd,
             modelUsed: draftResult.modelUsed,
             touchedPaths: draftResult.touchedPaths,
+            embeddedAtoms,
           }),
           draft,
         });

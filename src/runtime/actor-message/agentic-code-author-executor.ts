@@ -66,7 +66,12 @@ import type { Redactor } from '../../substrate/redactor.js';
 import { defaultBudgetCap, type BudgetCap } from '../../substrate/agent-budget.js';
 import { loadReplayTier } from '../../substrate/policy/replay-tier.js';
 import { loadBlobThreshold } from '../../substrate/policy/blob-threshold.js';
-import { createDraftPr, renderPrBody, PrCreationError } from '../actors/code-author/pr-creation.js';
+import {
+  buildEmbeddedAtomSnapshots,
+  createDraftPr,
+  renderPrBody,
+  PrCreationError,
+} from '../actors/code-author/pr-creation.js';
 import type {
   CodeAuthorExecutor,
   CodeAuthorExecutorResult,
@@ -391,6 +396,14 @@ async function createPrViaGhClient(
     ? (meta['title'] as string)
     : `plan ${planId}`;
   const title = `code-author: ${planTitle}`;
+  // Embed plan + operator-intent atom snapshots in the body so the
+  // LAG-auditor workflow on a CI runner (no .lag/atoms/ disk
+  // access, no named tunnel back to the operator's API surface)
+  // can resolve the atoms it needs from the carrier the dispatch
+  // signed into the PR. See pr-creation.ts:buildEmbeddedAtomSnapshots
+  // and scripts/lib/autonomous-dispatch-exec.mjs:parseEmbeddedAtomFromPrBody
+  // for the consumer-side parser + integrity check.
+  const embeddedAtoms = await buildEmbeddedAtomSnapshots(config.host, plan);
   const body = renderPrBody({
     planId,
     planContent: String(plan.content),
@@ -401,6 +414,7 @@ async function createPrViaGhClient(
     costUsd: 0,
     modelUsed: config.model,
     touchedPaths,
+    embeddedAtoms,
   });
   try {
     const pr = await createDraftPr({

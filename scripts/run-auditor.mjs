@@ -22,6 +22,7 @@ import { createFileHost } from '../dist/adapters/file/index.js';
 import { classifyDiffBlastRadius, computeVerdict } from './lib/auditor.mjs';
 import {
   PLAN_ID_LABEL_PREFIX,
+  parseEmbeddedAtomFromPrBody,
   parsePlanIdFromPrBody,
   truncatePlanIdLabel,
 } from './lib/autonomous-dispatch-exec.mjs';
@@ -46,6 +47,17 @@ async function main() {
     process.exit(2);
   }
   const host = await createFileHost({ rootDir: STATE_DIR });
+  // Read the PR body once: both fallback paths (label-truncation
+  // -> footer plan-id, on-disk-miss -> embedded atom JSON) anchor
+  // to it. Caching here avoids two `gh pr view` round-trips on the
+  // CI-runner code path that exercises both fallbacks back-to-back.
+  // A failure to read the body short-circuits at this point with a
+  // clear error rather than masquerading as a "plan not found"
+  // diagnostic three branches deeper. The PR-body read is idempotent;
+  // a transient gh failure here means transient gh failures elsewhere
+  // too, and the early surfacing keeps the error legible.
+  const prBody = await readPrBody(args.pr);
+
   // The `--plan` argv comes from the workflow's `split(":")[1]` of
   // the `plan-id:<id>` label. When the original plan id exceeds
   // GitHub's 50-char label limit, autonomous-dispatch.mjs writes a
@@ -57,7 +69,7 @@ async function main() {
   let resolvedPlanId = args.plan;
   let plan = await host.atoms.get(resolvedPlanId);
   if (!plan || plan.type !== 'plan') {
-    const fromBody = await readPlanIdFromPrBody(args.pr);
+    const fromBody = parsePlanIdFromPrBody(prBody);
     // Round-trip guard: only accept the body-derived plan id if its
     // truncatePlanIdLabel form matches the workflow-supplied label
     // token (`args.plan`). Without this gate, a malicious PR-body
@@ -80,6 +92,24 @@ async function main() {
       plan = await host.atoms.get(resolvedPlanId);
     }
   }
+  // Final fallback: the on-disk atom store does not have the plan
+  // (CI-runner scenario where .lag/atoms/ is git-ignored, local-
+  // only). The embedded-atom carrier in the PR body is the
+  // substrate-pure fallback per dec-atomstore-via-api: every
+  // consumer that cannot reach the live atom store gets the
+  // governance state from the carrier the dispatch flow signed
+  // into the PR. parseEmbeddedAtomFromPrBody validates the
+  // round-trip integrity (the parsed payload's `id` must equal
+  // the lookup id), which combined with the
+  // truncatePlanIdLabel(fromBody) check above means a malicious
+  // body cannot redirect the auditor at the wrong plan.
+  if (!plan || plan.type !== 'plan') {
+    const embeddedPlan = parseEmbeddedAtomFromPrBody(prBody, resolvedPlanId);
+    if (embeddedPlan && embeddedPlan.type === 'plan') {
+      console.log(`[auditor] plan atom ${resolvedPlanId} not on disk; resolved from PR body embedded snapshot`);
+      plan = embeddedPlan;
+    }
+  }
   if (!plan || plan.type !== 'plan') {
     console.error(`[auditor] plan atom ${resolvedPlanId} not found or wrong type`);
     process.exit(2);
@@ -89,18 +119,30 @@ async function main() {
   args.plan = resolvedPlanId;
   const derivedFrom = plan.provenance?.derived_from ?? [];
   let intentId = null;
+  let intent = null;
   for (const refId of derivedFrom) {
     const candidate = await host.atoms.get(refId);
     if (candidate && candidate.type === 'operator-intent') {
       intentId = refId;
+      intent = candidate;
+      break;
+    }
+    // CI-runner fallback: same embedded-atom carrier the plan
+    // falls back to. Walking each derived_from id symmetrically
+    // means every atom the auditor reads can come from either disk
+    // or carrier, and the audit chain stays intact.
+    const embedded = parseEmbeddedAtomFromPrBody(prBody, refId);
+    if (embedded && embedded.type === 'operator-intent') {
+      intentId = refId;
+      intent = embedded;
+      console.log(`[auditor] operator-intent atom ${refId} not on disk; resolved from PR body embedded snapshot`);
       break;
     }
   }
-  if (!intentId) {
+  if (!intentId || !intent) {
     console.error('[auditor] plan has no operator-intent atom in provenance; auditor gate only applies to intent-driven plans');
     process.exit(2);
   }
-  const intent = await host.atoms.get(intentId);
   const envelopeMax = intent?.metadata?.trust_envelope?.max_blast_radius;
   if (!envelopeMax) {
     console.error('[auditor] intent missing trust_envelope.max_blast_radius');
@@ -164,30 +206,34 @@ async function main() {
 }
 
 /**
- * Read the PR body via `gh pr view` and delegate to the pure
- * parsePlanIdFromPrBody helper to extract the canonical plan id.
- * Returns null only when the body has no machine-parseable footer
- * (legitimate "no fallback available" signal that lets the caller
- * surface the original "plan atom not found" diagnostic without
- * masking it).
+ * Read the PR body via `gh pr view`. Returns the body text on
+ * success; rethrows with context on `gh` failures (auth / network
+ * / API errors). Collapsing failures into an empty string would
+ * make a transient GitHub outage look like a body with no
+ * machine-parseable footer and silently disable the
+ * truncated-label fallback + embedded-atom carrier paths; the
+ * caller should see the underlying error instead. The auditor's
+ * outer main().catch surfaces the rethrown error and exits
+ * non-zero so CI flags the failure rather than emitting a
+ * misleading "plan not found".
  *
- * Rethrows on `gh` failures with context (auth / network / API
- * errors). Collapsing those into null would make a transient
- * GitHub outage look like a missing footer and silently disable
- * the truncated-label fallback path; the caller should see the
- * underlying error instead. The auditor's outer main().catch
- * surfaces the rethrown error and exits non-zero so CI flags the
- * failure rather than emitting a misleading "plan not found".
+ * Two consumers depend on this body string: parsePlanIdFromPrBody
+ * (the YAML footer fallback when the workflow-supplied label was
+ * truncated past GitHub's 50-char limit) and
+ * parseEmbeddedAtomFromPrBody (the embedded-atom JSON snapshot
+ * carrier the LAG-auditor relies on when running on a GitHub
+ * Actions runner with no .lag/atoms/ directory and no named
+ * tunnel back to the operator's API surface).
  */
-async function readPlanIdFromPrBody(prNumber) {
+async function readPrBody(prNumber) {
   let stdout;
   try {
     ({ stdout } = await execa('gh', ['pr', 'view', String(prNumber), '--json', 'body', '--jq', '.body']));
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err);
-    throw new Error(`[auditor] failed to read PR #${prNumber} body for plan-id fallback: ${cause}`);
+    throw new Error(`[auditor] failed to read PR #${prNumber} body: ${cause}`);
   }
-  return parsePlanIdFromPrBody(stdout ?? '');
+  return stdout ?? '';
 }
 
 main().catch((err) => {

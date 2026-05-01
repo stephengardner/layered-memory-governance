@@ -23,8 +23,10 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
+  EMBEDDED_ATOMS_HEADING,
   buildAuthedGitInvocation,
   looksLikeGitPush,
+  parseEmbeddedAtomFromPrBody,
   parsePlanIdFromPrBody,
   parseRepoSlug,
   truncatePlanIdLabel,
@@ -228,6 +230,153 @@ describe('parsePlanIdFromPrBody', () => {
     // auditor would then fail to look up.
     const body = 'plan_id: "missing-end-quote\nobservation_atom_id: "x"\n';
     expect(parsePlanIdFromPrBody(body)).toBe(null);
+  });
+});
+
+describe('parseEmbeddedAtomFromPrBody', () => {
+  // Mirror the renderEmbeddedAtomBlock shape from
+  // src/runtime/actors/code-author/pr-creation.ts so the test
+  // fixture round-trips through whatever encoding the renderer
+  // uses, instead of a hand-built literal that could drift.
+  function buildBlock(atomId: string, payload: object | string): string {
+    const json = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+    return [
+      `<details><summary>atom: ${atomId}</summary>`,
+      '',
+      '```json',
+      json,
+      '```',
+      '',
+      '</details>',
+    ].join('\n');
+  }
+
+  function buildSection(blocks: ReadonlyArray<string>): string {
+    return [EMBEDDED_ATOMS_HEADING, '', ...blocks].join('\n');
+  }
+
+  const PLAN_ID = LONG_PLAN_ID;
+  const INTENT_ID = 'operator-intent-2026-04-30-fix-auditor';
+
+  const PLAN_ATOM = {
+    schema_version: 1,
+    id: PLAN_ID,
+    type: 'plan',
+    layer: 'L1',
+    principal_id: 'cto-actor',
+    provenance: { kind: 'agent-claimed', source: { agent_id: 'cto-actor' }, derived_from: [INTENT_ID] },
+    confidence: 0.9,
+    scope: 'project',
+    content: 'plan content',
+    metadata: { delegation: { sub_actor_principal_id: 'code-author' } },
+    created_at: '2026-04-30T12:00:00.000Z',
+    last_reinforced_at: '2026-04-30T12:00:00.000Z',
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    taint: 'clean',
+    signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+  };
+
+  const INTENT_ATOM = {
+    schema_version: 1,
+    id: INTENT_ID,
+    type: 'operator-intent',
+    layer: 'L1',
+    principal_id: 'apex-agent',
+    provenance: { kind: 'human-attested', source: { author: 'apex-agent' }, derived_from: [] },
+    confidence: 1,
+    scope: 'project',
+    content: 'fix the auditor ci gap',
+    metadata: { trust_envelope: { max_blast_radius: 'tooling', min_plan_confidence: 0.7 } },
+    created_at: '2026-04-30T11:00:00.000Z',
+    last_reinforced_at: '2026-04-30T11:00:00.000Z',
+    expires_at: '2026-05-30T11:00:00.000Z',
+    supersedes: [],
+    superseded_by: [],
+    taint: 'clean',
+    signals: { agrees_with: [], conflicts_with: [], validation_status: 'unchecked', last_validated_at: null },
+  };
+
+  it('extracts a single embedded atom snapshot keyed by id', () => {
+    const body = buildSection([buildBlock(PLAN_ID, PLAN_ATOM)]);
+    const out = parseEmbeddedAtomFromPrBody(body, PLAN_ID);
+    expect(out).toMatchObject({ id: PLAN_ID, type: 'plan' });
+  });
+
+  it('extracts a sibling atom from a multi-block section', () => {
+    // The renderer emits one <details> per snapshot in the same
+    // section. The parser must scan each block and return the
+    // first one whose JSON id matches the lookup, so a body that
+    // ships {plan, intent} can resolve either id without a
+    // surrounding-block ordering dependency.
+    const body = buildSection([
+      buildBlock(PLAN_ID, PLAN_ATOM),
+      buildBlock(INTENT_ID, INTENT_ATOM),
+    ]);
+    expect(parseEmbeddedAtomFromPrBody(body, PLAN_ID)?.type).toBe('plan');
+    expect(parseEmbeddedAtomFromPrBody(body, INTENT_ID)?.type).toBe('operator-intent');
+  });
+
+  it('returns null when the section heading is absent', () => {
+    // A PR body that opens with prose but never emits the
+    // embedded-atoms heading must not match a stray <details>
+    // elsewhere; the heading is the section anchor.
+    const body = `## Summary\n\nSome prose.\n\n${buildBlock(PLAN_ID, PLAN_ATOM)}\n`;
+    expect(parseEmbeddedAtomFromPrBody(body, PLAN_ID)).toBe(null);
+  });
+
+  it('returns null when the requested atom id has no matching block', () => {
+    const body = buildSection([buildBlock(PLAN_ID, PLAN_ATOM)]);
+    expect(parseEmbeddedAtomFromPrBody(body, 'plan-other')).toBe(null);
+  });
+
+  it('rejects an id-mismatched payload (round-trip integrity guard)', () => {
+    // Security regression: a block whose <summary> lies about its
+    // atom id (claims plan-id-A but the JSON payload's `id` is
+    // plan-id-B) MUST NOT pass the lookup for plan-id-A. The
+    // parser compares the parsed payload's `id` field, not the
+    // summary text. Without this gate a malicious PR-body edit
+    // could redirect the auditor at an unrelated payload whose
+    // envelope happens to permit the diff.
+    const lyingBlock = [
+      `<details><summary>atom: ${PLAN_ID}</summary>`,
+      '',
+      '```json',
+      JSON.stringify({ ...PLAN_ATOM, id: 'plan-malicious' }, null, 2),
+      '```',
+      '',
+      '</details>',
+    ].join('\n');
+    const body = buildSection([lyingBlock]);
+    expect(parseEmbeddedAtomFromPrBody(body, PLAN_ID)).toBe(null);
+  });
+
+  it('skips a malformed JSON block and continues scanning', () => {
+    // A truncated-JSON block (the renderer's
+    // EMBEDDED_ATOM_JSON_CAP truncation marker produces this
+    // shape) must not silently disable later valid blocks. A
+    // body with one corrupt entry + one valid sibling still
+    // surfaces the sibling.
+    const body = buildSection([
+      buildBlock(PLAN_ID, '{"id":"' + PLAN_ID + '","type":"plan",/* truncated */'),
+      buildBlock(INTENT_ID, INTENT_ATOM),
+    ]);
+    expect(parseEmbeddedAtomFromPrBody(body, PLAN_ID)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody(body, INTENT_ID)?.type).toBe('operator-intent');
+  });
+
+  it('returns null on null/undefined/empty body', () => {
+    expect(parseEmbeddedAtomFromPrBody(undefined, PLAN_ID)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody(null, PLAN_ID)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody('', PLAN_ID)).toBe(null);
+  });
+
+  it('returns null on null/undefined/empty atom id', () => {
+    const body = buildSection([buildBlock(PLAN_ID, PLAN_ATOM)]);
+    expect(parseEmbeddedAtomFromPrBody(body, undefined)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody(body, null)).toBe(null);
+    expect(parseEmbeddedAtomFromPrBody(body, '')).toBe(null);
   });
 });
 
