@@ -30,11 +30,15 @@
  *     outputSchema validation still runs against the stub output.
  *
  *   - The dispatch stage is constructed with an empty SubActorRegistry.
- *     runDispatchTick scans for plan_state='approved' plan atoms and
- *     finds none (the runner does not persist stage outputs as plan
- *     atoms; the plan stage's PlanPayload lives only as priorOutput).
- *     The dispatch stage thus runs to dispatch_status='completed' with
- *     scanned=0 / dispatched=0 / failed=0.
+ *     runDispatchTick scans for plan_state='approved' plan atoms; the
+ *     runner DOES persist stage outputs as typed atoms (substrate-fix
+ *     in PR #stage-output-atom-persistence), so a plan atom IS written
+ *     by plan-stage with plan_state='proposed'. Without an approval
+ *     transition (the e2e fixture stops at 'proposed'), runDispatchTick
+ *     finds zero APPROVED plans and the dispatch-stage runs to
+ *     dispatch_status='completed' with scanned=0 / dispatched=0 /
+ *     failed=0. The persisted plan atom is queryable via host.atoms.query
+ *     and its provenance.derived_from chains back to the pipeline atom.
  *
  *   - The spec stage's auditSpec calls fs.access on cited_paths; the
  *     stubs emit empty cited_paths for the happy-path test and a
@@ -363,6 +367,38 @@ describe('deep planning pipeline end-to-end', () => {
       );
     });
     expect(exitSuccesses.length).toBe(5);
+
+    // Stage-output atom persistence regression guard. Each default
+    // stage now mints a typed atom whose provenance.derived_from
+    // chains back to the pipeline atom (and through it to the seed
+    // operator-intent). Without this wiring the dispatch-stage's
+    // planFilter found zero plan atoms and dispatch ran vacuously;
+    // the dogfeed of 2026-04-30 surfaced the gap. The plan atom
+    // type stays 'plan' so console plan-detail and the
+    // single-pass dispatch path consume one shape.
+    const brainstormPage = await host.atoms.query(
+      { type: ['brainstorm-output'] }, 100,
+    );
+    expect(brainstormPage.atoms.length).toBe(1);
+    const specOutputPage = await host.atoms.query(
+      { type: ['spec-output'] }, 100,
+    );
+    expect(specOutputPage.atoms.length).toBe(1);
+    const planPage = await host.atoms.query({ type: ['plan'] }, 100);
+    expect(planPage.atoms.length).toBeGreaterThanOrEqual(1);
+    const planAtom = planPage.atoms.find(
+      (a) => a.provenance.derived_from.includes(result.pipelineId),
+    );
+    expect(planAtom).toBeDefined();
+    expect(planAtom!.plan_state).toBe('proposed');
+    const reviewPage = await host.atoms.query(
+      { type: ['review-report'] }, 100,
+    );
+    expect(reviewPage.atoms.length).toBe(1);
+    const dispatchPage = await host.atoms.query(
+      { type: ['dispatch-record'] }, 100,
+    );
+    expect(dispatchPage.atoms.length).toBe(1);
   });
 
   it('halts on a fabricated cited_path (confabulation regression)', async () => {

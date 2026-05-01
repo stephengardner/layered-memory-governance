@@ -29,6 +29,11 @@ export {
   mkPipelineFailedAtom,
   mkPipelineResumeAtom,
   mkSpecAtom,
+  mkBrainstormOutputAtom,
+  mkSpecOutputAtom,
+  mkReviewReportAtom,
+  mkDispatchRecordAtom,
+  mkPlanOutputAtoms,
   PIPELINE_STATE_VALUES,
 } from './atom-shapes.js';
 export type {
@@ -39,6 +44,8 @@ export type {
   MkPipelineAuditFindingAtomInput,
   MkPipelineFailedAtomInput,
   MkPipelineResumeAtomInput,
+  MkStageOutputAtomBaseInput,
+  MkPlanOutputAtomsInput,
 } from './atom-shapes.js';
 
 export { runPipeline } from './runner.js';

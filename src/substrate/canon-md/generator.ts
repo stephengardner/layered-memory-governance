@@ -52,11 +52,17 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'agent-turn',
   // Deep planning pipeline atom types. Spec atoms are L0/L1 prose
   // artifacts; pipeline-* atoms are L0/L1 runtime state and audit
-  // projections. The canon applier filters to L3 so none of these
-  // appear in the rendered target; they are listed here for
-  // deterministic ordering when a debug tooling path renders a
+  // projections; brainstorm-output / spec-output / review-report /
+  // dispatch-record persist each pipeline stage's StageOutput.value
+  // as a queryable atom. The canon applier filters to L3 so none
+  // of these appear in the rendered target; they are listed here
+  // for deterministic ordering when a debug tooling path renders a
   // non-L3 atom set.
   'spec',
+  'brainstorm-output',
+  'spec-output',
+  'review-report',
+  'dispatch-record',
   'pipeline',
   'pipeline-stage-event',
   'pipeline-audit-finding',
@@ -92,11 +98,17 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   'agent-turn': 'Agent Turns',
   // Deep planning pipeline atom types. Spec atoms are looser-shaped
   // prose artifacts; pipeline-* atoms are runtime state and audit
-  // projections from the planning-pipeline runner. None reach the
-  // rendered canon target (the applier filters to L3); headings
-  // exist for deterministic ordering when a debug tool explicitly
-  // dumps non-L3 atoms.
+  // projections from the planning-pipeline runner; brainstorm-output
+  // / spec-output / review-report / dispatch-record persist each
+  // pipeline stage's StageOutput.value as a queryable atom. None
+  // reach the rendered canon target (the applier filters to L3);
+  // headings exist for deterministic ordering when a debug tool
+  // explicitly dumps non-L3 atoms.
   spec: 'Specs',
+  'brainstorm-output': 'Brainstorm Outputs',
+  'spec-output': 'Spec Outputs',
+  'review-report': 'Review Reports',
+  'dispatch-record': 'Dispatch Records',
   pipeline: 'Pipelines',
   'pipeline-stage-event': 'Pipeline Stage Events',
   'pipeline-audit-finding': 'Pipeline Audit Findings',

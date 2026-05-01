@@ -37,7 +37,7 @@
  */
 
 import type { Host } from '../../substrate/interface.js';
-import type { AtomId, PrincipalId, Time } from '../../substrate/types.js';
+import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
 import type {
   AuditFinding,
   PlanningStage,
@@ -45,10 +45,16 @@ import type {
   StageOutput,
 } from './types.js';
 import {
+  mkBrainstormOutputAtom,
+  mkDispatchRecordAtom,
   mkPipelineAtom,
   mkPipelineAuditFindingAtom,
   mkPipelineFailedAtom,
   mkPipelineStageEventAtom,
+  mkPlanOutputAtoms,
+  mkReviewReportAtom,
+  mkSpecOutputAtom,
+  serializeStageOutput,
 } from './atom-shapes.js';
 import {
   readPipelineStageCostCapPolicy,
@@ -203,15 +209,24 @@ export async function runPipeline(
     );
   }
 
-  // Resume path may hydrate priorOutput from caller; the runner does not
-  // re-query a prior stage's exit-success event because stage output
-  // persistence as typed atoms is a forward follow-up. Without caller
-  // hydration the resumed stage observes priorOutput=null, which is the
-  // documented fallback.
+  // Resume path may hydrate priorOutput from caller. Stage outputs
+  // ARE now persisted as typed atoms (substrate-fix in this PR); the
+  // resume entrypoint can read the prior stage's output atom directly
+  // and pass its value via options.priorOutput, which keeps the
+  // resume-mid-pipeline contract independent of the persistence shape
+  // (the runner does not re-query the atom store on every resume).
   let priorOutput: unknown =
     options.resumeFromStage !== undefined && options.priorOutput !== undefined
       ? options.priorOutput
       : null;
+  // Prior stage-output atom ids accumulated as the pipeline walks. Each
+  // new stage's derived_from chain begins with `[pipelineId, ...priorOutputAtomIds]`
+  // so a walk back from any stage-output atom reaches every upstream
+  // stage's atom AND the pipeline atom AND the seed operator-intent.
+  // Indie-floor consumers querying for a specific stage's output by id
+  // get the full chain in one read; org-ceiling consumers querying by
+  // pipeline_id metadata get the same set without walking provenance.
+  const priorOutputAtomIds: AtomId[] = [];
   let totalCostUsd = 0;
 
   for (let i = startIdx; i < stages.length; i++) {
@@ -350,6 +365,53 @@ export async function runPipeline(
     }
     totalCostUsd += output.cost_usd;
 
+    // Persist the stage's StageOutput.value as a typed queryable atom
+    // BEFORE audit runs. The atom serves two consumers regardless of
+    // outcome: (a) on critical-audit-halt the operator inspects the
+    // persisted output to understand what triggered the finding;
+    // (b) on HIL pause the operator reviews the persisted output
+    // before deciding whether to resume; (c) on exit-success the
+    // downstream stage receives the priorOutput value plus the new
+    // atom id is appended to priorOutputAtomIds for the next stage's
+    // derived_from chain. Schema validation already ran above so the
+    // value is guaranteed to match the stage's declared shape.
+    //
+    // Persistence is best-effort within the runner's threat model: a
+    // failed put rejects the pipeline tick into the existing failure
+    // path so the operator sees an explicit error rather than a
+    // silently-missing atom downstream. Atom-mint helpers themselves
+    // are pure (no I/O; pure shape validation), so a put failure here
+    // is an AtomStore-side problem the substrate already routes
+    // through failPipeline.
+    let stageOutputAtomId: AtomId | undefined;
+    try {
+      stageOutputAtomId = await persistStageOutput(
+        host,
+        stage.name,
+        output.atom_type,
+        output.value,
+        {
+          pipelineId,
+          principalId: options.principal,
+          correlationId: options.correlationId,
+          now: now(),
+          derivedFrom: [pipelineId, ...priorOutputAtomIds],
+        },
+      );
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err);
+      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+      return await failPipeline(
+        host,
+        pipelineId,
+        options,
+        now,
+        stage.name,
+        `stage-output-persist-failed: ${cause}`,
+        i,
+      );
+    }
+
     // Auditor wiring. Each finding produces a pipeline-audit-finding
     // atom; a 'critical' finding halts the stage.
     let findings: ReadonlyArray<AuditFinding> = [];
@@ -382,7 +444,18 @@ export async function runPipeline(
 
     const hasCritical = findings.some((f) => f.severity === 'critical');
     if (hasCritical) {
-      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+      // Emit the exit-failure event with the persisted stage-output
+      // atom id so the operator's audit walk reaches the output that
+      // triggered the finding. Without this the failure event chain
+      // forces a re-query of the stage-output atom by metadata
+      // pipeline_id, which is two reads where one suffices.
+      await emitStageEvent(
+        stage.name,
+        'exit-failure',
+        durationMs,
+        output.cost_usd,
+        stageOutputAtomId,
+      );
       return await failPipeline(
         host,
         pipelineId,
@@ -405,19 +478,37 @@ export async function runPipeline(
         && (hasCritical || auditorAbsent));
     if (shouldPause) {
       await host.atoms.update(pipelineId, { pipeline_state: 'hil-paused' });
-      await emitStageEvent(stage.name, 'hil-pause', durationMs, output.cost_usd);
+      // Carry the persisted stage-output atom id on the hil-pause
+      // event so the operator's resume tooling can read the prior
+      // output without re-walking the chain.
+      await emitStageEvent(
+        stage.name,
+        'hil-pause',
+        durationMs,
+        output.cost_usd,
+        stageOutputAtomId,
+      );
       return { kind: 'hil-paused', pipelineId, stageName: stage.name };
     }
 
+    // Prefer the runner-minted stage-output atom id over output.atom_id
+    // when emitting the exit-success event so the event chain points at
+    // the canonical persisted atom. Stage adapters that legacy-set
+    // output.atom_id (pre-persistence) still surface through the event,
+    // but the runner-minted id is authoritative for new pipelines.
+    const exitAtomId = stageOutputAtomId ?? output.atom_id;
     await emitStageEvent(
       stage.name,
       'exit-success',
       durationMs,
       output.cost_usd,
-      output.atom_id,
+      exitAtomId,
     );
 
     priorOutput = output.value;
+    if (stageOutputAtomId !== undefined) {
+      priorOutputAtomIds.push(stageOutputAtomId);
+    }
   }
 
   await host.atoms.update(pipelineId, {
@@ -425,6 +516,217 @@ export async function runPipeline(
     metadata: { completed_at: now(), total_cost_usd: totalCostUsd },
   });
   return { kind: 'completed', pipelineId };
+}
+
+/**
+ * Per-stage output persistence.
+ *
+ * Routes a stage's StageOutput.value to the correct atom-mint helper
+ * by the stage adapter's declared atom_type. Each branch returns the
+ * canonical atom id stored in priorOutputAtomIds for the next stage's
+ * derived_from chain.
+ *
+ * Routing table (substrate-side mechanism; adapter-declared
+ * StageOutput.atom_type is the dispatch key):
+ *
+ *   - 'plan'              -> mkPlanOutputAtoms (one atom per plan
+ *                            entry in the value's `plans` array;
+ *                            the runner returns the LAST plan atom
+ *                            id as the chain anchor since the plan
+ *                            stage emits a payload, not a single plan).
+ *   - 'brainstorm-output' -> mkBrainstormOutputAtom
+ *   - 'spec-output'       -> mkSpecOutputAtom
+ *   - 'review-report'     -> mkReviewReportAtom
+ *   - 'dispatch-record'   -> mkDispatchRecordAtom
+ *   - any other type      -> generic stage-output mint via
+ *                            mkGenericStageOutputAtom; org-ceiling
+ *                            deployments registering a custom stage
+ *                            adapter (legal-review, security-threat-
+ *                            model, perf-benchmark) land here without
+ *                            a runner change. The generic path
+ *                            persists under type='observation' with
+ *                            metadata.stage_name as the routing key
+ *                            so a custom stage's output is queryable
+ *                            without polluting the typed vocabulary.
+ *
+ * Routing by atom_type (not stage name) preserves substrate purity:
+ * the runner does not encode the canonical 5-stage names; the stage
+ * adapter declares its output type via StageOutput.atom_type and the
+ * runner dispatches on that. An org-ceiling adapter swapping in a
+ * different brainstorm implementation declares atom_type:
+ * 'brainstorm-output' to land in the typed branch, or any other type
+ * string to land in the generic branch.
+ *
+ * Returns the atom id of the persisted atom (or for plan-stage, the
+ * id of the last plan atom written, since plan-stage emits multiple
+ * plan atoms whose collective derived_from chain anchors at any of
+ * them; downstream stages only need a single id to start their walk).
+ */
+async function persistStageOutput(
+  host: Host,
+  stageName: string,
+  atomType: string,
+  value: unknown,
+  ctx: {
+    pipelineId: AtomId;
+    principalId: PrincipalId;
+    correlationId: string;
+    now: Time;
+    derivedFrom: ReadonlyArray<AtomId>;
+  },
+): Promise<AtomId> {
+  const baseInput = {
+    pipelineId: ctx.pipelineId,
+    stageName,
+    principalId: ctx.principalId,
+    correlationId: ctx.correlationId,
+    now: ctx.now,
+    derivedFrom: ctx.derivedFrom,
+    value,
+  };
+  switch (atomType) {
+    case 'brainstorm-output': {
+      const atom = mkBrainstormOutputAtom(baseInput);
+      await host.atoms.put(atom);
+      return atom.id;
+    }
+    case 'spec-output': {
+      const atom = mkSpecOutputAtom(baseInput);
+      await host.atoms.put(atom);
+      return atom.id;
+    }
+    case 'plan': {
+      // The plan-stage emits a payload with a `plans` array; mint
+      // one plan atom per entry and return the last id as the chain
+      // anchor. The dispatch-stage's planFilter walks derived_from
+      // on each plan atom and matches plans whose chain includes the
+      // pipeline atom id, so a multi-plan emission produces multiple
+      // dispatchable plans (which is the contract the plan-stage's
+      // schema declares with its plans-array).
+      const planAtoms = mkPlanOutputAtoms({
+        pipelineId: ctx.pipelineId,
+        principalId: ctx.principalId,
+        correlationId: ctx.correlationId,
+        now: ctx.now,
+        derivedFrom: ctx.derivedFrom,
+        value,
+      });
+      if (planAtoms.length === 0) {
+        // Plan-stage schema rejects empty plans arrays, so reaching
+        // here means the schema was loosened or the helper extracted
+        // zero atoms from a non-empty list. Fail closed: persist a
+        // generic stage-output atom so the operator sees the empty
+        // plan-stage emission rather than a silent skip; the
+        // dispatch-stage's planFilter then naturally finds zero
+        // plans and the runner's gating logic surfaces the gap.
+        const fallback = mkGenericStageOutputAtom(baseInput);
+        await host.atoms.put(fallback);
+        return fallback.id;
+      }
+      // Persist all plan atoms; return the LAST id as the chain
+      // anchor for the next stage. priorOutputAtomIds gets exactly
+      // one id per stage so downstream chains stay bounded; the
+      // additional plan atoms are findable via metadata.pipeline_id
+      // (which all of them carry).
+      let lastId: AtomId | undefined;
+      for (const planAtom of planAtoms) {
+        await host.atoms.put(planAtom);
+        lastId = planAtom.id;
+      }
+      // mkPlanOutputAtoms returns ReadonlyArray<Atom> with at least
+      // one entry guaranteed by the empty-check above, so lastId is
+      // always defined. The non-null assertion mirrors the assertion
+      // pattern used elsewhere in this file (stages[i]!).
+      return lastId!;
+    }
+    case 'review-report': {
+      const atom = mkReviewReportAtom(baseInput);
+      await host.atoms.put(atom);
+      return atom.id;
+    }
+    case 'dispatch-record': {
+      const atom = mkDispatchRecordAtom(baseInput);
+      await host.atoms.put(atom);
+      return atom.id;
+    }
+    default: {
+      // Custom stages (legal-review, security-threat-model,
+      // perf-benchmark, etc.) land here. The runner persists the
+      // value under a generic stage-output shape so any custom
+      // stage's output is queryable without an adapter-side change
+      // to the runner.
+      const atom = mkGenericStageOutputAtom(baseInput);
+      await host.atoms.put(atom);
+      return atom.id;
+    }
+  }
+}
+
+/**
+ * Generic stage-output atom for custom stages outside the default
+ * 5-stage set. The atom type is 'observation' so it routes through
+ * the existing AtomType union without requiring a substrate-types
+ * change for every new custom stage; the load-bearing routing key is
+ * metadata.stage_name. Org-ceiling deployments that register a
+ * dedicated atom type for a custom stage (e.g. 'legal-review-output')
+ * can do so by extending the AtomType union AND adding a switch
+ * branch above; the generic path is the default-deny fallback that
+ * keeps the substrate functional without the extension.
+ */
+function mkGenericStageOutputAtom(input: {
+  readonly pipelineId: AtomId;
+  readonly stageName: string;
+  readonly principalId: PrincipalId;
+  readonly correlationId: string;
+  readonly now: Time;
+  readonly derivedFrom: ReadonlyArray<AtomId>;
+  readonly value: unknown;
+}): Atom {
+  // Build a minimal Atom inline to avoid threading a fifth mint
+  // helper through atom-shapes.ts for the generic case. Mirrors the
+  // baseAtom shape from atom-shapes.ts so audit consumers see a
+  // consistent envelope; the type field is 'observation' (the catch-
+  // all atom type for any read-only artifact in the substrate). The
+  // load-bearing routing key is metadata.stage_name + the
+  // metadata.pipeline_id pair.
+  const id = `stage-output-${input.stageName}-${input.pipelineId}-${input.correlationId}` as AtomId;
+  return {
+    schema_version: 1,
+    id,
+    content: serializeStageOutput(input.value),
+    type: 'observation',
+    layer: 'L0',
+    provenance: {
+      kind: 'agent-observed',
+      source: {
+        tool: 'planning-pipeline',
+        agent_id: String(input.principalId),
+        session_id: input.correlationId,
+      },
+      derived_from: [...input.derivedFrom],
+    },
+    confidence: 1.0,
+    created_at: input.now,
+    last_reinforced_at: input.now,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: input.principalId,
+    taint: 'clean',
+    metadata: {
+      pipeline_id: input.pipelineId,
+      stage_name: input.stageName,
+      stage_output: input.value,
+      generic_stage_output: true,
+    },
+  };
 }
 
 async function failPipeline(

@@ -461,4 +461,284 @@ describe('runPipeline', () => {
       expect(meta.completed_at).toBe(failedAtom!.created_at);
     });
   });
+
+  // Stage-output atom persistence (substrate-fix in this PR).
+  // Without this wiring, each stage's StageOutput.value lived only
+  // in-memory as priorOutput between adjacent stages and was
+  // unreachable from host.atoms.query: the dispatch-stage's planFilter
+  // walked derived_from chains and found zero plan atoms because no
+  // plan atom had been written upstream. The runner now mints a typed
+  // atom for each stage and propagates priorOutputAtomIds so each
+  // downstream stage's atom chain captures the full pipeline lineage.
+  describe('stage-output atom persistence', () => {
+    it('mints one stage-output atom per default stage and chains derived_from back through the pipeline', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, [
+        'brainstorm-stage',
+        'spec-stage',
+        'plan-stage',
+        'review-stage',
+        'dispatch-stage',
+      ]);
+      // Use the canonical stage names so the runner's persistStageOutput
+      // routing dispatches to the dedicated mint helpers (vs the
+      // generic fallback). Each stage's run() returns a minimal
+      // payload that satisfies the shape assertions below; the
+      // runner's outputSchema validation is opt-in (no schema =
+      // skip) so these stages do not need a zod schema attached.
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'brainstorm-stage',
+          async run() {
+            return {
+              value: { open_questions: [], cost_usd: 0 },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'brainstorm-output',
+            };
+          },
+        },
+        {
+          name: 'spec-stage',
+          async run() {
+            return {
+              value: { goal: 'g', body: 'b', cost_usd: 0 },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'spec-output',
+            };
+          },
+        },
+        {
+          name: 'plan-stage',
+          async run() {
+            return {
+              value: {
+                plans: [{
+                  title: 'persisted plan',
+                  body: 'plan body',
+                  derived_from: ['intent-1'],
+                  principles_applied: [],
+                  alternatives_rejected: [],
+                  what_breaks_if_revisit: 'nothing',
+                  confidence: 0.9,
+                  delegation: {
+                    sub_actor_principal_id: 'code-author',
+                    reason: 'implements',
+                    implied_blast_radius: 'framework',
+                  },
+                }],
+                cost_usd: 0,
+              },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'plan',
+            };
+          },
+        },
+        {
+          name: 'review-stage',
+          async run() {
+            return {
+              value: { audit_status: 'clean', findings: [], total_bytes_read: 0, cost_usd: 0 },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'review-report',
+            };
+          },
+        },
+        {
+          name: 'dispatch-stage',
+          async run() {
+            return {
+              value: {
+                dispatch_status: 'completed',
+                scanned: 0, dispatched: 0, failed: 0, cost_usd: 0,
+              },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'dispatch-record',
+            };
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-stage-outputs',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('completed');
+      if (result.kind !== 'completed') return;
+
+      // brainstorm-output, spec-output, review-report, dispatch-record:
+      // one atom each, queryable by type.
+      const brainstormPage = await host.atoms.query(
+        { type: ['brainstorm-output'] }, 100,
+      );
+      expect(brainstormPage.atoms.length).toBe(1);
+      const brainstormAtom = brainstormPage.atoms[0]!;
+      expect(brainstormAtom.provenance.derived_from).toContain(result.pipelineId);
+
+      const specOutputPage = await host.atoms.query(
+        { type: ['spec-output'] }, 100,
+      );
+      expect(specOutputPage.atoms.length).toBe(1);
+      const specOutputAtom = specOutputPage.atoms[0]!;
+      // spec-output's derived_from chains through the brainstorm-output
+      // atom id; the chain captures both the pipeline and the prior
+      // stage's output.
+      expect(specOutputAtom.provenance.derived_from).toContain(result.pipelineId);
+      expect(specOutputAtom.provenance.derived_from).toContain(brainstormAtom.id);
+
+      const reviewPage = await host.atoms.query({ type: ['review-report'] }, 100);
+      expect(reviewPage.atoms.length).toBe(1);
+      const dispatchPage = await host.atoms.query({ type: ['dispatch-record'] }, 100);
+      expect(dispatchPage.atoms.length).toBe(1);
+
+      // plan atom: persisted under the canonical 'plan' type so the
+      // dispatch-stage's planFilter (matching plans whose
+      // derived_from includes the pipelineId) finds it.
+      const planPage = await host.atoms.query({ type: ['plan'] }, 100);
+      expect(planPage.atoms.length).toBe(1);
+      const planAtom = planPage.atoms[0]!;
+      expect(planAtom.plan_state).toBe('proposed');
+      expect(planAtom.provenance.derived_from).toContain(result.pipelineId);
+      // The plan's chain also captures the spec-output atom id (the
+      // immediately upstream stage), so a walk back from the plan
+      // atom reaches every prior stage and the seed intent.
+      expect(planAtom.provenance.derived_from).toContain(specOutputAtom.id);
+      // The plan's chain captures the original derived_from from the
+      // plan-stage payload too.
+      expect(planAtom.provenance.derived_from).toContain('intent-1');
+    });
+
+    it('emits exit-success with output_atom_id pointing at the persisted stage-output atom', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['spec-stage']);
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'spec-stage',
+          async run() {
+            return {
+              value: { goal: 'g', body: 'b', cost_usd: 0 },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'spec-output',
+            };
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-spec-output-event',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('completed');
+      const events = await host.atoms.query(
+        { type: ['pipeline-stage-event'] }, 100,
+      );
+      const exitSuccess = events.atoms.find((a) => {
+        const meta = a.metadata as Record<string, unknown>;
+        return meta.transition === 'exit-success' && meta.stage_name === 'spec-stage';
+      });
+      expect(exitSuccess).toBeDefined();
+      const exitMeta = exitSuccess!.metadata as Record<string, unknown>;
+      expect(exitMeta.output_atom_id).toBeDefined();
+      // The output_atom_id resolves to a real spec-output atom.
+      const specOutputAtom = await host.atoms.get(exitMeta.output_atom_id as AtomId);
+      expect(specOutputAtom).not.toBeNull();
+      expect(specOutputAtom!.type).toBe('spec-output');
+    });
+
+    it('falls back to a generic stage-output atom for unknown stage names', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['legal-review']);
+      // Custom stage name outside the default 5-stage set: routes
+      // through the generic-stage-output fallback.
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'legal-review',
+          async run() {
+            return {
+              value: { compliance_status: 'reviewed', cost_usd: 0 },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'observation',
+            };
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-custom-stage',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('completed');
+      const observations = await host.atoms.query(
+        { type: ['observation'] }, 100,
+      );
+      // Filter to the runner-emitted generic stage-output atom by
+      // metadata.generic_stage_output to avoid colliding with any
+      // other observation atoms a future test fixture may seed.
+      const genericAtoms = observations.atoms.filter((a) => {
+        const meta = a.metadata as Record<string, unknown>;
+        return meta.generic_stage_output === true;
+      });
+      expect(genericAtoms.length).toBe(1);
+      const meta = genericAtoms[0]!.metadata as Record<string, unknown>;
+      expect(meta.stage_name).toBe('legal-review');
+    });
+
+    it('writes the stage-output atom even on critical-audit-halt so the operator can inspect it', async () => {
+      const host = createMemoryHost();
+      const stages: ReadonlyArray<PlanningStage> = [
+        {
+          name: 'brainstorm-stage',
+          async run() {
+            return {
+              value: { open_questions: ['q'], cost_usd: 0 },
+              cost_usd: 0,
+              duration_ms: 0,
+              atom_type: 'brainstorm-output',
+            };
+          },
+          async audit() {
+            return [
+              {
+                severity: 'critical',
+                category: 'fabricated-cited-atom',
+                message: 'forced critical for test',
+                cited_atom_ids: [],
+                cited_paths: [],
+              },
+            ];
+          },
+        },
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-audit-halt-persists',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('failed');
+      // Stage-output atom WAS persisted before the audit ran, so the
+      // operator can inspect it after the pipeline halts.
+      const brainstormAtoms = await host.atoms.query(
+        { type: ['brainstorm-output'] }, 100,
+      );
+      expect(brainstormAtoms.atoms.length).toBe(1);
+    });
+  });
 });

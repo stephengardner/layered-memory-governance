@@ -209,7 +209,11 @@ async function runBrainstorm(
     value,
     cost_usd,
     duration_ms: result.metadata.latency_ms,
-    atom_type: 'observation',
+    // Declared atom type drives the runner's persistStageOutput
+    // routing: 'brainstorm-output' lands in the typed-mint branch
+    // so the runner mints via mkBrainstormOutputAtom and the
+    // resulting atom is queryable as type='brainstorm-output'.
+    atom_type: 'brainstorm-output',
   };
 }
 

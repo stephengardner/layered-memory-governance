@@ -75,13 +75,19 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // Deep planning pipeline atom types. Specs are prose artifacts
   // that may be referenced for months across follow-up work, so
   // their stated confidence stays stable like a directive. Pipeline
-  // runtime state and audit projection atoms are historical records
-  // tied to a specific run; their value comes from later forensic
-  // re-reading rather than arbitration, so a long half-life keeps
-  // them stable during the useful window. Operational purge after
-  // N months belongs in a follow-up policy atom, not on the
-  // substrate decay axis.
+  // runtime state, audit projection, and per-stage output atoms
+  // (brainstorm-output / spec-output / review-report /
+  // dispatch-record) are historical records tied to a specific
+  // run; their value comes from later forensic re-reading rather
+  // than arbitration, so a long half-life keeps them stable
+  // during the useful window. Operational purge after N months
+  // belongs in a follow-up policy atom, not on the substrate
+  // decay axis.
   spec: 365 * 24 * 60 * 60 * 1000,                       // ~1 year
+  'brainstorm-output': 365 * 24 * 60 * 60 * 1000,        // ~1 year
+  'spec-output': 365 * 24 * 60 * 60 * 1000,              // ~1 year
+  'review-report': 365 * 24 * 60 * 60 * 1000,            // ~1 year
+  'dispatch-record': 365 * 24 * 60 * 60 * 1000,          // ~1 year
   pipeline: 365 * 24 * 60 * 60 * 1000,                   // ~1 year
   'pipeline-stage-event': 365 * 24 * 60 * 60 * 1000,     // ~1 year
   'pipeline-audit-finding': 365 * 24 * 60 * 60 * 1000,   // ~1 year

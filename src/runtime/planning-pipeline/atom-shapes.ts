@@ -352,3 +352,421 @@ export function mkPipelineResumeAtom(input: MkPipelineResumeAtomInput): Atom {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Stage-output atoms (one per pipeline stage)
+//
+// Each stage's StageOutput.value is persisted via these mint helpers so
+// the chain is observable from `host.atoms.query` alone. provenance.
+// derived_from is `[pipelineId, ...priorOutputAtomIds]` so a walk back
+// through the pipeline reaches the seed operator-intent. Stage adapters
+// in examples/ remain unchanged: the runner mints these atoms from the
+// StageOutput produced by stage.run(), preserving substrate purity (the
+// stage adapter declares the output shape; the runner stamps the atom).
+// Each helper:
+//   - rejects an empty derivedFrom (the canon "every atom carries a
+//     source chain" directive applies to every typed output);
+//   - bounds content to MAX_STAGE_OUTPUT_CONTENT chars so a runaway
+//     LLM emission cannot inflate atom storage;
+//   - exposes the original StageOutput.value as `metadata.stage_output`
+//     so the typed payload is queryable without re-parsing content.
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard cap on the serialized stage-output content stored in the atom.
+ * Bounded so an adversarial or runaway LLM emission cannot grow an
+ * atom file past sane single-record sizes. The pipeline's existing
+ * per-stage budget cap and per-field schema bounds handle quality
+ * signals; this is the substrate-side hard wall on what the runner
+ * is allowed to persist. Anything longer is truncated with an explicit
+ * marker so the truncation is visible to audit consumers, never silent.
+ *
+ * Exported so the runner's generic-stage-output fallback path uses the
+ * same cap rather than re-declaring the constant (extracted at N=2 per
+ * the duplication-floor canon).
+ */
+export const MAX_STAGE_OUTPUT_CONTENT = 256 * 1024;
+
+/**
+ * JSON-stringify a stage output value with a hard byte cap.
+ *
+ * Returns the full serialised value when under MAX_STAGE_OUTPUT_CONTENT;
+ * otherwise returns the head truncated to leave room for the truncation
+ * marker so the truncation is visible (never silent). Stage adapters
+ * that need the full value beyond the cap should write it as a separate
+ * atom and cite it from metadata.
+ *
+ * Exported so the runner's generic-stage-output fallback path reuses
+ * this single implementation rather than re-declaring it (extracted at
+ * N=2 per the duplication-floor canon).
+ */
+export function serializeStageOutput(value: unknown): string {
+  const TRUNCATION_MARKER = '\n\n... [stage-output truncated; full value exceeded MAX_STAGE_OUTPUT_CONTENT] ...';
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(value, null, 2);
+  } catch {
+    // Non-serialisable value (e.g. a circular reference); fall back to
+    // a marker rather than throwing. The runner cannot verify
+    // serialisability before invoking this helper because the
+    // outputSchema validator is the authoritative shape gate.
+    return '[stage-output not JSON-serialisable]';
+  }
+  if (json === undefined) {
+    // JSON.stringify returns undefined for `undefined` and for some
+    // function-only values; record the typeof so audit consumers see
+    // why content is empty.
+    return `[stage-output not representable: typeof=${typeof value}]`;
+  }
+  if (json.length <= MAX_STAGE_OUTPUT_CONTENT) return json;
+  const head = json.slice(0, MAX_STAGE_OUTPUT_CONTENT - TRUNCATION_MARKER.length);
+  return head + TRUNCATION_MARKER;
+}
+
+/**
+ * Shared input shape for the four new stage-output mint helpers. The
+ * plan-stage uses `mkPlanOutputAtoms` below, which threads through the
+ * same canonical Plan atom shape used by the single-pass
+ * planning-actor so console plan-detail and downstream consumers do
+ * not branch on pipeline vs single-pass origin.
+ */
+export interface MkStageOutputAtomBaseInput {
+  readonly pipelineId: AtomId;
+  readonly stageName: string;
+  readonly principalId: PrincipalId;
+  readonly correlationId: string;
+  readonly now: Time;
+  /**
+   * The full provenance chain back through prior stages to the
+   * pipeline atom (and through it, the seed operator-intent). Must
+   * be non-empty: a stage-output atom that does not chain to the
+   * pipeline atom cannot be discovered via the dispatch-stage's
+   * planFilter or any audit walk.
+   */
+  readonly derivedFrom: ReadonlyArray<AtomId>;
+  /**
+   * The StageOutput.value the stage adapter produced. Persisted in
+   * metadata.stage_output for queryable shape preservation; also
+   * serialized into atom.content (with hard byte cap) so the atom's
+   * primary surface remains a human-readable artifact.
+   */
+  readonly value: unknown;
+  /**
+   * Optional supplementary metadata the runner wants on the atom
+   * (e.g. stage-specific cost breakdown, model id, latency). Merged
+   * shallow under the standard pipeline_id + stage_name fields; the
+   * runner-supplied keys win on collision because they are
+   * load-bearing for cross-stage walking.
+   */
+  readonly extraMetadata?: Record<string, unknown>;
+}
+
+/**
+ * Local helper: build the metadata block shared by every
+ * stage-output atom. The pipeline_id + stage_name + stage_output
+ * keys are load-bearing for the dispatch-stage's planFilter and for
+ * audit consumers; runner-supplied fields take precedence over any
+ * collision in extraMetadata so a stage adapter cannot accidentally
+ * shadow them.
+ */
+function buildStageOutputMetadata(
+  input: MkStageOutputAtomBaseInput,
+): Record<string, unknown> {
+  return {
+    ...(input.extraMetadata ?? {}),
+    pipeline_id: input.pipelineId,
+    stage_name: input.stageName,
+    stage_output: input.value,
+  };
+}
+
+/**
+ * Local helper: enforce the non-empty derivedFrom invariant for every
+ * stage-output mint. Extracted at N=2+ per the duplication-floor
+ * canon; mint helpers must NEVER produce a stage-output atom with an
+ * empty provenance chain because a chain-less atom is invisible to
+ * the dispatch-stage's planFilter and to every audit walk.
+ */
+function requireNonEmptyDerivedFrom(
+  helperName: string,
+  derivedFrom: ReadonlyArray<AtomId>,
+): void {
+  if (derivedFrom.length === 0) {
+    throw new Error(
+      `${helperName}: derivedFrom must be non-empty (provenance directive)`,
+    );
+  }
+}
+
+/**
+ * Build the deterministic id used by every stage-output mint helper.
+ * Format: `<typePrefix>-<pipelineId>-<correlationId>` so two writes
+ * for the same pipeline + correlation collide rather than create
+ * siblings.
+ */
+function stageOutputAtomId(
+  typePrefix: string,
+  input: MkStageOutputAtomBaseInput,
+): AtomId {
+  return `${typePrefix}-${input.pipelineId}-${input.correlationId}` as AtomId;
+}
+
+// ---------------------------------------------------------------------------
+// brainstorm-output atom
+// ---------------------------------------------------------------------------
+
+export function mkBrainstormOutputAtom(input: MkStageOutputAtomBaseInput): Atom {
+  requireNonEmptyDerivedFrom('mkBrainstormOutputAtom', input.derivedFrom);
+  const id = stageOutputAtomId('brainstorm-output', input);
+  return baseAtom({
+    id,
+    type: 'brainstorm-output',
+    content: serializeStageOutput(input.value),
+    principalId: input.principalId,
+    correlationId: input.correlationId,
+    now: input.now,
+    derivedFrom: input.derivedFrom,
+    metadata: buildStageOutputMetadata(input),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// spec-output atom
+// ---------------------------------------------------------------------------
+
+export function mkSpecOutputAtom(input: MkStageOutputAtomBaseInput): Atom {
+  requireNonEmptyDerivedFrom('mkSpecOutputAtom', input.derivedFrom);
+  const id = stageOutputAtomId('spec-output', input);
+  return baseAtom({
+    id,
+    type: 'spec-output',
+    content: serializeStageOutput(input.value),
+    principalId: input.principalId,
+    correlationId: input.correlationId,
+    now: input.now,
+    derivedFrom: input.derivedFrom,
+    metadata: buildStageOutputMetadata(input),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// review-report atom
+// ---------------------------------------------------------------------------
+
+export function mkReviewReportAtom(input: MkStageOutputAtomBaseInput): Atom {
+  requireNonEmptyDerivedFrom('mkReviewReportAtom', input.derivedFrom);
+  const id = stageOutputAtomId('review-report', input);
+  return baseAtom({
+    id,
+    type: 'review-report',
+    content: serializeStageOutput(input.value),
+    principalId: input.principalId,
+    correlationId: input.correlationId,
+    now: input.now,
+    derivedFrom: input.derivedFrom,
+    metadata: buildStageOutputMetadata(input),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// dispatch-record atom
+// ---------------------------------------------------------------------------
+
+export function mkDispatchRecordAtom(input: MkStageOutputAtomBaseInput): Atom {
+  requireNonEmptyDerivedFrom('mkDispatchRecordAtom', input.derivedFrom);
+  const id = stageOutputAtomId('dispatch-record', input);
+  return baseAtom({
+    id,
+    type: 'dispatch-record',
+    content: serializeStageOutput(input.value),
+    principalId: input.principalId,
+    correlationId: input.correlationId,
+    now: input.now,
+    derivedFrom: input.derivedFrom,
+    metadata: buildStageOutputMetadata(input),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// plan atom (deep-pipeline plan-stage output; reuses the canonical
+// 'plan' type so single-pass and pipeline-emitted plans share one
+// downstream shape).
+//
+// The single-pass planning-actor's buildPlanAtom is the authoritative
+// single-pass shape; this helper produces a plan atom in the same
+// shape from a plan-stage StageOutput.value (which carries the
+// PlanPayload.plans array under the key 'plans'). Each plan in the
+// payload becomes one plan atom; the helper returns a frozen
+// ReadonlyArray<Atom> so callers get a single allocation per stage
+// run. Empty plans arrays return [] -- the runner's outputSchema
+// validation at plan-stage rejects an empty plans array upstream, so
+// reaching this helper with an empty list means the schema bounds
+// were loosened, which is a separate canon-edit moment.
+// ---------------------------------------------------------------------------
+
+export interface MkPlanOutputAtomsInput {
+  readonly pipelineId: AtomId;
+  readonly principalId: PrincipalId;
+  readonly correlationId: string;
+  readonly now: Time;
+  readonly derivedFrom: ReadonlyArray<AtomId>;
+  /**
+   * The plan-stage StageOutput.value object whose `plans` key is an
+   * array of plan entries (matching the plan adapter's
+   * planEntrySchema in examples/planning-stages/plan/index.ts).
+   * Typed loosely as `unknown` so this helper does not depend on the
+   * plan-stage adapter module; the helper extracts an array under the
+   * `plans` key and returns [] when the shape is missing or empty.
+   */
+  readonly value: unknown;
+}
+
+interface PlanEntryLike {
+  readonly title?: unknown;
+  readonly body?: unknown;
+  readonly derived_from?: ReadonlyArray<unknown>;
+  readonly principles_applied?: ReadonlyArray<unknown>;
+  readonly alternatives_rejected?: ReadonlyArray<unknown>;
+  readonly what_breaks_if_revisit?: unknown;
+  readonly confidence?: unknown;
+  readonly delegation?: {
+    readonly sub_actor_principal_id?: unknown;
+    readonly reason?: unknown;
+    readonly implied_blast_radius?: unknown;
+  };
+}
+
+function asString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function asStringArray(value: unknown): ReadonlyArray<string> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === 'string');
+}
+
+function asNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function slugifyPlanTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40);
+}
+
+/**
+ * Mint the plan atoms for a plan-stage StageOutput.value. Returns one
+ * atom per plan entry in the payload; the runner persists each before
+ * advancing to the review stage so the dispatch-stage's planFilter
+ * can find them by walking derived_from.
+ *
+ * Every plan atom is shaped to match the single-pass planning-actor
+ * buildPlanAtom output: `type: 'plan'`, `layer: 'L1'`, `plan_state:
+ * 'proposed'`, with title / principles_applied / alternatives_rejected
+ * / what_breaks_if_revisit / delegation in metadata. The deterministic
+ * id format is `plan-<title-slug>-<principalId>-<pipelineId>-<index>`
+ * so two plans in the same payload do not collide and a re-emit by a
+ * resumed pipeline produces the same id (idempotent put on the
+ * memory-host adapter).
+ */
+export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<Atom> {
+  requireNonEmptyDerivedFrom('mkPlanOutputAtoms', input.derivedFrom);
+  const value = input.value;
+  if (typeof value !== 'object' || value === null) return [];
+  const plansRaw = (value as { plans?: unknown }).plans;
+  if (!Array.isArray(plansRaw) || plansRaw.length === 0) return [];
+
+  const atoms: Atom[] = [];
+  for (let i = 0; i < plansRaw.length; i++) {
+    const entry = plansRaw[i] as PlanEntryLike;
+    const title = asString(entry.title, '(untitled)');
+    const slug = slugifyPlanTitle(title);
+    // Deterministic id includes both the principalId (so two
+    // principals running the same plan-stage payload do not collide)
+    // and a per-entry index (so a payload with multiple plans
+    // produces distinct atoms even when their titles slug-collide).
+    // The pipelineId namespace ensures cross-pipeline isolation.
+    const id =
+      `plan-${slug}-${input.principalId}-${input.pipelineId}-${i}` as AtomId;
+
+    // Build derived_from: start with the runner-supplied chain
+    // (pipelineId + prior stage outputs) and append the plan entry's
+    // own derived_from list so the chain captures BOTH the pipeline
+    // provenance AND the LLM-cited atoms the plan claims to derive
+    // from. The plan-stage's audit pass already verified those
+    // citations resolve and are in the verified-citations set; the
+    // runner does not re-validate here.
+    const planDerivedFrom: AtomId[] = [
+      ...input.derivedFrom,
+      ...asStringArray(entry.derived_from).map((s) => s as AtomId),
+    ];
+
+    const principlesApplied = asStringArray(entry.principles_applied);
+    const alternativesRejected = Array.isArray(entry.alternatives_rejected)
+      ? entry.alternatives_rejected
+        .filter((a): a is { option: string; reason: string } =>
+          typeof a === 'object'
+          && a !== null
+          && typeof (a as { option?: unknown }).option === 'string'
+          && typeof (a as { reason?: unknown }).reason === 'string',
+        )
+      : [];
+
+    const delegation = entry.delegation;
+    const delegationMetadata =
+      delegation !== undefined && typeof delegation === 'object' && delegation !== null
+        ? {
+            delegation: {
+              sub_actor_principal_id: asString(delegation.sub_actor_principal_id),
+              reason: asString(delegation.reason),
+              implied_blast_radius: asString(delegation.implied_blast_radius),
+            },
+          }
+        : {};
+
+    atoms.push({
+      schema_version: 1,
+      id,
+      content: asString(entry.body, '(empty plan body)'),
+      type: 'plan',
+      layer: 'L1',
+      provenance: {
+        kind: 'agent-observed',
+        source: {
+          tool: 'planning-pipeline',
+          agent_id: String(input.principalId),
+          session_id: input.correlationId,
+        },
+        derived_from: planDerivedFrom,
+      },
+      confidence: asNumber(entry.confidence, 0.8),
+      created_at: input.now,
+      last_reinforced_at: input.now,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: input.principalId,
+      taint: 'clean',
+      plan_state: 'proposed',
+      metadata: {
+        title,
+        pipeline_id: input.pipelineId,
+        principles_applied: [...principlesApplied],
+        alternatives_rejected: alternativesRejected.map((a) => a.option),
+        what_breaks_if_revisit: asString(entry.what_breaks_if_revisit),
+        ...delegationMetadata,
+      },
+    });
+  }
+  return atoms;
+}

@@ -117,7 +117,25 @@ export type AtomType =
   // prefix groups runtime state and audit projection atoms together
   // so a Console filter can surface a single pipeline run as a
   // coherent timeline.
+  //
+  // Stage-output atom types persist each pipeline stage's
+  // StageOutput.value as a queryable atom with a derived_from chain
+  // tracing back to the seed operator-intent. Without these, a
+  // pipeline run's stage outputs survive only as in-memory
+  // priorOutput between adjacent stages and are unreachable from
+  // host.atoms.query (the dispatch-stage's planFilter, the
+  // operator's plan-detail console view, and any audit consumer all
+  // need a typed atom to walk). The plan-stage's output uses the
+  // existing 'plan' type (kept consistent with the single-pass
+  // planning-actor output so console plan-detail and downstream
+  // consumers do not need branching logic); the other four stages
+  // get dedicated types so their schemas can diverge without
+  // polluting the plan vocabulary.
   | 'spec'
+  | 'brainstorm-output'
+  | 'spec-output'
+  | 'review-report'
+  | 'dispatch-record'
   | 'pipeline'
   | 'pipeline-stage-event'
   | 'pipeline-audit-finding'

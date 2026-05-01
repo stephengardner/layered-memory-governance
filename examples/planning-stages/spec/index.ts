@@ -208,7 +208,15 @@ async function runSpec(
     value,
     cost_usd,
     duration_ms: result.metadata.latency_ms,
-    atom_type: 'spec',
+    // Declared atom type drives the runner's persistStageOutput
+    // routing: 'spec-output' lands in the typed-mint branch so the
+    // runner mints via mkSpecOutputAtom and the resulting atom is
+    // queryable as type='spec-output'. The legacy 'spec' atom type
+    // (a looser-shaped sibling of 'plan') stays available for
+    // adapters that want a prose-shaped spec atom; the deep-pipeline
+    // spec-stage uses 'spec-output' for the queryable stage-output
+    // contract.
+    atom_type: 'spec-output',
   };
 }
 
