@@ -34,6 +34,18 @@ const TOKEN = 'ghs_test_installation_token_0123456789';
 const OWNER = 'stephengardner';
 const REPO = 'layered-autonomous-governance';
 
+// Pipeline-generated plan id observed in dogfeed-9 + dogfeed-11
+// (2026-05-01): 91 chars long, overruns GitHub's 50-char label
+// limit when prefixed with `plan-id:`. Lifted to module scope so
+// every fixture using the same id flows through one source of
+// truth (per dev-extract-at-n-equals-2 canon).
+const LONG_PLAN_ID =
+  'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0';
+// Sibling plan from the same multi-task pipeline; differs only at
+// the trailing index suffix. Used to exercise hash-suffix collision
+// avoidance.
+const LONG_PLAN_ID_NEXT = LONG_PLAN_ID.replace(/-0$/, '-1');
+
 describe('parseRepoSlug', () => {
   it('returns owner/repo for "owner/repo"', () => {
     expect(parseRepoSlug('foo/bar')).toEqual({ owner: 'foo', repo: 'bar' });
@@ -72,12 +84,6 @@ describe('parseRepoSlug', () => {
 });
 
 describe('truncatePlanIdLabel', () => {
-  // Pipeline-generated plan id observed in dogfeed-9 + dogfeed-11
-  // (2026-05-01): 91 chars long, overruns GitHub's 50-char label
-  // limit when prefixed with `plan-id:`.
-  const LONG_PLAN_ID =
-    'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0';
-
   it('returns the full label when the plan id fits within 50 chars', () => {
     // Short legacy plan id (cto-actor + YYYYMMDDHHmmss form, 75
     // chars including the .json suffix => atom id is 70 chars).
@@ -126,12 +132,8 @@ describe('truncatePlanIdLabel', () => {
     // first-prefix truncation alone would collide on the same
     // 50-char label. The sha-256 digest tail is the
     // collision-avoidance mechanism the auditor relies on.
-    const a =
-      'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0';
-    const b =
-      'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-1';
-    const labelA = truncatePlanIdLabel(a);
-    const labelB = truncatePlanIdLabel(b);
+    const labelA = truncatePlanIdLabel(LONG_PLAN_ID);
+    const labelB = truncatePlanIdLabel(LONG_PLAN_ID_NEXT);
     expect(labelA).not.toBe(labelB);
     expect(labelA.length).toBe(50);
     expect(labelB.length).toBe(50);
@@ -152,11 +154,26 @@ describe('truncatePlanIdLabel', () => {
     expect(() => truncatePlanIdLabel(null as unknown as string)).toThrow();
     expect(() => truncatePlanIdLabel(42 as unknown as string)).toThrow();
   });
+
+  it('round-trips for any plan id: truncate(planId) is the same regardless of who computes it', () => {
+    // The auditor's PR-body-fallback path round-trips: it accepts a
+    // body-derived plan id only when truncatePlanIdLabel(fromBody)
+    // matches the workflow-supplied label token. This covers the
+    // determinism contract that validation relies on -- the same
+    // plan id always maps to the same label token, so a malicious
+    // body that names a different plan would not satisfy the round
+    // trip and would be rejected.
+    expect(truncatePlanIdLabel(LONG_PLAN_ID)).toBe(truncatePlanIdLabel(LONG_PLAN_ID));
+    expect(truncatePlanIdLabel(LONG_PLAN_ID)).not.toBe(truncatePlanIdLabel(LONG_PLAN_ID_NEXT));
+  });
 });
 
 describe('parsePlanIdFromPrBody', () => {
   // Mirrors the YAML footer buildPrBody emits in
-  // src/runtime/actors/code-author/pr-creation.ts:218-221.
+  // src/runtime/actors/code-author/pr-creation.ts:218-221. JSON.stringify
+  // is the same encoding the source uses, so the test fixture
+  // round-trips through whatever escape semantics the helper depends
+  // on instead of a hand-quoted literal that could drift.
   const FOOTER_BODY = [
     '## Why',
     '',
@@ -165,16 +182,14 @@ describe('parsePlanIdFromPrBody', () => {
     '## Machine-parseable provenance footer',
     '',
     '```yaml',
-    'plan_id: "plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0"',
+    `plan_id: ${JSON.stringify(LONG_PLAN_ID)}`,
     'observation_atom_id: "obs-12345"',
     'commit_sha: "abc1234567890"',
     '```',
   ].join('\n');
 
   it('extracts the full plan id from a buildPrBody-shaped footer', () => {
-    expect(parsePlanIdFromPrBody(FOOTER_BODY)).toBe(
-      'plan-add-one-line-pointer-to-docs-framework-m-cto-actor-pipeline-cto-1777622668718-vh8a0j-0',
-    );
+    expect(parsePlanIdFromPrBody(FOOTER_BODY)).toBe(LONG_PLAN_ID);
   });
 
   it('returns null when no plan_id field is present', () => {

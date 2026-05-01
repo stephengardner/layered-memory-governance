@@ -78,7 +78,13 @@ export function parseRepoSlug(slug) {
  */
 export function parsePlanIdFromPrBody(body) {
   if (typeof body !== 'string' || body.length === 0) return null;
-  const match = /^plan_id:\s*"((?:[^"\\]|\\.)*)"\s*$/m.exec(body);
+  // Negated class excludes raw `\n` so the match cannot span lines
+  // and pull in a closing quote from a sibling YAML field. The
+  // canonical buildPrBody output emits `JSON.stringify(planId)`,
+  // which already escapes any literal newline in the id as `\\n`,
+  // so a newline reaching this regex is a malformed body and the
+  // safer behaviour is no-match -> null.
+  const match = /^plan_id:\s*"((?:[^"\\\n]|\\.)*)"\s*$/m.exec(body);
   if (!match) return null;
   try {
     return JSON.parse(`"${match[1]}"`);

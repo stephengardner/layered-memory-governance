@@ -20,7 +20,9 @@ import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { classifyDiffBlastRadius, computeVerdict } from './lib/auditor.mjs';
-import { parsePlanIdFromPrBody } from './lib/autonomous-dispatch-exec.mjs';
+import { parsePlanIdFromPrBody, truncatePlanIdLabel } from './lib/autonomous-dispatch-exec.mjs';
+
+const PLAN_ID_LABEL_PREFIX = 'plan-id:';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -54,7 +56,23 @@ async function main() {
   let plan = await host.atoms.get(resolvedPlanId);
   if (!plan || plan.type !== 'plan') {
     const fromBody = await readPlanIdFromPrBody(args.pr);
+    // Round-trip guard: only accept the body-derived plan id if its
+    // truncatePlanIdLabel form matches the workflow-supplied label
+    // token (`args.plan`). Without this gate, a malicious PR-body
+    // edit could redirect the auditor at an unrelated plan whose
+    // envelope happens to permit the diff. Symmetric with how the
+    // dispatch-side label was minted from the plan id, so a body
+    // value that did not originate from the same plan cannot pass.
     if (fromBody && fromBody !== resolvedPlanId) {
+      const expectedToken = truncatePlanIdLabel(fromBody).slice(PLAN_ID_LABEL_PREFIX.length);
+      if (expectedToken !== args.plan) {
+        console.error(
+          `[auditor] PR body plan_id does not round-trip to the triggering label token; `
+          + `label=${args.plan} body=${fromBody} expected-from-body=${expectedToken}. `
+          + 'Refusing the fallback to avoid auditing the wrong plan.',
+        );
+        process.exit(2);
+      }
       console.log(`[auditor] label-derived plan id ${resolvedPlanId} did not resolve; using PR body footer plan id ${fromBody}`);
       resolvedPlanId = fromBody;
       plan = await host.atoms.get(resolvedPlanId);
