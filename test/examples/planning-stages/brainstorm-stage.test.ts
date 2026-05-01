@@ -128,6 +128,9 @@ describe('brainstormStage', () => {
           correlationId: 'corr',
           pipelineId: 'p-missing' as AtomId,
           stageName: 'brainstorm-stage',
+          verifiedCitedAtomIds: [],
+          verifiedSubActorPrincipalIds: [],
+          operatorIntentContent: '',
         },
       ),
     ).rejects.toThrow(/pipeline atom .* not found/);
@@ -153,6 +156,9 @@ describe('brainstormStage', () => {
           correlationId: 'corr',
           pipelineId,
           stageName: 'brainstorm-stage',
+          verifiedCitedAtomIds: [],
+          verifiedSubActorPrincipalIds: [],
+          operatorIntentContent: '',
         },
       ),
     ).rejects.toThrow(/empty provenance.derived_from/);
