@@ -1,3 +1,4 @@
+<!-- dogfeed-13b auditor end-to-end validation marker -->
 <p align="center">
   <img src="docs/assets/lag-logo.png" alt="LAG: Layered Autonomous Governance" width="320">
 </p>
