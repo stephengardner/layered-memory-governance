@@ -67,6 +67,20 @@ describe('routeForAtomId', () => {
     it('routes pipeline-resume-* descendants to activities', () => {
       expect(routeForAtomId('pipeline-resume-abc-2026-04-26T01-00-00-000Z')).toBe('activities');
     });
+
+    // Stage-output atoms are pipeline descendants persisted per-stage
+    // by the deep planning pipeline (see PR #252). Without explicit
+    // routing they fall through to canon and dead-end in focus mode
+    // because the canon list is filtered to canon atom types. Table-
+    // driven so adding the next descendant prefix is one line of data.
+    it.each([
+      ['brainstorm-output-*', 'brainstorm-output-abc-2026-04-30T01-00-00-000Z'],
+      ['spec-output-*', 'spec-output-xyz-2026-04-30T01-00-00-000Z'],
+      ['review-report-*', 'review-report-abc-2026-04-30T01-00-00-000Z'],
+      ['dispatch-record-*', 'dispatch-record-abc-2026-04-30T01-00-00-000Z'],
+    ])('routes %s stage-output atoms to activities', (_label, atomId) => {
+      expect(routeForAtomId(atomId)).toBe('activities');
+    });
   });
 
   describe('canon (default)', () => {
