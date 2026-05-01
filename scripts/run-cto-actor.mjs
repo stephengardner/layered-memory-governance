@@ -27,7 +27,7 @@
 
 import { resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { ClaudeCliLLM } from '../dist/adapters/claude-cli/index.js';
 import { runActor } from '../dist/actors/index.js';
@@ -327,10 +327,14 @@ async function runDeepPipeline(args) {
       console.error(`ERROR: --invokers ${modPath} does not exist.`);
       process.exit(2);
     }
-    // Windows-safe: convert absolute fs path to file:// URL before
-    // import() so dynamic import does not misinterpret a `C:` drive
-    // letter as a URL scheme. Same shape as run-approval-cycle.mjs.
-    const mod = await import(new URL(`file:///${modPath.replace(/\\/g, '/')}`).href);
+    // Cross-platform-safe: pathToFileURL() handles Windows drive
+    // letters AND POSIX absolute paths uniformly. The manual
+    // `new URL('file:///' + path)` shape that ships in
+    // run-approval-cycle.mjs leaks the leading `/` on POSIX (an
+    // absolute path /a/b becomes file:////a/b) and is the kind of
+    // platform drift this seam should not carry; pathToFileURL is
+    // the official Node helper for exactly this conversion.
+    const mod = await import(pathToFileURL(modPath).href);
     if (typeof mod.default !== 'function') {
       console.error(
         'ERROR: --invokers module must default-export '

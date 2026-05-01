@@ -282,6 +282,30 @@ describe('parseRunCtoActorArgs', () => {
     if (!r.ok) expect(r.reason).toMatch(/--invokers/);
   });
 
+  // CR PR #259 round-2 review: broaden flag-like rejection to also
+  // catch single-dash short flags like `-h`. The previous
+  // startsWith('--') guard let `--invokers -h` through and the
+  // failure surfaced later at path resolution.
+  it('rejects --invokers with a short-flag value (-h)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', '-h',
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/--invokers/);
+  });
+
+  it('trims --invokers value before persistence (space-form)', () => {
+    const r = parseRunCtoActorArgs([
+      '--request', 'x',
+      '--invokers', '  ./scripts/invokers/autonomous-dispatch.mjs  ',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.invokersPath).toBe('./scripts/invokers/autonomous-dispatch.mjs');
+    }
+  });
+
   it('preserves --invokers alongside --mode substrate-deep', () => {
     const r = parseRunCtoActorArgs([
       '--request', 'x',

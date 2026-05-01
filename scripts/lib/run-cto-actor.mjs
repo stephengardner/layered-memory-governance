@@ -224,21 +224,25 @@ export function parseRunCtoActorArgs(argv) {
       // and any other sub-actors. Validated at consume time (driver
       // resolves the path and exit(2) on missing-file / wrong-shape).
       //
-      // Guard against `--invokers=` (empty inline) and `--invokers --mode`
-      // (next-flag-as-value): readRequiredValue would otherwise assign
-      // `''` or `'--mode'` to invokersPath, and the failure mode would
-      // surface much later as a less-actionable path-resolution error in
-      // the driver. Reject at parse time with the same message.
+      // Guard against `--invokers=` (empty inline), `--invokers --mode`
+      // (long-flag consumed as value), and `--invokers -h` (short-flag
+      // consumed as value): readRequiredValue would otherwise assign
+      // '' / '--mode' / '-h' to invokersPath, and the failure mode
+      // would surface much later as a less-actionable path-resolution
+      // error in the driver. Reject any leading-dash value; trim before
+      // persistence so a quoted argv like " ./path " normalises here.
       const v = readRequiredValue('--invokers expects a path to an .mjs module');
       if (!v.ok) return v;
+      const trimmed =
+        typeof v.value === 'string' ? v.value.trim() : v.value;
       if (
-        typeof v.value !== 'string'
-        || v.value.trim().length === 0
-        || v.value.startsWith('--')
+        typeof trimmed !== 'string'
+        || trimmed.length === 0
+        || trimmed.startsWith('-')
       ) {
         return { ok: false, reason: '--invokers expects a path to an .mjs module' };
       }
-      args.invokersPath = v.value;
+      args.invokersPath = trimmed;
     } else if (a === '-h' || a === '--help') {
       args.help = true;
     } else if (typeof a === 'string' && a.startsWith('--')) {
