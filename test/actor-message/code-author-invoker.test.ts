@@ -264,6 +264,21 @@ describe('runCodeAuthor', () => {
     return { execute: impl };
   }
 
+  /**
+   * Locate the `code-author-invoked` observation written by the
+   * invoker and return its `executor_result` metadata projection.
+   * Asserts the atom exists before dereferencing so a missing
+   * observation surfaces a clear test failure rather than a less-
+   * informative non-null-bang crash. Extracted at N=2 (per the
+   * extract-at-N-equals-2 canon) once a third call site appeared.
+   */
+  async function getInvokedExecutorResult(h: Host): Promise<Record<string, unknown>> {
+    const { atoms } = await h.atoms.query({ type: ['observation'] }, 100);
+    const invoked = atoms.find((a) => a.metadata['kind'] === 'code-author-invoked');
+    expect(invoked).toBeDefined();
+    return invoked!.metadata['executor_result'] as Record<string, unknown>;
+  }
+
   it('with executor injected (dispatched): returns dispatched and stores PR handle on observation', async () => {
     await seedFullFence(host);
     await host.atoms.put(planAtom('plan-test-1', 'executing'));
@@ -304,10 +319,7 @@ describe('runCodeAuthor', () => {
       'bbbbbb',
     );
     // Since we don't control `now` here, locate the atom via query.
-    const { atoms: all } = await host.atoms.query({ type: ['observation'] }, 100);
-    const invoked = all.find((a) => a.metadata['kind'] === 'code-author-invoked');
-    expect(invoked).toBeDefined();
-    const exec = invoked!.metadata['executor_result'] as Record<string, unknown>;
+    const exec = await getInvokedExecutorResult(host);
     expect(exec['kind']).toBe('dispatched');
     expect(exec['pr_number']).toBe(123);
     expect(exec['pr_html_url']).toBe('https://github.com/o/r/pull/123');
@@ -341,10 +353,7 @@ describe('runCodeAuthor', () => {
     expect(result.message).toMatch(/stage=apply-branch/);
     expect(result.message).toMatch(/dirty worktree/);
 
-    const { atoms: all } = await host.atoms.query({ type: ['observation'] }, 100);
-    const invoked = all.find((a) => a.metadata['kind'] === 'code-author-invoked');
-    expect(invoked).toBeDefined();
-    const exec = invoked!.metadata['executor_result'] as Record<string, unknown>;
+    const exec = await getInvokedExecutorResult(host);
     expect(exec['kind']).toBe('error');
     expect(exec['stage']).toBe('apply-branch');
     expect(exec['reason']).toBe('dirty worktree');
@@ -379,9 +388,7 @@ describe('runCodeAuthor', () => {
     );
     expect(result.kind).toBe('error');
 
-    const { atoms: all } = await host.atoms.query({ type: ['observation'] }, 100);
-    const invoked = all.find((a) => a.metadata['kind'] === 'code-author-invoked');
-    const exec = invoked!.metadata['executor_result'] as Record<string, unknown>;
+    const exec = await getInvokedExecutorResult(host);
     expect(exec['kind']).toBe('error');
     expect(exec['stage']).toBe('pr-creation/gh-api-failed');
     expect(exec['branch_name']).toBe('code-author/plan-x-abc123');
@@ -407,9 +414,8 @@ describe('runCodeAuthor', () => {
     expect(result.message).toMatch(/stage=executor-threw/);
     expect(result.message).toMatch(/kaboom/);
 
-    const { atoms: all } = await host.atoms.query({ type: ['observation'] }, 100);
-    const invoked = all.find((a) => a.metadata['kind'] === 'code-author-invoked');
-    expect(invoked!.metadata['executor_result']).toMatchObject({
+    const exec = await getInvokedExecutorResult(host);
+    expect(exec).toMatchObject({
       kind: 'error',
       stage: 'executor-threw',
     });

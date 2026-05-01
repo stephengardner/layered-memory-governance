@@ -145,6 +145,12 @@ export default async function register(host, registry) {
     repoOwner: owner,
     repoName: repo,
   });
+  // Construct the gh-authed shim once at register time alongside
+  // execImpl so per-dispatch ticks reuse the same closure rather
+  // than re-allocating on every invocation. The closure captures
+  // `tokenCache` only; the token mint inside is still lazy + cached
+  // so the shape mirrors the existing execImpl pattern.
+  const ghAuthedExecImpl = buildGhAuthedExecImpl({ tokenCache });
 
   // Construct a GitWorktreeProvider rooted at the operator's primary
   // checkout. Each dispatch acquires a fresh `<repoDir>/.worktrees/agentic/<id>`
@@ -234,14 +240,12 @@ export default async function register(host, registry) {
     // falls through to the original error so the dispatcher's error
     // path still surfaces a real failure.
     //
-    // Auth: route the probe through gh-as.mjs (the same bot-identity
-    // wrapper the labels step uses). buildBotAuthedExecImpl above is
-    // git-only and lets `gh` fall through to ambient CLI auth, which
-    // would attribute the probe to the operator's PAT. The dedicated
-    // ghAuthedExecImpl below mints an installation token through the
-    // same App record + spawns gh with GH_TOKEN set so the probe runs
-    // under the dispatch bot.
-    const ghAuthedExecImpl = buildGhAuthedExecImpl({ tokenCache });
+    // Auth: route the probe through ghAuthedExecImpl (built at
+    // register time). buildBotAuthedExecImpl is git-only and lets
+    // `gh` fall through to ambient CLI auth, which would attribute
+    // the probe to the operator's PAT. ghAuthedExecImpl mints an
+    // installation token through the same App record + spawns gh
+    // with GH_TOKEN set so the probe runs under the dispatch bot.
     let recoveredFromGatewayError = false;
     if (
       result.kind === 'error'
