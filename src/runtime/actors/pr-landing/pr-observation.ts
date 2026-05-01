@@ -47,19 +47,29 @@ export interface PrObservationInputs {
 }
 
 /**
- * Deterministic id keyed on head SHA. Same SHA -> same atom (write is
- * a no-op when the atom already exists). New SHA -> new atom with a
- * derived_from link to the prior observation so history chains
- * without scanning.
+ * Deterministic id keyed on head SHA AND minute-truncated observation
+ * time. The SHA prefix gives within-commit idempotence (two observers
+ * watching the same commit collapse to one atom); the minute slug gives
+ * across-minute distinctness so a state-transition observation
+ * (OPEN -> MERGED on the same head SHA) lands under a fresh id and
+ * supersedes the prior one. Two observations within the same minute
+ * collapse to the same id (idempotent re-observe).
+ *
+ * UTC-only minute slug: observedAt is an ISO-8601 string; truncate to
+ * minute (16 chars: YYYY-MM-DDTHH:MM) and strip non-digits to keep the
+ * id filesystem-safe.
  */
 export function mkPrObservationAtomId(
   owner: string,
   repo: string,
   number: number,
   headSha: string,
+  observedAt: Time,
 ): AtomId {
   const shaSuffix = String(headSha).slice(0, 12);
-  return `pr-observation-${owner}-${repo}-${number}-${shaSuffix}` as AtomId;
+  const minute = String(observedAt).slice(0, 16);
+  const minuteSlug = minute.replace(/[^0-9]/g, '');
+  return `pr-observation-${owner}-${repo}-${number}-${shaSuffix}-${minuteSlug}` as AtomId;
 }
 
 export function mkPrObservationAtom(inputs: PrObservationInputs): Atom {

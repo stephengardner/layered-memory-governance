@@ -605,10 +605,10 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
     process.exit(1);
   }
 
-  const atomId = mkPrObservationAtomId(owner, repo, number, headSha);
+  const nowIso = new Date().toISOString();
+  const atomId = mkPrObservationAtomId(owner, repo, number, headSha, nowIso);
   const existing = await host.atoms.get(atomId);
 
-  const nowIso = new Date().toISOString();
   const body = renderPrObservationBody({ owner, repo, number, status, headSha, observedAt: nowIso });
 
   let atomWritten = false;
@@ -636,6 +636,25 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
       await host.atoms.put(atom);
       atomWritten = true;
       console.log(`[pr-landing:observe-only] wrote pr-observation atom ${atomId}`);
+
+      // Supersede the prior observation so the pr-merge-reconcile tick
+      // ignores it and reads only the fresh atom we just wrote. Without
+      // this, an OPEN observation written at PR-creation time would
+      // remain visible to the reconciler alongside the MERGED/CLOSED
+      // one we just landed and the reconciler would see ambiguous
+      // state. Best-effort: a transient host failure here means the
+      // prior atom remains visible and the reconciler may pick the
+      // wrong one this tick; the next refresh tick re-runs and the
+      // supersede step retries. Do NOT fail the whole observation for
+      // a supersede miss.
+      if (priorId && priorId !== atomId) {
+        try {
+          await host.atoms.update(priorId, { superseded_by: [atomId] });
+          console.log(`[pr-landing:observe-only] superseded prior atom ${priorId}`);
+        } catch (sErr) {
+          console.warn(`[pr-landing:observe-only] failed to supersede prior atom ${priorId}: ${sErr?.message ?? sErr}`);
+        }
+      }
     } catch (err) {
       const code = err?.code ?? err?.kind;
       if (code === 'conflict' || /already exists/i.test(String(err?.message ?? ''))) {

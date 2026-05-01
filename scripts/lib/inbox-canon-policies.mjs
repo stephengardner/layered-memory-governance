@@ -232,6 +232,24 @@ export function buildPolicies(operatorId) {
         deadline_imminent_threshold_ms: 60_000,
       },
     },
+    {
+      id: 'pol-pr-observation-freshness-threshold-ms',
+      subject: 'pr-observation-freshness-threshold-ms',
+      reason:
+        'Freshness threshold for pr-observation atoms. The plan-observation-refresh tick '
+        + 're-observes a PR whose latest observation is older than this many milliseconds, '
+        + 'has pr_state=OPEN, and whose linked plan is still executing. Default 5 minutes is '
+        + 'a sensible indie-floor; an org running tighter latency budgets sets a smaller '
+        + 'value. Closes the substrate gap where a PR that merges or closes leaves its plan '
+        + 'stuck in plan_state=executing because the only observation atom for the PR was '
+        + 'written ONCE at PR-creation time and carries pr_state=OPEN forever.',
+      fields: {
+        // 5 minutes matches the autonomous-loop cadence; the next approval-cycle
+        // tick after a PR merges sees the stale observation and refreshes it,
+        // which the reconciler then transitions on the same pass.
+        freshness_ms: 300_000,
+      },
+    },
   ];
 }
 

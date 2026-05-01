@@ -14,10 +14,17 @@
  *   2. runPlanApprovalTick        proposed -> approved (or abandoned)
  *                                  for distinct-principal consensus
  *                                  (pol-plan-multi-reviewer-approval).
- *   3. runPlanStateReconcileTick  executing|approved -> succeeded|abandoned
+ *   3. runPlanObservationRefreshTick  refresh stale pr-observation
+ *                                      atoms whose linked plan is still
+ *                                      executing and whose pr_state is
+ *                                      non-terminal, so the reconciler
+ *                                      below sees fresh terminal state
+ *                                      on PRs that have merged or
+ *                                      closed since the last observe.
+ *   4. runPlanStateReconcileTick  executing|approved -> succeeded|abandoned
  *                                  when a pr-observation carries a
  *                                  terminal merge_state_status.
- *   4. runDispatchTick            approved -> executing
+ *   5. runDispatchTick            approved -> executing
  *                                  via SubActorRegistry.invoke.
  *
  * Order matters: auto-approve + multi-reviewer-approve BEFORE dispatch
@@ -74,12 +81,25 @@ import {
   runPlanApprovalTick,
 } from '../dist/actor-message/index.js';
 import { runPlanStateReconcileTick } from '../dist/runtime/plans/pr-merge-reconcile.js';
+import { runPlanObservationRefreshTick } from '../dist/runtime/plans/pr-observation-refresh.js';
 import {
   LLM_REQUIRING_SUB_ACTORS,
   checkLlmCompatibility,
 } from './lib/approval-cycle-gate.mjs';
+import { createPrLandingObserveRefresher } from './lib/pr-observation-refresher.mjs';
 
 const SUPPORTED_LLMS = new Set(['claude-cli', 'memory']);
+
+/**
+ * Render a skipped-by-reason map as "skipped=<key>=<count>,..." or empty
+ * when nothing was skipped. Used by the per-tick log lines so the
+ * format stays consistent across ticks.
+ */
+function formatSkipped(skipped) {
+  const entries = Object.entries(skipped).filter(([, n]) => n > 0);
+  if (entries.length === 0) return '';
+  return ` skipped=${entries.map(([k, n]) => `${k}=${n}`).join(',')}`;
+}
 
 function parseArgs(argv) {
   const args = {
@@ -88,6 +108,7 @@ function parseArgs(argv) {
     invokersPath: null,
     llm: 'claude-cli',
     once: true,
+    refresh: true,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -96,16 +117,18 @@ function parseArgs(argv) {
     else if (a === '--invokers' && i + 1 < argv.length) args.invokersPath = argv[++i];
     else if (a === '--llm' && i + 1 < argv.length) args.llm = argv[++i];
     else if (a === '--once') args.once = true;
+    else if (a === '--no-refresh') args.refresh = false;
     else if (a === '--help' || a === '-h') {
       console.log([
         'Usage: node scripts/run-approval-cycle.mjs --root-dir <path> [--principal-id <id>] [--invokers <path>] [--llm <adapter>] [--once]',
         '',
         'Runs one pass of the approval cycle, in order:',
-        '  0. runIntentAutoApprovePass    (intent-backed single-principal)',
-        '  1. runAutoApprovePass          (single-principal allowlist)',
-        '  2. runPlanApprovalTick         (distinct-principal consensus)',
-        '  3. runPlanStateReconcileTick   (pr-merge writeback)',
-        '  4. runDispatchTick             (approved -> executing)',
+        '  0. runIntentAutoApprovePass        (intent-backed single-principal)',
+        '  1. runAutoApprovePass              (single-principal allowlist)',
+        '  2. runPlanApprovalTick             (distinct-principal consensus)',
+        '  3. runPlanObservationRefreshTick   (refresh stale pr-observation atoms)',
+        '  4. runPlanStateReconcileTick       (pr-merge writeback)',
+        '  5. runDispatchTick                 (approved -> executing)',
         '',
         'Options:',
         '  --root-dir <path>      Required. The LAG state dir (e.g. .lag).',
@@ -133,6 +156,9 @@ function parseArgs(argv) {
         "                         AND the registry contains a sub-actor that",
         "                         requires a real LLM (today: code-author).",
         '  --once                 Run one pass and exit (default).',
+        '  --no-refresh           Skip the pr-observation refresh tick. Use on',
+        '                         deployments that observe PRs through a webhook',
+        '                         or that never want polling. Default: refresh on.',
         '',
         'Exit codes:',
         '  0  all ticks completed without throwing',
@@ -304,7 +330,28 @@ async function main() {
     firstError = firstError ?? err;
   }
 
-  // 3. PR-merge writeback (executing|approved -> succeeded|abandoned).
+  // 3. Refresh stale pr-observation atoms so the reconciler below
+  // sees terminal pr_state on PRs that have merged or closed since
+  // the last observation. Best-effort: tick errors and refresher
+  // errors are non-fatal so the rest of the cycle still runs. The
+  // tick is invisible-by-default: zero plans in 'executing' means
+  // zero scans, zero spawns, zero GitHub API spend.
+  if (args.refresh) {
+    try {
+      const refresher = createPrLandingObserveRefresher({ repoRoot: process.cwd() });
+      const r = await runPlanObservationRefreshTick(host, refresher);
+      const skippedFragment = formatSkipped(r.skipped);
+      console.log(
+        '[approval-cycle] plan-obs-refresh   '
+        + `scanned=${r.scanned} refreshed=${r.refreshed}${skippedFragment}`,
+      );
+    } catch (err) {
+      console.error(`[approval-cycle] plan-obs-refresh FAILED: ${err?.message ?? err}`);
+      firstError = firstError ?? err;
+    }
+  }
+
+  // 4. PR-merge writeback (executing|approved -> succeeded|abandoned).
   try {
     const r = await runPlanStateReconcileTick(host);
     console.log(
@@ -316,7 +363,7 @@ async function main() {
     firstError = firstError ?? err;
   }
 
-  // 4. Dispatch approved plans.
+  // 5. Dispatch approved plans.
   try {
     const r = await runDispatchTick(host, registry);
     console.log(
