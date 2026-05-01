@@ -493,10 +493,17 @@ export function listPrActivity(
     const state = atom.type === 'plan-merge-settled'
       ? 'merged'
       : (stateRaw ? stateRaw.toLowerCase() : 'unknown');
-    // Title resolution ladder; see JSDoc above.
-    let title: string | null = typeof meta['pr_title'] === 'string'
-      ? (meta['pr_title'] as string)
-      : null;
+    // Title resolution ladder; see JSDoc above. Empty-string pr_title
+    // is treated as absent so the plan-title fallback still runs --
+    // an upstream `pr_title: ''` (e.g. a producer that captures the
+    // field but writes the empty default) should not block the
+    // resolution, just like the plan-title index guard ignores empty
+    // strings via `t.length > 0` above.
+    let title: string | null
+      = typeof meta['pr_title'] === 'string'
+          && (meta['pr_title'] as string).length > 0
+        ? (meta['pr_title'] as string)
+        : null;
     if (title === null) {
       const planId = typeof meta['plan_id'] === 'string'
         ? (meta['plan_id'] as string)

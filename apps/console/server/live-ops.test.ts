@@ -827,4 +827,34 @@ describe('listPrActivity', () => {
     const out = listPrActivity(atoms, NOW);
     expect(out[0]?.title).toBeNull();
   });
+
+  // Regression: an empty-string `pr_title` should NOT block the
+  // plan-title fallback (the rest of the ladder treats empty as
+  // absent via the same `length > 0` guard).
+  it('treats empty-string pr_title as absent and falls back to the plan title', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-empty-pr-title-fallback',
+        type: 'plan',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: { title: 'Plan title used because pr_title was empty' },
+      }),
+      atom({
+        id: 'pr-observation-304',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { number: 304 },
+          pr_state: 'OPEN',
+          pr_title: '',
+          plan_id: 'plan-empty-pr-title-fallback',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.title).toBe('Plan title used because pr_title was empty');
+  });
 });
