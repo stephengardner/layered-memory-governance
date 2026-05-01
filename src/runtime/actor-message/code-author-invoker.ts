@@ -414,10 +414,19 @@ function renderExecutorMetadata(
   result: CodeAuthorExecutorResult,
 ): Record<string, unknown> {
   if (result.kind === 'error') {
+    // Preserve `branch_name` on the error metadata when the executor
+    // surfaced one. Without it, a downstream consumer reading
+    // `metadata.executor_result` from the observation atom cannot
+    // see the branch the executor pushed before the failure step,
+    // and any reconciliation that depends on the field becomes
+    // observation-blind.
     return {
       kind: 'error',
       stage: result.stage,
       reason: result.reason,
+      ...(typeof result.branchName === 'string' && result.branchName.length > 0
+        ? { branch_name: result.branchName }
+        : {}),
     };
   }
   return {

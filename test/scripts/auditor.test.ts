@@ -89,6 +89,17 @@ describe('isPrAuthorTrustedForEmbedded', () => {
     expect(isPrAuthorTrustedForEmbedded('c-bot', '  a-bot  ,  b-bot  ')).toBe(false);
   });
 
+  it('treats a whitespace-only override as unsupplied (falls back to default)', () => {
+    // A whitespace-only env value is the operator-typo failure mode:
+    // export LAG_AUDITOR_TRUSTED_PR_AUTHOR='   ' should NOT collapse
+    // the allowlist to empty (which would silently reject every
+    // legitimate dispatch-bot PR), it should fall back to the indie
+    // default. Trim before testing length to enforce that.
+    expect(isPrAuthorTrustedForEmbedded('lag-ceo[bot]', '   ')).toBe(true);
+    expect(isPrAuthorTrustedForEmbedded('app/lag-ceo', '\t\n  ')).toBe(true);
+    expect(isPrAuthorTrustedForEmbedded('mallory', '  ')).toBe(false);
+  });
+
   it('returns false on empty / null / undefined author login (fail-closed)', () => {
     // A missing author login is the gh-CLI failure signature for
     // a deleted-account author or a permissions-stripped read; the

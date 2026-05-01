@@ -348,6 +348,43 @@ describe('runCodeAuthor', () => {
     expect(exec['kind']).toBe('error');
     expect(exec['stage']).toBe('apply-branch');
     expect(exec['reason']).toBe('dirty worktree');
+    // No branch_name on a pre-push failure stage; the omit-when-undefined
+    // discipline keeps the observation metadata clean for downstream
+    // consumers that condition on the field's presence.
+    expect(exec['branch_name']).toBeUndefined();
+  });
+
+  it('preserves branchName on the executor_result metadata when the executor surfaces it', async () => {
+    // Failures AFTER the push step (pr-creation/*) carry a
+    // branchName so a downstream consumer reading
+    // observation.metadata.executor_result can detect the orphaned
+    // remote artifact and reconcile it. Without preserving the
+    // field through the metadata projection, the type-contract
+    // change would be wire-invisible.
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async () => ({
+      kind: 'error',
+      stage: 'pr-creation/gh-api-failed',
+      reason: 'gh REST pulls create failed: HTTP 504: Gateway Timeout',
+      branchName: 'code-author/plan-x-abc123',
+    }));
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-1',
+      { executor, idNonce: 'eeeeee' },
+    );
+    expect(result.kind).toBe('error');
+
+    const { atoms: all } = await host.atoms.query({ type: ['observation'] }, 100);
+    const invoked = all.find((a) => a.metadata['kind'] === 'code-author-invoked');
+    const exec = invoked!.metadata['executor_result'] as Record<string, unknown>;
+    expect(exec['kind']).toBe('error');
+    expect(exec['stage']).toBe('pr-creation/gh-api-failed');
+    expect(exec['branch_name']).toBe('code-author/plan-x-abc123');
   });
 
   it('with executor that throws: invoker catches and records executor-threw stage', async () => {

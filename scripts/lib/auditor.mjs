@@ -79,7 +79,13 @@ export function computeVerdict({ diffRadius, envelopeMax }) {
  */
 export function isPrAuthorTrustedForEmbedded(authorLogin, allowlistRaw) {
   if (typeof authorLogin !== 'string' || authorLogin.length === 0) return false;
-  const raw = typeof allowlistRaw === 'string' && allowlistRaw.length > 0
+  // Trim before testing length so a whitespace-only override (e.g.
+  // `LAG_AUDITOR_TRUSTED_PR_AUTHOR='   '`) is treated as unsupplied
+  // and falls back to the indie default. Without the trim, the
+  // whitespace passes the truthy gate, splits to one empty entry,
+  // gets filtered out, and produces an empty allowlist that rejects
+  // every legitimate dispatch-bot PR silently.
+  const raw = typeof allowlistRaw === 'string' && allowlistRaw.trim().length > 0
     ? allowlistRaw
     : 'lag-ceo[bot],app/lag-ceo';
   const allowed = raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
