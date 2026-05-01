@@ -169,9 +169,15 @@ export function listActiveSessions(
       : atom.created_at;
     const lastTurnTs = latestTurnBySession.get(sessionId) ?? null;
     const lastTurnAt = lastTurnTs !== null ? new Date(lastTurnTs).toISOString() : null;
-    // Active iff (a) no ended_at AND (b) either we have a recent turn
-    // or we have no turns at all (just-spawned).
-    const turnRecent = lastTurnTs === null || (now - lastTurnTs) <= ACTIVE_SESSION_TURN_WINDOW_MS;
+    // Active iff (a) no ended_at AND (b) either we have a recent turn,
+    // or we have no turns at all but the session was just-spawned within
+    // the active window. Without the started_at fallback for the turn-less
+    // case, sessions that mint an agent-session atom but never record a
+    // turn (e.g. cron-pulse stubs) would show as "active" indefinitely.
+    const turnRecent =
+      (lastTurnTs === null
+        && (now - parseIsoTs(startedAt)) <= ACTIVE_SESSION_TURN_WINDOW_MS)
+      || (lastTurnTs !== null && (now - lastTurnTs) <= ACTIVE_SESSION_TURN_WINDOW_MS);
     const isActive = endedAt === null && turnRecent;
     if (!isActive) continue;
     out.push({
@@ -211,6 +217,15 @@ export function listLiveDeliberations(
     if (planState !== 'proposed') continue;
     if (atom.superseded_by && atom.superseded_by.length > 0) continue;
     if (atom.taint && atom.taint !== 'clean') continue;
+    // Exclude failure escalations from the live-deliberations feed.
+    // missingJudgmentPlan() in src/runtime/actors/planning/host-llm-judgment.ts
+    // (lines 135-168) emits plan_state='proposed' atoms whose id begins with
+    // 'plan-clarify-cannot-draft-' to surface LLM-judgment failures to the
+    // operator's HIL path. Those are explicit failure escalations (confidence
+    // 0.15, title "Clarify: cannot draft a grounded plan ..."), not live work,
+    // and they belong on a separate escalations feed rather than drowning out
+    // legitimate proposed plans on the dashboard's front page.
+    if (atom.id.startsWith('plan-clarify-cannot-draft-')) continue;
     const ts = parseIsoTs(atom.created_at);
     if (!Number.isFinite(ts)) continue;
     proposed.push({ atom, ts });
