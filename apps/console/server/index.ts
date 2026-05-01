@@ -507,6 +507,32 @@ async function handleActorActivityStream(params: {
  * field is present (arch-plan-state-top-level-field).
  */
 /*
+ * Single-atom lookup by id. The substrate writes atoms of MANY types
+ * (plan, pipeline, pipeline-stage-event, brainstorm-output, spec-output,
+ * review-report, dispatch-record, actor-message, agent-session,
+ * agent-turn, operator-intent, observation, pr-fix-observation, etc.),
+ * not just the L3 canon set surfaced by /api/canon.list. The atom-detail
+ * UI page (route '/atom/<id>') needs a generic read for ANY of those,
+ * so this endpoint exposes the full atom shape from the in-memory index
+ * (the canonical projection per arch-atomstore-source-of-truth).
+ *
+ * Hot-path lookup: the index is keyed by `${id}.json` so id->atom is
+ * O(1). The readAllAtoms() linear-scan fallback only runs in the
+ * narrow startup window before primeAtomIndex resolves, preserving
+ * first-request correctness without paying O(N) on the steady state.
+ *
+ * Returns null when the id is unknown so the caller can render a
+ * targeted "atom not found" empty state rather than a generic 5xx.
+ */
+async function handleAtomGet(id: string): Promise<Atom | null> {
+  if (atomIndexPrimed) {
+    return atomIndex.get(`${id}.json`) ?? null;
+  }
+  const all = await readAllAtoms();
+  return all.find((a) => a.id === id) ?? null;
+}
+
+/*
  * Reverse refs = every atom whose provenance or metadata points AT
  * the given id. Lets the UI surface "this atom is referenced by..."
  * on any card — turns the derived_from graph bidirectional.
@@ -2338,6 +2364,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'arbitration-compare-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.get' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const id = typeof body['id'] === 'string' ? (body['id'] as string) : '';
+    if (!id) {
+      sendErr(req, res, 400, 'missing-id', 'atoms.get requires { id: string }');
+      return;
+    }
+    try {
+      const atom = await handleAtomGet(id);
+      if (!atom) {
+        sendErr(req, res, 404, 'atom-not-found', `no atom with id ${id}`);
+        return;
+      }
+      sendOk(req, res, atom);
+    } catch (err) {
+      sendErr(req, res, 500, 'atoms-get-failed', (err as Error).message);
     }
     return;
   }

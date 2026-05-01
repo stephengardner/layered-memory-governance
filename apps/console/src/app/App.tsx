@@ -18,8 +18,10 @@ import { TimelineView } from '@/features/timeline-viewer/TimelineView';
 import { MetricsRollupView } from '@/features/metrics-rollup/MetricsRollupView';
 import { ActorActivityView } from '@/features/actor-activity/ActorActivityView';
 import { LiveOpsView } from '@/features/live-ops/LiveOpsView';
+import { AtomDetailView } from '@/features/atom-detail-viewer/AtomDetailView';
+import { EmptyState } from '@/components/state-display/StateDisplay';
 import { PageTransition } from '@/components/page-transition/PageTransition';
-import { useRoute, type Route } from '@/state/router.store';
+import { useRoute, useRouteId, type Route } from '@/state/router.store';
 import { useThemeStore } from '@/state/theme.store';
 import { useDensityStore } from '@/state/density.store';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
@@ -38,6 +40,7 @@ export function App() {
   const theme = useThemeStore((s) => s.theme);
   const density = useDensityStore((s) => s.density);
   const route = useRoute();
+  const routeId = useRouteId();
   const [helpOpen, setHelpOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [proposeOpen, setProposeOpen] = useState(false);
@@ -65,7 +68,7 @@ export function App() {
   return (
     <>
       <AppShell route={route} onPropose={() => setProposeOpen(true)}>
-        <PageTransition key={route}>{renderRoute(route)}</PageTransition>
+        <PageTransition key={route}>{renderRoute(route, routeId)}</PageTransition>
       </AppShell>
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
@@ -74,7 +77,7 @@ export function App() {
   );
 }
 
-function renderRoute(r: Route) {
+function renderRoute(r: Route, id: string | null) {
   switch (r) {
     case 'dashboard': return <MetricsRollupView />;
     case 'control': return <ControlPanelView />;
@@ -91,5 +94,21 @@ function renderRoute(r: Route) {
     case 'graph': return <GraphView />;
     case 'timeline': return <TimelineView />;
     case 'actor-activity': return <ActorActivityView />;
+    case 'atom':
+      /*
+       * The atom-detail viewer requires an id segment. A bare /atom
+       * URL with no second segment is recoverable: redirect-empty
+       * pattern via an EmptyState that points at the activities feed.
+       */
+      if (!id) {
+        return (
+          <EmptyState
+            title="Open an atom from another view"
+            detail="The atom-detail page renders a single atom by id. Click an atom-ref chip from anywhere in the console to land here."
+            testId="atom-detail-empty-id"
+          />
+        );
+      }
+      return <AtomDetailView atomId={id} />;
   }
 }

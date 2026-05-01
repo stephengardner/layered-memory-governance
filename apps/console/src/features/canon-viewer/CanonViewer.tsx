@@ -187,7 +187,21 @@ function FocusOrEmpty({ focusId }: { focusId: string | null }) {
       />
     );
   }
-  const label = target === 'plans' ? 'Plans' : 'Activities';
+  /*
+   * Label the redirect target by the surface the operator will land on.
+   * The atom-detail fallback ('atom') ships 2026-05-01 alongside the
+   * generic atom-detail viewer; AtomRef hover / click already routes
+   * non-canon ids straight there, so this branch only triggers when an
+   * operator manually opens a /canon/<id> permalink with a non-canon
+   * id (copy-paste, old bookmark).
+   */
+  const label = target === 'plans'
+    ? 'Plans'
+    : target === 'activities'
+      ? 'Activities'
+      : target === 'pipelines'
+        ? 'Pipelines'
+        : 'Atom detail';
   return (
     <EmptyState
       title="Not in canon"
@@ -203,7 +217,7 @@ function FocusOrEmpty({ focusId }: { focusId: string | null }) {
             setRoute(target, focusId);
           }}
         >
-          Open in {label} →
+          Open in {label} {'\u2192'}
         </a>
       }
     />

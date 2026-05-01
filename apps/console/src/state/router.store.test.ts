@@ -113,12 +113,52 @@ describe('routeForAtomId', () => {
       expect(routeForAtomId('ref-target-architecture')).toBe('canon');
     });
 
-    it('routes unknown ids to canon (fallback)', () => {
-      // The fallback is intentionally 'canon' for now; unknown atom
-      // types are most likely future canon prefixes. If a non-canon
-      // class becomes prominent enough to dead-end clicks, add an
-      // explicit branch above (mirroring how q-* was added 2026-04-27).
-      expect(routeForAtomId('mystery-atom-2026-04-26')).toBe('canon');
+  });
+
+  describe('atom-detail (generic fallback)', () => {
+    it('routes unknown ids to the generic atom-detail viewer', () => {
+      // Default behaviour for any id whose prefix is not one of the
+      // known buckets above. Replaces the old 'canon' fallback so a
+      // non-canon atom (plan-* settlement, observation-*, agent-turn-*,
+      // spec-output-*, etc.) always lands on a meaningful page. The
+      // generic atom-detail viewer renders the full atom shape with
+      // type-specific renderers for the high-volume types and a
+      // generic fallback for unknown types.
+      expect(routeForAtomId('mystery-atom-2026-04-26')).toBe('atom');
+    });
+
+    it('routes brainstorm-* root prefixes to atom-detail', () => {
+      // A plain `brainstorm-` (without `-output-`) doesn't match the
+      // pipeline-descendant list or any canon prefix; it lands on the
+      // generic detail page where the brainstorm-output renderer (or
+      // generic fallback for non-output variants) renders it.
+      expect(routeForAtomId('brainstorm-2026-05-01')).toBe('atom');
+    });
+
+    it('routes auditor-plan-check-* (verdict observations) to atom-detail', () => {
+      // verdict atoms are typed `observation` with metadata.kind=
+      // 'auditor-plan-check'; their id starts with `auditor-plan-check-`
+      // which doesn't match any canon prefix. Generic detail viewer
+      // dispatches to the auditor-plan-check renderer based on the
+      // atom's metadata.kind, not its id prefix.
+      expect(routeForAtomId('auditor-plan-check-some-plan-2026-05-01')).toBe('atom');
+    });
+
+    it('routes operator-intent-* to atom-detail', () => {
+      // operator-intent atoms carry the trust_envelope shape; the
+      // generic atom-detail viewer dispatches to the operator-intent
+      // renderer. Note: short-form `intent-*` ids route to activities
+      // per the existing ACTIVITY_PREFIXES branch above.
+      expect(routeForAtomId('operator-intent-canon-scout-1777358233934')).toBe('atom');
+    });
+
+    it('routes spec-output-* (without pipeline-output prefix collision) to atom-detail', () => {
+      // The pipeline-descendant list catches `spec-output-` already
+      // (test case in the activities block). This test covers a
+      // hypothetical bare `spec-output` id without the trailing dash:
+      // the prefix list match is `'spec-output-'`, so an id without
+      // the dash falls through to the generic fallback.
+      expect(routeForAtomId('spec-output')).toBe('atom');
     });
   });
 

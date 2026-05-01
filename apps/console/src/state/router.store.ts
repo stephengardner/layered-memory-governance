@@ -12,6 +12,7 @@ import { useSyncExternalStore } from 'react';
  *   /activities/<atom-id>
  *   /plans
  *   /plans/<plan-id>
+ *   /atom/<atom-id>     (generic atom-detail viewer, any atom type)
  *
  * This is an enterprise-style path structure — the second segment is
  * a first-class URL citizen (permalinkable, bookmarkable, shareable)
@@ -27,7 +28,7 @@ import { useSyncExternalStore } from 'react';
  * routes by default, so `/canon/my-atom-id` resolves to the SPA bundle.
  */
 
-export type Route = 'dashboard' | 'control' | 'live-ops' | 'canon' | 'principals' | 'hierarchy' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions' | 'actor-activity' | 'deliberation' | 'pipelines';
+export type Route = 'dashboard' | 'control' | 'live-ops' | 'canon' | 'principals' | 'hierarchy' | 'activities' | 'plans' | 'graph' | 'timeline' | 'plan-lifecycle' | 'canon-suggestions' | 'actor-activity' | 'deliberation' | 'pipelines' | 'atom';
 
 /*
  * `dashboard` is the new home: landing on `/` resolves here so the
@@ -56,6 +57,7 @@ const VALID: ReadonlyArray<Route> = [
   'actor-activity',
   'deliberation',
   'pipelines',
+  'atom',
 ];
 const NAV_EVENT = 'lag-console:navigate';
 
@@ -218,30 +220,48 @@ const ACTIVITY_PREFIXES = [
   'q-',
 ] as const;
 
+/*
+ * Atom-id prefixes that signal a canon-shaped atom (L3 directive,
+ * decision, preference, reference, invariant, architecture, policy).
+ * Routed to the canon viewer's focus mode where filter + drift checks
+ * give an L3-aware shell. New canon-domain prefixes go here so they
+ * land on the canon page rather than the generic atom-detail viewer.
+ */
+const CANON_PREFIXES = [
+  'arch-',
+  'dev-',
+  'inv-',
+  'pol-',
+  'dec-',
+  'pref-',
+  'ref-',
+] as const;
+
 function hasAnyPrefix(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
 }
 
 /*
- * Given an atom id, pick the view it belongs to. Canon atoms use
- * domain prefixes (arch/dev/inv/pol/dec/pref/ref), so the default is
- * 'canon'. Only atoms we KNOW live elsewhere get routed away — plans
- * and activity-like atoms (operator-action, actor-messages, audit
- * replies, planner-deliberation questions).
+ * Given an atom id, pick the view it belongs to. The order is precise:
  *
- * `plan-merge-settled-*` atoms are settlement records emitted by
- * pr-landing-agent; they're activity-shaped, not plan documents, so
- * route them with the other activity atoms. The check is order-
- * sensitive — must precede the generic `plan-` prefix.
+ *   1. plan-merge-settled-*           -> activities (settlement records)
+ *   2. pipeline descendant prefixes   -> activities (per-stage children)
+ *   3. pipeline-*                     -> pipelines  (root pipeline atoms)
+ *   4. plan-*                         -> plans      (plan documents)
+ *   5. activity prefixes              -> activities (operator + messaging)
+ *   6. canon prefixes                 -> canon      (L3 governance atoms)
+ *   7. anything else                  -> atom      (generic detail viewer)
  *
- * `q-*` atoms are deliberation sub-events (the planner raised an
- * internal Q&A inside a plan). Without an explicit branch they fell
- * through to 'canon' and rendered as an empty canon focus page. The
- * activities view handles arbitrary atom ids in focus mode (the list
- * scrolls the focused entry into view) and renders the question
- * content correctly, so route them there until a dedicated
- * deliberation drill-down resolves question-id back to its parent
- * plan-id.
+ * The trailing `'atom'` fallback (introduced 2026-05-01) replaces an
+ * earlier `return 'canon'` default. The substrate writes atoms of
+ * MANY types (plan, pipeline-stage-event, brainstorm-output, spec-output,
+ * review-report, dispatch-record, actor-message, agent-session,
+ * agent-turn, operator-intent, observation, pr-fix-observation, ...);
+ * a canon-default routed every unknown id to the canon viewer's
+ * focus-mode, which silently filters non-canon types out of the L3
+ * grid and rendered an empty page. The generic atom-detail viewer at
+ * `/atom/<id>` handles every atom type via a type-dispatch table with
+ * a generic fallback for unknown types.
  */
 export function routeForAtomId(id: string): Route {
   if (id.startsWith('plan-merge-settled-')) return 'activities';
@@ -249,5 +269,6 @@ export function routeForAtomId(id: string): Route {
   if (id.startsWith('pipeline-')) return 'pipelines';
   if (id.startsWith('plan-')) return 'plans';
   if (hasAnyPrefix(id, ACTIVITY_PREFIXES)) return 'activities';
-  return 'canon';
+  if (hasAnyPrefix(id, CANON_PREFIXES)) return 'canon';
+  return 'atom';
 }

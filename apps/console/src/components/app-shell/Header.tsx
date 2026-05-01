@@ -73,6 +73,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Control Tower',
     subtitle: 'Real-time view of which principals are writing atoms right now',
   },
+  atom: {
+    title: 'Atom',
+    subtitle: 'Detail view for any atom in the substrate (every type, with type-specific renderers)',
+  },
 };
 
 /**
