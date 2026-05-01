@@ -470,6 +470,7 @@ GitHub Actions CI runs typecheck, build, default test suite, and a quickstart sm
 9. `design/structural-audit-2026-04.md` - the last principled audit against pluggability, substrate-discipline, and simple-surface goals.
 10. `DECISIONS.md` - living log of architectural choices: what we picked, why, and what we rejected.
 11. `CLAUDE.md` - rendered canon (L3 atoms from this repo's own `.lag/` state). What future agents on this repo should read first.
+12. `docs/cr-precheck.md` - CodeRabbit CLI pre-push gate; how to run CR locally before opening a PR.
 
 ## Non-goals (for now)
 
