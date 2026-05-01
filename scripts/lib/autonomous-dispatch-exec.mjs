@@ -94,6 +94,90 @@ export function parsePlanIdFromPrBody(body) {
 }
 
 /**
+ * Section heading the dispatch-side renderer (renderPrBody in
+ * src/runtime/actors/code-author/pr-creation.ts) emits before the
+ * embedded-atom <details> blocks. Lifted to a module constant so
+ * the dispatch-side and auditor-side anchor the same string; a
+ * drift between the two would silently disable the embedded-atom
+ * carrier flow that fixes the LAG-auditor CI gap (the workflow
+ * runs on a runner with no .lag/atoms/ directory and no named
+ * tunnel, so the embedded JSON in the PR body is the only way the
+ * auditor can resolve the plan + operator-intent snapshots).
+ *
+ * NOTE: must stay in sync with EMBEDDED_ATOMS_HEADING in
+ * src/runtime/actors/code-author/pr-creation.ts. A future refactor
+ * that wants to share the constant across the .ts/.mjs boundary
+ * can promote it into the dist/ output (or a JSON manifest) once
+ * we have a bigger reason to do that work.
+ */
+export const EMBEDDED_ATOMS_HEADING = '## Embedded atom snapshots';
+
+/**
+ * Parse an atom JSON snapshot embedded in a PR body's
+ * `<details>...```json...```...</details>` block keyed by atom id.
+ *
+ * Returns the parsed atom object on success, or null when:
+ *   - body is null/undefined/empty
+ *   - no <details> block matches the embedded-atoms section
+ *   - the requested atomId has no embedded snapshot
+ *   - the JSON payload is malformed
+ *   - the parsed payload's `id` field does not equal the requested
+ *     atomId (round-trip integrity guard; symmetric with how
+ *     parsePlanIdFromPrBody validates the YAML footer's plan_id
+ *     before trusting it)
+ *
+ * The id-mismatch guard is the load-bearing security check: a
+ * malicious PR-body edit could ship a plan-shaped atom under a
+ * legitimate atom id's <details> heading, redirecting the auditor
+ * at an unrelated payload whose envelope might happen to permit
+ * the diff. Comparing the embedded payload's own `id` to the
+ * caller-supplied lookup id rejects that path; the embedded
+ * snapshot must self-identify with the same id the lookup
+ * specified.
+ *
+ * Multiple <details> blocks per body are supported (the renderer
+ * emits one per atom); the parser scans them in order and returns
+ * the first match for the requested atomId.
+ */
+export function parseEmbeddedAtomFromPrBody(body, atomId) {
+  if (typeof body !== 'string' || body.length === 0) return null;
+  if (typeof atomId !== 'string' || atomId.length === 0) return null;
+  // Only scan inside the embedded-atoms section so a stray
+  // <details> elsewhere in the body cannot shadow a missing
+  // embedded snapshot. Anchored to the heading the renderer emits.
+  const sectionStart = body.indexOf(EMBEDDED_ATOMS_HEADING);
+  if (sectionStart < 0) return null;
+  const section = body.slice(sectionStart);
+  // Each block's <summary> carries the atom id with the literal
+  // marker text 'atom: '. Iterate over every <details> block in
+  // the section and inspect the JSON payload to find the match;
+  // the summary text is HTML-escaped for rendering purposes and is
+  // NOT the integrity gate the lookup compares against (the
+  // parsed payload's `id` field is the canonical identifier per
+  // the round-trip security note above).
+  const blockRegex = /<details><summary>atom: [^<]*<\/summary>\s*```json\s*([\s\S]*?)\s*```\s*<\/details>/g;
+  let match;
+  while ((match = blockRegex.exec(section)) !== null) {
+    const jsonText = match[1];
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      // Malformed JSON in this block: keep scanning later blocks
+      // because the renderer always emits valid JSON, but a
+      // mid-section corruption should not silently disable later
+      // valid blocks. A multi-block body where one entry is
+      // malformed still surfaces the others.
+      continue;
+    }
+    if (parsed && typeof parsed === 'object' && parsed.id === atomId) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+/**
  * Build the GitHub label name for a plan id, capped at 50 chars.
  *
  * Returns `plan-id:<id>` when the full id fits, otherwise

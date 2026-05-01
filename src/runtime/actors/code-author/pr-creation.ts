@@ -14,6 +14,8 @@
  */
 
 import type { GhClient } from '../../../external/github/index.js';
+import type { Atom } from '../../../types.js';
+import type { Host } from '../../../interface.js';
 
 export type PrCreationErrorReason =
   | 'missing-owner-repo'
@@ -175,9 +177,53 @@ export interface PrBodyInputs {
   readonly costUsd: number;
   readonly modelUsed: string;
   readonly touchedPaths: ReadonlyArray<string>;
+  /**
+   * Optional per-atom JSON snapshots emitted as collapsible
+   * `<details>` blocks at the end of the body. Each entry's `id`
+   * is rendered in the section anchor and is the round-trip
+   * integrity guard a downstream consumer can validate before
+   * trusting the embedded payload (the parsed JSON's `id` field
+   * must equal the lookup id).
+   *
+   * The body becomes a carrier for governance state a downstream
+   * observer can parse without reaching back to the producing
+   * host's atom store. Optional so callers that do not need a
+   * carrier keep their current body shape; callers that need
+   * one populate this with whatever atoms the consumer expects.
+   */
+  readonly embeddedAtoms?: ReadonlyArray<EmbeddedAtomSnapshot>;
+}
+
+export interface EmbeddedAtomSnapshot {
+  readonly id: string;
+  /**
+   * The atom payload JSON-stringified by the caller. Pre-stringified
+   * (rather than `unknown`) so callers control encoding (pretty-print,
+   * key sorting) and the consumer-side parse is symmetric.
+   */
+  readonly json: string;
 }
 
 const PLAN_CONTENT_CAP = 4000;
+/**
+ * Cap on each embedded atom JSON so a pathological atom cannot
+ * blow past GitHub's PR body length limit (65536 chars for the
+ * description field on the REST API). The 16kB per-atom ceiling
+ * leaves room for several snapshots before the body limit
+ * becomes a concern. Truncation rather than fail-closed because
+ * the truncation marker deliberately produces unparseable JSON,
+ * which makes the parser surface a clear "malformed JSON"
+ * diagnostic rather than silently using a half-cropped atom.
+ */
+const EMBEDDED_ATOM_JSON_CAP = 16_384;
+/**
+ * Section heading for the embedded-atoms block. Stable string the
+ * consumer-side parser anchors to; changing this value is a wire-
+ * compatibility break that requires a coordinated parser update
+ * AND a deployment that processes both the old + new shape during
+ * the rollout window.
+ */
+export const EMBEDDED_ATOMS_HEADING = '## Embedded atom snapshots';
 
 export function renderPrBody(inputs: PrBodyInputs): string {
   // Compute the trimmed plan once so the length check and the slice
@@ -219,5 +265,135 @@ export function renderPrBody(inputs: PrBodyInputs): string {
   lines.push(`observation_atom_id: ${JSON.stringify(inputs.observationAtomId)}`);
   lines.push(`commit_sha: ${JSON.stringify(inputs.commitSha)}`);
   lines.push('```');
+  // Embedded-atom block: rendered last so the carrier is at the
+  // body tail where downstream parsers anchor. Each snapshot
+  // lives inside a collapsible <details> with the atom id on the
+  // summary line so a consumer can scope its parse to a specific
+  // atom. Skipped entirely when no snapshots are passed; existing
+  // callers keep their current body shape because the section is
+  // purely opt-in.
+  const snapshots = inputs.embeddedAtoms ?? [];
+  if (snapshots.length > 0) {
+    lines.push('');
+    lines.push(EMBEDDED_ATOMS_HEADING);
+    lines.push('');
+    for (const snap of snapshots) {
+      lines.push(renderEmbeddedAtomBlock(snap));
+    }
+  }
   return lines.join('\n');
+}
+
+/**
+ * Render one embedded-atom block. Pure, exported for tests; the
+ * production caller path runs through renderPrBody.
+ *
+ * Shape (single block):
+ *   <details><summary>atom: &lt;id&gt;</summary>
+ *
+ *   ```json
+ *   {...}
+ *   ```
+ *
+ *   </details>
+ *
+ * The atom id appears HTML-escaped in the summary so an id with
+ * literal `<`, `>`, or `&` does not break the surrounding HTML
+ * parse on GitHub's renderer. The id used by the consumer-side
+ * parser is the JSON payload's own `id` field (not the summary
+ * text), so the summary's HTML-escape is a rendering concern
+ * separate from the parser's integrity contract.
+ */
+export function renderEmbeddedAtomBlock(snap: EmbeddedAtomSnapshot): string {
+  const safeJson = capEmbeddedJson(snap.json);
+  // HTML-escape the id for the rendered <summary>; the parser
+  // recovers the canonical id from the JSON payload, so this is a
+  // display concern only.
+  const escapedSummaryId = snap.id
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return [
+    `<details><summary>atom: ${escapedSummaryId}</summary>`,
+    '',
+    '```json',
+    safeJson,
+    '```',
+    '',
+    '</details>',
+  ].join('\n');
+}
+
+/**
+ * Build a snapshot pair {plan, ancestor} suitable for the
+ * `embeddedAtoms` field on renderPrBody: walks
+ * `plan.provenance.derived_from` looking for an atom of
+ * `ancestorType`; when found, returns both serialized.
+ *
+ * Returns an empty array when no provenance ancestor of the
+ * requested type is reachable. Callers consume the empty list
+ * by skipping the embedded-atoms section entirely (renderPrBody
+ * does this automatically), keeping the body shape clean for
+ * plans that do not need a carrier.
+ *
+ * Centralized here so multiple executors that emit the same
+ * snapshot pair share one chain-walk rather than duplicating it.
+ */
+export async function buildEmbeddedAtomSnapshots(
+  host: Host,
+  plan: Atom,
+  ancestorType: string = 'operator-intent',
+): Promise<ReadonlyArray<EmbeddedAtomSnapshot>> {
+  const derivedFrom = plan.provenance?.derived_from ?? [];
+  for (const refId of derivedFrom) {
+    const candidate = await host.atoms.get(refId);
+    if (candidate?.type === ancestorType) {
+      // Plan first so a downstream consumer's primary lookup
+      // hits a snapshot before walking provenance; ancestor
+      // second so the rendered body reads top-down (plan ->
+      // its provenance). Order is not load-bearing for the
+      // parser (which scans every block by id) but improves
+      // readability for human reviewers.
+      return [
+        { id: String(plan.id), json: serializeAtom(plan) },
+        { id: String(candidate.id), json: serializeAtom(candidate) },
+      ];
+    }
+  }
+  return [];
+}
+
+/**
+ * Stable, sorted-key JSON serialization for atom snapshots. Sorted
+ * keys keep the output deterministic so two PRs that ship the
+ * same atom produce identical `<details>` blocks; identical body
+ * blocks make the round-trip integrity check (the parser
+ * comparing the embedded `id` to the lookup id) trivially
+ * symmetric on the wire.
+ *
+ * 2-space indent matches GitHub's default Markdown JSON-block
+ * rendering for readability.
+ */
+function serializeAtom(atom: Atom): string {
+  return JSON.stringify(atom, sortedKeysReplacer, 2);
+}
+
+function sortedKeysReplacer(_key: string, value: unknown): unknown {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const sorted: Record<string, unknown> = {};
+    for (const k of Object.keys(value as Record<string, unknown>).sort()) {
+      sorted[k] = (value as Record<string, unknown>)[k];
+    }
+    return sorted;
+  }
+  return value;
+}
+
+function capEmbeddedJson(raw: string): string {
+  if (raw.length <= EMBEDDED_ATOM_JSON_CAP) return raw;
+  // Append an unparseable trailer so the parser fails loudly
+  // rather than silently using a half-cropped atom. The
+  // consumer's not-found fallback path then surfaces the
+  // underlying issue.
+  return `${raw.slice(0, EMBEDDED_ATOM_JSON_CAP)}\n/* truncated at ${EMBEDDED_ATOM_JSON_CAP} chars */`;
 }
