@@ -414,7 +414,10 @@ const planDraftOutput = z.object({
         confidence: z.number().min(0).max(1),
         delegation: z.object({
           sub_actor_principal_id: z.string().min(1).max(200),
-          reason: z.string().min(1).max(300),
+          // Sized for the spec-output era (post-#252): plan-stage drafters
+          // see 10KB+ markdown context and tend toward longer rationales.
+          // Still a runaway-output guard, just relaxed to fit current usage.
+          reason: z.string().min(1).max(1000),
           implied_blast_radius: z.enum(['none', 'docs', 'tooling', 'framework', 'l3-canon-proposal']),
         }),
       }),
