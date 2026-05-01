@@ -173,6 +173,39 @@ describe('buildActorActivityResponse', () => {
     ]);
   });
 
+  it('maps deep-planning-pipeline atom types to human verbs', () => {
+    /*
+     * Guards the verbs for the 9 atom types shipped in the pipeline
+     * substrate + pipelines view + stage-output persistence rounds.
+     * Without explicit entries these fell through to the default
+     * 'wrote' verb and the activity feed lost the pipeline narrative.
+     */
+    const atoms: ActorActivityAtom[] = [
+      atom({ id: 'a', type: 'pipeline', principal_id: 'p1', created_at: '2026-04-26T11:09:00.000Z' }),
+      atom({ id: 'b', type: 'pipeline-stage-event', principal_id: 'p1', created_at: '2026-04-26T11:08:00.000Z' }),
+      atom({ id: 'c', type: 'pipeline-audit-finding', principal_id: 'p1', created_at: '2026-04-26T11:07:00.000Z' }),
+      atom({ id: 'd', type: 'pipeline-failed', principal_id: 'p1', created_at: '2026-04-26T11:06:00.000Z' }),
+      atom({ id: 'e', type: 'pipeline-resume', principal_id: 'p1', created_at: '2026-04-26T11:05:00.000Z' }),
+      atom({ id: 'f', type: 'brainstorm-output', principal_id: 'p1', created_at: '2026-04-26T11:04:00.000Z' }),
+      atom({ id: 'g', type: 'spec-output', principal_id: 'p1', created_at: '2026-04-26T11:03:00.000Z' }),
+      atom({ id: 'h', type: 'review-report', principal_id: 'p1', created_at: '2026-04-26T11:02:00.000Z' }),
+      atom({ id: 'i', type: 'dispatch-record', principal_id: 'p1', created_at: '2026-04-26T11:01:00.000Z' }),
+    ];
+    const r = buildActorActivityResponse(atoms, {}, NOW);
+    const verbs = r.groups[0]!.entries.map((e) => e.verb);
+    expect(verbs).toEqual([
+      'started a pipeline',
+      'transitioned a stage',
+      'flagged an audit finding',
+      'recorded pipeline failure',
+      'resumed a pipeline',
+      'brainstormed alternatives',
+      'drafted a spec',
+      'reviewed pipeline output',
+      'dispatched plan',
+    ]);
+  });
+
   it('counts distinct principals across consecutive runs', () => {
     const atoms: ActorActivityAtom[] = [
       atom({ id: '1', principal_id: 'a', created_at: '2026-04-26T11:00:00.000Z' }),

@@ -109,6 +109,23 @@ const VERB_BY_TYPE: Readonly<Record<string, string>> = Object.freeze({
   'circuit-breaker-trip': 'tripped a circuit breaker',
   'circuit-breaker-reset': 'reset a circuit breaker',
   ephemeral: 'noted ephemerally',
+  /*
+   * Deep planning pipeline atoms (shipped in the pipeline-substrate +
+   * pipelines-view + stage-output-persistence rounds). These atoms now
+   * exist in the local atom store; without explicit verbs they fell
+   * through to 'wrote' and obscured the pipeline narrative in the feed.
+   * Grouped here so the pipeline-* family + per-stage *-output family
+   * read together when scanning the map.
+   */
+  pipeline: 'started a pipeline',
+  'pipeline-stage-event': 'transitioned a stage',
+  'pipeline-audit-finding': 'flagged an audit finding',
+  'pipeline-failed': 'recorded pipeline failure',
+  'pipeline-resume': 'resumed a pipeline',
+  'brainstorm-output': 'brainstormed alternatives',
+  'spec-output': 'drafted a spec',
+  'review-report': 'reviewed pipeline output',
+  'dispatch-record': 'dispatched plan',
 });
 
 function truncate(s: string, n: number): string {
