@@ -54,6 +54,8 @@ function mkStatus(overrides: Partial<PrReviewStatus> = {}): PrReviewStatus {
     pr,
     mergeable: true,
     mergeStateStatus: 'CLEAN',
+    prState: 'OPEN',
+    title: null,
     lineComments: [],
     bodyNits: [],
     submittedReviews: [],

@@ -402,6 +402,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
         mergeable: null as boolean | null,
         mergeStateStatus: null as string | null,
         prState: null as string | null,
+        title: null as string | null,
         headOid: null as string | null,
       };
     });
@@ -453,6 +454,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       mergeable: meta.mergeable,
       mergeStateStatus: meta.mergeStateStatus,
       prState: meta.prState,
+      title: meta.title,
       lineComments: line,
       bodyNits: body,
       submittedReviews: reviews,
@@ -477,6 +479,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
     mergeable: boolean | null;
     mergeStateStatus: string | null;
     prState: string | null;
+    title: string | null;
     headOid: string | null;
   }> {
     const query = `
@@ -486,6 +489,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
             mergeable
             mergeStateStatus
             state
+            title
             headRefOid
           }
         }
@@ -497,6 +501,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
           readonly mergeable: string | null;
           readonly mergeStateStatus: string | null;
           readonly state: string | null;
+          readonly title: string | null;
           readonly headRefOid: string | null;
         };
       };
@@ -518,6 +523,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       mergeable,
       mergeStateStatus: node.mergeStateStatus,
       prState: node.state,
+      title: node.title,
       headOid: node.headRefOid,
     };
   }

@@ -135,6 +135,15 @@ export function mkPrObservationAtom(inputs: PrObservationInputs): Atom {
       mergeable: status.mergeable,
       merge_state_status: status.mergeStateStatus,
       pr_state: status.prState,
+      // Capture title for downstream projections (Live Ops Pulse PR
+      // activity panel, console feeds) so a recognizable label is
+      // available without re-querying GitHub. Read from the composite
+      // status snapshot to keep this surface coherent with the rest
+      // of the metadata. Optional: omit when the upstream adapter
+      // could not read it (null) to avoid materializing a
+      // null-typed field that would force consumers into a defensive
+      // type guard for a value they would never use.
+      ...(typeof status.title === 'string' ? { pr_title: status.title } : {}),
       ...(planId && planId.length > 0 ? { plan_id: planId } : {}),
       counts: {
         line_comments: status.lineComments.length,
