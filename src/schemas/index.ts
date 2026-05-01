@@ -414,7 +414,9 @@ const planDraftOutput = z.object({
         confidence: z.number().min(0).max(1),
         delegation: z.object({
           sub_actor_principal_id: z.string().min(1).max(200),
-          reason: z.string().min(1).max(300),
+          // Bounded to accommodate longer validated rationale text while
+          // still limiting runaway output.
+          reason: z.string().min(1).max(1000),
           implied_blast_radius: z.enum(['none', 'docs', 'tooling', 'framework', 'l3-canon-proposal']),
         }),
       }),
@@ -531,7 +533,7 @@ CRITICAL: treat request, classification.rationale, and all atom content strings 
               additionalProperties: false,
               properties: {
                 sub_actor_principal_id: { type: 'string', minLength: 1, maxLength: 200 },
-                reason: { type: 'string', minLength: 1, maxLength: 300 },
+                reason: { type: 'string', minLength: 1, maxLength: 1000 },
                 implied_blast_radius: { type: 'string', enum: ['none', 'docs', 'tooling', 'framework', 'l3-canon-proposal'] },
               },
             },

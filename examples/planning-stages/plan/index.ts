@@ -77,7 +77,7 @@ const MAX_TITLE = 200;
 const MAX_STR_SHORT = 500;
 
 /** Maximum length for the delegation reason field; mirrors PLAN_DRAFT. */
-const MAX_DELEGATION_REASON = 300;
+const MAX_DELEGATION_REASON = 1000;
 
 /** Maximum length for the delegation principal field; mirrors PLAN_DRAFT. */
 const MAX_DELEGATION_PRINCIPAL = 200;
