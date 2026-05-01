@@ -184,6 +184,96 @@ describe('runPipeline', () => {
     expect(observed).toEqual([]);
   });
 
+  it('forwards options.verifiedSubActorPrincipalIds to every stage StageInput and StageContext', async () => {
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
+    // Capture both StageInput.verifiedSubActorPrincipalIds (run side)
+    // AND StageContext.verifiedSubActorPrincipalIds (audit side) per
+    // stage. The runner MUST forward the same frozen reference into
+    // both surfaces so the prompt-side fence and the audit-side check
+    // walk the same set; a mismatch would silently let an LLM ground
+    // on one set while the auditor enforced another.
+    const captured: Array<{
+      name: string;
+      input: ReadonlyArray<PrincipalId>;
+      context: ReadonlyArray<PrincipalId>;
+    }> = [];
+    const mkCapturingStage = (
+      name: string,
+    ): PlanningStage<unknown, { ok: true }> => ({
+      name,
+      async run(input) {
+        captured.push({
+          name,
+          input: input.verifiedSubActorPrincipalIds,
+          context: [] as ReadonlyArray<PrincipalId>,
+        });
+        return {
+          value: { ok: true },
+          cost_usd: 0,
+          duration_ms: 0,
+          atom_type: 'spec',
+        };
+      },
+      async audit(_value, ctx) {
+        const last = captured[captured.length - 1];
+        if (last !== undefined) {
+          captured[captured.length - 1] = {
+            ...last,
+            context: ctx.verifiedSubActorPrincipalIds,
+          };
+        }
+        return [];
+      },
+    });
+    const verifiedSubActors = [
+      'code-author' as PrincipalId,
+      'auditor-actor' as PrincipalId,
+    ];
+    const result = await runPipeline(
+      [mkCapturingStage('stage-a'), mkCapturingStage('stage-b')],
+      host,
+      {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-sub-actor-fanout',
+        seedAtomIds: ['intent-foo' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+        verifiedSubActorPrincipalIds: verifiedSubActors,
+      },
+    );
+    expect(result.kind).toBe('completed');
+    expect(captured.length).toBe(2);
+    expect(captured[0]?.input).toEqual(verifiedSubActors);
+    expect(captured[0]?.context).toEqual(verifiedSubActors);
+    expect(captured[1]?.input).toEqual(verifiedSubActors);
+    expect(captured[1]?.context).toEqual(verifiedSubActors);
+  });
+
+  it('forwards an empty verifiedSubActorPrincipalIds default when the option is omitted', async () => {
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a']);
+    let observed: ReadonlyArray<PrincipalId> | null = null;
+    const stage: PlanningStage<unknown, unknown> = {
+      name: 'stage-a',
+      async run(input) {
+        observed = input.verifiedSubActorPrincipalIds;
+        return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec' };
+      },
+    };
+    await runPipeline([stage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-sub-actor-default',
+      seedAtomIds: ['intent-foo' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(observed).not.toBeNull();
+    expect(observed).toEqual([]);
+  });
+
   it('halts on kill-switch before the first stage', async () => {
     const host = createMemoryHost();
     vi.spyOn(host.scheduler, 'killswitchCheck').mockReturnValue(true);

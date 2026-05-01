@@ -88,6 +88,7 @@ describe('brainstormStage', () => {
         pipelineId,
         stageName: 'brainstorm-stage',
         verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
       },
     );
     expect(findings?.some(
@@ -237,6 +238,7 @@ describe('brainstormStage', () => {
       pipelineId: 'p' as AtomId,
       seedAtomIds: seedIds,
       verifiedCitedAtomIds: seedIds,
+      verifiedSubActorPrincipalIds: [],
     });
     // Audit-trail contract: the data block still carries the verified
     // seed-atom set under a stable key so the post-stage auditor can
@@ -327,6 +329,7 @@ describe('brainstormStage', () => {
         pipelineId,
         stageName: 'brainstorm-stage',
         verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
       },
     );
     expect(findings?.length).toBeGreaterThan(0);
@@ -356,6 +359,7 @@ describe('brainstormStage', () => {
         pipelineId,
         stageName: 'brainstorm-stage',
         verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
       },
     );
     expect(findings?.length).toBe(0);
@@ -383,6 +387,7 @@ describe('brainstormStage', () => {
         pipelineId,
         stageName: 'brainstorm-stage',
         verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
       },
     );
     expect(findings?.length).toBe(0);

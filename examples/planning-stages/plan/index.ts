@@ -134,17 +134,33 @@ export type PlanPayload = z.infer<typeof planPayloadSchema>;
  * Plan system prompt.
  *
  * Exported so the contract-tests can assert on the citation-grounding
- * language. Tightened (substrate-fix in this PR) so the LLM does not
- * fabricate plausible-but-invented atom-ids in derived_from or
- * principles_applied: the e2e of the deep planning pipeline halted on
- * 2026-04-30 because the unconstrained "NEVER invent atom ids" prompt
- * still left the LLM free to hallucinate plausible principle ids
- * (e.g. "treat-data-as-literal", "minimal-blast-radius") that the
- * post-stage auditor caught and surfaced as critical findings.
- * Constraining citations to data.verified_cited_atom_ids gives the
- * LLM a positive grounding signal it can succeed against; mirrors
- * the brainstorm-stage `verified_seed_atom_ids` pattern, generalised
- * to the plan stage where citation correctness is load-bearing.
+ * language. Two HARD-CONSTRAINT fences live here:
+ *
+ *   (1) Atom-id citation grounding: every atom-id placed in
+ *       derived_from and principles_applied MUST appear in
+ *       data.verified_cited_atom_ids. The dogfeed of 2026-04-30
+ *       halted on this gate because the unconstrained prompt invited
+ *       plausible-but-invented principle ids; the auditor caught
+ *       them and surfaced critical findings. The fix added the
+ *       positive grounding signal mirrored from the brainstorm
+ *       stage's `verified_seed_atom_ids` pattern.
+ *
+ *   (2) Sub-actor delegation grounding: delegation.sub_actor_principal_id
+ *       MUST appear in data.verified_sub_actor_principal_ids. The
+ *       set is the seed operator-intent's
+ *       metadata.trust_envelope.allowed_sub_actors -- the per-run
+ *       authoritative list of sub-actors the autonomous-intent flow
+ *       will auto-approve. Without this fence the drafter chose
+ *       arbitrary strings: dogfeed-4 picked 'plan-dispatcher' (a
+ *       real principal id but the pipeline's OWN dispatch-stage
+ *       principal, not an executable sub-actor) and dogfeed-5 picked
+ *       'pol-llm-tool-policy-code-author' (a POLICY ATOM ID, not a
+ *       principal id at all). Both shapes pass the freeform-string
+ *       schema and only fail later when the auto-approve check
+ *       skips the plan with sub-actor-not-allowed. Surfacing the
+ *       fence at draft-time means the LLM never gets a chance to
+ *       guess; if no allowed sub-actor fits the plan, the plan is
+ *       incomplete and the drafter should not emit it.
  */
 export const PLAN_SYSTEM_PROMPT = `You are the plan stage of a deep-planning pipeline.
 Synthesize the spec-stage output into a plan that the operator can
@@ -163,6 +179,18 @@ would cite is not in that set, OMIT the citation rather than guess.
 Inventing or paraphrasing an atom-id outside the verified set produces
 a critical audit finding and halts the stage. principles_applied is a
 subset of derived_from; both are bounded by the verified set.
+
+HARD CONSTRAINT on delegation.sub_actor_principal_id: the value MUST
+appear in data.verified_sub_actor_principal_ids. That set is the seed
+operator-intent's allowed sub-actors and is the only authoritative
+list of executable principals for this run. Do NOT name the
+pipeline's own stage principals (e.g. plan-dispatcher, spec-author,
+brainstorm-actor); they are stage actors, not implementation
+sub-actors. Do NOT name a policy atom id (e.g. anything starting
+with pol-); policy atoms are not principals. If no allowed sub-actor
+fits the plan you would emit, the plan is incomplete and you must
+NOT emit it. Inventing or paraphrasing a sub-actor outside the
+verified set produces a critical audit finding and halts the stage.
 
 Emit ONLY a payload that matches the provided schema; no prose
 outside the schema fields.`;
@@ -260,6 +288,20 @@ async function runPlan(
       // citation against host.atoms.get and emits a critical finding
       // on fabrication or non-authoritative resolution.
       verified_cited_atom_ids: input.verifiedCitedAtomIds.map(String),
+      // Sub-actor-grounding fence: the LLM is constrained by
+      // PLAN_SYSTEM_PROMPT to name delegation.sub_actor_principal_id
+      // ONLY from this array. Computed by the runner's caller
+      // (runDeepPipeline) from the seed operator-intent's
+      // metadata.trust_envelope.allowed_sub_actors -- the intent
+      // envelope IS the per-run authoritative list of sub-actors,
+      // and matches the same set the auto-approve evaluator checks
+      // against. An empty array effectively forbids any delegation
+      // (and the prompt instructs the LLM not to emit a plan it
+      // cannot delegate). The post-stage auditor walks the emitted
+      // delegation against the same set and emits a critical
+      // finding on out-of-set ids.
+      verified_sub_actor_principal_ids:
+        input.verifiedSubActorPrincipalIds.map(String),
       correlation_id: input.correlationId,
       // Forward the upstream spec-stage payload so the plan synthesises
       // against the goal, body, cited_paths, and cited_atom_ids the
@@ -346,6 +388,15 @@ async function auditPlan(
   // alone).
   const verifiedSet = new Set(ctx.verifiedCitedAtomIds.map(String));
   const enforceVerifiedSet = verifiedSet.size > 0;
+  // Same shape for the verified sub-actor principal-id set. Empty
+  // set => skip the delegation closure check entirely (legacy callers
+  // and direct audit() invocations from tests do not compute the
+  // set). When non-empty, the LLM was prompted to name only ids in
+  // this set, and the auditor enforces the same closure.
+  const verifiedSubActorSet = new Set(
+    ctx.verifiedSubActorPrincipalIds.map(String),
+  );
+  const enforceVerifiedSubActorSet = verifiedSubActorSet.size > 0;
   for (const plan of output.plans) {
     // Verify every derived_from atom-id is authoritative: present,
     // untainted, and not superseded. Any failure is a critical finding;
@@ -424,6 +475,36 @@ async function auditPlan(
             + 'enforces the closure-of-citations property at the audit '
             + 'layer, not just the prompt layer.',
           cited_atom_ids: [id as AtomId],
+          cited_paths: [],
+        });
+      }
+    }
+    // Sub-actor closure check: delegation.sub_actor_principal_id MUST
+    // appear in the verified sub-actor principal-id set when the
+    // runner supplied one. Mirrors the cited-atom closure pattern
+    // above; the prompt fences the LLM at draft-time and this audit
+    // fences at the substrate layer so a prompt drift cannot quietly
+    // ship an out-of-set delegation. Empty verified set short-circuits
+    // (legacy / test callers without a set rely on the
+    // single-pass auto-approve gate alone).
+    if (enforceVerifiedSubActorSet) {
+      const subActor = plan.delegation.sub_actor_principal_id;
+      if (!verifiedSubActorSet.has(String(subActor))) {
+        findings.push({
+          severity: 'critical',
+          category: 'non-verified-sub-actor-principal-id',
+          message:
+            `Plan "${plan.title}" delegates to sub_actor_principal_id `
+            + `"${subActor}" which is NOT in the verified sub-actor `
+            + 'set sourced from the seed operator-intent\'s '
+            + 'trust_envelope.allowed_sub_actors. The plan-stage '
+            + 'delegation fence enforces the per-run sub-actor '
+            + 'allowlist at the audit layer, mirroring the citation '
+            + 'closure check. Surfaced when the LLM names a stage '
+            + 'principal (e.g. plan-dispatcher), a policy atom id '
+            + '(e.g. pol-llm-tool-policy-code-author), or any other '
+            + 'string outside the envelope-authorised set.',
+          cited_atom_ids: [],
           cited_paths: [],
         });
       }

@@ -32,6 +32,7 @@ function ctx(host: ReturnType<typeof createMemoryHost>) {
     pipelineId: 'pipeline-corr' as AtomId,
     stageName: 'dispatch-stage',
     verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
+    verifiedSubActorPrincipalIds: [] as ReadonlyArray<PrincipalId>,
   };
 }
 
@@ -120,8 +121,11 @@ function makeStageRunInput(
     // the substrate StageInput shape requires the field after the
     // citation-fence extension. Forward an empty array so the stage's
     // structural type matches without changing the dispatch-stage's
-    // gating semantics.
+    // gating semantics. Same rationale for verifiedSubActorPrincipalIds:
+    // the field is present for substrate symmetry; the dispatch-stage
+    // does not consume it.
     verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
+    verifiedSubActorPrincipalIds: [] as ReadonlyArray<PrincipalId>,
   };
 }
 

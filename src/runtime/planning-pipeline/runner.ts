@@ -129,6 +129,22 @@ export interface RunPipelineOptions {
    * with a non-empty grounding contract must fail closed in that case.
    */
   readonly verifiedCitedAtomIds?: ReadonlyArray<AtomId>;
+  /**
+   * Verified sub-actor principal-id set forwarded to every stage's
+   * StageInput. The caller (e.g. a deep-pipeline driver) computes
+   * this from the seed operator-intent's
+   * metadata.trust_envelope.allowed_sub_actors -- the intent envelope
+   * IS the per-run "allowed sub-actors" coordinate, so reading from
+   * any other source would drift from the auto-approve gate. The
+   * runner threads it through to each stage's
+   * StageInput.verifiedSubActorPrincipalIds and
+   * StageContext.verifiedSubActorPrincipalIds without inspecting the
+   * contents. When omitted the runner forwards an empty list; stage
+   * adapters whose audit depends on a non-empty grounding contract
+   * fall back to resolvability-only (legacy callers, including direct
+   * audit() invocations from tests, do not compute a verified set).
+   */
+  readonly verifiedSubActorPrincipalIds?: ReadonlyArray<PrincipalId>;
 }
 
 export async function runPipeline(
@@ -159,6 +175,15 @@ export async function runPipeline(
   const verifiedCitedAtomIds = Object.freeze(
     [...(options.verifiedCitedAtomIds ?? [])],
   ) as ReadonlyArray<AtomId>;
+  // Same defensive freeze for the verified sub-actor principal-id set.
+  // Threaded uniformly into every StageInput + StageContext so the
+  // plan-stage prompt and the plan-stage auditor walk the same set.
+  // The set comes from the seed operator-intent's
+  // metadata.trust_envelope.allowed_sub_actors at the runDeepPipeline
+  // boundary; the runner does not inspect the contents.
+  const verifiedSubActorPrincipalIds = Object.freeze(
+    [...(options.verifiedSubActorPrincipalIds ?? [])],
+  ) as ReadonlyArray<PrincipalId>;
 
   const pipelineId = `pipeline-${options.correlationId}` as AtomId;
   // First-run vs resume: only seed a fresh pipeline atom when none
@@ -324,6 +349,7 @@ export async function runPipeline(
         pipelineId,
         seedAtomIds: options.seedAtomIds,
         verifiedCitedAtomIds,
+        verifiedSubActorPrincipalIds,
       };
       output = await stage.run(stageInput);
     } catch (err) {
@@ -453,6 +479,7 @@ export async function runPipeline(
         pipelineId,
         stageName: stage.name,
         verifiedCitedAtomIds,
+        verifiedSubActorPrincipalIds,
       });
       for (const finding of findings) {
         await host.atoms.put(

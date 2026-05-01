@@ -36,6 +36,24 @@ export interface StageInput<T> {
    * grounding contract should fail closed in that case.
    */
   readonly verifiedCitedAtomIds: ReadonlyArray<AtomId>;
+  /**
+   * Verified set of sub-actor principal ids the stage's LLM may name
+   * in `delegation.sub_actor_principal_id`. The runner forwards this
+   * from RunPipelineOptions; the canonical source is the seed
+   * operator-intent's `metadata.trust_envelope.allowed_sub_actors`
+   * (the intent envelope IS the per-run "allowed sub-actors"
+   * coordinate). Concrete stage adapters pass it into the LLM `data`
+   * block under the stable key `verified_sub_actor_principal_ids` and
+   * instruct the LLM in the system prompt to ground every delegation
+   * choice in this set. Stage audit functions continue to walk the
+   * emitted delegation against the verified set and emit critical
+   * findings on out-of-set ids; this field is the positive-grounding
+   * signal the LLM needs to succeed. Mirrors the
+   * `verifiedCitedAtomIds` pattern. Default empty when the runner is
+   * invoked without a computed set; stage adapters that depend on a
+   * non-empty grounding contract should fail closed in that case.
+   */
+  readonly verifiedSubActorPrincipalIds: ReadonlyArray<PrincipalId>;
 }
 
 export interface StageOutput<T> {
@@ -72,6 +90,18 @@ export interface StageContext {
    * nothing, so resolvability alone may be the audit's only signal).
    */
   readonly verifiedCitedAtomIds: ReadonlyArray<AtomId>;
+  /**
+   * Verified sub-actor principal-id set the stage's audit() may use
+   * to reject out-of-set delegation choices. Mirrored from the
+   * StageInput field of the same name; the runner threads it through
+   * unchanged so audit walks the same set the LLM was prompted with.
+   * Empty when the runner is invoked without a computed set; audits
+   * that depend on a non-empty grounding contract should treat the
+   * empty case as "no closure check available" (legacy callers may
+   * invoke audit() without a set; resolvability alone is the only
+   * signal in that path).
+   */
+  readonly verifiedSubActorPrincipalIds: ReadonlyArray<PrincipalId>;
 }
 
 export type RetryStrategy =

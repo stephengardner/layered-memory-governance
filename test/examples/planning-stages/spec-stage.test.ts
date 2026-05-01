@@ -99,6 +99,7 @@ describe('specStage', () => {
         pipelineId: 'p' as AtomId,
         stageName: 'spec-stage',
         verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -122,6 +123,7 @@ describe('specStage', () => {
         pipelineId: 'p' as AtomId,
         stageName: 'spec-stage',
         verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
       },
     );
     expect(findings?.some((f) => f.severity === 'critical')).toBe(true);
@@ -219,6 +221,7 @@ describe('specStage', () => {
           pipelineId: 'p' as AtomId,
           stageName: 'spec-stage',
           verifiedCitedAtomIds: [],
+          verifiedSubActorPrincipalIds: [],
         },
       );
       expect(findings?.length).toBe(0);

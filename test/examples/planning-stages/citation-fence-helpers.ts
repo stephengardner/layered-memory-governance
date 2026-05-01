@@ -108,13 +108,17 @@ export function expectVerifiedCitedAtomIdsForwarded(
  * Build a minimal StageInput literal for citation-fence prompt
  * contract tests. Each call site passes the principal id and the
  * verified-cited-atom-ids set; everything else is a fixed test
- * default.
+ * default. The verified-sub-actor set defaults to empty when not
+ * supplied so the citation-fence-only tests do not need to know
+ * about the delegation fence; tests that exercise the delegation
+ * fence pass `verifiedSubActorPrincipalIds` explicitly.
  */
 export function mkPromptContractStageInput<TIn>(args: {
   readonly host: ReturnType<typeof createMemoryHost>;
   readonly principal: string;
   readonly priorOutput: TIn;
   readonly verifiedCitedAtomIds: ReadonlyArray<AtomId>;
+  readonly verifiedSubActorPrincipalIds?: ReadonlyArray<PrincipalId>;
 }): StageInput<TIn> {
   return {
     host: args.host,
@@ -124,5 +128,6 @@ export function mkPromptContractStageInput<TIn>(args: {
     pipelineId: 'p' as AtomId,
     seedAtomIds: ['intent-foo' as AtomId],
     verifiedCitedAtomIds: args.verifiedCitedAtomIds,
+    verifiedSubActorPrincipalIds: args.verifiedSubActorPrincipalIds ?? [],
   };
 }

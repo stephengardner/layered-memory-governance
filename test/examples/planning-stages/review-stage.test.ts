@@ -51,6 +51,7 @@ function ctx(host: ReturnType<typeof createMemoryHost>) {
     pipelineId: 'p' as AtomId,
     stageName: 'review-stage',
     verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
+    verifiedSubActorPrincipalIds: [] as ReadonlyArray<PrincipalId>,
   };
 }
 
@@ -169,6 +170,7 @@ describe('reviewStage', () => {
       pipelineId: 'p' as AtomId,
       seedAtomIds: [],
       verifiedCitedAtomIds: [],
+      verifiedSubActorPrincipalIds: [],
     });
     expect(output.atom_type).toBe('review-report');
     expect(output.value.audit_status).toBe('findings');
@@ -197,6 +199,7 @@ describe('reviewStage', () => {
       pipelineId: 'p' as AtomId,
       seedAtomIds: [],
       verifiedCitedAtomIds: [],
+      verifiedSubActorPrincipalIds: [],
     });
     expect(output.value.audit_status).toBe('clean');
     expect(output.value.findings.length).toBe(0);
@@ -255,6 +258,7 @@ describe('reviewStage', () => {
       pipelineId: 'p' as AtomId,
       seedAtomIds: [specId],
       verifiedCitedAtomIds: [],
+      verifiedSubActorPrincipalIds: [],
     });
     expect(
       output.value.findings.some(

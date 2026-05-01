@@ -351,6 +351,26 @@ async function runDeepPipeline(args) {
     + `(${[args.intentId].length} seed + `
     + `${verifiedCitedAtomIds.length - [args.intentId].length} canon)`,
   );
+  // Compute the verified sub-actor principal-id set. The intent
+  // envelope's allowed_sub_actors IS the per-run authoritative list
+  // of executable sub-actors -- the same set the auto-approve flow
+  // checks against -- so reading it here keeps the plan-stage
+  // delegation fence in lock-step with the auto-approve gate.
+  // Filter to string entries defensively; the envelope schema is
+  // operator-authored and may carry malformed values that the
+  // runner's freeze cannot retroactively repair. A non-array or
+  // empty allowed_sub_actors leaves the set empty; the plan-stage
+  // prompt then forbids any delegation, which is the correct
+  // behaviour because no sub-actor is authorised for this intent.
+  const allowedSubActorsRaw = trustEnvelope.allowed_sub_actors;
+  const verifiedSubActorPrincipalIds = Array.isArray(allowedSubActorsRaw)
+    ? allowedSubActorsRaw.filter((v) => typeof v === 'string')
+    : [];
+  console.log(
+    `[cto-actor] verified-sub-actor-principal-id-set computed from `
+    + `intent.metadata.trust_envelope.allowed_sub_actors: `
+    + `${verifiedSubActorPrincipalIds.length} principal-id(s)`,
+  );
   const result = await runPipeline(stageAdapters, host, {
     principal: principal.id,
     correlationId,
@@ -358,6 +378,7 @@ async function runDeepPipeline(args) {
     stagePolicyAtomId: stages.atomId,
     mode: 'substrate-deep',
     verifiedCitedAtomIds,
+    verifiedSubActorPrincipalIds,
   });
   console.log('[cto-actor] --- DEEP-PIPELINE REPORT ---');
   console.log(JSON.stringify(result, null, 2));
