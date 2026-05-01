@@ -15,7 +15,10 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { runDispatchTick } from '../../src/actor-message/plan-dispatch.js';
+import {
+  parsePrNumberFromSummary,
+  runDispatchTick,
+} from '../../src/actor-message/plan-dispatch.js';
 import {
   SubActorRegistry,
   type InvokeResult,
@@ -123,7 +126,15 @@ describe('runDispatchTick', () => {
     expect(escalation!.metadata.actor_message.body).toContain('ghost-actor');
   });
 
-  it("transitions plan to 'executing' when invoker returns 'dispatched'", async () => {
+  it("transitions plan to 'succeeded' when invoker returns 'dispatched' (PR-opened semantics)", async () => {
+    // The 'dispatched' kind is what the autonomous-dispatch / code-author
+    // invoker returns after a PR is opened; from the dispatcher's
+    // perspective the dispatch operation completed cleanly. Without
+    // this terminal mapping the plan would stay in 'executing' forever
+    // because no PR-merge reaper exists today to flip it. The legacy
+    // dispatch_result.kind='dispatched' field is preserved so consumers
+    // distinguishing PR-shaped vs atom-producing completions still
+    // have that signal.
     const host = createMemoryHost();
     const registry = new SubActorRegistry();
     registry.register('slow-actor' as PrincipalId, async (): Promise<InvokeResult> => ({
@@ -142,7 +153,13 @@ describe('runDispatchTick', () => {
     await runDispatchTick(host, registry);
 
     const updated = await host.atoms.get('p3' as AtomId);
-    expect(updated!.plan_state).toBe('executing');
+    expect(updated!.plan_state).toBe('succeeded');
+    expect(updated!.metadata.terminal_kind).toBe('succeeded');
+    // Legacy dispatch_result.kind preserves the 'dispatched' shape so
+    // a console reader can still distinguish PR-opened from atom-emitting
+    // completions when it cares.
+    const dr = updated!.metadata.dispatch_result as { kind: string };
+    expect(dr.kind).toBe('dispatched');
   });
 
   it('ignores plans without a delegation envelope', async () => {
@@ -730,7 +747,16 @@ describe('runDispatchTick state-lifecycle metadata + audit emission', () => {
     expect(body.length).toBeLessThan(2048);
   });
 
-  it('emits a plan.dispatch-in-flight audit event when invoker returns dispatched (async)', async () => {
+  it("transitions plan to 'succeeded' and emits plan.dispatch-succeeded when invoker returns 'dispatched'", async () => {
+    // 'dispatched' is the kind the code-author / autonomous-dispatch
+    // invoker returns after a PR is opened: the dispatcher's contract
+    // ("did the dispatch operation succeed?") is satisfied. Pre-fix
+    // this stranded plans in 'executing' forever because no reaper
+    // existed; the new terminal-kind mapping closes that gap. The
+    // dispatch_result.kind preserves the 'dispatched' shape distinct
+    // from 'completed' so legacy consumers still see what kind of work
+    // landed. The plan.dispatch-in-flight audit kind is no longer
+    // emitted; both success kinds emit plan.dispatch-succeeded.
     const host = createMemoryHost();
     const registry = new SubActorRegistry();
     registry.register('async-actor' as PrincipalId, async (): Promise<InvokeResult> => ({
@@ -750,27 +776,139 @@ describe('runDispatchTick state-lifecycle metadata + audit emission', () => {
     await runDispatchTick(host, registry);
 
     const updated = await host.atoms.get('p-async' as AtomId);
-    expect(updated!.plan_state).toBe('executing');
-    // No terminal stamp because the plan stays executing.
-    expect(updated!.metadata.terminal_at).toBeUndefined();
-    expect(updated!.metadata.terminal_kind).toBeUndefined();
+    expect(updated!.plan_state).toBe('succeeded');
+    // Terminal stamps land on the same write that flips plan_state.
+    expect(updated!.metadata.terminal_at).toBeDefined();
+    expect(updated!.metadata.terminal_kind).toBe('succeeded');
+    // Legacy dispatch_result.kind preserves 'dispatched' so a consumer
+    // distinguishing PR-shaped vs atom-emitting completions still has
+    // that signal.
+    const dr = updated!.metadata.dispatch_result as { kind: string; summary: string };
+    expect(dr.kind).toBe('dispatched');
+    expect(dr.summary).toBe('queued for later');
 
-    // Two audit events fire on this dispatch path: the executing
-    // claim AND the in-flight hand-off. Both are observable so the
-    // operator can distinguish "claim landed" from "sub-actor accepted
-    // the work asynchronously".
+    // Audit chain: one executing event + one succeeded event. The
+    // pre-fix plan.dispatch-in-flight kind is no longer emitted (kept
+    // in the type union for back-compat with historical audit logs).
     const executingEvents = await host.auditor.query(
       { kind: ['plan.dispatch-executing'] },
       10,
     );
     expect(executingEvents.length).toBe(1);
+    const succeededEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-succeeded'] },
+      10,
+    );
+    expect(succeededEvents.length).toBe(1);
+    expect(succeededEvents[0]!.refs.atom_ids).toContain('p-async');
+    expect(succeededEvents[0]!.details.summary).toBe('queued for later');
+    expect(succeededEvents[0]!.details.result_kind).toBe('dispatched');
+    // No more in-flight emissions on the dispatched path.
     const inFlightEvents = await host.auditor.query(
       { kind: ['plan.dispatch-in-flight'] },
       10,
     );
-    expect(inFlightEvents.length).toBe(1);
-    expect(inFlightEvents[0]!.refs.atom_ids).toContain('p-async');
-    expect(inFlightEvents[0]!.details.summary).toBe('queued for later');
+    expect(inFlightEvents.length).toBe(0);
+  });
+
+  it("stamps dispatch_pr_number when the 'dispatched' invoker summary contains a #<n> token", async () => {
+    // The autonomous-dispatch invoker formats its summary as
+    // "...as PR #<n> (<sha>)" so the dispatcher can stamp a numeric
+    // dispatch_pr_number on the plan without widening the InvokeResult
+    // type to carry PR-shaped fields. The console reads this stamp to
+    // render a plan -> PR link.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('code-author' as PrincipalId, async (): Promise<InvokeResult> => ({
+      kind: 'dispatched',
+      summary: 'code-author dispatched plan p-pr-link as PR #4242 (abc1234)',
+    }));
+
+    await host.atoms.put(planAtom('p-pr-link', {
+      delegation: {
+        sub_actor_principal_id: 'code-author',
+        payload: {},
+        correlation_id: 'corr-pr-link',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+
+    const updated = await host.atoms.get('p-pr-link' as AtomId);
+    expect(updated!.plan_state).toBe('succeeded');
+    expect(updated!.metadata.dispatch_pr_number).toBe(4242);
+    expect(updated!.metadata.dispatch_pr_summary).toBe(
+      'code-author dispatched plan p-pr-link as PR #4242 (abc1234)',
+    );
+    // Audit detail also carries the parsed PR number so downstream
+    // consumers (rollup dashboards, audit-search) can filter without
+    // re-reading the plan atom.
+    const succeededEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-succeeded'] },
+      10,
+    );
+    expect(succeededEvents.length).toBe(1);
+    expect(succeededEvents[0]!.details.dispatch_pr_number).toBe(4242);
+  });
+
+  it("does NOT stamp dispatch_pr_number when the 'dispatched' summary lacks a #<n> token", async () => {
+    // Conservative posture: only stamp when the summary actually
+    // surfaces a parseable number, so a non-PR-shaped invoker doesn't
+    // get a misleading number stamped on its plan.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('non-pr-actor' as PrincipalId, async (): Promise<InvokeResult> => ({
+      kind: 'dispatched',
+      summary: 'queued for later (no PR shape)',
+    }));
+
+    await host.atoms.put(planAtom('p-no-pr-link', {
+      delegation: {
+        sub_actor_principal_id: 'non-pr-actor',
+        payload: {},
+        correlation_id: 'corr-no-pr',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+
+    const updated = await host.atoms.get('p-no-pr-link' as AtomId);
+    expect(updated!.plan_state).toBe('succeeded');
+    expect(updated!.metadata.dispatch_pr_number).toBeUndefined();
+    expect(updated!.metadata.dispatch_pr_summary).toBeUndefined();
+  });
+
+  it("does NOT stamp dispatch_pr_number when invoker returns 'completed' (atom-emitting shape)", async () => {
+    // 'completed' is the atom-emitting completion kind; PR-link
+    // stamping is scoped to 'dispatched' because that's the kind
+    // associated with PR-creation work in the autonomous-dispatch
+    // chain. A completed run that happens to mention '#1' in a freeform
+    // summary should not be misread as a PR link.
+    const host = createMemoryHost();
+    const registry = new SubActorRegistry();
+    registry.register('auditor-actor' as PrincipalId, async (): Promise<InvokeResult> => ({
+      kind: 'completed',
+      producedAtomIds: ['out-1'],
+      summary: 'audit produced 1 atom (#1)',
+    }));
+
+    await host.atoms.put(planAtom('p-completed-no-pr', {
+      delegation: {
+        sub_actor_principal_id: 'auditor-actor',
+        payload: {},
+        correlation_id: 'corr-completed',
+        escalate_to: 'operator',
+      },
+    }));
+
+    await runDispatchTick(host, registry);
+
+    const updated = await host.atoms.get('p-completed-no-pr' as AtomId);
+    expect(updated!.plan_state).toBe('succeeded');
+    expect(updated!.metadata.terminal_kind).toBe('succeeded');
+    expect(updated!.metadata.dispatch_pr_number).toBeUndefined();
   });
 
   it('emits exactly one audit event per terminal transition (no duplicate emission on rerun of an already-terminal plan)', async () => {
@@ -862,5 +1000,37 @@ describe('runDispatchTick state-lifecycle metadata + audit emission', () => {
     expect(final!.metadata.executing_invoker).toBe('auditor-actor');
     expect(final!.metadata.terminal_at).toBeDefined();
     expect(final!.metadata.terminal_kind).toBe('succeeded');
+  });
+});
+
+describe('parsePrNumberFromSummary', () => {
+  it('extracts a PR number from the autonomous-dispatch summary shape', () => {
+    expect(
+      parsePrNumberFromSummary(
+        'code-author dispatched plan plan-foo as PR #273 (47bfe06)',
+      ),
+    ).toBe(273);
+  });
+
+  it('extracts the first matching number when multiple #<n> tokens appear', () => {
+    expect(
+      parsePrNumberFromSummary('PR #100 supersedes PR #99'),
+    ).toBe(100);
+  });
+
+  it('returns null when no #<n> token is present', () => {
+    expect(parsePrNumberFromSummary('queued for later')).toBeNull();
+    expect(parsePrNumberFromSummary('')).toBeNull();
+  });
+
+  it('returns null for malformed numeric tokens', () => {
+    // No-digit hash, hex-shaped non-numeric, and excessively long
+    // numeric tokens all fail conservatively. The 7-digit upper bound
+    // is deliberately tighter than GitHub's true PR-number ceiling so
+    // a runaway invoker emitting a giant number does not produce a
+    // misleading link target.
+    expect(parsePrNumberFromSummary('see #abc')).toBeNull();
+    expect(parsePrNumberFromSummary('#0 is not a real PR')).toBeNull();
+    expect(parsePrNumberFromSummary('#12345678 is too large')).toBeNull();
   });
 });

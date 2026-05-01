@@ -10,17 +10,26 @@
  *    event so the transition is observable through the same channel as
  *    the proposed -> approved transition (auto-approve.ts pattern).
  * 3. Call registry.invoke(...).
- * 4. On success, update the plan to state='succeeded' (with
- *    metadata.terminal_at + terminal_kind + dispatch_result) and emit
- *    a 'plan.dispatch-succeeded' audit event.
- * 5. On error, update the plan to state='failed' (with
- *    metadata.terminal_at + terminal_kind + error_message +
- *    dispatch_result), emit a 'plan.dispatch-failed' audit event, and
+ * 4. Map the InvokeResult's `kind` through INVOKE_RESULT_TO_TERMINAL_KIND
+ *    to a plan_state terminal kind. The mapping is the single source of
+ *    truth for "did this dispatch operation succeed?"; both 'completed'
+ *    and 'dispatched' invoker outcomes mean "the dispatcher's work
+ *    finished cleanly" and transition the plan to 'succeeded'. 'error'
+ *    transitions to 'failed' and writes an escalation actor-message.
+ *    Unknown kinds fail-closed (treated as failed) so a future invoker
+ *    that returns a not-yet-mapped kind doesn't silently strand a plan
+ *    in 'executing'. Adding a real "stays-executing-pending-async-reaper"
+ *    semantic in the future is a deliberate canon edit, not a fall-
+ *    through default.
+ * 5. On success, stamp metadata.terminal_at + terminal_kind + (when the
+ *    invoker surfaced a PR via the summary) dispatch_pr_number and
+ *    dispatch_pr_summary so the console can link plan -> PR without an
+ *    out-of-band lookup. dispatch_result is preserved verbatim for
+ *    legacy consumers (plan-detail viewer, intent-approve audit).
+ * 6. On error, stamp metadata.terminal_at + terminal_kind + error_message
+ *    + dispatch_result, emit a 'plan.dispatch-failed' audit event, and
  *    write an escalation actor-message back to the plan's operator
  *    principal.
- * 6. On 'dispatched' (fire-and-forget), keep the plan in 'executing'
- *    and emit a 'plan.dispatch-in-flight' audit event so the operator
- *    can see the async path without waiting for terminal state.
  * 7. Unregistered sub-actor principal -> ValidationError bubbled by
  *    registry.invoke; the dispatcher catches, writes an escalation
  *    actor-message, and marks the plan 'failed'. This makes the
@@ -41,9 +50,9 @@
  * Backward-compatibility note: metadata.dispatch_result is preserved
  * unchanged so console plan-detail and any consumer querying the legacy
  * shape keeps working. The new top-level fields (executing_at,
- * executing_invoker, terminal_at, terminal_kind, error_message) are
- * additive; an old reader that ignores them sees the same dispatch_result
- * payload as before.
+ * executing_invoker, terminal_at, terminal_kind, error_message,
+ * dispatch_pr_number, dispatch_pr_summary) are additive; an old reader
+ * that ignores them sees the same dispatch_result payload as before.
  */
 
 import type { Host } from '../../interface.js';
@@ -65,6 +74,93 @@ function truncateErrorMessage(message: string): string {
   // Reserve room for the marker so the total length stays under the cap.
   const head = message.slice(0, MAX_ERROR_MESSAGE_LEN - 12);
   return `${head}...truncated`;
+}
+
+/**
+ * Single source of truth: which InvokeResult kinds count as a successful
+ * dispatch operation? Treated as a comprehensive table rather than an
+ * if/else chain so a future invoker that returns a new success kind
+ * lands as a one-line addition here, not a scattered patch across the
+ * dispatch + audit + console surfaces.
+ *
+ * Today's kinds:
+ *   'completed'  -> sub-actor finished synchronously and emitted result
+ *                   atoms; plan transitions to 'succeeded'. Producer:
+ *                   auditor-actor and any read-only sub-actor that emits
+ *                   atoms in-process.
+ *   'dispatched' -> sub-actor handed off durable work (e.g. opened a
+ *                   GitHub PR) and considers its dispatch operation
+ *                   complete. Plan transitions to 'succeeded' because
+ *                   the dispatcher's contract is "did the dispatch
+ *                   operation succeed?", not "is the downstream artifact
+ *                   merged?". Producers: code-author / autonomous-
+ *                   dispatch path, both of which return 'dispatched'
+ *                   after a PR is created. Without this terminal
+ *                   mapping a plan stays in 'executing' forever because
+ *                   no PR-merge reaper exists to flip it.
+ *   'error'      -> sub-actor failed; plan transitions to 'failed'.
+ *
+ * Adding a true "stays-executing-pending-async-reaper" semantic later
+ * is a deliberate canon edit (a new InvokeResult kind plus a reaper
+ * that flips the plan back into a terminal state). Until then, leaving
+ * 'dispatched' as a non-terminal-mapping was the substrate gap that
+ * stranded plans on every autonomous-dispatch run.
+ */
+const INVOKE_RESULT_TO_TERMINAL_KIND: Readonly<
+  Record<InvokeResult['kind'], 'succeeded' | 'failed'>
+> = Object.freeze({
+  completed: 'succeeded',
+  dispatched: 'succeeded',
+  error: 'failed',
+});
+
+/**
+ * Loud-fail guard: assert that a particular InvokeResult kind is in the
+ * success branch of the mapping table. Called from the per-kind branches
+ * in runDispatchTick so a future canon edit that downgrades 'completed'
+ * or 'dispatched' to a failed mapping fails noisily on the next
+ * dispatch tick rather than silently emitting the wrong audit kind.
+ *
+ * Throws (rather than logging + continuing) because a misalignment
+ * between table and branch is a substrate-correctness regression, not
+ * a user-recoverable runtime condition.
+ */
+function assertSuccessMapping(kind: InvokeResult['kind']): void {
+  const mapped = INVOKE_RESULT_TO_TERMINAL_KIND[kind];
+  if (mapped !== 'succeeded') {
+    throw new Error(
+      `runDispatchTick invariant violation: kind=${kind} expected mapping `
+      + `'succeeded' but INVOKE_RESULT_TO_TERMINAL_KIND returned '${mapped}'. `
+      + 'Update the per-kind branch in runDispatchTick if the table changed.',
+    );
+  }
+}
+
+/**
+ * Best-effort extractor for a PR number from an InvokeResult's summary
+ * string. The autonomous-dispatch + code-author invokers both format
+ * their summaries as "...as PR #<number> (commit-sha)..." so a parse
+ * that succeeds gives the console a stable plan -> PR link without
+ * widening the InvokeResult type to carry PR-shaped fields (which would
+ * bake the autonomous-dispatch shape into the framework boundary).
+ *
+ * Returns null when no recognizable PR-number pattern is present so a
+ * non-PR-shaped invoker (e.g. auditor-actor returning "atoms produced:
+ * out-corr-1") doesn't get a misleading number stamped on its plan.
+ *
+ * Conservative regex: matches '#<digits>' anywhere in the summary,
+ * bounded above to 7 digits because GitHub PR numbers in this repo are
+ * 3-4 digits today and the substrate-defined ceiling is far below 7.
+ * A future repo with a different PR-number scale loosens this when the
+ * second example arrives, per the canon dial-after-second-use-case
+ * directive.
+ */
+export function parsePrNumberFromSummary(summary: string): number | null {
+  const match = /#(\d{1,7})\b/.exec(summary);
+  if (match === null) return null;
+  const parsed = Number.parseInt(match[1]!, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
 }
 
 /**
@@ -132,9 +228,13 @@ export async function runDispatchTick(
   // Local helper: every audit emission for a dispatch transition shares
   // the same kind/principal_id/timestamp/refs scaffolding and varies
   // only in the details payload. Extracted at N=2 per the repo's
-  // duplication-floor canon (4 emit sites: executing, succeeded,
-  // in-flight, failed). Closes over plan + envelope from the caller's
-  // scope so the helper signature stays minimal.
+  // duplication-floor canon (3 emit sites: executing, succeeded,
+  // failed). Closes over plan + envelope from the caller's scope so
+  // the helper signature stays minimal. Note: the prior 'plan.dispatch-
+  // in-flight' kind is retained in the type union for back-compat with
+  // audit-log consumers reading historical events written before
+  // 'dispatched' was mapped to terminal_kind='succeeded'; new
+  // emissions only use the three active kinds.
   async function emitDispatchAudit(
     plan: Atom,
     kind: 'plan.dispatch-executing'
@@ -224,11 +324,27 @@ export async function runDispatchTick(
     //
     // dispatch_result is preserved verbatim (legacy shape; console
     // plan-detail + intent-approve audit consumers all read it). The
-    // new top-level fields (terminal_at, terminal_kind, error_message)
-    // are additive so a reader querying terminal_kind sees the same
-    // outcome without parsing dispatch_result.kind.
+    // new top-level fields (terminal_at, terminal_kind, error_message,
+    // dispatch_pr_number, dispatch_pr_summary) are additive so a reader
+    // querying terminal_kind sees the same outcome without parsing
+    // dispatch_result.kind.
+    //
+    // Branch on the discriminator (result.kind) rather than the mapped
+    // terminal kind so TypeScript narrows the InvokeResult union to
+    // the per-case shape (.summary + .producedAtomIds on 'completed',
+    // .summary on 'dispatched', .message on 'error'). The mapping
+    // table INVOKE_RESULT_TO_TERMINAL_KIND remains the single source
+    // of truth for "which kinds count as successful?" and is asserted
+    // below to keep the table and the branching in lockstep.
     const terminalAt = new Date(now()).toISOString();
+
     if (result.kind === 'completed') {
+      // Sanity check: the success-mapping table must agree with this
+      // branch. If a future canon edit downgrades 'completed' to a
+      // failed mapping the table change would surface here as a
+      // failed-loud guard rather than silently emitting the wrong
+      // audit kind.
+      assertSuccessMapping('completed');
       await host.atoms.update(plan.id, {
         plan_state: 'succeeded',
         metadata: {
@@ -247,17 +363,29 @@ export async function runDispatchTick(
         sub_actor_principal_id: envelope.sub_actor_principal_id,
         correlation_id: envelope.correlation_id,
         summary: result.summary,
+        result_kind: 'completed',
         produced_atom_ids: [...result.producedAtomIds],
       });
       dispatched += 1;
     } else if (result.kind === 'dispatched') {
-      // Plan stays in 'executing'; the terminal transition lands on a
-      // future tick when the async sub-actor completes. terminal_at
-      // and terminal_kind intentionally NOT stamped: the plan has not
-      // reached terminal yet. dispatch_result records the in-flight
-      // hand-off so an audit consumer sees the dispatch happened.
+      // 'dispatched' is the kind autonomous-dispatch / code-author
+      // returns after a PR is opened; the dispatcher's contract is
+      // "did this dispatch operation succeed?", so the plan transitions
+      // to terminal_kind='succeeded'. Without this terminal mapping a
+      // plan stays in 'executing' forever (no PR-merge reaper exists
+      // today). dispatch_result.kind='dispatched' is preserved so a
+      // legacy reader can still distinguish PR-shaped vs atom-emitting
+      // completions.
+      assertSuccessMapping('dispatched');
+      const prNumber = parsePrNumberFromSummary(result.summary);
       await host.atoms.update(plan.id, {
+        plan_state: 'succeeded',
         metadata: {
+          terminal_at: terminalAt,
+          terminal_kind: 'succeeded',
+          ...(prNumber !== null
+            ? { dispatch_pr_number: prNumber, dispatch_pr_summary: result.summary }
+            : {}),
           dispatch_result: {
             kind: 'dispatched',
             summary: result.summary,
@@ -265,15 +393,22 @@ export async function runDispatchTick(
           },
         },
       });
-      await emitDispatchAudit(plan, 'plan.dispatch-in-flight', terminalAt, {
+      await emitDispatchAudit(plan, 'plan.dispatch-succeeded', terminalAt, {
         plan_id: String(plan.id),
         sub_actor_principal_id: envelope.sub_actor_principal_id,
         correlation_id: envelope.correlation_id,
         summary: result.summary,
+        result_kind: 'dispatched',
+        ...(prNumber !== null ? { dispatch_pr_number: prNumber } : {}),
       });
       dispatched += 1;
     } else {
-      // error case
+      // result.kind === 'error' is the only remaining variant. The
+      // discriminated-union exhaustiveness check below pins this so a
+      // future kind addition must be wired up explicitly here rather
+      // than slipping through the implicit fallthrough.
+      const _exhaustive: 'error' = result.kind;
+      void _exhaustive;
       const errorMessage = truncateErrorMessage(result.message);
       await host.atoms.update(plan.id, {
         plan_state: 'failed',
@@ -293,6 +428,7 @@ export async function runDispatchTick(
         sub_actor_principal_id: envelope.sub_actor_principal_id,
         correlation_id: envelope.correlation_id,
         error_message: errorMessage,
+        result_kind: 'error',
       });
       // Pass the truncated errorMessage (not the raw result.message) so a
       // runaway sub-actor's stack trace cannot pollute the escalation
