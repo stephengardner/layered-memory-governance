@@ -172,6 +172,49 @@ describe('listActiveSessions', () => {
     expect(out[0]?.last_turn_at).toBe(new Date(NOW - 20_000).toISOString());
   });
 
+  // Regression: a session with NO turns and a started_at older than the
+  // active window must NOT count as active. Without the started_at-fallback
+  // age-out, a turn-less agent-session atom (e.g. a 13-hour-old cron-pulse
+  // stub) would show as active indefinitely because the original turn-less
+  // grace branch was unconditional.
+  it('drops a turn-less session whose started_at is older than the active window', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'agent-session-op-session-cron-pulse-stale',
+        type: 'agent-session',
+        principal_id: 'operator-principal',
+        created_at: new Date(NOW - 13 * 60 * 60_000).toISOString(),
+        metadata: {
+          session_id: 'pulse-stale',
+          started_at: new Date(NOW - 13 * 60 * 60_000).toISOString(),
+        },
+      }),
+    ];
+    expect(listActiveSessions(atoms, NOW)).toEqual([]);
+  });
+
+  // Just-spawned grace: a turn-less session whose started_at is within the
+  // active window stays active so a session opened 200ms before the
+  // snapshot fired still appears on the dashboard.
+  it('keeps a turn-less session whose started_at is within the active window', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'agent-session-fresh',
+        type: 'agent-session',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          session_id: 'sess-fresh',
+          started_at: new Date(NOW - 30_000).toISOString(),
+        },
+      }),
+    ];
+    const out = listActiveSessions(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.session_id).toBe('sess-fresh');
+    expect(out[0]?.last_turn_at).toBeNull();
+  });
+
   it('drops sessions whose latest turn is older than the active window', () => {
     // Window is ACTIVE_SESSION_TURN_WINDOW_MS (15 minutes). The turn here
     // is 16 minutes old so it falls outside the window regardless of
@@ -304,6 +347,39 @@ describe('listLiveDeliberations', () => {
     const out = listLiveDeliberations(atoms, NOW);
     expect(out[0]?.title).toBe('plan-no-content'); // newer, falls back to id
     expect(out[1]?.title).toBe('From content');
+  });
+
+  // Regression: missingJudgmentPlan() in
+  // src/runtime/actors/planning/host-llm-judgment.ts (lines 135-168) emits
+  // plan_state='proposed' atoms with id-prefix 'plan-clarify-cannot-draft-'
+  // when the LLM cannot draft a grounded plan. Those are explicit failure
+  // escalations (confidence 0.15), not live deliberations, and must be
+  // filtered out of the front-page feed so the dashboard does not read
+  // "all failures."
+  it('filters out plan-clarify-cannot-draft failure-escalation atoms', () => {
+    const atoms: LiveOpsAtom[] = [
+      {
+        id: 'plan-clarify-cannot-draft-a-grounded-plan-llm-cto-actor-20260420043034',
+        type: 'plan',
+        layer: 'L1',
+        content: '# Clarify: cannot draft a grounded plan (llm)',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 5_000).toISOString(),
+        metadata: { plan_state: 'proposed' },
+      } as LiveOpsAtom,
+      {
+        id: 'plan-do-thing',
+        type: 'plan',
+        layer: 'L1',
+        content: '# Real proposed plan',
+        principal_id: 'cto-actor',
+        created_at: new Date(NOW - 10_000).toISOString(),
+        metadata: { plan_state: 'proposed' },
+      } as LiveOpsAtom,
+    ];
+    const out = listLiveDeliberations(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.plan_id).toBe('plan-do-thing');
   });
 
   it('skips superseded plans even if still in proposed state', () => {
