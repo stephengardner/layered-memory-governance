@@ -28,82 +28,23 @@ import { createMemoryHost } from '../../../../src/adapters/memory/index.js';
 import type {
   AgentLoopAdapter,
   AgentLoopInput,
-  AgentLoopResult,
 } from '../../../../src/substrate/agent-loop.js';
-import type { BlobStore } from '../../../../src/substrate/blob-store.js';
-import { blobRefFromHash } from '../../../../src/substrate/blob-store.js';
-import type { Redactor } from '../../../../src/substrate/redactor.js';
 import type {
-  Workspace,
-  WorkspaceProvider,
-} from '../../../../src/substrate/workspace-provider.js';
-import type {
-  AgentSessionMeta,
-  AgentTurnMeta,
-  Atom,
   AtomId,
   PrincipalId,
-  Time,
 } from '../../../../src/substrate/types.js';
 import type { StageInput } from '../../../../src/runtime/planning-pipeline/index.js';
+import {
+  makeStubAdapter,
+  makeStubHostBundle,
+} from '../agent-loop-stubs.js';
 
 const CORR = 'corr-test-1';
 const PRINCIPAL = 'brainstorm-actor' as PrincipalId;
 const PIPELINE_ID = 'pipeline-test-1' as AtomId;
-const NOW: Time = '2026-05-01T00:00:00.000Z' as Time;
 
-function makeHostBundle(): {
-  host: ReturnType<typeof createMemoryHost>;
-  blobStore: BlobStore;
-  redactor: Redactor;
-  workspaceProvider: WorkspaceProvider;
-} {
-  const host = createMemoryHost({
-    canonInitial: '<!-- canon: managed -->\n[]\n',
-  });
-  const blobStore: BlobStore = {
-    async put(content) {
-      const buf =
-        typeof content === 'string' ? Buffer.from(content) : content;
-      return blobRefFromHash(
-        require('node:crypto')
-          .createHash('sha256')
-          .update(buf)
-          .digest('hex'),
-      );
-    },
-    async get() {
-      return Buffer.from('');
-    },
-    async has() {
-      return true;
-    },
-    describeStorage() {
-      return { kind: 'local-file' as const, rootPath: '/tmp/test' };
-    },
-  };
-  const redactor: Redactor = {
-    redact: (content) => content,
-  };
-  let acquireCount = 0;
-  let releaseCount = 0;
-  const workspaceProvider: WorkspaceProvider = {
-    async acquire(input) {
-      acquireCount++;
-      return {
-        id: `ws-${acquireCount}`,
-        path: `/tmp/ws-${acquireCount}`,
-        baseRef: input.baseRef,
-      } satisfies Workspace;
-    },
-    async release() {
-      releaseCount++;
-    },
-  };
-  Object.defineProperty(workspaceProvider, '_counts', {
-    get: () => ({ acquireCount, releaseCount }),
-  });
-  return { host, blobStore, redactor, workspaceProvider };
+function makeHostBundle() {
+  return makeStubHostBundle();
 }
 
 function makeStageInput(
@@ -119,127 +60,6 @@ function makeStageInput(
     verifiedCitedAtomIds: [],
     verifiedSubActorPrincipalIds: [],
     operatorIntentContent: 'Test operator intent for unit test.',
-  };
-}
-
-/**
- * Build a stub agent-loop adapter that records its inputs and writes
- * agent-session + agent-turn atoms with a configurable final llm_output.
- * Used for every test below; the test customises the final-output JSON
- * per case via the `outputs` array (one per turn).
- */
-function makeStubAdapter(opts: {
-  outputs: ReadonlyArray<string>;
-  recorder?: { lastInput?: AgentLoopInput };
-}): AgentLoopAdapter {
-  const recorder = opts.recorder ?? {};
-  return {
-    capabilities: {
-      tracks_cost: true,
-      supports_signal: true,
-      classify_failure: () => 'structural',
-    },
-    async run(input: AgentLoopInput): Promise<AgentLoopResult> {
-      recorder.lastInput = input;
-      const sessionId = `agent-session-${input.correlationId}-${Math.random().toString(36).slice(2, 8)}` as AtomId;
-      const sessionAtom: Atom = {
-        schema_version: 1,
-        id: sessionId,
-        content: 'stub-session',
-        type: 'agent-session',
-        layer: 'L0',
-        provenance: {
-          kind: 'agent-observed',
-          source: {
-            tool: 'stub',
-            agent_id: String(input.principal),
-            session_id: input.correlationId,
-          },
-          derived_from: [],
-        },
-        confidence: 1,
-        created_at: NOW,
-        last_reinforced_at: NOW,
-        expires_at: null,
-        supersedes: [],
-        superseded_by: [],
-        scope: 'project',
-        signals: {
-          agrees_with: [],
-          conflicts_with: [],
-          validation_status: 'unchecked',
-          last_validated_at: null,
-        },
-        principal_id: input.principal,
-        taint: 'clean',
-        metadata: {
-          agent_session: {
-            model_id: 'stub',
-            adapter_id: 'stub-adapter',
-            workspace_id: input.workspace.id,
-            started_at: NOW,
-            completed_at: NOW,
-            terminal_state: 'completed',
-            replay_tier: input.replayTier,
-            budget_consumed: { turns: opts.outputs.length, wall_clock_ms: 0, usd: 0.5 },
-          } satisfies AgentSessionMeta,
-        },
-      };
-      await input.host.atoms.put(sessionAtom);
-      const turnAtomIds: AtomId[] = [];
-      for (let i = 0; i < opts.outputs.length; i++) {
-        const turnId = `agent-turn-${input.correlationId}-${i}` as AtomId;
-        const turnAtom: Atom = {
-          schema_version: 1,
-          id: turnId,
-          content: `stub-turn-${i}`,
-          type: 'agent-turn',
-          layer: 'L0',
-          provenance: {
-            kind: 'agent-observed',
-            source: {
-              tool: 'stub',
-              agent_id: String(input.principal),
-              session_id: input.correlationId,
-            },
-            derived_from: [sessionId],
-          },
-          confidence: 1,
-          created_at: NOW,
-          last_reinforced_at: NOW,
-          expires_at: null,
-          supersedes: [],
-          superseded_by: [],
-          scope: 'project',
-          signals: {
-            agrees_with: [],
-            conflicts_with: [],
-            validation_status: 'unchecked',
-            last_validated_at: null,
-          },
-          principal_id: input.principal,
-          taint: 'clean',
-          metadata: {
-            agent_turn: {
-              session_atom_id: sessionId,
-              turn_index: i,
-              llm_input: '<stub-input>',
-              llm_output: opts.outputs[i]!,
-              tool_calls: [],
-              latency_ms: 100,
-              cost_usd: 0.1,
-            } satisfies AgentTurnMeta,
-          },
-        };
-        await input.host.atoms.put(turnAtom);
-        turnAtomIds.push(turnId);
-      }
-      return {
-        kind: 'completed',
-        sessionAtomId: sessionId,
-        turnAtomIds,
-      };
-    },
   };
 }
 

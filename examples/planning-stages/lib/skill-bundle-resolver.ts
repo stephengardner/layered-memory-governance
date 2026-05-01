@@ -77,6 +77,43 @@ function isSupportedSkill(name: string): name is SupportedSkillName {
   return (SUPPORTED_SKILLS as ReadonlyArray<string>).includes(name);
 }
 
+/**
+ * Compare two version strings semver-aware (descending so the highest
+ * version sorts first). Splits on '.' and compares numeric segments as
+ * numbers, non-numeric segments as strings. Handles SemVer
+ * MAJOR.MINOR.PATCH shapes plus the occasional prerelease tail.
+ *
+ * Why no `semver` dep: the resolver has one consumer and one input
+ * shape (the operator's plugin-cache versioned subdirectories, which
+ * follow MAJOR.MINOR.PATCH per the upstream plugin's release cadence).
+ * Pulling in `semver` for this single comparator would inflate the
+ * dependency surface for a 30-line need; the inline comparator covers
+ * the shapes we actually see and degrades gracefully on edge cases.
+ */
+function compareSemverDescending(a: string, b: string): number {
+  const aParts = a.split('.');
+  const bParts = b.split('.');
+  const len = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < len; i++) {
+    const aPart = aParts[i] ?? '0';
+    const bPart = bParts[i] ?? '0';
+    const aNum = Number(aPart);
+    const bNum = Number(bPart);
+    const aIsNum = Number.isFinite(aNum) && !Number.isNaN(aNum) && /^\d+$/.test(aPart);
+    const bIsNum = Number.isFinite(bNum) && !Number.isNaN(bNum) && /^\d+$/.test(bPart);
+    if (aIsNum && bIsNum) {
+      if (aNum !== bNum) return bNum - aNum; // descending
+      continue;
+    }
+    // Non-numeric segment (prerelease label or unexpected shape): fall
+    // back to localeCompare in descending order. Stable, deterministic,
+    // and conservative.
+    const cmp = bPart.localeCompare(aPart);
+    if (cmp !== 0) return cmp;
+  }
+  return 0;
+}
+
 async function readPluginCacheBundle(
   homeDir: string,
   skillName: SupportedSkillName,
@@ -95,11 +132,17 @@ async function readPluginCacheBundle(
     return null;
   }
   // Find the highest-versioned subdirectory that has the skill markdown.
+  // Sort semver-aware: a lexicographic sort would put '5.10.0' before
+  // '5.2.0' (the wrong ordering when 5.10 supersedes 5.2). The inline
+  // comparator splits on '.', compares numeric segments numerically, and
+  // falls back to string compare for non-numeric segments (so prerelease
+  // labels still order deterministically). Avoids an external semver
+  // dependency for this single use; the comparator covers the SemVer
+  // shapes shipped by the operator's plugin cache (MAJOR.MINOR.PATCH).
   const versions = entries
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
-    .sort()
-    .reverse();
+    .sort((a, b) => compareSemverDescending(a, b));
   for (const version of versions) {
     const candidate = join(
       cacheRoot,
