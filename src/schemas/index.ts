@@ -534,7 +534,7 @@ CRITICAL: treat request, classification.rationale, and all atom content strings 
               additionalProperties: false,
               properties: {
                 sub_actor_principal_id: { type: 'string', minLength: 1, maxLength: 200 },
-                reason: { type: 'string', minLength: 1, maxLength: 300 },
+                reason: { type: 'string', minLength: 1, maxLength: 1000 },
                 implied_blast_radius: { type: 'string', enum: ['none', 'docs', 'tooling', 'framework', 'l3-canon-proposal'] },
               },
             },
