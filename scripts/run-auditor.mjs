@@ -164,19 +164,28 @@ async function main() {
 /**
  * Read the PR body via `gh pr view` and delegate to the pure
  * parsePlanIdFromPrBody helper to extract the canonical plan id.
- * Returns null on any failure (gh spawn error, missing footer,
- * json parse fail) so the caller falls back to the original argv
- * plan id unchanged. Treating absence as null (not throw) keeps
- * the auditor back-compatible with PRs whose body predates the
- * footer convention or was rewritten by a later edit.
+ * Returns null only when the body has no machine-parseable footer
+ * (legitimate "no fallback available" signal that lets the caller
+ * surface the original "plan atom not found" diagnostic without
+ * masking it).
+ *
+ * Rethrows on `gh` failures with context (auth / network / API
+ * errors). Collapsing those into null would make a transient
+ * GitHub outage look like a missing footer and silently disable
+ * the truncated-label fallback path; the caller should see the
+ * underlying error instead. The auditor's outer main().catch
+ * surfaces the rethrown error and exits non-zero so CI flags the
+ * failure rather than emitting a misleading "plan not found".
  */
 async function readPlanIdFromPrBody(prNumber) {
+  let stdout;
   try {
-    const { stdout } = await execa('gh', ['pr', 'view', String(prNumber), '--json', 'body', '--jq', '.body']);
-    return parsePlanIdFromPrBody(stdout ?? '');
-  } catch {
-    return null;
+    ({ stdout } = await execa('gh', ['pr', 'view', String(prNumber), '--json', 'body', '--jq', '.body']));
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(`[auditor] failed to read PR #${prNumber} body for plan-id fallback: ${cause}`);
   }
+  return parsePlanIdFromPrBody(stdout ?? '');
 }
 
 main().catch((err) => {
