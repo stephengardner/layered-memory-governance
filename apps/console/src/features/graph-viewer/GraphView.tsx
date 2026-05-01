@@ -21,22 +21,8 @@ import { AtomHoverCard } from '@/components/hover-card/AtomHoverCard';
 import { useHoverCard } from '@/components/hover-card/useHoverCard';
 import { useGraphService } from '@/services/graph/useGraphService';
 import type { GraphBounds, GraphNode } from '@/services/graph/GraphService';
+import { atomTypeTone, ATOM_TYPE_KINDS } from '@/features/atom-type-tones/tones';
 import styles from './GraphView.module.css';
-
-const TYPE_COLORS: Record<string, string> = {
-  directive: 'var(--status-danger)',
-  decision: 'var(--accent)',
-  preference: 'var(--status-warning)',
-  reference: 'var(--status-success)',
-  plan: 'var(--accent-active)',
-  observation: 'var(--text-muted)',
-  'actor-message': 'var(--accent-hover)',
-};
-
-const ALL_KINDS = [
-  'directive', 'decision', 'preference', 'reference',
-  'plan', 'observation', 'actor-message',
-] as const;
 
 const SCALE_MIN = 0.2;
 const SCALE_MAX = 4;
@@ -236,7 +222,7 @@ export function GraphView() {
           </div>
         </div>
         <div className={styles.filters}>
-          {ALL_KINDS.map((k) => (
+          {ATOM_TYPE_KINDS.map((k) => (
             <button
               key={k}
               type="button"
@@ -245,7 +231,7 @@ export function GraphView() {
               data-testid={`graph-filter-${k}`}
               data-active={snapshot.kinds.has(k)}
             >
-              <span className={styles.filterDot} style={{ background: TYPE_COLORS[k] ?? 'var(--text-muted)' }} />
+              <span className={styles.filterDot} style={{ background: atomTypeTone(k) }} />
               {k}
             </button>
           ))}
@@ -320,7 +306,7 @@ export function GraphView() {
                 >
                   <circle
                     r={n.radius}
-                    style={{ fill: TYPE_COLORS[n.type] ?? 'var(--text-muted)' }}
+                    style={{ fill: atomTypeTone(n.type) }}
                   />
                 </g>
               ))}

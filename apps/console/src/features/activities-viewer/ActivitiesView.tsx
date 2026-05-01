@@ -6,18 +6,8 @@ import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { ActivityHeatmap } from '@/components/heatmap/ActivityHeatmap';
+import { atomTypeTone } from '@/features/atom-type-tones/tones';
 import styles from './ActivitiesView.module.css';
-
-const TYPE_DOT_COLORS: Record<string, string> = {
-  directive: 'var(--status-danger)',
-  decision: 'var(--accent)',
-  preference: 'var(--status-warning)',
-  reference: 'var(--status-success)',
-  observation: 'var(--text-muted)',
-  'actor-message': 'var(--accent-hover)',
-  plan: 'var(--accent-active)',
-  question: 'var(--text-tertiary)',
-};
 
 export function ActivitiesView() {
   const query = useQuery({
@@ -91,7 +81,7 @@ export function ActivitiesView() {
                     >
                       <span
                         className={styles.dot}
-                        style={{ background: TYPE_DOT_COLORS[a.type] ?? 'var(--text-muted)' }}
+                        style={{ background: atomTypeTone(a.type) }}
                         aria-hidden="true"
                       />
                       <div className={styles.itemHead}>
