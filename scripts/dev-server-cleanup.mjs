@@ -52,15 +52,15 @@ const PID_FILE = resolve(REPO_ROOT, 'apps', 'console', '.lag-dev-servers.pid.jso
 // `apps/console/server/index.ts`.
 const ENTRY = 'apps/console/server/index.ts';
 
-async function execImpl(cmd, args, opts = {}) {
+async function execImpl(cmd, args) {
   // wmic / ps stdout can run hundreds of KB on a busy host; bump
   // the buffer so a noisy machine does not throw ENOBUFS and skip
-  // the scan path.
-  const result = await execFileP(cmd, args, {
+  // the scan path. Returns { stdout, stderr } per execFileP; the
+  // lib consumer reads `.stdout` directly.
+  return execFileP(cmd, args, {
     maxBuffer: 16 * 1024 * 1024,
     windowsHide: true,
   });
-  return opts.capture ? result : result;
 }
 
 async function main() {
