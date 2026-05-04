@@ -77,7 +77,9 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   classifyProbe,
+  decideProbeAction,
   decideRestartAction,
+  decideRestartTimerAction,
   mergeAllowedOrigins,
   nextBackoffMs,
   parseTrycloudflareHostname,
@@ -103,36 +105,53 @@ const DEFAULTS = {
   spawnTunnel: true,
 };
 
+/**
+ * Parse and validate the integer value that follows an integer-valued
+ * CLI flag. Centralized so the three integer flags (--check-interval-ms,
+ * --max-failures, --cooldown-ms) share parse + validate + error-exit
+ * logic rather than copy-pasting three almost-identical branches.
+ *
+ * Returns { value, newIndex } so the caller can advance its argv cursor
+ * past the consumed value. On invalid input, prints the same error
+ * message the inline branches printed and calls process.exit(2). The
+ * minBound check is `< minBound`, matching the inline `< 1000`, `< 1`,
+ * `< 0` semantics of the original three branches; error strings stay
+ * byte-identical so behaviour is unchanged.
+ */
+function parseIntegerFlag(name, argv, i, minBound, errorMsg) {
+  if (i + 1 >= argv.length) {
+    console.error(`[tunnel-watchdog] ${name} requires a value`);
+    process.exit(2);
+  }
+  const n = Number.parseInt(argv[i + 1], 10);
+  if (!Number.isFinite(n) || n < minBound) {
+    console.error(errorMsg);
+    process.exit(2);
+  }
+  return { value: n, newIndex: i + 1 };
+}
+
 function parseArgs(argv) {
   const args = { ...DEFAULTS };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--no-tunnel') { args.spawnTunnel = false; continue; }
     if (a === '--check-interval-ms' && i + 1 < argv.length) {
-      const n = Number.parseInt(argv[++i], 10);
-      if (!Number.isFinite(n) || n < 1000) {
-        console.error('[tunnel-watchdog] --check-interval-ms must be >= 1000');
-        process.exit(2);
-      }
-      args.checkIntervalMs = n;
+      const r = parseIntegerFlag(a, argv, i, 1000, '[tunnel-watchdog] --check-interval-ms must be >= 1000');
+      args.checkIntervalMs = r.value;
+      i = r.newIndex;
       continue;
     }
     if (a === '--max-failures' && i + 1 < argv.length) {
-      const n = Number.parseInt(argv[++i], 10);
-      if (!Number.isFinite(n) || n < 1) {
-        console.error('[tunnel-watchdog] --max-failures must be >= 1');
-        process.exit(2);
-      }
-      args.maxFailures = n;
+      const r = parseIntegerFlag(a, argv, i, 1, '[tunnel-watchdog] --max-failures must be >= 1');
+      args.maxFailures = r.value;
+      i = r.newIndex;
       continue;
     }
     if (a === '--cooldown-ms' && i + 1 < argv.length) {
-      const n = Number.parseInt(argv[++i], 10);
-      if (!Number.isFinite(n) || n < 0) {
-        console.error('[tunnel-watchdog] --cooldown-ms must be >= 0');
-        process.exit(2);
-      }
-      args.cooldownMs = n;
+      const r = parseIntegerFlag(a, argv, i, 0, '[tunnel-watchdog] --cooldown-ms must be >= 0');
+      args.cooldownMs = r.value;
+      i = r.newIndex;
       continue;
     }
     if (a === '--help' || a === '-h') {
@@ -169,6 +188,12 @@ function makeComponentState(name) {
     lastTripAt: null,
     lastProbeReason: 'init',
     restarting: false,
+    // Monotonic counter incremented every time state.child is replaced.
+    // Stale setTimeout callbacks (e.g. a queued restart whose target
+    // child was already replaced by an unrelated respawn path like
+    // handleNewTunnelHost) compare against this to detect that the
+    // world moved out from under them and skip the respawn.
+    generation: 0,
   };
 }
 
@@ -303,11 +328,33 @@ function scheduleRestart(name) {
   });
   log(`${state.name}: scheduling restart in ${delay}ms (failures=${state.failures})`);
   state.restarting = true;
+  // Capture the child handle and a generation counter at scheduling
+  // time. If a different code path replaces state.child (e.g. the
+  // handleNewTunnelHost rotation respawns api with new env, or a
+  // parallel probe-driven SIGTERM has already triggered a fresh exit
+  // -> scheduleRestart cycle that beat us to it), the stale timer must
+  // bail out instead of producing a second respawn that collides on
+  // the port. The decision logic is in lib/tunnel-watchdog.mjs so it
+  // can be unit-tested without standing up real child processes.
+  const expectedChild = state.child;
+  const expectedGeneration = state.generation;
   setTimeout(() => {
     state.restarting = false;
-    if (shuttingDown) return;
+    const decision = decideRestartTimerAction({
+      shuttingDown,
+      expectedChild,
+      expectedGeneration,
+      currentChild: state.child,
+      currentGeneration: state.generation,
+    });
+    if (decision.action === 'shutdown') return;
+    if (decision.action === 'stale') {
+      log(`${state.name}: stale restart timer skipped (${decision.reason})`);
+      return;
+    }
     try {
       state.child = spawnFor(state.name);
+      state.generation += 1;
       attachLifecycle(state);
       log(`${state.name}: respawned`);
     } catch (err) {
@@ -332,6 +379,7 @@ function handleNewTunnelHost(host) {
     api.child.removeAllListeners('exit');
     api.child.once('exit', () => {
       api.child = spawnFor('api');
+      api.generation += 1;
       attachLifecycle(api);
       log('api: respawned with updated LAG_CONSOLE_ALLOWED_ORIGINS');
     });
@@ -339,9 +387,10 @@ function handleNewTunnelHost(host) {
   } else {
     // No live api child: spawn fresh (the periodic probe loop will
     // have already noticed and scheduled a restart, so we may be
-    // racing it; idempotent because the respawn check below is
-    // gated on api.child.killed).
+    // racing it; the generation bump invalidates any in-flight stale
+    // restart timer in scheduleRestart).
     api.child = spawnFor('api');
+    api.generation += 1;
     attachLifecycle(api);
   }
 }
@@ -373,6 +422,34 @@ async function probe(url, opts = {}) {
   }
 }
 
+// Apply the pure probe-decision to a component's live state. Wires
+// the side effects (failures bump, SIGTERM, scheduleRestart) so the
+// decision in decideProbeAction stays pure.
+function applyProbeAction(name, result) {
+  const state = components[name];
+  if (!state) return;
+  const hasLiveChild = !!(state.child && !state.child.killed);
+  const decision = decideProbeAction({
+    probeStatus: result.status,
+    restarting: state.restarting,
+    hasLiveChild,
+  });
+  if (decision.action === 'reset') {
+    state.failures = 0;
+    return;
+  }
+  if (decision.action === 'noop') return;
+  if (decision.action === 'sigterm') {
+    log(`${name}: probe unhealthy (${result.reason}); SIGTERM to flush through exit handler`);
+    try { state.child.kill('SIGTERM'); } catch {}
+    return;
+  }
+  // 'schedule'
+  log(`${name}: probe unhealthy (${result.reason}); no live child, scheduling restart`);
+  state.failures += 1;
+  scheduleRestart(name);
+}
+
 async function tickHealth() {
   if (shuttingDown) return;
   const apiUrl = `http://localhost:${args.apiPort}/api/health`;
@@ -381,27 +458,16 @@ async function tickHealth() {
   const webResult = classifyProbe(await probe(webUrl));
   components.api.lastProbeReason = apiResult.reason;
   components.web.lastProbeReason = webResult.reason;
-  if (apiResult.status === 'unhealthy' && !components.api.restarting) {
-    log(`api: probe unhealthy (${apiResult.reason}); restart-restart pipeline will pick it up via exit handler`);
-    // The exit handler is the canonical restart trigger; if the
-    // child is wedged-but-alive, a SIGTERM here flushes it through
-    // the same pipeline.
-    components.api.failures += 1;
-    if (components.api.child && !components.api.child.killed) {
-      components.api.child.kill('SIGTERM');
-    } else {
-      scheduleRestart('api');
-    }
-  }
-  if (webResult.status === 'unhealthy' && !components.web.restarting) {
-    log(`web: probe unhealthy (${webResult.reason})`);
-    components.web.failures += 1;
-    if (components.web.child && !components.web.child.killed) {
-      components.web.child.kill('SIGTERM');
-    } else {
-      scheduleRestart('web');
-    }
-  }
+  // Healthy probes reset the failures counter so transient blips do
+  // not accumulate toward the breaker. The exit handler is the
+  // SINGLE place that increments failures after an actual child exit;
+  // the probe branch only increments when there is no live child to
+  // kill (otherwise the SIGTERM below produces an exit event that
+  // hits the increment site, causing double-counting). Decision logic
+  // is in lib/tunnel-watchdog.mjs (decideProbeAction) so it is unit
+  // tested without spinning real children.
+  applyProbeAction('api', apiResult);
+  applyProbeAction('web', webResult);
   // Tunnel probe is implicit: cloudflared exiting is observed by the
   // 'exit' handler. We do not synthesize a tunnel-health probe here
   // because the canonical signature (502 from a public URL) requires
@@ -432,13 +498,42 @@ process.once('SIGTERM', () => shutdown('SIGTERM'));
 // Boot.
 log(`booting watchdog (api=${args.apiPort}, web=${args.webPort}, tunnel=${args.spawnTunnel})`);
 components.api.child = spawnFor('api');
+components.api.generation += 1;
 attachLifecycle(components.api);
 components.web.child = spawnFor('web');
+components.web.generation += 1;
 attachLifecycle(components.web);
 if (args.spawnTunnel) {
   try {
-    components.tunnel.child = spawnFor('tunnel');
-    attachLifecycle(components.tunnel);
+    const tunnelChild = spawnFor('tunnel');
+    // ENOENT (cloudflared not installed) is emitted asynchronously as
+    // a 'spawn'-time error event, so a sync try/catch around spawnFor
+    // never catches it. Attach a one-shot listener BEFORE wiring the
+    // restart loop so a missing-binary signal short-circuits cleanly
+    // rather than spinning attachLifecycle's restart logic against a
+    // process that never existed.
+    let tunnelDisabled = false;
+    tunnelChild.once('error', (err) => {
+      if (err?.code === 'ENOENT') {
+        errLog('tunnel: cloudflared not found on PATH; pass --no-tunnel to silence this');
+        tunnelDisabled = true;
+        components.tunnel.child = null;
+      } else {
+        errLog(`tunnel: spawn error: ${err?.message ?? err}`);
+        components.tunnel.failures += 1;
+        scheduleRestart('tunnel');
+      }
+    });
+    components.tunnel.child = tunnelChild;
+    components.tunnel.generation += 1;
+    // Defer attachLifecycle to next tick so the ENOENT listener above
+    // fires first if the binary is missing; otherwise wire normal
+    // lifecycle handling. setImmediate keeps the boot sequence
+    // synchronous-looking while letting libuv flush the spawn error.
+    setImmediate(() => {
+      if (tunnelDisabled || shuttingDown) return;
+      attachLifecycle(components.tunnel);
+    });
   } catch (err) {
     errLog(`tunnel: spawn failed: ${err?.message ?? err}`);
     errLog('tunnel: continuing without a tunnel; pass --no-tunnel to silence this');
@@ -448,6 +543,21 @@ if (args.spawnTunnel) {
 // Health probe loop. setInterval is idiomatic for "do this every N
 // ms"; the unref() is so the watchdog exits when nothing else is
 // pinning the loop (e.g. all children gone after shutdown).
-setInterval(() => {
-  tickHealth().catch((err) => errLog(`probe tick error: ${err?.message ?? err}`));
+//
+// Serialize: tickHealth() awaits two HTTP probes back-to-back, which
+// can take longer than the interval itself when the upstream is
+// wedged. Without serialization, two ticks would interleave and race
+// on shared state (lastProbeReason, failures). The running-flag gate
+// makes overlapping ticks a no-op rather than a corruption source.
+let tickHealthRunning = false;
+setInterval(async () => {
+  if (tickHealthRunning) return;
+  tickHealthRunning = true;
+  try {
+    await tickHealth();
+  } catch (err) {
+    errLog(`probe tick error: ${err?.message ?? err}`);
+  } finally {
+    tickHealthRunning = false;
+  }
 }, args.checkIntervalMs).unref();

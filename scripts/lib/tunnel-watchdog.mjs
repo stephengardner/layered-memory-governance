@@ -164,6 +164,64 @@ export function classifyProbe(probe) {
 }
 
 /**
+ * Decide what the periodic probe loop should do for a single component
+ * based on the classified probe status and whether a live child is
+ * currently supervising the port. Pure: takes the inputs, returns the
+ * action; the caller wires the side effects.
+ *
+ * The policy this encodes (Finding 3): the EXIT handler is the single
+ * place that increments failures after an actual child exit; the probe
+ * loop only increments failures when there is no live child to kill
+ * (otherwise SIGTERM produces an exit event that hits the increment
+ * site, causing double-counting). Healthy probes reset failures to 0
+ * so transient blips do not accumulate toward the breaker.
+ *
+ * Returns one of four actions:
+ *   - 'reset'    : healthy probe, caller should set failures = 0.
+ *   - 'noop'     : a restart is already pending for this component.
+ *   - 'sigterm'  : unhealthy probe with a live child; caller should
+ *                  SIGTERM the child and let the exit handler bump
+ *                  failures + schedule the restart.
+ *   - 'schedule' : unhealthy probe with NO live child; caller should
+ *                  bump failures and call scheduleRestart directly.
+ */
+export function decideProbeAction(input) {
+  const probeStatus = input?.probeStatus;
+  const restarting = input?.restarting === true;
+  const hasLiveChild = input?.hasLiveChild === true;
+  if (probeStatus === 'healthy') return { action: 'reset' };
+  if (restarting) return { action: 'noop' };
+  if (hasLiveChild) return { action: 'sigterm' };
+  return { action: 'schedule' };
+}
+
+/**
+ * Decide whether a setTimeout-driven restart callback should proceed
+ * or bail out as stale. The watchdog captures the child handle and a
+ * monotonically-incrementing generation counter at scheduling time;
+ * if a different code path (e.g. handleNewTunnelHost rotation) has
+ * since replaced state.child or bumped the generation, the queued
+ * timer must skip the respawn rather than create a second child that
+ * collides on the port (Finding 2).
+ *
+ * Returns one of three actions:
+ *   - 'shutdown' : the watchdog is shutting down; abandon the restart.
+ *   - 'stale'    : the captured child or generation no longer matches
+ *                  the live state; abandon the restart.
+ *   - 'proceed'  : the captured snapshot still matches; respawn.
+ */
+export function decideRestartTimerAction(input) {
+  if (input?.shuttingDown === true) return { action: 'shutdown' };
+  const expectedChild = input?.expectedChild;
+  const expectedGeneration = input?.expectedGeneration;
+  const currentChild = input?.currentChild;
+  const currentGeneration = input?.currentGeneration;
+  if (currentChild !== expectedChild) return { action: 'stale', reason: 'child-changed' };
+  if (currentGeneration !== expectedGeneration) return { action: 'stale', reason: 'generation-changed' };
+  return { action: 'proceed' };
+}
+
+/**
  * Merge a freshly-discovered tunnel hostname into an existing
  * LAG_CONSOLE_ALLOWED_ORIGINS env value. Returns the new env value AND
  * a boolean indicating whether the value actually changed (so the
