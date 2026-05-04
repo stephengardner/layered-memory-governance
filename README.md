@@ -487,6 +487,7 @@ GitHub Actions CI runs typecheck, build, default test suite, and a quickstart sm
 - Microsoft GraphRAG: entity + relation layer.
 - Anthropic Projects: low-autonomy baseline.
 - Temporal knowledge graph literature: time as first-class relationship.
+- LangGraph: graph-based orchestration substrate (BYO orchestration first-class peer to native runActor).
 
 ## License
 
