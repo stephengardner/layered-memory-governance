@@ -285,6 +285,14 @@ export function buildAgenticDispatchStage(
   async function run(
     input: StageInput<unknown>,
   ): Promise<StageOutput<DispatchRecordPayload>> {
+    // Start the wall-clock timer BEFORE the skill resolution so the
+    // returned duration_ms covers the full stage run (skill resolve +
+    // agent-loop + canon-audit + the approved-path runDispatchTick
+    // handoff). The runStageAgentLoop helper's result.durationMs only
+    // measures the agent-loop slice; using it here would understate
+    // agentic dispatch latency relative to the single-shot adapter at
+    // dispatch/index.ts which times the whole stage.
+    const t0 = Date.now();
     const skillBundle = await resolveSkillBundle('dispatch-discipline');
     // Compose the helper input as a literal so exactOptionalPropertyTypes
     // narrows on the canonAuditPromptBuilder branch (the option-key is
@@ -348,7 +356,7 @@ export function buildAgenticDispatchStage(
           gating_reason: result.value.reason,
         },
         cost_usd: result.costUsd,
-        duration_ms: result.durationMs,
+        duration_ms: Date.now() - t0,
         atom_type: 'dispatch-record',
       };
     }
@@ -370,7 +378,7 @@ export function buildAgenticDispatchStage(
         cost_usd: result.costUsd,
       },
       cost_usd: result.costUsd,
-      duration_ms: result.durationMs,
+      duration_ms: Date.now() - t0,
       atom_type: 'dispatch-record',
     };
   }

@@ -36,10 +36,16 @@ unauthorised mutation". The verdict captures:
   every cited atom-id resolves on disk via .lag/atoms/<id>.json.
   Bare assertions like "the chain looks clean" without naming
   specific atom-ids walked are a critical audit finding.
-- **Verify the citation closure.** Every atom-id in any plan's
-  derived_from and principles_applied MUST appear in the verified
-  citation set the pipeline supplies. An atom-id outside the set is
-  a fabrication; reject the chain naming the specific id.
+- **Verify the citation closure.** Every EXTERNAL atom-id in any
+  plan's derived_from and principles_applied MUST appear in the
+  verified citation set the pipeline supplies. EXEMPT from this
+  check: the current pipeline atom id (the substrate's plan-stage
+  stamps the pipeline id into derived_from so the dispatch-stage's
+  planFilter can scope the tick to this pipeline; pipeline ids are
+  NOT in verifiedCitedAtomIds and rejecting them would block every
+  legitimate pipeline-scoped plan). An EXTERNAL atom-id outside the
+  verified set is a fabrication; reject the chain naming the specific
+  id. The current pipeline atom id is the only structural exemption.
 - **Verify the sub-actor allowlist.** Every plan's
   delegation.sub_actor_principal_id MUST appear in the verified
   sub-actor set. A delegation outside the set is a fence violation;
