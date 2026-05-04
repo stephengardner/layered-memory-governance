@@ -54,6 +54,8 @@ function mkStatus(overrides: Partial<PrReviewStatus> = {}): PrReviewStatus {
     pr,
     mergeable: true,
     mergeStateStatus: 'CLEAN',
+    prState: 'OPEN',
+    title: null,
     lineComments: [],
     bodyNits: [],
     submittedReviews: [],
@@ -258,6 +260,35 @@ describe('mkPrObservationAtom', () => {
     });
     expect((noPlan.metadata as Record<string, unknown>).plan_id).toBeUndefined();
     expect((emptyPlan.metadata as Record<string, unknown>).plan_id).toBeUndefined();
+  });
+
+  it('writes metadata.pr_title when status.title is a non-empty string', () => {
+    const atom = mkPrObservationAtom({
+      ...base,
+      status: mkStatus({ title: 'fix(pr-observation): capture pr title' }),
+    });
+    const md = atom.metadata as Record<string, unknown>;
+    expect(md.pr_title).toBe('fix(pr-observation): capture pr title');
+  });
+
+  it('preserves an empty string title as metadata.pr_title (untitled PRs are valid)', () => {
+    const atom = mkPrObservationAtom({
+      ...base,
+      status: mkStatus({ title: '' }),
+    });
+    const md = atom.metadata as Record<string, unknown>;
+    // Empty string is a valid value per the adapter contract; do
+    // not coerce to undefined or fall back to a placeholder.
+    expect(md.pr_title).toBe('');
+  });
+
+  it('omits metadata.pr_title when status.title is null (upstream fetch failed)', () => {
+    const atom = mkPrObservationAtom({
+      ...base,
+      status: mkStatus({ title: null }),
+    });
+    const md = atom.metadata as Record<string, unknown>;
+    expect(md.pr_title).toBeUndefined();
   });
 });
 

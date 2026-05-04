@@ -402,6 +402,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
         mergeable: null as boolean | null,
         mergeStateStatus: null as string | null,
         prState: null as string | null,
+        title: null as string | null,
         headOid: null as string | null,
       };
     });
@@ -453,6 +454,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       mergeable: meta.mergeable,
       mergeStateStatus: meta.mergeStateStatus,
       prState: meta.prState,
+      title: meta.title,
       lineComments: line,
       bodyNits: body,
       submittedReviews: reviews,
@@ -464,19 +466,25 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
   }
 
   /**
-   * Fetch PR-level mergeability metadata via a single GraphQL query.
-   * Returns `mergeable` (coerced from the GraphQL enum to
-   * boolean | null; null for UNKNOWN when GitHub has not finished
-   * computing), `mergeStateStatus`
-   * (CLEAN / BLOCKED / UNKNOWN / BEHIND / DIRTY / DRAFT / HAS_HOOKS /
-   * UNSTABLE), and the head ref's SHA so the check-runs and
-   * legacy-statuses fetches can hang off it. One GraphQL round trip
-   * keeps the composite read cheap.
+   * Fetch PR-level metadata via a single GraphQL query. Returns:
+   *   - `mergeable` (coerced from the GraphQL enum to boolean | null;
+   *     null for UNKNOWN when GitHub has not finished computing)
+   *   - `mergeStateStatus` (CLEAN / BLOCKED / UNKNOWN / BEHIND /
+   *     DIRTY / DRAFT / HAS_HOOKS / UNSTABLE; the merge-readiness
+   *     snapshot of an OPEN PR)
+   *   - `prState` (lifecycle phase: OPEN / CLOSED / MERGED; null on
+   *     fetch failure)
+   *   - `title` (human-readable PR title; null on fetch failure;
+   *     empty string preserved as a valid untitled-PR value)
+   *   - `headOid` (the head ref's SHA so the check-runs and
+   *     legacy-statuses fetches can hang off it)
+   * One GraphQL round trip keeps the composite read cheap.
    */
   private async fetchPrMetaGql(pr: PrIdentifier): Promise<{
     mergeable: boolean | null;
     mergeStateStatus: string | null;
     prState: string | null;
+    title: string | null;
     headOid: string | null;
   }> {
     const query = `
@@ -486,6 +494,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
             mergeable
             mergeStateStatus
             state
+            title
             headRefOid
           }
         }
@@ -497,6 +506,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
           readonly mergeable: string | null;
           readonly mergeStateStatus: string | null;
           readonly state: string | null;
+          readonly title: string | null;
           readonly headRefOid: string | null;
         };
       };
@@ -518,6 +528,7 @@ export class GitHubPrReviewAdapter implements PrReviewAdapter {
       mergeable,
       mergeStateStatus: node.mergeStateStatus,
       prState: node.state,
+      title: node.title,
       headOid: node.headRefOid,
     };
   }

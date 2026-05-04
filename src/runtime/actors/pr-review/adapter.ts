@@ -177,6 +177,16 @@ export interface PrReviewStatus {
    */
   readonly prState: string | null;
   /**
+   * Human-readable PR title. Read alongside the lifecycle state so
+   * a downstream UI or projection that renders PR activity can show
+   * a recognizable label instead of falling back to "(no title)" -
+   * a fallback that is correct only when the upstream adapter
+   * genuinely could not read it. `null` when the metadata fetch
+   * failed (same condition as `prState`); empty string is a valid
+   * value (PRs without titles exist) and is preserved as-is.
+   */
+  readonly title: string | null;
+  /**
    * Line-level unresolved review comments. Same shape as
    * listUnresolvedComments; duplicated in this composite so a
    * caller never has to make a second call.
