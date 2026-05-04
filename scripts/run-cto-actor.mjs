@@ -386,14 +386,14 @@ async function runDeepPipeline(args) {
   // stage is agentic we lazily build the substrate primitives the
   // agentic adapter requires (AgentLoop + WorkspaceProvider + BlobStore
   // + Redactor); single-shot deployments pay zero cost for that wiring.
-  // T6 shipped the agentic option for brainstorm-stage; T7 adds
-  // spec-stage. Plan and review fall back to single-shot regardless of
-  // the canon policy until T12-T13 deliver their agentic adapters;
-  // dispatch is a deterministic handoff and stays single-shot
-  // permanently. A canon entry of 'agentic' for an unimplemented stage
-  // halts the registry construction with a clear "not yet implemented"
-  // diagnostic rather than silently downgrading.
-  const AGENTIC_AVAILABLE = new Set(['brainstorm-stage', 'spec-stage']);
+  // T6 shipped brainstorm-stage; T7 added spec-stage; T8 adds plan-stage.
+  // Review falls back to single-shot regardless of the canon policy
+  // until T13 delivers its agentic adapter; dispatch is a deterministic
+  // handoff and stays single-shot permanently. A canon entry of
+  // 'agentic' for an unimplemented stage halts the registry construction
+  // with a clear "not yet implemented" diagnostic rather than silently
+  // downgrading.
+  const AGENTIC_AVAILABLE = new Set(['brainstorm-stage', 'spec-stage', 'plan-stage']);
 
   // Fail-fast preflight: implementation-policy entries whose
   // stage_name does not match any resolved stage in the canon-ordered
@@ -425,9 +425,9 @@ async function runDeepPipeline(args) {
   if (unimplementedAgentic.length > 0) {
     console.error(
       `ERROR: canon selects mode='agentic' for stages [${unimplementedAgentic.join(', ')}] `
-      + 'but no agentic adapter is registered for those stages. T6+T7 ship agentic for '
-      + 'brainstorm-stage and spec-stage; T12-T13 add agentic plan/review. Until then, flip '
-      + 'those stages back to mode=\'single-shot\' via a higher-priority canon atom or '
+      + 'but no agentic adapter is registered for those stages. T6+T7+T8 ship agentic for '
+      + 'brainstorm-stage, spec-stage, and plan-stage; T13 adds agentic review. Until then, '
+      + 'flip those stages back to mode=\'single-shot\' via a higher-priority canon atom or '
       + 'wait for the upstream stage to ship its agentic option.',
     );
     process.exit(2);
@@ -457,6 +457,9 @@ async function runDeepPipeline(args) {
     );
     const { buildAgenticSpecStage } = await import(
       '../dist/examples/planning-stages/spec/agentic.js'
+    );
+    const { buildAgenticPlanStage } = await import(
+      '../dist/examples/planning-stages/plan/agentic.js'
     );
 
     // Wire the substrate primitives once and share them across every
@@ -489,6 +492,17 @@ async function runDeepPipeline(args) {
       stageRegistry.set(
         'spec-stage',
         buildAgenticSpecStage({
+          agentLoop,
+          workspaceProvider,
+          blobStore,
+          redactor,
+        }),
+      );
+    }
+    if (wantsAgentic.includes('plan-stage')) {
+      stageRegistry.set(
+        'plan-stage',
+        buildAgenticPlanStage({
           agentLoop,
           workspaceProvider,
           blobStore,

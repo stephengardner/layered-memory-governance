@@ -369,7 +369,7 @@ function citationFinding(
   };
 }
 
-async function auditPlan(
+export async function auditPlan(
   output: PlanPayload,
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
