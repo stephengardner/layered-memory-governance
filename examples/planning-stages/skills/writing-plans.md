@@ -153,8 +153,8 @@ Self-check:
   `principles_applied` fields and NOT inside body prose?
 - Are the steps bite-sized and concrete (exact file paths, exact
   commands, no placeholders)?
-- Are the alternatives_rejected substantively distinct, with trade-
-  offs that cite trade-offs?
+- Are the alternatives_rejected substantively distinct, with clear
+  one-line trade-off reasons?
 - Is the JSON valid and matches the schema?
 
 If any answer is no, fix it before emitting.
