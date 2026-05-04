@@ -98,6 +98,8 @@ class StubReviewAdapter implements PrReviewAdapter {
       pr,
       mergeable: true,
       mergeStateStatus: 'CLEAN',
+      prState: 'OPEN',
+      title: null,
       lineComments,
       bodyNits,
       submittedReviews: [],
@@ -446,6 +448,8 @@ describe('PrLandingActor', () => {
       pr,
       mergeable: true,
       mergeStateStatus: 'CLEAN',
+      prState: 'OPEN',
+      title: null,
       lineComments: [c1],
       bodyNits: [],
       submittedReviews: [
