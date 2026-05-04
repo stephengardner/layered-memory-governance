@@ -142,13 +142,13 @@ function buildReviewPrompt(opts: {
     `- principal: ${String(stagePrincipal)}`,
     `- seed atom ids: ${seedAtomIds}`,
     `- canon directives applicable: ${canonAtomIds.length} (you have read access via Read on .lag/atoms/)`,
-    `- verified citation set (audit any plan citation NOT in this set as a critical fabrication): ${verifiedCited}`,
+    `- verified citation set (for grounding context; the audit fence is resolvability via Read on .lag/atoms/<id>.json, not membership in this set): ${verifiedCited}`,
     '',
     '## Operator-intent (literal text; for context only)',
     '',
     stageInput.operatorIntentContent.length > 0
       ? stageInput.operatorIntentContent
-      : '(no anchor available; audit citations against the verified set only)',
+      : '(no anchor available; audit citations against the resolvability fence only)',
     '',
     '## Upstream plan output (the artifact you audit)',
     '',

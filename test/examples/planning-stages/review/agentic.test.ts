@@ -203,8 +203,8 @@ describe('agenticReviewStage', () => {
     expect(verdict).toBe('approved');
   });
 
-  it('exposes audit() so the runner re-runs the single-shot citation-closure check', () => {
-    const { blobStore, redactor, workspaceProvider } = makeStubHostBundle();
+  it('audit() re-emits findings from the produced payload (load-bearing halt path)', async () => {
+    const { host, blobStore, redactor, workspaceProvider } = makeStubHostBundle();
     const adapter = makeStubAdapter({ outputs: ['{}'] });
     const stage = buildAgenticReviewStage({
       agentLoop: adapter,
@@ -213,6 +213,41 @@ describe('agenticReviewStage', () => {
       redactor,
     });
     expect(typeof stage.audit).toBe('function');
+    // Feed audit() a literal payload with one critical finding; assert
+    // the same finding is re-emitted unchanged. The agentic adapter's
+    // load-bearing halt-on-critical path is the runner re-running this
+    // hook on the produced payload; a no-op audit would let a critical
+    // finding escape the runner's halt machinery.
+    const payload = {
+      audit_status: 'findings' as const,
+      findings: [
+        {
+          severity: 'critical' as const,
+          category: 'fabricated-cited-atom',
+          message: 'cited atom-id "fake-atom-id" does not resolve',
+          cited_atom_ids: ['fake-atom-id'],
+          cited_paths: [],
+        },
+      ],
+      total_bytes_read: 0,
+      cost_usd: 0,
+    };
+    const ctx = {
+      host,
+      principal: PRINCIPAL,
+      correlationId: 'corr-audit-test',
+      pipelineId: PIPELINE_ID,
+      stageName: 'review-stage',
+      verifiedCitedAtomIds: [] as ReadonlyArray<AtomId>,
+      verifiedSubActorPrincipalIds: [] as ReadonlyArray<PrincipalId>,
+      operatorIntentContent: '',
+    };
+    const findings = await stage.audit!(payload, ctx);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.severity).toBe('critical');
+    expect(findings[0]!.category).toBe('fabricated-cited-atom');
+    expect(findings[0]!.message).toContain('fake-atom-id');
+    expect(findings[0]!.cited_atom_ids).toEqual(['fake-atom-id']);
   });
 
   it('threads config.principal into the prompt so the override stays in sync with the actor identity', async () => {
