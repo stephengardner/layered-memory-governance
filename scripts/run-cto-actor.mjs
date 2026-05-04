@@ -490,67 +490,53 @@ async function runDeepPipeline(args) {
     const blobStore = new FileBlobStore(blobRoot);
     const redactor = new RegexRedactor();
 
-    if (wantsAgentic.includes('brainstorm-stage')) {
-      stageRegistry.set(
+    // Descriptor map for the per-stage agentic-builder wiring. Extracted
+    // at N=2 per dev-extract-at-n-2: with T10 there are 5 near-identical
+    // wantsAgentic.includes(...) -> stageRegistry.set(buildAgenticX(...))
+    // blocks; centralizing the descriptor prevents the wiring + the
+    // shipped-stage error message from drifting when a future stage
+    // lands. The dispatch-stage is the only entry that needs the
+    // SubActorRegistry, so its builder closes over subActorRegistry
+    // explicitly. The shape is data, not code.
+    const agenticBuilders = new Map([
+      [
         'brainstorm-stage',
-        buildAgenticBrainstormStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-        }),
-      );
-    }
-    if (wantsAgentic.includes('spec-stage')) {
-      stageRegistry.set(
+        () => buildAgenticBrainstormStage({ agentLoop, workspaceProvider, blobStore, redactor }),
+      ],
+      [
         'spec-stage',
-        buildAgenticSpecStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-        }),
-      );
-    }
-    if (wantsAgentic.includes('plan-stage')) {
-      stageRegistry.set(
+        () => buildAgenticSpecStage({ agentLoop, workspaceProvider, blobStore, redactor }),
+      ],
+      [
         'plan-stage',
-        buildAgenticPlanStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-        }),
-      );
-    }
-    if (wantsAgentic.includes('review-stage')) {
-      stageRegistry.set(
+        () => buildAgenticPlanStage({ agentLoop, workspaceProvider, blobStore, redactor }),
+      ],
+      [
         'review-stage',
-        buildAgenticReviewStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-        }),
-      );
-    }
-    if (wantsAgentic.includes('dispatch-stage')) {
-      // The agentic dispatch-stage takes the same SubActorRegistry the
-      // single-shot adapter does so the runDispatchTick handoff routes
-      // through the same registered invokers. The agent's job is chain
-      // verification (citations + sub-actor allowlist + envelope match)
-      // before the substrate hands off; the registry wiring is identical
-      // to single-shot.
-      stageRegistry.set(
+        () => buildAgenticReviewStage({ agentLoop, workspaceProvider, blobStore, redactor }),
+      ],
+      [
         'dispatch-stage',
-        buildAgenticDispatchStage({
-          agentLoop,
-          workspaceProvider,
-          blobStore,
-          redactor,
-          registry: subActorRegistry,
-        }),
-      );
+        () =>
+          buildAgenticDispatchStage({
+            agentLoop,
+            workspaceProvider,
+            blobStore,
+            redactor,
+            // The agentic dispatch-stage takes the same SubActorRegistry
+            // the single-shot adapter does so the runDispatchTick handoff
+            // routes through the same registered invokers. The agent's
+            // job is chain verification before the substrate hands off;
+            // the registry wiring is identical to single-shot.
+            registry: subActorRegistry,
+          }),
+      ],
+    ]);
+    for (const stageName of wantsAgentic) {
+      const buildStage = agenticBuilders.get(stageName);
+      if (buildStage !== undefined) {
+        stageRegistry.set(stageName, buildStage());
+      }
     }
   }
 
