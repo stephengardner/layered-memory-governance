@@ -27,6 +27,20 @@ import {
 const PRINCIPAL = 'spec-author' as PrincipalId;
 const PIPELINE_ID = 'pipeline-spec-agentic-test' as AtomId;
 
+/**
+ * Shared AgentLoopAdapter.capabilities literal used by every stub
+ * adapter in this file. Extracted at N=2 per dev-extract-at-n-2: the
+ * three test cases below all need the same capabilities shape, and a
+ * future fourth case (review-stage / plan-stage agentic test) will
+ * inherit the same constant. Keeps the per-test surface focused on
+ * the orchestration assertion rather than the capabilities boilerplate.
+ */
+const STUB_CAPABILITIES: AgentLoopAdapter['capabilities'] = {
+  tracks_cost: true,
+  supports_signal: true,
+  classify_failure: () => 'structural',
+};
+
 function makeStageInput(host: ReturnType<typeof createMemoryHost>): StageInput<unknown> {
   return {
     host,
@@ -81,11 +95,7 @@ describe('agenticSpecStage', () => {
     // call returns the canon-audit verdict.
     let runIdx = 0;
     const sequencingAdapter: AgentLoopAdapter = {
-      capabilities: {
-        tracks_cost: true,
-        supports_signal: true,
-        classify_failure: () => 'structural',
-      },
+      capabilities: STUB_CAPABILITIES,
       async run(input) {
         const stub = makeStubAdapter({
           outputs: [JSON.stringify(STUB_SPEC_PAYLOAD)],
@@ -139,11 +149,7 @@ describe('agenticSpecStage', () => {
     // event without invoking the adapter a second time.
     let dispatchCount = 0;
     const singlePassAdapter: AgentLoopAdapter = {
-      capabilities: {
-        tracks_cost: true,
-        supports_signal: true,
-        classify_failure: () => 'structural',
-      },
+      capabilities: STUB_CAPABILITIES,
       async run(input) {
         dispatchCount++;
         const stub = makeStubAdapter({
@@ -177,6 +183,13 @@ describe('agenticSpecStage', () => {
     // audit posture.
     const verdict = (auditEvents[0]!.metadata as { canon_audit_verdict?: string }).canon_audit_verdict;
     expect(verdict).toBe('approved');
+    // Lock the contract on the findings list too: the helper emits an
+    // empty array when no canon-audit prompt builder is supplied, so a
+    // future regression that injects synthesized findings here would
+    // surface as a single-test failure.
+    const findings =
+      (auditEvents[0]!.metadata as { canon_audit_findings?: unknown[] }).canon_audit_findings;
+    expect(Array.isArray(findings) ? findings : []).toHaveLength(0);
   });
 
   it('exposes audit() so the runner re-runs the single-shot citation-closure check', () => {
@@ -197,11 +210,7 @@ describe('agenticSpecStage', () => {
     const recorder: { lastInput?: import('../../../../src/substrate/agent-loop.js').AgentLoopInput } = {};
     let runIdx = 0;
     const sequencingAdapter: AgentLoopAdapter = {
-      capabilities: {
-        tracks_cost: true,
-        supports_signal: true,
-        classify_failure: () => 'structural',
-      },
+      capabilities: STUB_CAPABILITIES,
       async run(input) {
         if (runIdx === 0) {
           recorder.lastInput = input;
