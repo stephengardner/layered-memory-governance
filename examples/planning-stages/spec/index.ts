@@ -298,7 +298,14 @@ function extractCitedAtomIds(text: string): ReadonlyArray<string> {
   return out;
 }
 
-async function auditSpec(
+/**
+ * Audit a spec-stage payload. Exported so the agentic spec-stage
+ * adapter at `./agentic.ts` can re-use the single-shot citation-
+ * closure check unchanged: the substrate-mediated audit() that the
+ * runner invokes after run() is the load-bearing gate, regardless of
+ * which adapter path produced the output.
+ */
+export async function auditSpec(
   output: SpecPayload,
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
