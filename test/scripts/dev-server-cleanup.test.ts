@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 import {
   buildScanCommand,
   cleanupOrphans,
@@ -24,8 +25,11 @@ import {
   killProcessTree,
   parseScanOutput,
   readPidRecord,
+  readPidRecordDir,
   removePidRecord,
+  removePidRecordFile,
   writePidRecord,
+  writePidRecordFile,
 } from '../../scripts/lib/dev-server-cleanup.mjs';
 
 describe('readPidRecord', () => {
@@ -502,5 +506,209 @@ describe('cleanupOrphans', () => {
     });
     expect(result.errors.length).toBe(1);
     expect(result.errors[0]).toMatch(/scan failed/);
+  });
+
+  it('preserves unresolved PIDs in the pidFile when a kill fails', async () => {
+    // Records two PIDs; only one is killable, the other refuses to die.
+    // The cleanup must rewrite the file with the unresolved PID rather
+    // than removing it entirely (otherwise the next launcher loses
+    // track of the survivor).
+    await writeFile(
+      pidFile,
+      JSON.stringify({
+        version: 1,
+        pids: [3333, 4444],
+        startedAt: '2026-05-04T10:00:00.000Z',
+        repoRoot: '/repo',
+        entry: 'apps/console/server/index.ts',
+      }),
+      'utf8',
+    );
+    const live = new Set([3333, 4444]);
+    const result = await cleanupOrphans({
+      pidFile,
+      repoRoot: '/repo',
+      entry: 'apps/console/server/index.ts',
+      platform: 'linux',
+      execImpl: async () => ({ stdout: 'PID COMMAND\n' }),
+      killImpl: ((p: number, s: NodeJS.Signals | number) => {
+        if (s === 0) {
+          if (!live.has(Math.abs(p))) {
+            const e = new Error('ESRCH') as Error & { code?: string };
+            e.code = 'ESRCH';
+            throw e;
+          }
+          return;
+        }
+        // 3333 dies; 4444 ignores all signals (simulates a wedged
+        // child that won't even respond to SIGKILL within the
+        // grace window).
+        if (Math.abs(p) === 3333) live.delete(3333);
+      }) as never,
+      sleepImpl: async () => undefined,
+    });
+    expect(result.recordedKilled).toEqual([3333]);
+    expect(result.errors.length).toBeGreaterThan(0);
+    // Pid file rewritten with only the unresolved PID.
+    const remaining = JSON.parse(await readFile(pidFile, 'utf8'));
+    expect(remaining.pids).toEqual([4444]);
+  });
+});
+
+describe('readPidRecordDir / writePidRecordFile / removePidRecordFile', () => {
+  let tmp: string;
+  let dir: string;
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'lag-dev-cleanup-dir-'));
+    dir = join(tmp, '.lag-dev-servers');
+  });
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('returns [] when the directory does not exist', () => {
+    expect(readPidRecordDir(dir)).toEqual([]);
+  });
+
+  it('round-trips per-launcher records', () => {
+    writePidRecordFile(dir, 1001, {
+      pids: [1001, 2002],
+      startedAt: '2026-05-04T10:00:00.000Z',
+      repoRoot: '/repo',
+      entry: 'tsx watch server/index.ts',
+    });
+    writePidRecordFile(dir, 1003, {
+      pids: [1003, 2003],
+      startedAt: '2026-05-04T10:00:01.000Z',
+      repoRoot: '/repo',
+      entry: 'vite',
+    });
+    const entries = readPidRecordDir(dir);
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.launcherPid)).toEqual([1001, 1003]);
+    expect(entries[0].record.pids).toEqual([1001, 2002]);
+    expect(entries[1].record.pids).toEqual([1003, 2003]);
+  });
+
+  it('skips files that fail to parse', async () => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, '999.json'), 'not-json{', 'utf8');
+    writePidRecordFile(dir, 1001, {
+      pids: [1001],
+      startedAt: '2026-05-04T10:00:00.000Z',
+      repoRoot: '/repo',
+      entry: 'x',
+    });
+    const entries = readPidRecordDir(dir);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].launcherPid).toBe(1001);
+  });
+
+  it('skips non-numeric filenames', async () => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'README.json'), JSON.stringify({ pids: [1] }), 'utf8');
+    writePidRecordFile(dir, 1001, {
+      pids: [1001],
+      startedAt: '2026-05-04T10:00:00.000Z',
+      repoRoot: '/repo',
+      entry: 'x',
+    });
+    const entries = readPidRecordDir(dir);
+    expect(entries.map((e) => e.launcherPid)).toEqual([1001]);
+  });
+
+  it('removePidRecordFile is idempotent', () => {
+    writePidRecordFile(dir, 1001, {
+      pids: [1001],
+      startedAt: '2026-05-04T10:00:00.000Z',
+      repoRoot: '/repo',
+      entry: 'x',
+    });
+    expect(removePidRecordFile(dir, 1001)).toBe(true);
+    expect(removePidRecordFile(dir, 1001)).toBe(false);
+  });
+});
+
+describe('cleanupOrphans pidDir mode', () => {
+  let tmp: string;
+  let dir: string;
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'lag-dev-cleanup-orph-'));
+    dir = join(tmp, '.lag-dev-servers');
+  });
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  it('walks every record file and kills the recorded PIDs', async () => {
+    writePidRecordFile(dir, 1001, {
+      pids: [1001, 2001],
+      startedAt: '2026-05-04T10:00:00.000Z',
+      repoRoot: '/repo',
+      entry: 'tsx watch server/index.ts',
+    });
+    writePidRecordFile(dir, 1002, {
+      pids: [1002, 2002],
+      startedAt: '2026-05-04T10:00:01.000Z',
+      repoRoot: '/repo',
+      entry: 'vite',
+    });
+    const live = new Set([1001, 2001, 1002, 2002]);
+    const result = await cleanupOrphans({
+      pidDir: dir,
+      repoRoot: '/repo',
+      entry: 'apps/console/server/index.ts',
+      platform: 'linux',
+      execImpl: async () => ({ stdout: 'PID COMMAND\n' }),
+      killImpl: ((p: number, s: NodeJS.Signals | number) => {
+        if (s === 0) {
+          if (!live.has(Math.abs(p))) {
+            const e = new Error('ESRCH') as Error & { code?: string };
+            e.code = 'ESRCH';
+            throw e;
+          }
+          return;
+        }
+        live.delete(Math.abs(p));
+      }) as never,
+      sleepImpl: async () => undefined,
+    });
+    expect(result.recordedKilled.sort((a, b) => a - b)).toEqual([1001, 1002, 2001, 2002]);
+    // Both record files removed.
+    expect(readPidRecordDir(dir)).toEqual([]);
+  });
+
+  it('preserves only the unresolved PIDs per record file', async () => {
+    writePidRecordFile(dir, 1001, {
+      pids: [1001, 2001],
+      startedAt: '2026-05-04T10:00:00.000Z',
+      repoRoot: '/repo',
+      entry: 'tsx watch server/index.ts',
+    });
+    const live = new Set([1001, 2001]);
+    const result = await cleanupOrphans({
+      pidDir: dir,
+      repoRoot: '/repo',
+      entry: 'apps/console/server/index.ts',
+      platform: 'linux',
+      execImpl: async () => ({ stdout: 'PID COMMAND\n' }),
+      killImpl: ((p: number, s: NodeJS.Signals | number) => {
+        if (s === 0) {
+          if (!live.has(Math.abs(p))) {
+            const e = new Error('ESRCH') as Error & { code?: string };
+            e.code = 'ESRCH';
+            throw e;
+          }
+          return;
+        }
+        // 1001 dies cleanly; 2001 refuses (simulates wedged child).
+        if (Math.abs(p) === 1001) live.delete(1001);
+      }) as never,
+      sleepImpl: async () => undefined,
+    });
+    expect(result.recordedKilled).toEqual([1001]);
+    const remaining = readPidRecordDir(dir);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].record.pids).toEqual([2001]);
   });
 });

@@ -18,7 +18,7 @@ Any agent (Claude Code session, subagent, CI job) working inside `apps/console/`
 
 ## Before starting any work in this subtree
 
-- Know what processes are already running (dashboard port 9080, backend port 9081) — never start a second instance from a different worktree. `npm run dev` runs a `predev` cleanup hook (`scripts/dev-server-cleanup.mjs`) that kills stale tsx-watch and vite children from prior loop runs, but if you are unsure inspect the OS process table directly (`tasklist` on Windows, `ps -ef | grep tsx` on POSIX). The PID record lives at `apps/console/.lag-dev-servers.pid.json`.
+- Know what processes are already running (dashboard port 9080, backend port 9081), never start a second instance from a different worktree. `npm run dev` runs a `predev` cleanup hook (`scripts/dev-server-cleanup.mjs`) that kills stale tsx-watch and vite children from prior loop runs, but if you are unsure inspect the OS process table directly (`tasklist` on Windows, `ps -ef | grep tsx` on POSIX). The PID records live at `apps/console/.lag-dev-servers/`.
 - Read the token system at `src/tokens/tokens.css` before styling anything.
 - Read the transport abstraction at `src/services/transport/` before fetching anything.
 

@@ -92,8 +92,10 @@ NUL
 /scripts/reply-and-resolve-cr.mjs
 /apps/console/*.png
 
-# Per-launcher PID record for the Console dev-servers (tsx watch + vite).
-# Written by scripts/dev-server-with-pid.mjs at start, removed at clean exit;
-# scripts/dev-server-cleanup.mjs reads it as the (b) pre-flight kill path.
-# Always per-worktree, never tracked.
-/apps/console/.lag-dev-servers.pid.json
+# Per-launcher PID record directory for the Console dev-servers
+# (tsx watch + vite). Each launcher writes <launcherPid>.json on
+# start and removes it on clean exit; scripts/dev-server-cleanup.mjs
+# walks the directory as the (b) pre-flight kill path. A directory
+# (rather than a single shared file) avoids the lost-update race
+# under concurrent npm-script spawns. Always per-worktree, never tracked.
+/apps/console/.lag-dev-servers/

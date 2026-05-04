@@ -41,11 +41,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Repo root = parent of `scripts/`. The launcher resolves the PID
-// file under `apps/console/.lag-dev-servers.pid.json` so a fresh
-// worktree gets its own record (each worktree has its own
+// records under `apps/console/.lag-dev-servers/` so a fresh
+// worktree gets its own records (each worktree has its own
 // apps/console/ subtree) without polluting the primary checkout.
+//
+// We use a per-launcher record directory rather than a single
+// shared JSON file to avoid the lost-update race that an unlocked
+// read-merge-write would suffer when `concurrently` spawns the
+// `dev:server` and `dev:web` wrappers within the same millisecond.
 const REPO_ROOT = resolve(__dirname, '..');
-const PID_FILE = resolve(REPO_ROOT, 'apps', 'console', '.lag-dev-servers.pid.json');
+const PID_DIR = resolve(REPO_ROOT, 'apps', 'console', '.lag-dev-servers');
 // The matched entry path. The Console's tsx-watch child is
 // invoked as `tsx watch server/index.ts` from `apps/console/`,
 // so the absolute path on disk includes both the repo root and
@@ -65,7 +70,7 @@ async function execImpl(cmd, args) {
 
 async function main() {
   const summary = await cleanupOrphans({
-    pidFile: PID_FILE,
+    pidDir: PID_DIR,
     repoRoot: REPO_ROOT,
     entry: ENTRY,
     execImpl,

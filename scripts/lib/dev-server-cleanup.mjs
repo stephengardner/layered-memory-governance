@@ -25,9 +25,9 @@
 // (ps + kill -9). All platform branches are gated through
 // `process.platform === 'win32'`.
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 
 // Shape of the PID-file record. Versioned so future fields don't
 // silently break older readers; v1 readers tolerate extra keys.
@@ -109,6 +109,64 @@ export function removePidRecord(pidFile, opts = {}) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Per-launcher PID-record directory mode. Each launcher (one per
+ * concurrent dev-server child: tsx watch, vite, ...) writes its
+ * own JSON file at <pidDir>/<launcherPid>.json. Read merges all
+ * files. This eliminates the lost-update race that a single shared
+ * file would have under concurrent npm-script spawns: each writer
+ * touches a unique path, no read-merge-write window exists.
+ *
+ * The directory shape is what `cleanupOrphans` consumes when
+ * `pidDir` is set; the legacy single-file mode (`pidFile`) is
+ * retained for callers that already write a single record.
+ */
+
+/**
+ * Read every record file in `pidDir`. Files that fail to parse
+ * are skipped (a single malformed file does not block cleanup).
+ * Returns an array of { launcherPid, record } pairs sorted by
+ * launcherPid for determinism.
+ */
+export function readPidRecordDir(pidDir, opts = {}) {
+  const fs = opts.fs ?? { existsSync, readdirSync, readFileSync };
+  if (!fs.existsSync(pidDir)) return [];
+  let entries;
+  try {
+    entries = fs.readdirSync(pidDir);
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue;
+    const launcherPid = Number.parseInt(name.slice(0, -'.json'.length), 10);
+    if (!Number.isFinite(launcherPid) || launcherPid <= 0) continue;
+    const record = readPidRecord(join(pidDir, name), { fs });
+    if (record === null) continue;
+    out.push({ launcherPid, record, file: join(pidDir, name) });
+  }
+  return out.sort((a, b) => a.launcherPid - b.launcherPid);
+}
+
+/**
+ * Write a per-launcher record to `<pidDir>/<launcherPid>.json`.
+ * Each launcher owns its own file: no read-merge-write race.
+ */
+export function writePidRecordFile(pidDir, launcherPid, record, opts = {}) {
+  const path = join(pidDir, `${launcherPid}.json`);
+  return writePidRecord(path, record, opts);
+}
+
+/**
+ * Remove a per-launcher record. Returns false when the file is
+ * already gone (idempotent).
+ */
+export function removePidRecordFile(pidDir, launcherPid, opts = {}) {
+  const path = join(pidDir, `${launcherPid}.json`);
+  return removePidRecord(path, opts);
 }
 
 /**
@@ -364,6 +422,7 @@ function matchesEntry(cmdline, entry, repoRoot) {
  */
 export async function cleanupOrphans(opts) {
   const pidFile = opts.pidFile;
+  const pidDir = opts.pidDir;
   const repoRoot = opts.repoRoot;
   const entry = opts.entry;
   const execImpl = opts.execImpl;
@@ -377,9 +436,34 @@ export async function cleanupOrphans(opts) {
   const recordedKilled = [];
   const scannedKilled = [];
 
-  // Step 1: PID-file path.
-  const record = readPidRecord(pidFile, { fs });
-  if (record !== null && record.pids.length > 0) {
+  // Step 1: PID-file path. Two modes are supported:
+  //
+  //   - `pidDir`: per-launcher record directory. Each file is
+  //     read independently; cleanup walks every file and tracks
+  //     which kills failed PER FILE so the next launcher can
+  //     retry the unresolved PIDs (rather than losing them when
+  //     the file is removed).
+  //   - `pidFile`: legacy single-file record. Same retry-on-fail
+  //     contract: only delete the file when every recorded PID
+  //     is dead.
+  //
+  // Files are touched atomically: success path removes the file;
+  // partial-failure path rewrites the file with only the PIDs
+  // that we could not kill.
+  const recordsToProcess = [];
+  if (typeof pidDir === 'string' && pidDir.length > 0) {
+    for (const entry of readPidRecordDir(pidDir, { fs })) {
+      recordsToProcess.push(entry);
+    }
+  } else if (typeof pidFile === 'string' && pidFile.length > 0) {
+    const record = readPidRecord(pidFile, { fs });
+    if (record !== null) {
+      recordsToProcess.push({ launcherPid: 0, record, file: pidFile });
+    }
+  }
+
+  for (const { record, file } of recordsToProcess) {
+    const unresolved = [];
     for (const pid of record.pids) {
       if (!isPidAlive(pid, { killImpl })) continue;
       const result = await killProcessTree(pid, {
@@ -389,15 +473,27 @@ export async function cleanupOrphans(opts) {
         isAliveImpl,
         sleepImpl,
       });
-      if (result.ok) recordedKilled.push(pid);
-      else errors.push(`pid ${pid}: ${result.message}`);
+      if (result.ok) {
+        recordedKilled.push(pid);
+      } else {
+        unresolved.push(pid);
+        errors.push(`pid ${pid}: ${result.message}`);
+      }
+    }
+    // Preserve unresolved PIDs so the next launcher retries them.
+    // Drop the file only when every recorded PID is verified dead;
+    // a partial failure rewrites the record with the leftovers.
+    if (unresolved.length === 0) {
+      removePidRecord(file, { fs });
+    } else {
+      writePidRecord(file, {
+        ...record,
+        pids: unresolved,
+      }, { fs });
     }
   }
-  // Step 2: clear the record so a crash mid-spawn doesn't leave
-  // a dangling reference.
-  removePidRecord(pidFile, { fs });
 
-  // Step 3: scan-fallback. Always runs (even when the PID record
+  // Step 2: scan-fallback. Always runs (even when the PID record
   // was present) because the recorded list can lag behind reality
   // when the launcher crashed mid-write.
   if (typeof entry === 'string' && entry.length > 0) {
