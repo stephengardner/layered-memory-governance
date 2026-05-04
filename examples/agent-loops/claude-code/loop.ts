@@ -91,19 +91,17 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
     if (input.signal?.aborted === true) {
       const startedAt = new Date().toISOString();
       const sessionId = `agent-session-${randomBytes(6).toString('hex')}` as AtomId;
+      // mkSessionShadowMeta supplies the projection-compat top-level
+      // shadow keys (session_id / started_at / ended_at / terminal_state);
+      // see its JSDoc for the substrate-vs-projection rationale. Nested
+      // `agent_session.*` remains canonical for substrate consumers.
       const sessionAtom: Atom = mkAtom(sessionId, 'agent-session', input.principal, [], {
-        // Top-level shadow keys mirror nested `agent_session` fields so
-        // the LAG Console's `listActiveSessions` projection (which reads
-        // top-level `metadata.session_id` / `started_at` / `ended_at` /
-        // `terminal_state`) sees adapter-written sessions uniformly with
-        // the operator-pulse pathway in `scripts/lib/operator-claude-session.mjs`.
-        // Nested `agent_session.*` remains canonical for substrate consumers;
-        // top-level keys are projection-compat shadows. Note: Console reads
-        // `ended_at` while the substrate canonicalizes `completed_at`.
-        session_id: sessionId,
-        started_at: startedAt,
-        ended_at: startedAt,
-        terminal_state: 'aborted',
+        ...mkSessionShadowMeta({
+          sessionId,
+          startedAt,
+          endedAt: startedAt,
+          terminalState: 'aborted',
+        }),
         agent_session: {
           model_id: 'claude-opus-4-7',
           adapter_id: 'claude-code-agent-loop',
@@ -136,17 +134,16 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
     const sessionId = `agent-session-${randomBytes(6).toString('hex')}` as AtomId;
-    // Open the session atom with top-level shadow keys mirroring the
-    // nested `agent_session` fields. Substrate consumers continue to
-    // read the nested shape; the Console's `listActiveSessions`
-    // projection reads top-level `metadata.session_id` / `started_at`
-    // / `ended_at` / `terminal_state`. `ended_at` is omitted at session
-    // start so the projection treats the session as live; the finally
-    // block writes `ended_at` on session close.
+    // mkSessionShadowMeta supplies the projection-compat top-level
+    // shadow keys; see its JSDoc for the rationale. `ended_at` is
+    // omitted at session-open so the projection treats the session as
+    // live; the finally-block update writes it on session close.
     const sessionAtom: Atom = mkAtom(sessionId, 'agent-session', input.principal, [], {
-      session_id: sessionId,
-      started_at: startedAt,
-      terminal_state: 'completed',
+      ...mkSessionShadowMeta({
+        sessionId,
+        startedAt,
+        terminalState: 'completed',
+      }),
       agent_session: {
         model_id: 'claude-opus-4-7',
         adapter_id: 'claude-code-agent-loop',
@@ -594,17 +591,17 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       try {
         await input.host.atoms.update(sessionId, {
           metadata: {
-            // Top-level shadow keys mirror the nested fields on close
-            // so the LAG Console's `listActiveSessions` projection
-            // sees `ended_at` + the final `terminal_state` and de-lists
-            // the session from the active set. Note the name shift:
-            // substrate canonicalizes `completed_at`, Console reads
-            // `ended_at` -- both refer to the same concept and are
-            // written here.
-            session_id: sessionId,
-            started_at: startedAt,
-            ended_at: completedAt,
-            terminal_state: finalTerminalState,
+            // mkSessionShadowMeta supplies the projection-compat
+            // top-level shadow keys on close; see its JSDoc for the
+            // substrate-vs-projection rationale. `ended_at` is the
+            // close-side shadow that flips the session from active
+            // to completed in projection consumers.
+            ...mkSessionShadowMeta({
+              sessionId,
+              startedAt,
+              endedAt: completedAt,
+              terminalState: finalTerminalState,
+            }),
             agent_session: {
               // Prefer the model the CLI's `system` event reported (so
               // operator CLIs that auto-route to a different default
@@ -641,6 +638,36 @@ export class ClaudeCodeAgentLoopAdapter implements AgentLoopAdapter {
       ...(failure !== undefined ? { failure } : {}),
     };
   }
+}
+
+/**
+ * Build the top-level shadow metadata block for an `agent-session`
+ * atom (session_id, started_at, terminal_state, optional ended_at).
+ *
+ * Substrate consumers read the canonical nested `agent_session.*`
+ * shape; projections that key on top-level metadata (e.g. consumers
+ * of the active-sessions surface) read the shadow keys this helper
+ * emits. Extracted at N=2 per the canon directive on duplication
+ * (`dev-extract-helpers-at-N-2-plus-one`): the same shadow assembly
+ * appears at session-open, signal-aborted fast-path, and the
+ * session-close finally block.
+ *
+ * The caller spreads the return value into the atom's `metadata`
+ * before adding the nested `agent_session: {...}` block; the nested
+ * shape stays canonical and is owned by the caller.
+ */
+function mkSessionShadowMeta(input: {
+  readonly sessionId: AtomId;
+  readonly startedAt: string;
+  readonly terminalState: 'completed' | 'budget-exhausted' | 'error' | 'aborted';
+  readonly endedAt?: string;
+}): Record<string, unknown> {
+  return {
+    session_id: input.sessionId,
+    started_at: input.startedAt,
+    terminal_state: input.terminalState,
+    ...(input.endedAt !== undefined ? { ended_at: input.endedAt } : {}),
+  };
 }
 
 function mkAtom(

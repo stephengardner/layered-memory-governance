@@ -106,6 +106,29 @@ function mkInput(host: ReturnType<typeof createMemoryHost>, signal?: AbortSignal
   };
 }
 
+/*
+ * The canonical happy-path stream: system event with a CLI session id,
+ * a single assistant-text turn, and a result event with cost. Used as
+ * the default scenario across every test that does not need a
+ * specialized event stream. Extracted at N=2 per the canon directive
+ * on duplication (`dev-extract-helpers-at-N-2-plus-one`).
+ */
+const DEFAULT_HAPPY_STDOUT = [
+  JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
+  JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
+  JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
+];
+
+/**
+ * Run a default happy-path adapter session against the supplied host
+ * and return the host so callers can query it for assertions. Every
+ * test that does not need a specialized event stream uses this helper.
+ */
+async function runDefaultHappyPathSession(host: ReturnType<typeof createMemoryHost>) {
+  const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(DEFAULT_HAPPY_STDOUT) });
+  await adapter.run(mkInput(host));
+}
+
 describe('ClaudeCodeAgentLoopAdapter -- top-level metadata shadow keys', () => {
   it('agent-session atom carries top-level session_id, started_at, terminal_state on session-open', async () => {
     /*
@@ -116,13 +139,7 @@ describe('ClaudeCodeAgentLoopAdapter -- top-level metadata shadow keys', () => {
      * just-spawned session is invisible until the first turn closes.
      */
     const host = createMemoryHost();
-    const stdoutLines = [
-      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
-      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
-    ];
-    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
-    await adapter.run(mkInput(host));
+    await runDefaultHappyPathSession(host);
     const sessions = (await host.atoms.query({ type: ['agent-session'] }, 100)).atoms;
     expect(sessions).toHaveLength(1);
     const meta = sessions[0]!.metadata as Record<string, unknown>;
@@ -141,13 +158,7 @@ describe('ClaudeCodeAgentLoopAdapter -- top-level metadata shadow keys', () => {
      * 'completed' seeded at open to the actual final state.
      */
     const host = createMemoryHost();
-    const stdoutLines = [
-      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
-      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
-    ];
-    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
-    await adapter.run(mkInput(host));
+    await runDefaultHappyPathSession(host);
     const sessions = (await host.atoms.query({ type: ['agent-session'] }, 100)).atoms;
     const meta = sessions[0]!.metadata as Record<string, unknown>;
     expect(typeof meta['ended_at']).toBe('string');
@@ -161,13 +172,7 @@ describe('ClaudeCodeAgentLoopAdapter -- top-level metadata shadow keys', () => {
      * nested keys; both must be present on the same atom.
      */
     const host = createMemoryHost();
-    const stdoutLines = [
-      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
-      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
-    ];
-    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
-    await adapter.run(mkInput(host));
+    await runDefaultHappyPathSession(host);
     const sessions = (await host.atoms.query({ type: ['agent-session'] }, 100)).atoms;
     const meta = sessions[0]!.metadata as Record<string, unknown>;
     const nested = meta['agent_session'] as Record<string, unknown>;
@@ -218,13 +223,7 @@ describe('ClaudeCodeAgentLoopAdapter -- top-level metadata shadow keys', () => {
      * falls back to the started_at-only path.
      */
     const host = createMemoryHost();
-    const stdoutLines = [
-      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
-      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
-    ];
-    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
-    await adapter.run(mkInput(host));
+    await runDefaultHappyPathSession(host);
     const sessions = (await host.atoms.query({ type: ['agent-session'] }, 100)).atoms;
     const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
     expect(turns).toHaveLength(1);
@@ -248,13 +247,7 @@ describe('ClaudeCodeAgentLoopAdapter -- top-level metadata shadow keys', () => {
      * invariant.
      */
     const host = createMemoryHost();
-    const stdoutLines = [
-      JSON.stringify({ type: 'system', model: 'claude-opus-4-7', session_id: 's1' }),
-      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } }),
-      JSON.stringify({ type: 'result', cost_usd: 0.01, is_error: false }),
-    ];
-    const adapter = new ClaudeCodeAgentLoopAdapter({ execImpl: makeStubExeca(stdoutLines) });
-    await adapter.run(mkInput(host));
+    await runDefaultHappyPathSession(host);
     const turns = (await host.atoms.query({ type: ['agent-turn'] }, 100)).atoms;
     const turnMeta = turns[0]!.metadata as Record<string, unknown>;
     // Top-level shadow survives the update.
