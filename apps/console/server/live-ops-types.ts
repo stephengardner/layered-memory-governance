@@ -96,6 +96,17 @@ export interface LiveOpsPrActivity {
   readonly title: string | null;
   readonly state: string;
   readonly at: string;
+  /*
+   * Canonical GitHub PR URL of the form
+   * `https://github.com/<owner>/<repo>/pull/<number>`. Derived in the
+   * projection layer from `metadata.pr.{owner, repo, number}`; null
+   * whenever any of the three is absent (older atoms, shape variants)
+   * so the UI can degrade gracefully to a plain text row instead of a
+   * broken link. No producer-side substrate change is required: pr-
+   * observation and plan-merge-settled both already carry the owner +
+   * repo + number triple in metadata.pr.
+   */
+  readonly pr_url: string | null;
 }
 
 export interface LiveOpsSnapshot {

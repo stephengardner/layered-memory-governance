@@ -521,14 +521,46 @@ function PrActivityTile({ prs }: { prs: ReadonlyArray<LiveOpsPrActivity> }) {
 }
 
 function PrRow({ pr }: { pr: LiveOpsPrActivity }) {
+  /*
+   * When the projection layer derived a canonical GitHub URL, render
+   * the row as an external anchor opening in a new tab. rel includes
+   * `noopener noreferrer` to neutralize tabnabbing -- the navigated
+   * window has no `window.opener` reference back to the dashboard,
+   * and the Referer header isn't leaked to GitHub. When pr_url is
+   * null (older atoms, shape variants), we keep the unlinked span
+   * so the row never renders as a confidently-broken link. The
+   * row's outer styling (.row + .rowLink hover state) lives in
+   * LiveOpsView.module.css and resolves through the token system
+   * -- no hardcoded colors per apps/console/CLAUDE.md principle 3.
+   */
+  const primary = (
+    <>
+      #{pr.pr_number} {pr.title ?? '(no title)'}
+    </>
+  );
   return (
     <li className={styles.row} data-testid="live-ops-pr-row" data-pr-number={pr.pr_number}>
-      <span className={styles.rowPrimary}>
-        #{pr.pr_number} {pr.title ?? '(no title)'}
-      </span>
-      <span className={styles.rowSecondary}>
-        {pr.state} {'\u00B7'} {formatRelative(pr.at)}
-      </span>
+      {pr.pr_url ? (
+        <a
+          className={styles.rowLink}
+          href={pr.pr_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="live-ops-pr-row-link"
+        >
+          <span className={styles.rowPrimary}>{primary}</span>
+          <span className={styles.rowSecondary}>
+            {pr.state} {'\u00B7'} {formatRelative(pr.at)}
+          </span>
+        </a>
+      ) : (
+        <>
+          <span className={styles.rowPrimary}>{primary}</span>
+          <span className={styles.rowSecondary}>
+            {pr.state} {'\u00B7'} {formatRelative(pr.at)}
+          </span>
+        </>
+      )}
     </li>
   );
 }
