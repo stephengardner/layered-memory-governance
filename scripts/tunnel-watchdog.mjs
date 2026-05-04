@@ -82,6 +82,7 @@ import {
   decideRestartTimerAction,
   mergeAllowedOrigins,
   nextBackoffMs,
+  parseIntegerFlag,
   parseTrycloudflareHostname,
 } from './lib/tunnel-watchdog.mjs';
 
@@ -105,30 +106,18 @@ const DEFAULTS = {
   spawnTunnel: true,
 };
 
-/**
- * Parse and validate the integer value that follows an integer-valued
- * CLI flag. Centralized so the three integer flags (--check-interval-ms,
- * --max-failures, --cooldown-ms) share parse + validate + error-exit
- * logic rather than copy-pasting three almost-identical branches.
- *
- * Returns { value, newIndex } so the caller can advance its argv cursor
- * past the consumed value. On invalid input, prints the same error
- * message the inline branches printed and calls process.exit(2). The
- * minBound check is `< minBound`, matching the inline `< 1000`, `< 1`,
- * `< 0` semantics of the original three branches; error strings stay
- * byte-identical so behaviour is unchanged.
- */
-function parseIntegerFlag(name, argv, i, minBound, errorMsg) {
-  if (i + 1 >= argv.length) {
-    console.error(`[tunnel-watchdog] ${name} requires a value`);
+// Adapter that turns the pure parseIntegerFlag (which returns
+// { ok, value/error }) into the original inline behaviour: print the
+// error to stderr and exit 2 on failure. Keeping the side-effect
+// adapter in the CLI wrapper (where process.exit lives) lets the
+// pure helper itself stay testable without intercepting exit.
+function applyIntegerFlag(name, argv, i, minBound, errorMsg) {
+  const r = parseIntegerFlag(name, argv, i, minBound, errorMsg);
+  if (!r.ok) {
+    console.error(r.error);
     process.exit(2);
   }
-  const n = Number.parseInt(argv[i + 1], 10);
-  if (!Number.isFinite(n) || n < minBound) {
-    console.error(errorMsg);
-    process.exit(2);
-  }
-  return { value: n, newIndex: i + 1 };
+  return { value: r.value, newIndex: r.newIndex };
 }
 
 function parseArgs(argv) {
@@ -137,19 +126,19 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--no-tunnel') { args.spawnTunnel = false; continue; }
     if (a === '--check-interval-ms' && i + 1 < argv.length) {
-      const r = parseIntegerFlag(a, argv, i, 1000, '[tunnel-watchdog] --check-interval-ms must be >= 1000');
+      const r = applyIntegerFlag(a, argv, i, 1000, '[tunnel-watchdog] --check-interval-ms must be >= 1000');
       args.checkIntervalMs = r.value;
       i = r.newIndex;
       continue;
     }
     if (a === '--max-failures' && i + 1 < argv.length) {
-      const r = parseIntegerFlag(a, argv, i, 1, '[tunnel-watchdog] --max-failures must be >= 1');
+      const r = applyIntegerFlag(a, argv, i, 1, '[tunnel-watchdog] --max-failures must be >= 1');
       args.maxFailures = r.value;
       i = r.newIndex;
       continue;
     }
     if (a === '--cooldown-ms' && i + 1 < argv.length) {
-      const r = parseIntegerFlag(a, argv, i, 0, '[tunnel-watchdog] --cooldown-ms must be >= 0');
+      const r = applyIntegerFlag(a, argv, i, 0, '[tunnel-watchdog] --cooldown-ms must be >= 0');
       args.cooldownMs = r.value;
       i = r.newIndex;
       continue;
@@ -375,13 +364,24 @@ function handleNewTunnelHost(host) {
   log(`tunnel: new host ${host}; updating LAG_CONSOLE_ALLOWED_ORIGINS and bouncing api server`);
   currentAllowedOrigins = merged.value;
   const api = components.api;
+  // Toggle the same restarting flag scheduleRestart uses so a
+  // concurrent probe-loop tick or scheduleRestart call sees an
+  // in-flight rotation and short-circuits, avoiding a duplicate
+  // respawn on top of this one. Cleared inside the once('exit')
+  // callback once the replacement child is live; cleared in the
+  // catch path so a respawn failure does not leave the flag stuck.
+  api.restarting = true;
   if (api.child && !api.child.killed) {
     api.child.removeAllListeners('exit');
     api.child.once('exit', () => {
-      api.child = spawnFor('api');
-      api.generation += 1;
-      attachLifecycle(api);
-      log('api: respawned with updated LAG_CONSOLE_ALLOWED_ORIGINS');
+      try {
+        api.child = spawnFor('api');
+        api.generation += 1;
+        attachLifecycle(api);
+        log('api: respawned with updated LAG_CONSOLE_ALLOWED_ORIGINS');
+      } finally {
+        api.restarting = false;
+      }
     });
     api.child.kill('SIGTERM');
   } else {
@@ -389,9 +389,13 @@ function handleNewTunnelHost(host) {
     // have already noticed and scheduled a restart, so we may be
     // racing it; the generation bump invalidates any in-flight stale
     // restart timer in scheduleRestart).
-    api.child = spawnFor('api');
-    api.generation += 1;
-    attachLifecycle(api);
+    try {
+      api.child = spawnFor('api');
+      api.generation += 1;
+      attachLifecycle(api);
+    } finally {
+      api.restarting = false;
+    }
   }
 }
 

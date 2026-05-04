@@ -107,7 +107,14 @@ export function decideRestartAction(state) {
     ? state.cooldownMs
     : 0;
   const lastTripAt = Number.isFinite(state?.lastTripAt) ? state.lastTripAt : null;
-  const now = Number.isFinite(state?.now) ? state.now : Date.now();
+  // Clock injection is mandatory: this module's contract is "No I/O,
+  // no spawn, no clock reads" and a Date.now() fallback inside a pure
+  // helper makes its output non-deterministic for the same input. The
+  // CLI caller passes state.now explicitly; tests pin a fixed value.
+  if (!Number.isFinite(state?.now)) {
+    throw new Error('decideRestartAction requires a numeric state.now (clock-free helper contract)');
+  }
+  const now = state.now;
 
   if (failures < threshold) return { verdict: 'attempt', reason: 'within-budget' };
   if (cooldownMs <= 0) return { verdict: 'tripped', reason: 'breaker-open-no-cooldown' };
@@ -236,6 +243,40 @@ export function decideRestartTimerAction(input) {
  *   - Empty/undefined existing value parses as no entries (not
  *     `['']`), preventing a leading comma in the merged result.
  */
+/**
+ * Parse and validate the integer value that follows an integer-valued
+ * CLI flag. Centralized so the three integer flags
+ * (--check-interval-ms, --max-failures, --cooldown-ms) share parse +
+ * validate + error-emit logic rather than copy-pasting three
+ * almost-identical branches.
+ *
+ * Returns one of:
+ *   - { ok: true, value, newIndex } : parsed successfully; caller
+ *     advances its argv cursor to newIndex.
+ *   - { ok: false, error }           : parse failure with a stable
+ *     error string. The CLI wrapper prints the error and exits 2.
+ *
+ * Returns rather than throws/exits so unit tests can assert the
+ * error path without intercepting process.exit. The CLI wrapper at
+ * scripts/tunnel-watchdog.mjs converts a {ok:false} result into the
+ * exit-2 + console.error pair the original inline branches produced.
+ *
+ * Pure: no I/O, no process.exit, no globals. The minBound check is
+ * `< minBound`, matching the inline `< 1000` / `< 1` / `< 0`
+ * semantics of the original three branches; error strings stay
+ * byte-identical so behaviour is unchanged.
+ */
+export function parseIntegerFlag(name, argv, i, minBound, errorMsg) {
+  if (!Array.isArray(argv) || i + 1 >= argv.length) {
+    return { ok: false, error: `[tunnel-watchdog] ${name} requires a value` };
+  }
+  const n = Number.parseInt(argv[i + 1], 10);
+  if (!Number.isFinite(n) || n < minBound) {
+    return { ok: false, error: errorMsg };
+  }
+  return { ok: true, value: n, newIndex: i + 1 };
+}
+
 export function mergeAllowedOrigins(existing, newHost) {
   if (typeof newHost !== 'string' || newHost.length === 0) {
     return { value: existing ?? '', changed: false };

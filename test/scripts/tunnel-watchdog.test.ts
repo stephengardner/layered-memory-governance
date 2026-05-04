@@ -23,6 +23,7 @@ import {
   decideRestartTimerAction,
   mergeAllowedOrigins,
   nextBackoffMs,
+  parseIntegerFlag,
   parseTrycloudflareHostname,
 } from '../../scripts/lib/tunnel-watchdog.mjs';
 
@@ -99,15 +100,20 @@ describe('nextBackoffMs', () => {
 });
 
 describe('decideRestartAction', () => {
+  // Each test passes `now` explicitly: the lib enforces clock injection
+  // ("No I/O, no spawn, no clock reads"), so the helper throws if
+  // state.now is missing. Pinning a fixed `now` keeps the test
+  // deterministic and prevents a future Date.now() fallback from
+  // re-introducing test flake.
   it('attempts when failures are below threshold', () => {
-    expect(decideRestartAction({ failures: 2, threshold: 5 })).toEqual({
+    expect(decideRestartAction({ failures: 2, threshold: 5, now: 1_000_000 })).toEqual({
       verdict: 'attempt',
       reason: 'within-budget',
     });
   });
 
   it('trips with no cooldown when breaker is open', () => {
-    const r = decideRestartAction({ failures: 5, threshold: 5, cooldownMs: 0 });
+    const r = decideRestartAction({ failures: 5, threshold: 5, cooldownMs: 0, now: 1_000_000 });
     expect(r.verdict).toBe('tripped');
   });
 
@@ -136,9 +142,29 @@ describe('decideRestartAction', () => {
   });
 
   it('reports cooldown-pending when tripped without a recorded trip time', () => {
-    const r = decideRestartAction({ failures: 5, threshold: 5, cooldownMs: 60_000, lastTripAt: null });
+    const r = decideRestartAction({
+      failures: 5,
+      threshold: 5,
+      cooldownMs: 60_000,
+      lastTripAt: null,
+      now: 1_000_000,
+    });
     expect(r.verdict).toBe('cooldown');
     expect(r.reason).toContain('cooldown-pending');
+  });
+
+  it('throws when state.now is missing (purity contract: no clock reads)', () => {
+    // The helper documentation pins this contract. A future regression
+    // that re-adds a Date.now() fallback would flip this test red,
+    // catching the violation at PR time instead of after the fact.
+    expect(() => decideRestartAction({ failures: 2, threshold: 5 })).toThrow(/requires a numeric state\.now/);
+  });
+
+  it('throws when state.now is non-numeric (defensive against type drift)', () => {
+    // A caller that passes "1000" (string) instead of 1000 (number) is
+    // a common source of silent bugs in JS. Fail-fast keeps the
+    // upstream caller honest.
+    expect(() => decideRestartAction({ failures: 2, threshold: 5, now: '1000' as unknown as number })).toThrow();
   });
 });
 
@@ -501,42 +527,70 @@ describe('boot ENOENT handling (Finding 5: cloudflared missing at startup)', () 
   });
 });
 
-describe('parseIntegerFlag boundary semantics (Finding 1: helper extraction preserves error strings)', () => {
-  // Background: the three integer flags (--check-interval-ms,
-  // --max-failures, --cooldown-ms) had three near-identical
-  // parse/validate/exit branches in parseArgs. The fix extracts a
-  // shared helper; this test pins the boundary semantics so a future
-  // refactor that loosens validation (e.g. accepts negative values
-  // for cooldown) trips the test.
+describe('parseIntegerFlag (Finding 1: helper extraction + Finding 6: real exercise)', () => {
+  // The helper is exported from scripts/lib/tunnel-watchdog.mjs (a
+  // shebang-free module) and returns { ok, value, newIndex } |
+  // { ok, error } so tests can assert outputs without intercepting
+  // process.exit. The CLI wrapper at scripts/tunnel-watchdog.mjs
+  // converts {ok:false} into the legacy error+exit-2 pair.
 
-  it('--check-interval-ms accepts >=1000 (test the boundary value 1000 itself)', () => {
-    // We cannot import parseIntegerFlag directly without making the
-    // CLI script's top-level executable import-safe, so we test the
-    // boundary semantics via the documented contract: value >= minBound
-    // is the accept rule; below is reject.
-    // This shape test guards against a refactor that flips the
-    // comparison from `< minBound` to `<= minBound` (which would
-    // reject the boundary value itself).
-    const minBound = 1000;
-    expect(1000 < minBound).toBe(false); // 1000 is accepted
-    expect(999 < minBound).toBe(true); // 999 is rejected
+  it('--check-interval-ms accepts the boundary value 1000', () => {
+    const argv = ['--check-interval-ms', '1000'];
+    const r = parseIntegerFlag('--check-interval-ms', argv, 0, 1000, '[err]');
+    expect(r).toEqual({ ok: true, value: 1000, newIndex: 1 });
+  });
+
+  it('--check-interval-ms rejects 999 (just below the boundary)', () => {
+    const argv = ['--check-interval-ms', '999'];
+    const r = parseIntegerFlag('--check-interval-ms', argv, 0, 1000, '[err]');
+    expect(r).toEqual({ ok: false, error: '[err]' });
   });
 
   it('--cooldown-ms accepts 0 (zero is a valid disable value, NOT a sentinel)', () => {
     // A common refactor mistake: treating 0 as falsy. cooldown=0
     // means "do not enter a cooldown phase" and is a legitimate
-    // operator choice. The minBound for cooldown is 0; 0 must pass.
-    const minBound = 0;
-    expect(0 < minBound).toBe(false); // 0 is accepted
-    expect(-1 < minBound).toBe(true); // -1 is rejected
+    // operator choice.
+    const argv = ['--cooldown-ms', '0'];
+    const r = parseIntegerFlag('--cooldown-ms', argv, 0, 0, '[err]');
+    expect(r).toEqual({ ok: true, value: 0, newIndex: 1 });
+  });
+
+  it('--cooldown-ms rejects -1 (below minBound)', () => {
+    const argv = ['--cooldown-ms', '-1'];
+    const r = parseIntegerFlag('--cooldown-ms', argv, 0, 0, '[err]');
+    expect(r.ok).toBe(false);
   });
 
   it('--max-failures rejects 0 (zero strikes is a useless config)', () => {
-    // zero max-failures would trip the breaker on the first failure
-    // before any restart attempt; reject so the operator gets a clear
-    // error rather than an immediately-tripped breaker.
-    const minBound = 1;
-    expect(0 < minBound).toBe(true); // 0 is rejected
-    expect(1 < minBound).toBe(false); // 1 is accepted
+    const argv = ['--max-failures', '0'];
+    const r = parseIntegerFlag('--max-failures', argv, 0, 1, '[err]');
+    expect(r.ok).toBe(false);
+  });
+
+  it('returns ok:false when the flag is the last token (no value follows)', () => {
+    const argv = ['--check-interval-ms']; // missing value
+    const r = parseIntegerFlag('--check-interval-ms', argv, 0, 1000, '[err]');
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('--check-interval-ms requires a value');
+  });
+
+  it('returns ok:false on a non-integer value', () => {
+    const argv = ['--max-failures', 'abc'];
+    const r = parseIntegerFlag('--max-failures', argv, 0, 1, '[err]');
+    expect(r.ok).toBe(false);
+  });
+
+  it('returns ok:false on a non-array argv (defensive against caller drift)', () => {
+    const r = parseIntegerFlag('--x', undefined as unknown as string[], 0, 0, '[err]');
+    expect(r.ok).toBe(false);
+  });
+
+  it('newIndex is i+1 so the caller advances past the consumed value', () => {
+    // The CLI wrapper does i = r.newIndex; the for-loop's i++ then
+    // moves past the value. A future refactor that returns i+2 would
+    // skip the next token entirely; this test pins the contract.
+    const argv = ['--max-failures', '5', '--cooldown-ms', '0'];
+    const r = parseIntegerFlag('--max-failures', argv, 0, 1, '[err]');
+    expect(r.newIndex).toBe(1);
   });
 });
