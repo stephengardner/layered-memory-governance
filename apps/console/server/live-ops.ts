@@ -413,8 +413,9 @@ export function computeDaemonPosture(
 /**
  * PR activity: recent pr-observation and plan-merge-settled atoms in
  * the last 24h. Each row carries pr_number (when extractable),
- * title (best-effort), state (open|merged|closed), and the at
- * timestamp.
+ * title (best-effort), state (open|merged|closed), the at timestamp,
+ * and pr_url (derived from metadata.pr.{owner,repo,number} when all
+ * three are present; null otherwise).
  *
  * Title resolution ladder (first match wins):
  *   1. metadata.pr_title on the observation (rare; pr-observation
@@ -468,6 +469,7 @@ export function listPrActivity(
     at: string;
     ts: number;
     merged: boolean;
+    pr_url: string | null;
   }>();
   for (const atom of atoms) {
     if (atom.type !== 'observation' && atom.type !== 'plan-merge-settled') continue;
@@ -489,6 +491,28 @@ export function listPrActivity(
         ? rawNumNested
         : null;
     if (prNumber === null) continue;
+    // Derive the canonical GitHub PR URL when owner+repo+number are
+    // all present. pr-observation and plan-merge-settled both write
+    // metadata.pr as an object carrying the triple; older shape
+    // variants without the sub-object simply produce pr_url=null and
+    // the UI falls back to a plain text row. We deliberately check
+    // for non-empty string-ness and a positive integer to keep junk
+    // shapes (empty strings, NaN, negatives) from constructing a
+    // confidently-broken href. encodeURIComponent guards owner/repo
+    // so a path-bearing string can never escape the /pull/<n>
+    // segment of the URL.
+    const owner = typeof prSubObj?.['owner'] === 'string'
+      ? (prSubObj!['owner'] as string)
+      : '';
+    const repo = typeof prSubObj?.['repo'] === 'string'
+      ? (prSubObj!['repo'] as string)
+      : '';
+    const prUrl = owner.length > 0
+        && repo.length > 0
+        && Number.isInteger(prNumber)
+        && prNumber > 0
+      ? `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pull/${prNumber}`
+      : null;
     const stateRaw = typeof meta['pr_state'] === 'string' ? (meta['pr_state'] as string) : null;
     const state = atom.type === 'plan-merge-settled'
       ? 'merged'
@@ -539,6 +563,7 @@ export function listPrActivity(
         at: atom.created_at,
         ts,
         merged: isSettled,
+        pr_url: prUrl,
       });
     } else if (ts > existing.ts) {
       const nextMerged = existing.merged || isSettled;
@@ -549,13 +574,23 @@ export function listPrActivity(
         at: atom.created_at,
         ts,
         merged: nextMerged,
+        // Prefer the freshest atom's pr_url; fall back to whatever the
+        // prior pick had so an older observation that DID carry the
+        // pr.owner/pr.repo triple doesn't get clobbered by a later
+        // shape-variant atom that only carries pr.number.
+        pr_url: prUrl ?? existing.pr_url,
       });
     } else if (isSettled) {
       // Settled atom is older than the current pick but still pins the
       // PR's terminal state. Don't move `at`/`ts` (still want recency
-      // ordering) but flip the row to merged.
+      // ordering) but flip the row to merged. If this older settled
+      // atom carries a pr_url and the existing pick lacked one, take
+      // it -- the link is a stable derivation, not a freshness signal.
       existing.state = 'merged';
       existing.merged = true;
+      if (existing.pr_url === null && prUrl !== null) {
+        existing.pr_url = prUrl;
+      }
     }
   }
   const rows = Array.from(byPr.values()).sort((a, b) => b.ts - a.ts);

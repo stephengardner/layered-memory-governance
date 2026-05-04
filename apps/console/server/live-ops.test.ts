@@ -857,4 +857,151 @@ describe('listPrActivity', () => {
     const out = listPrActivity(atoms, NOW);
     expect(out[0]?.title).toBe('Plan title used because pr_title was empty');
   });
+
+  /*
+   * pr_url derivation regression set. The projection layer derives
+   * the canonical GitHub URL from metadata.pr.{owner, repo, number};
+   * the substrate layer (pr-observation producer) is unchanged. The
+   * cases below cover the happy path, missing-owner/repo graceful
+   * null, the shape-variant plan-merge-settled path with only
+   * number, and the encodeURIComponent guard against owner/repo
+   * strings that contain path-bearing characters.
+   */
+  it('emits pr_url for observation atoms with full pr.owner/repo/number', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-400',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: {
+            owner: 'stephengardner',
+            repo: 'layered-autonomous-governance',
+            number: 400,
+          },
+          pr_state: 'OPEN',
+          pr_title: 'feat: a thing',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pr_url).toBe(
+      'https://github.com/stephengardner/layered-autonomous-governance/pull/400',
+    );
+  });
+
+  it('emits null pr_url when pr.owner is missing (graceful degradation)', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-401',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          // owner absent; repo + number present
+          pr: { repo: 'layered-autonomous-governance', number: 401 },
+          pr_state: 'OPEN',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pr_url).toBeNull();
+  });
+
+  it('emits null pr_url when atom has only pr.number (e.g. plan-merge-settled with shape-variant)', () => {
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'plan-merge-settled-402',
+        type: 'plan-merge-settled',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          // Shape variant: only the number, no owner/repo. Older
+          // settled atoms wrote this minimal shape before the
+          // owner+repo triple landed in the producer.
+          pr: { number: 402 },
+          target_plan_state: 'succeeded',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pr_number).toBe(402);
+    expect(out[0]?.pr_url).toBeNull();
+    expect(out[0]?.state).toBe('merged');
+  });
+
+  it('encodeURIComponent guards owner/repo so a path-bearing string cannot break out of the URL', () => {
+    /*
+     * GitHub repo names are tightly constrained by upstream rules,
+     * but the substrate stays defensive: never trust the metadata
+     * payload to be path-safe. A pathological owner like
+     * `evil/../redirect` would otherwise build an href that escaped
+     * `/pull/<n>`. encodeURIComponent percent-encodes `/` as %2F
+     * so the resulting URL stays inside the github.com path
+     * structure regardless of the literal owner string.
+     */
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-403',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 30_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { owner: 'evil/../redirect', repo: 'r', number: 403 },
+          pr_state: 'OPEN',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out[0]?.pr_url).toBe('https://github.com/evil%2F..%2Fredirect/r/pull/403');
+  });
+
+  it('falls back to an older atom\'s pr_url when a newer atom for the same PR lacks owner/repo', () => {
+    /*
+     * Sticky-pr_url: an older observation that DID carry the
+     * pr.owner/pr.repo triple should not be clobbered by a later
+     * shape-variant atom missing one of them. The link is a stable
+     * derivation, not a freshness signal.
+     */
+    const atoms: LiveOpsAtom[] = [
+      atom({
+        id: 'pr-observation-404-old-rich',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 60_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: {
+            owner: 'stephengardner',
+            repo: 'layered-autonomous-governance',
+            number: 404,
+          },
+          pr_state: 'OPEN',
+        },
+      }),
+      atom({
+        id: 'pr-observation-404-new-thin',
+        type: 'observation',
+        principal_id: 'pr-landing-agent',
+        created_at: new Date(NOW - 10_000).toISOString(),
+        metadata: {
+          kind: 'pr-observation',
+          pr: { number: 404 },
+          pr_state: 'OPEN',
+        },
+      }),
+    ];
+    const out = listPrActivity(atoms, NOW);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.pr_url).toBe(
+      'https://github.com/stephengardner/layered-autonomous-governance/pull/404',
+    );
+  });
 });
