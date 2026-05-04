@@ -281,7 +281,7 @@ async function readVerifiedSeedSetFromPipelineAtom(
   return new Set(derived.map((id) => String(id)));
 }
 
-async function auditBrainstorm(
+export async function auditBrainstorm(
   output: BrainstormPayload,
   ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {

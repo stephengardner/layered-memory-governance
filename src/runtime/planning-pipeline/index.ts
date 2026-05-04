@@ -49,6 +49,7 @@ export type {
   MkPipelineResumeAtomInput,
   MkStageOutputAtomBaseInput,
   MkPlanOutputAtomsInput,
+  CanonAuditFindingShape,
 } from './atom-shapes.js';
 
 export { runPipeline } from './runner.js';

@@ -38,7 +38,22 @@ export const PIPELINE_STATE_VALUES = [
 export type PipelineStateLabel = typeof PIPELINE_STATE_VALUES[number];
 
 const SEVERITY = z.enum(['critical', 'major', 'minor']);
-const TRANSITION = z.enum(['enter', 'exit-success', 'exit-failure', 'hil-pause', 'hil-resume']);
+const TRANSITION = z.enum([
+  'enter',
+  'exit-success',
+  'exit-failure',
+  'hil-pause',
+  'hil-resume',
+  // Transition definitions for agentic stage adapters: each preserves
+  // the existing event-atom shape and places transition-specific payload
+  // on metadata. The type discriminator is metadata.transition, not
+  // atom.type, so adding values does not change legacy event-atom
+  // queries.
+  'canon-bound',
+  'canon-audit-complete',
+  'agent-turn',
+]);
+const CANON_AUDIT_VERDICT = z.enum(['approved', 'issues-found']);
 const AUDIT_STATUS = z.enum(['unchecked', 'clean', 'findings']);
 const MODE = z.enum(['single-pass', 'substrate-deep']);
 
@@ -197,21 +212,129 @@ export function mkSpecAtom(input: MkSpecAtomInput): Atom {
 // pipeline-stage-event atom (one per state transition)
 // ---------------------------------------------------------------------------
 
+/**
+ * Optional payload carried by a 'canon-audit-complete' transition. The
+ * canon-audit checkpoint runs after a stage's main agent loop produces
+ * its output and before the runner persists the typed stage-output atom.
+ * The verdict + findings are surfaced on the event atom so a console
+ * deliberation-trail viewer renders the verdict without a separate
+ * pipeline-audit-finding query.
+ */
+export interface CanonAuditFindingShape {
+  readonly severity: 'critical' | 'major' | 'minor';
+  readonly category: string;
+  readonly message: string;
+  readonly cited_atom_ids: ReadonlyArray<string>;
+  readonly cited_paths: ReadonlyArray<string>;
+}
+
 export interface MkPipelineStageEventAtomInput {
   readonly pipelineId: AtomId;
   readonly stageName: string;
   readonly principalId: PrincipalId;
   readonly correlationId: string;
   readonly now: Time;
-  readonly transition: 'enter' | 'exit-success' | 'exit-failure' | 'hil-pause' | 'hil-resume';
+  readonly transition:
+    | 'enter'
+    | 'exit-success'
+    | 'exit-failure'
+    | 'hil-pause'
+    | 'hil-resume'
+    | 'canon-bound'
+    | 'canon-audit-complete'
+    | 'agent-turn';
   readonly durationMs: number;
   readonly costUsd: number;
   readonly outputAtomId?: AtomId;
+  /**
+   * canon-bound: list of canon atom-ids the stage's agent-loop subagent
+   * was bound to at the start of its session. Capped at MAX_CITED_LIST so
+   * a runaway applicable-canon query cannot inflate a single event atom
+   * past sane sizes.
+   */
+  readonly canonAtomIds?: ReadonlyArray<AtomId>;
+  /**
+   * canon-audit-complete: the verdict the post-output canon-audit
+   * checkpoint returned. 'approved' means no halt-worthy issues;
+   * 'issues-found' surfaces the findings list for HIL review.
+   */
+  readonly canonAuditVerdict?: 'approved' | 'issues-found';
+  /**
+   * canon-audit-complete: the findings list the audit produced. Capped at
+   * MAX_CITED_LIST to bound a runaway audit emission.
+   */
+  readonly canonAuditFindings?: ReadonlyArray<CanonAuditFindingShape>;
+  /**
+   * agent-turn: pointer to the agent-turn atom the AgentLoopAdapter wrote
+   * during this turn. The pipeline-stage-event entry is a thin index into
+   * the existing agent-turn atom so console rendering does not have to
+   * cross-walk by metadata fields.
+   */
+  readonly agentTurnAtomId?: AtomId;
+  /**
+   * agent-turn: zero-based index of this turn within the stage's agent
+   * session. Mirrors AgentTurnMeta.turn_index from the substrate so
+   * console rendering can sort without reading the agent-turn atom.
+   */
+  readonly turnIndex?: number;
 }
 
 export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): Atom {
   TRANSITION.parse(input.transition);
-  const id = `pipeline-stage-event-${input.pipelineId}-${input.stageName}-${input.transition}-${input.correlationId}` as AtomId;
+  // Fail-closed at mint time on transition-specific payload shape. A
+  // malformed adapter cannot smuggle an oversized canon list, an unknown
+  // verdict, an out-of-bound findings array, or skip a required field for
+  // its transition. Mirrors the cite-list bounding pattern enforced for
+  // cited_atom_ids / cited_paths above.
+  if (input.transition === 'canon-bound') {
+    // canonAtomIds may be an empty list (a stage may have no applicable
+    // canon directives), but the field MUST be DEFINED so the event
+    // atom carries an explicit empty-list rather than an absent slot
+    // that downstream renderers and audit walkers would treat as
+    // "missing data" instead of "empty by design".
+    if (input.canonAtomIds === undefined) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='canon-bound' requires canon_atom_ids (may be [])`,
+      );
+    }
+  }
+  if (input.transition === 'canon-audit-complete') {
+    if (input.canonAuditVerdict === undefined) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='canon-audit-complete' requires canon_audit_verdict`,
+      );
+    }
+  }
+  if (input.transition === 'agent-turn') {
+    if (input.agentTurnAtomId === undefined || input.turnIndex === undefined) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='agent-turn' requires agent_turn_atom_id and turn_index`,
+      );
+    }
+  }
+  if (input.canonAtomIds !== undefined && input.canonAtomIds.length > MAX_CITED_LIST) {
+    throw new Error(
+      `mkPipelineStageEventAtom: canon_atom_ids capped at ${MAX_CITED_LIST}`,
+    );
+  }
+  if (input.canonAuditVerdict !== undefined) {
+    CANON_AUDIT_VERDICT.parse(input.canonAuditVerdict);
+  }
+  if (input.canonAuditFindings !== undefined && input.canonAuditFindings.length > MAX_CITED_LIST) {
+    throw new Error(
+      `mkPipelineStageEventAtom: canon_audit_findings capped at ${MAX_CITED_LIST}`,
+    );
+  }
+  // Stamp a deterministic atom id. For 'agent-turn' transitions the id
+  // additionally folds in the turn_index so a single stage's multi-turn
+  // session produces N distinct event atoms (one per turn) without
+  // re-using the same id and triggering an idempotent put-as-overwrite.
+  // Other transitions remain {pipeline}-{stage}-{transition}-{correlation};
+  // the per-stage one-event-per-transition contract is preserved.
+  const idTail = input.transition === 'agent-turn' && input.turnIndex !== undefined
+    ? `${input.transition}-${input.turnIndex}`
+    : input.transition;
+  const id = `pipeline-stage-event-${input.pipelineId}-${input.stageName}-${idTail}-${input.correlationId}` as AtomId;
   return baseAtom({
     id,
     type: 'pipeline-stage-event',
@@ -227,6 +350,31 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
       duration_ms: input.durationMs,
       cost_usd: input.costUsd,
       ...(input.outputAtomId !== undefined ? { output_atom_id: input.outputAtomId } : {}),
+      ...(input.canonAtomIds !== undefined
+        ? { canon_atom_ids: input.canonAtomIds.map(String) }
+        : {}),
+      ...(input.canonAuditVerdict !== undefined
+        ? { canon_audit_verdict: input.canonAuditVerdict }
+        : {}),
+      ...(input.canonAuditFindings !== undefined
+        ? {
+            // Defensive copy so a mutating caller cannot reach back through
+            // the original input reference and skew the persisted finding
+            // list. Mirrors the freeze pattern in runner.ts for the
+            // verified-citation set.
+            canon_audit_findings: input.canonAuditFindings.map((f) => ({
+              severity: f.severity,
+              category: f.category,
+              message: f.message,
+              cited_atom_ids: [...f.cited_atom_ids],
+              cited_paths: [...f.cited_paths],
+            })),
+          }
+        : {}),
+      ...(input.agentTurnAtomId !== undefined
+        ? { agent_turn_atom_id: input.agentTurnAtomId }
+        : {}),
+      ...(input.turnIndex !== undefined ? { turn_index: input.turnIndex } : {}),
     },
   });
 }

@@ -174,6 +174,196 @@ describe('mkPipelineStageEventAtom', () => {
       costUsd: 0,
     })).toThrow();
   });
+
+  // Killer-pipeline transitions: canon-bound, canon-audit-complete,
+  // agent-turn. These extend the substrate's transition vocabulary so an
+  // agentic stage adapter can record (a) which canon directives it loaded
+  // before invoking its agent loop, (b) the verdict + findings of the
+  // post-output canon-audit checkpoint, and (c) per-LLM-call breadcrumbs
+  // pointing at the agent-turn atoms the AgentLoopAdapter wrote during
+  // the run. Mirrors the existing transition-event shape; no new
+  // top-level Atom field, just metadata extensions.
+  it('records a canon-bound transition with canon_atom_ids metadata', () => {
+    const atom = mkPipelineStageEventAtom({
+      pipelineId: 'pipeline-abc' as AtomId,
+      stageName: 'brainstorm-stage',
+      principalId: 'brainstorm-actor' as PrincipalId,
+      correlationId: 'corr-1',
+      now: NOW,
+      transition: 'canon-bound',
+      durationMs: 50,
+      costUsd: 0,
+      canonAtomIds: [
+        'dev-deep-planning-pipeline' as AtomId,
+        'dev-implementation-canon-audit-loop' as AtomId,
+      ],
+    });
+    expect(atom.type).toBe('pipeline-stage-event');
+    expect((atom.metadata as { transition: string }).transition).toBe('canon-bound');
+    expect(
+      (atom.metadata as { canon_atom_ids: ReadonlyArray<string> }).canon_atom_ids,
+    ).toEqual([
+      'dev-deep-planning-pipeline',
+      'dev-implementation-canon-audit-loop',
+    ]);
+  });
+
+  it('records a canon-audit-complete transition with verdict + findings', () => {
+    const atom = mkPipelineStageEventAtom({
+      pipelineId: 'pipeline-abc' as AtomId,
+      stageName: 'brainstorm-stage',
+      principalId: 'brainstorm-actor' as PrincipalId,
+      correlationId: 'corr-1',
+      now: NOW,
+      transition: 'canon-audit-complete',
+      durationMs: 1200,
+      costUsd: 0.42,
+      canonAuditVerdict: 'approved',
+      canonAuditFindings: [
+        {
+          severity: 'minor',
+          category: 'redundant-citation',
+          message: 'duplicate cite',
+          cited_atom_ids: [],
+          cited_paths: [],
+        },
+      ],
+    });
+    expect(
+      (atom.metadata as { canon_audit_verdict: string }).canon_audit_verdict,
+    ).toBe('approved');
+    expect(
+      (atom.metadata as { canon_audit_findings: ReadonlyArray<unknown> })
+        .canon_audit_findings,
+    ).toHaveLength(1);
+  });
+
+  it('records an agent-turn transition pointing at an agent-turn atom id', () => {
+    const atom = mkPipelineStageEventAtom({
+      pipelineId: 'pipeline-abc' as AtomId,
+      stageName: 'brainstorm-stage',
+      principalId: 'brainstorm-actor' as PrincipalId,
+      correlationId: 'corr-1',
+      now: NOW,
+      transition: 'agent-turn',
+      durationMs: 4200,
+      costUsd: 0.18,
+      agentTurnAtomId: 'agent-turn-abc' as AtomId,
+      turnIndex: 3,
+    });
+    expect(
+      (atom.metadata as { agent_turn_atom_id: string }).agent_turn_atom_id,
+    ).toBe('agent-turn-abc');
+    expect((atom.metadata as { turn_index: number }).turn_index).toBe(3);
+  });
+
+  it('legacy transitions still mint with no killer-pipeline metadata', () => {
+    const atom = mkPipelineStageEventAtom({
+      pipelineId: 'pipeline-abc' as AtomId,
+      stageName: 'spec-stage',
+      principalId: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-1',
+      now: NOW,
+      transition: 'enter',
+      durationMs: 0,
+      costUsd: 0,
+    });
+    expect(
+      (atom.metadata as { canon_atom_ids?: ReadonlyArray<string> }).canon_atom_ids,
+    ).toBeUndefined();
+    expect(
+      (atom.metadata as { canon_audit_verdict?: string }).canon_audit_verdict,
+    ).toBeUndefined();
+    expect(
+      (atom.metadata as { agent_turn_atom_id?: string }).agent_turn_atom_id,
+    ).toBeUndefined();
+  });
+
+  it('caps canonAtomIds at MAX_CITED_LIST', () => {
+    // 257 ids exceeds the cap. A runaway canon load (e.g. a misconfigured
+    // applicable-canon query) must not balloon a single event atom past
+    // sane sizes.
+    const tooMany = Array.from({ length: 257 }, (_v, i) => `canon-${i}` as AtomId);
+    expect(() =>
+      mkPipelineStageEventAtom({
+        pipelineId: 'pipeline-abc' as AtomId,
+        stageName: 'brainstorm-stage',
+        principalId: 'brainstorm-actor' as PrincipalId,
+        correlationId: 'corr-1',
+        now: NOW,
+        transition: 'canon-bound',
+        durationMs: 50,
+        costUsd: 0,
+        canonAtomIds: tooMany,
+      }),
+    ).toThrow(/canon_atom_ids/);
+  });
+
+  it('fails closed when canon-bound has no canonAtomIds field at all (defined-but-empty is OK)', () => {
+    // canon-bound REQUIRES canonAtomIds defined; an absent field is a
+    // half-formed mint. An empty list is a legitimate state (the
+    // principal has no applicable canon at this scope) and is allowed.
+    expect(() =>
+      mkPipelineStageEventAtom({
+        pipelineId: 'pipeline-abc' as AtomId,
+        stageName: 'brainstorm-stage',
+        principalId: 'brainstorm-actor' as PrincipalId,
+        correlationId: 'corr-1',
+        now: NOW,
+        transition: 'canon-bound',
+        durationMs: 50,
+        costUsd: 0,
+      }),
+    ).toThrow(/canon-bound.*canon_atom_ids/);
+  });
+
+  it('accepts canon-bound with an empty canonAtomIds list', () => {
+    const atom = mkPipelineStageEventAtom({
+      pipelineId: 'pipeline-abc' as AtomId,
+      stageName: 'brainstorm-stage',
+      principalId: 'brainstorm-actor' as PrincipalId,
+      correlationId: 'corr-1',
+      now: NOW,
+      transition: 'canon-bound',
+      durationMs: 50,
+      costUsd: 0,
+      canonAtomIds: [],
+    });
+    expect(
+      (atom.metadata as { canon_atom_ids: ReadonlyArray<string> }).canon_atom_ids,
+    ).toEqual([]);
+  });
+
+  it('fails closed when canon-audit-complete has no verdict', () => {
+    expect(() =>
+      mkPipelineStageEventAtom({
+        pipelineId: 'pipeline-abc' as AtomId,
+        stageName: 'brainstorm-stage',
+        principalId: 'brainstorm-actor' as PrincipalId,
+        correlationId: 'corr-1',
+        now: NOW,
+        transition: 'canon-audit-complete',
+        durationMs: 50,
+        costUsd: 0,
+      }),
+    ).toThrow(/canon-audit-complete.*canon_audit_verdict/);
+  });
+
+  it('fails closed when agent-turn lacks agentTurnAtomId or turnIndex', () => {
+    expect(() =>
+      mkPipelineStageEventAtom({
+        pipelineId: 'pipeline-abc' as AtomId,
+        stageName: 'brainstorm-stage',
+        principalId: 'brainstorm-actor' as PrincipalId,
+        correlationId: 'corr-1',
+        now: NOW,
+        transition: 'agent-turn',
+        durationMs: 50,
+        costUsd: 0,
+        turnIndex: 0,
+      }),
+    ).toThrow(/agent-turn.*agent_turn_atom_id and turn_index/);
+  });
 });
 
 describe('mkPipelineFailedAtom', () => {
