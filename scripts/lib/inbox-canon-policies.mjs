@@ -250,6 +250,31 @@ export function buildPolicies(operatorId) {
         freshness_ms: 300_000,
       },
     },
+    {
+      id: 'pol-approval-cycle-tick-interval-ms',
+      subject: 'approval-cycle-tick-interval-ms',
+      reason:
+        'Sleep interval between passes for the approval-cycle daemon mode '
+        + '(scripts/run-approval-cycle.mjs --daemon). The daemon drives the six '
+        + 'approval-cycle ticks (intent-approve, auto-approve, plan-approval, '
+        + 'plan-obs-refresh, plan-reconcile, dispatch) on this cadence; the '
+        + 'pr-observation refresh tick in particular needs the daemon to be '
+        + 'self-sustaining so substrate gap #8 (stale OPEN observations on '
+        + 'merged PRs) does not require manual operator invocation. Default 5 '
+        + 'minutes matches pol-pr-observation-freshness-threshold-ms so a stale '
+        + 'OPEN observation is refreshed within one cadence-window. Org-ceiling '
+        + 'deployments that want a tighter (60s) or relaxed (15min) cadence flip '
+        + 'this via a higher-priority canon atom; the daemon reads the value '
+        + 'BEFORE each sleep so a canon edit takes effect on the next pass '
+        + 'without a daemon restart.',
+      fields: {
+        // 5 minutes matches pol-pr-observation-freshness-threshold-ms above.
+        // Keeping the pair in lockstep means a stale observation is refreshed
+        // within one cadence-window without forcing an operator to tune two
+        // atoms together.
+        interval_ms: 300_000,
+      },
+    },
   ];
 }
 

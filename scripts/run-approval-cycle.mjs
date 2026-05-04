@@ -35,10 +35,14 @@
  * first.
  *
  * Script defaults to --once (single pass, exit). Non-zero exit only on
- * tick-thrown errors. The daemon mode (long-running loop with a sleep
- * between passes) is a follow-up; shipping --once first keeps the
- * surface minimal and matches how run-pr-landing.mjs / run-cto-self-
- * audit-continue.mjs compose.
+ * tick-thrown errors. Daemon mode (long-running loop with a sleep
+ * between passes) is opt-in via --daemon and matches how run-pr-landing.mjs
+ * / run-cto-self-audit-continue.mjs compose, except this driver lives
+ * for the full lifetime of the substrate's approval-cycle work. The
+ * tick interval is canon-tunable via pol-approval-cycle-tick-interval-ms
+ * (default 5min, matching pol-pr-observation-freshness-threshold-ms);
+ * the loop reads canon BEFORE each sleep so a canon edit takes effect
+ * on the next pass without a daemon restart.
  *
  * Dispatch requires a SubActorRegistry populated with invokers. This
  * script always registers `auditor-actor` (read-only, always safe to
@@ -83,10 +87,15 @@ import {
 import { runPlanStateReconcileTick } from '../dist/runtime/plans/pr-merge-reconcile.js';
 import { runPlanObservationRefreshTick } from '../dist/runtime/plans/pr-observation-refresh.js';
 import {
+  DEFAULT_TICK_INTERVAL_MS,
+  readApprovalCycleTickIntervalMs,
+} from '../dist/runtime/loop/approval-cycle-interval.js';
+import {
   LLM_REQUIRING_SUB_ACTORS,
   checkLlmCompatibility,
 } from './lib/approval-cycle-gate.mjs';
 import { createPrLandingObserveRefresher } from './lib/pr-observation-refresher.mjs';
+import { runDaemonLoop } from './lib/approval-cycle-daemon.mjs';
 
 const SUPPORTED_LLMS = new Set(['claude-cli', 'memory']);
 
@@ -108,7 +117,9 @@ function parseArgs(argv) {
     invokersPath: null,
     llm: 'claude-cli',
     once: true,
+    daemon: false,
     refresh: true,
+    intervalMsOverride: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -116,11 +127,21 @@ function parseArgs(argv) {
     else if (a === '--principal-id' && i + 1 < argv.length) args.principalId = argv[++i];
     else if (a === '--invokers' && i + 1 < argv.length) args.invokersPath = argv[++i];
     else if (a === '--llm' && i + 1 < argv.length) args.llm = argv[++i];
-    else if (a === '--once') args.once = true;
+    else if (a === '--once') { args.once = true; args.daemon = false; }
+    else if (a === '--daemon') { args.daemon = true; args.once = false; }
     else if (a === '--no-refresh') args.refresh = false;
+    else if (a === '--interval-ms' && i + 1 < argv.length) {
+      const raw = argv[++i];
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n <= 0) {
+        console.error(`ERROR: --interval-ms must be a positive number; got '${raw}'.`);
+        process.exit(2);
+      }
+      args.intervalMsOverride = n;
+    }
     else if (a === '--help' || a === '-h') {
       console.log([
-        'Usage: node scripts/run-approval-cycle.mjs --root-dir <path> [--principal-id <id>] [--invokers <path>] [--llm <adapter>] [--once]',
+        'Usage: node scripts/run-approval-cycle.mjs --root-dir <path> [--principal-id <id>] [--invokers <path>] [--llm <adapter>] [--once | --daemon] [--interval-ms <n>]',
         '',
         'Runs one pass of the approval cycle, in order:',
         '  0. runIntentAutoApprovePass        (intent-backed single-principal)',
@@ -156,13 +177,25 @@ function parseArgs(argv) {
         "                         AND the registry contains a sub-actor that",
         "                         requires a real LLM (today: code-author).",
         '  --once                 Run one pass and exit (default).',
+        '  --daemon               Run continuously, sleeping between passes for',
+        '                         the canon-tunable interval (pol-approval-cycle-',
+        '                         tick-interval-ms, default 5min). Reads the',
+        '                         interval from canon BEFORE each sleep so a',
+        '                         canon edit takes effect next pass. SIGTERM /',
+        "                         SIGINT triggers a clean shutdown that doesn't",
+        '                         block on a full interval.',
+        '  --interval-ms <n>      Optional. Override the canon-tuned interval',
+        '                         for this daemon run (e.g. for ad-hoc tighter',
+        '                         polling). Ignored when --once is in effect.',
         '  --no-refresh           Skip the pr-observation refresh tick. Use on',
         '                         deployments that observe PRs through a webhook',
         '                         or that never want polling. Default: refresh on.',
         '',
         'Exit codes:',
-        '  0  all ticks completed without throwing',
-        '  1  a tick threw; see stderr',
+        '  0  --once: all ticks completed without throwing.',
+        '     --daemon: clean shutdown after SIGTERM/SIGINT (errors per-pass',
+        '     are logged but do not exit).',
+        '  1  --once: a tick threw; see stderr.',
         '  2  argument error',
       ].join('\n'));
       process.exit(0);
@@ -278,12 +311,61 @@ async function main() {
 
   const startedAt = new Date().toISOString();
   const principalTag = args.principalId === null ? 'unset' : args.principalId;
-  console.log(`[approval-cycle] started at ${startedAt} root=${rootDir} principal=${principalTag} llm=${args.llm}`);
+  const modeTag = args.daemon ? 'daemon' : 'once';
+  console.log(`[approval-cycle] started at ${startedAt} root=${rootDir} principal=${principalTag} llm=${args.llm} mode=${modeTag}`);
 
-  // Track whether any tick threw; non-zero exit on the first throw
-  // preserves "exit 0 iff clean". We STILL try each tick so a failure
-  // in, say, auto-approve does not silently skip consensus. The
-  // collected error is re-thrown at the end.
+  if (args.daemon) {
+    // Daemon mode: drive runOnePass on the canon-tunable cadence so
+    // substrate gap #8 fix (pr-observation refresh) is self-sustaining
+    // without manual operator invocation. Reads the interval from
+    // canon BEFORE each sleep so a canon edit takes effect on the
+    // next pass without a daemon restart.
+    const ac = new AbortController();
+    const onSig = (sig) => {
+      console.log(`[approval-cycle] received ${sig}; shutting down after current pass...`);
+      ac.abort();
+    };
+    process.on('SIGTERM', () => onSig('SIGTERM'));
+    process.on('SIGINT', () => onSig('SIGINT'));
+    await runDaemonLoop({
+      runOnce: async () => {
+        await runOnePass(host, registry, args);
+      },
+      readIntervalMs: async () => {
+        if (args.intervalMsOverride !== null) return args.intervalMsOverride;
+        return readApprovalCycleTickIntervalMs(host);
+      },
+      signal: ac.signal,
+      onError: (err) => {
+        // Per-pass failures already log via runOnePass's per-tick
+        // try-blocks; this hook catches anything that escaped that
+        // (e.g. a runtime error in runOnePass itself).
+        console.error(`[approval-cycle:daemon] pass error: ${err?.message ?? err}`);
+      },
+    });
+    const endedAt = new Date().toISOString();
+    console.log(`[approval-cycle] finished at ${endedAt} (mode=daemon, default-interval=${DEFAULT_TICK_INTERVAL_MS}ms)`);
+    return;
+  }
+
+  // --once mode: one pass, exit non-zero on any tick error.
+  const firstError = await runOnePass(host, registry, args);
+  const endedAt = new Date().toISOString();
+  console.log(`[approval-cycle] finished at ${endedAt} (mode=once)`);
+  if (firstError !== null) {
+    process.exit(1);
+  }
+}
+
+/**
+ * One full pass through the six approval-cycle ticks, in fixed order.
+ * Returns the first error captured (or null on a clean pass). All
+ * tick errors are logged but the pass continues so a failure in, say,
+ * auto-approve does not silently skip consensus.
+ *
+ * @returns {Promise<Error|null>}
+ */
+async function runOnePass(host, registry, args) {
   /** @type {Error|null} */
   let firstError = null;
 
@@ -303,7 +385,7 @@ async function main() {
       ? ` skipped=${skipped}${skipBreakdown ? ` (${skipBreakdown})` : ''}`
       : '';
     console.log(`[approval-cycle] intent-approve     scanned=${intentResult.scanned} approved=${intentResult.approved} rejected=${intentResult.rejected ?? 0}${skippedFragment}${intentResult.halted ? ' [HALTED by kill-switch]' : ''}`);
-    if (intentResult.halted) return;
+    if (intentResult.halted) return firstError;
   } catch (err) {
     console.error(`[approval-cycle] intent-approve FAILED: ${err?.message ?? err}`);
     firstError = firstError ?? err;
@@ -375,11 +457,7 @@ async function main() {
     firstError = firstError ?? err;
   }
 
-  const endedAt = new Date().toISOString();
-  console.log(`[approval-cycle] finished at ${endedAt} (once=${args.once ? 'true' : 'false'})`);
-  if (firstError !== null) {
-    process.exit(1);
-  }
+  return firstError;
 }
 
 main().catch((err) => {

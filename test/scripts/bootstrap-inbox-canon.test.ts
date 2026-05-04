@@ -44,6 +44,7 @@ describe('bootstrap-inbox-canon POLICIES', () => {
     expect(ids).toEqual([
       'pol-actor-message-circuit-breaker',
       'pol-actor-message-rate',
+      'pol-approval-cycle-tick-interval-ms',
       'pol-circuit-breaker-reset-authority',
       'pol-inbox-ordering',
       'pol-inbox-poll-cadence',
