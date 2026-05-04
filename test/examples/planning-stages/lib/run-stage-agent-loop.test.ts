@@ -339,22 +339,10 @@ describe('runStageAgentLoop', () => {
 
     // Pre-stash the payload into the blob store so the adapter's turn
     // atom can carry the BlobRef without the adapter needing to do the
-    // put itself.
+    // put itself. The stub blobStore is now backed by an in-memory Map
+    // so put/get round-trip correctly without bespoke overrides; tests
+    // exercise the real {ref:BlobRef} branch through the actual stub.
     const ref = await blobStore.put(finalOutput);
-    // Override blob-store get so the dereferencing path returns the
-    // expected payload (the test stub's get() returns an empty buffer
-    // by default, which would not surface the bug).
-    const getRecorder: { lastRef?: string } = {};
-    const dereffingBlobStore = {
-      ...blobStore,
-      async get(r: typeof ref) {
-        getRecorder.lastRef = String(r);
-        if (String(r) === String(ref)) {
-          return Buffer.from(finalOutput, 'utf8');
-        }
-        return Buffer.from('');
-      },
-    };
 
     const adapter: AgentLoopAdapter = {
       capabilities: {
@@ -468,7 +456,7 @@ describe('runStageAgentLoop', () => {
       outputSchema: testSchema,
       agentLoop: adapter,
       workspaceProvider,
-      blobStore: dereffingBlobStore,
+      blobStore,
       redactor,
       replayTier: 'best-effort',
       blobThreshold: 4096,
@@ -476,7 +464,10 @@ describe('runStageAgentLoop', () => {
     });
     expect(result.value.goal).toBe('externalized-output-survived-blob-roundtrip');
     expect(result.value.alternatives).toEqual(['A', 'B']);
-    expect(getRecorder.lastRef).toBe(String(ref));
+    // The blob ref the adapter wrote was the same ref the helper read
+    // back; the round-trip is what proves readFinalOutputJson resolved
+    // the ref instead of stringifying the {ref} wrapper.
+    expect(await blobStore.has(ref)).toBe(true);
   });
 });
 

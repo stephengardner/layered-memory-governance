@@ -119,8 +119,12 @@ export function makeStubAdapter(opts: {
       await input.host.atoms.put(sessionAtom);
       const turnAtomIds: AtomId[] = [];
       for (let i = 0; i < opts.outputs.length; i++) {
-        const turnId =
-          `agent-turn-${input.correlationId}-${i}` as AtomId;
+        // Derive the turn id from sessionId (which already carries a
+        // randomBytes suffix) rather than from correlationId alone. Two
+        // adapter runs that share a correlationId would otherwise mint
+        // colliding turn ids; deriving from sessionId isolates each run
+        // even when callers reuse the correlation.
+        const turnId = `${sessionId}-turn-${i}` as AtomId;
         const turnAtom: Atom = {
           schema_version: 1,
           id: turnId,
@@ -196,17 +200,33 @@ export function makeStubHostBundle(): {
   const host = createMemoryHost({
     canonInitial: '<!-- canon: managed -->\n[]\n',
   });
+  // Backed by an in-memory Map keyed by the same string returned by
+  // blobRefFromHash so put/get/has round-trip correctly. The previous
+  // shape had get() return an empty Buffer and has() always return
+  // true, which masked the readFinalOutputJson blob-deref bug behind a
+  // false-success: any test asserting on round-trip behaviour had to
+  // override the stub. With the in-memory backing tests can validate
+  // the {ref:BlobRef} branch without bespoke overrides.
+  const blobs = new Map<string, Buffer>();
   const blobStore: BlobStore = {
     async put(content) {
       const buf =
         typeof content === 'string' ? Buffer.from(content) : content;
-      return blobRefFromHash(createHash('sha256').update(buf).digest('hex'));
+      const ref = blobRefFromHash(
+        createHash('sha256').update(buf).digest('hex'),
+      );
+      blobs.set(String(ref), buf);
+      return ref;
     },
-    async get() {
-      return Buffer.from('');
+    async get(ref) {
+      const buf = blobs.get(String(ref));
+      if (buf === undefined) {
+        throw new Error(`stub blobStore.get: unknown ref ${String(ref)}`);
+      }
+      return buf;
     },
-    async has() {
-      return true;
+    async has(ref) {
+      return blobs.has(String(ref));
     },
     describeStorage() {
       return { kind: 'local-file' as const, rootPath: '/tmp/test' };
