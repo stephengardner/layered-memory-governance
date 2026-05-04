@@ -45,8 +45,8 @@ export type PipelineStageImplementationMode = 'agentic' | 'single-shot';
 export interface PipelineStageImplementationsPolicyResult {
   /**
    * Map of stage_name to selected adapter mode. A stage absent from the
-   * map has no canon selection; the caller decides the default (the
-   * indie floor is single-shot per dev-indie-floor-org-ceiling).
+   * map has no canon selection; the caller applies its own default for
+   * absent entries.
    */
   readonly implementations: ReadonlyMap<string, PipelineStageImplementationMode>;
   readonly atomId: string | null;
@@ -208,12 +208,11 @@ export async function readPipelineStageCostCapPolicy(
  * reader resolves WHICH stages run in WHAT order; this reader resolves
  * WHICH adapter IMPLEMENTATION runs each stage. Conflating them would
  * couple two independent canon dimensions: a deployment that wants to
- * keep the default 5-stage ordering but flip brainstorm to agentic
- * would have to reproduce the entire stage list to alter one mode.
+ * keep the default stage ordering but flip one stage's adapter mode
+ * would have to reproduce the entire stage list to alter the mode.
  *
- * Fail-closed: malformed entries collapse to an empty map; the caller
- * MUST default each absent stage to the indie-floor single-shot mode
- * per dev-indie-floor-org-ceiling.
+ * Fail-closed: malformed entries collapse to an empty map. The caller
+ * decides the default mode for stages absent from the returned map.
  */
 export async function readPipelineStageImplementationsPolicy(
   host: Host,
