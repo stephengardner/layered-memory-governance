@@ -50,6 +50,7 @@ import { fileURLToPath } from 'node:url';
 /** Allow-listed skill names. Adding a new skill is a code edit. */
 export const SUPPORTED_SKILLS = [
   'brainstorming',
+  'writing-clearly',
   'writing-plans',
   'requesting-code-review',
   'subagent-driven-development',
