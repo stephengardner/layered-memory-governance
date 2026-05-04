@@ -294,7 +294,7 @@ async function runReview(
   };
 }
 
-async function auditReview(
+export async function auditReview(
   output: ReviewReportPayload,
   _ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {

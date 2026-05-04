@@ -55,6 +55,7 @@ export const SUPPORTED_SKILLS = [
   'requesting-code-review',
   'subagent-driven-development',
   'test-driven-development',
+  'review-discipline',
 ] as const;
 export type SupportedSkillName = (typeof SUPPORTED_SKILLS)[number];
 
