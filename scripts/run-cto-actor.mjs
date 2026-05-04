@@ -534,9 +534,23 @@ async function runDeepPipeline(args) {
     ]);
     for (const stageName of wantsAgentic) {
       const buildStage = agenticBuilders.get(stageName);
-      if (buildStage !== undefined) {
-        stageRegistry.set(stageName, buildStage());
+      if (buildStage === undefined) {
+        // Fail-closed: AGENTIC_AVAILABLE said the stage has an agentic
+        // adapter, but the builder map says it doesn't. The two lists
+        // drifted; silently falling through to the single-shot adapter
+        // would land the substrate in the wrong mode without the operator
+        // noticing. Halt loud so the missed entry is added to the map
+        // (or removed from AGENTIC_AVAILABLE) before the next run.
+        console.error(
+          `ERROR: canon selects mode='agentic' for stage '${stageName}' but no `
+          + 'builder was registered in agenticBuilders. AGENTIC_AVAILABLE and '
+          + 'agenticBuilders drifted; both lists must enumerate the same '
+          + 'stage_names. Add the builder entry or remove the stage_name from '
+          + 'AGENTIC_AVAILABLE before the next run.',
+        );
+        process.exit(2);
       }
+      stageRegistry.set(stageName, buildStage());
     }
   }
 
