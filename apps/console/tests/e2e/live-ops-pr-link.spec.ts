@@ -115,6 +115,7 @@ test.describe('live ops pr-row link', () => {
      * store has zero such rows.
      */
     const snapshotResponse = await request.post('/api/live-ops.snapshot');
+    expect(snapshotResponse.ok(), 'live-ops.snapshot endpoint should return 200').toBe(true);
     const body = await snapshotResponse.json();
     const data: LiveOpsSnapshotShape = body?.data ?? body ?? { pr_activity: [] };
     const firstWithoutUrl = data.pr_activity.find((row) => row.pr_url === null);
