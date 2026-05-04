@@ -131,9 +131,49 @@ export interface CodeAuthorExecutorFailure {
   readonly branchName?: string;
 }
 
+/**
+ * Silent-success terminal: the drafter executed correctly and
+ * concluded that the requested change is already in the desired
+ * state, so the implementing diff is empty. The executor MUST NOT
+ * call `git apply` on empty input (git rejects "No valid patches in
+ * input" and the dispatcher would then mark the plan failed even
+ * though the plan executed correctly). Surfacing the no-op as its
+ * own variant keeps the type honest: a no-op never opens a PR, so
+ * the result shape lacks `prNumber`/`prHtmlUrl`/`commitSha`/
+ * `branchName`. The drafter notes carry the model's explanation of
+ * why no diff was needed; downstream consumers (invoker observation
+ * metadata, console renderers) discriminate on `kind === 'noop'` to
+ * distinguish "completed silently because no work needed" from
+ * "completed with PR opened".
+ *
+ * The detection rule that yields this result is purely structural:
+ * a whitespace-only string is not a valid unified-diff input. The
+ * semantic interpretation ("silent skip succeeded") belongs to the
+ * executor (mechanism layer), per the substrate-purity discipline
+ * that keeps domain rules out of plan-dispatch's terminal mapper.
+ */
+export interface CodeAuthorExecutorNoop {
+  readonly kind: 'noop';
+  /** Drafter-reported notes explaining why no change was produced. */
+  readonly notes: string;
+  /** Drafter-reported confidence in the no-op judgment. */
+  readonly confidence: number;
+  readonly modelUsed: string;
+  readonly totalCostUsd: number;
+  /**
+   * Stable reason tag the invoker stamps on observation metadata.
+   * Today the only producer is the diff-based executor's
+   * empty-diff detection; tagging the source keeps the metadata
+   * shape future-proof if a different executor (agentic, external
+   * workflow) gains its own no-op signal later.
+   */
+  readonly reason: 'drafter-emitted-empty-diff';
+}
+
 export type CodeAuthorExecutorResult =
   | CodeAuthorExecutorSuccess
-  | CodeAuthorExecutorFailure;
+  | CodeAuthorExecutorFailure
+  | CodeAuthorExecutorNoop;
 
 export interface CodeAuthorExecutor {
   execute(inputs: {
@@ -365,6 +405,23 @@ export async function runCodeAuthor(
     };
   }
 
+  if (executorResult?.kind === 'noop') {
+    // Silent-success terminal: the drafter concluded the requested
+    // change is already in the desired state, so no PR is opened.
+    // The plan is `succeeded` (not `failed`) -- no work was needed,
+    // so the dispatcher's terminal mapping treats this exactly like
+    // any other completed sub-actor: producedAtomIds carries the
+    // observation id so a downstream consumer can still walk the
+    // chain. The summary distinguishes the no-op outcome from a
+    // PR-bearing dispatch so console renderers can render the
+    // correct verb without parsing executor_result.kind.
+    return {
+      kind: 'completed',
+      producedAtomIds: [String(atomId)],
+      summary: `code-author silent-skip on plan ${plan.id}: ${executorResult.reason}`,
+    };
+  }
+
   return {
     kind: 'completed',
     producedAtomIds: [String(atomId)],
@@ -403,6 +460,16 @@ function renderInvokedContent(
     lines.push(`  Cost (USD): ${executorResult.totalCostUsd.toFixed(4)}`);
     lines.push(`  Touched paths (${executorResult.touchedPaths.length}):`);
     for (const p of executorResult.touchedPaths) lines.push(`    - ${p}`);
+  } else if (executorResult.kind === 'noop') {
+    lines.push('Executor terminated as a silent-skip no-op:');
+    lines.push(`  Reason:     ${executorResult.reason}`);
+    lines.push(`  Model:      ${executorResult.modelUsed}`);
+    lines.push(`  Confidence: ${executorResult.confidence.toFixed(2)}`);
+    lines.push(`  Cost (USD): ${executorResult.totalCostUsd.toFixed(4)}`);
+    if (executorResult.notes.length > 0) {
+      lines.push('  Drafter notes:');
+      for (const n of executorResult.notes.split('\n')) lines.push(`    ${n}`);
+    }
   } else {
     lines.push(`Executor failed at stage "${executorResult.stage}":`);
     lines.push(`  ${executorResult.reason}`);
@@ -427,6 +494,24 @@ function renderExecutorMetadata(
       ...(typeof result.branchName === 'string' && result.branchName.length > 0
         ? { branch_name: result.branchName }
         : {}),
+    };
+  }
+  if (result.kind === 'noop') {
+    // dispatch_outcome='no-op' is the load-bearing routing key for
+    // console renderers and any downstream consumer that wants to
+    // distinguish "completed silently because no work needed" from
+    // "completed with PR opened" without re-parsing the executor
+    // chain. Sibling fields (model_used, confidence, total_cost_usd,
+    // notes) mirror the `dispatched` shape so a metadata reader can
+    // render either kind from the same field set.
+    return {
+      kind: 'noop',
+      dispatch_outcome: 'no-op',
+      reason: result.reason,
+      notes: result.notes,
+      model_used: result.modelUsed,
+      confidence: result.confidence,
+      total_cost_usd: result.totalCostUsd,
     };
   }
   return {

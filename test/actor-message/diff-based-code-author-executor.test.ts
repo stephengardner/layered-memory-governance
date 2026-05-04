@@ -318,6 +318,107 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     expect(result.branchName?.length ?? 0).toBeGreaterThan(0);
   });
 
+  it('empty diff -> kind=noop, no git apply, no PR opened (silent-success skip)', async () => {
+    // The drafter executed correctly and concluded the requested
+    // change is already in the desired state, so it returned an
+    // empty diff. Before this fix, the executor passed empty input
+    // to `git apply --check`, which rejects with "No valid patches
+    // in input", and the dispatcher then marked the plan failed
+    // even though the plan executed correctly. The fix detects an
+    // empty/whitespace-only diff in the executor, short-circuits
+    // BEFORE `applyDraftBranch`, and surfaces a `kind: 'noop'`
+    // result so the invoker can map it to a `succeeded` plan
+    // terminal.
+    //
+    // Regression for the dogfeed-16 substrate gap (2026-04-30):
+    // 2 of 3 dogfeed plans failed despite being semantically
+    // correct because the target file was already in the desired
+    // state and the drafter correctly emitted an empty diff.
+    const plan = mkPlan('plan-empty-diff', '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+      title: 'Already-applied change',
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: '',
+      notes: 'README.md already contains the requested line; no change needed.',
+      confidence: 0.95,
+    });
+
+    const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const prCalls: Array<Record<string, unknown>> = [];
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async (args: Record<string, unknown>) => {
+        prCalls.push(args);
+        return { number: 1, html_url: '', url: '', node_id: '', state: 'open' };
+      }) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'noop1',
+      execImpl,
+    });
+
+    const result = await executor.execute({
+      plan,
+      fence: mkFence(),
+      correlationId: 'corr-noop',
+      observationAtomId: 'obs-noop' as AtomId,
+    });
+
+    // The executor returns the no-op terminal, NOT a failure.
+    expect(result.kind).toBe('noop');
+    if (result.kind !== 'noop') throw new Error('unreachable');
+    expect(result.reason).toBe('drafter-emitted-empty-diff');
+    expect(result.notes).toContain('already contains');
+    expect(result.confidence).toBeCloseTo(0.95);
+    expect(result.modelUsed).toBe('claude-opus-4-7');
+    expect(typeof result.totalCostUsd).toBe('number');
+
+    // No git operations (no fetch/checkout/apply/commit/push), no
+    // PR creation: the executor short-circuited before applyDraftBranch.
+    expect(gitCalls).toHaveLength(0);
+    expect(prCalls).toHaveLength(0);
+  });
+
+  it('whitespace-only diff is also treated as a no-op (does not reach git apply)', async () => {
+    // Defense in depth: a drafter that emits a single newline,
+    // a tab, or trailing whitespace should still be classified as
+    // a no-op. `git apply --check` rejects these the same way it
+    // rejects '' (no valid patches in input). The executor's
+    // detection rule is structural (`diff.trim().length === 0`),
+    // so it absorbs the same shape regardless of byte content.
+    const plan = mkPlan('plan-ws-diff', '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: '   \n\t\n  ',
+      notes: 'No change needed.',
+      confidence: 0.9,
+    });
+
+    const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+    });
+
+    const result = await executor.execute({
+      plan,
+      fence: mkFence(),
+      correlationId: 'c',
+      observationAtomId: 'obs-ws' as AtomId,
+    });
+    expect(result.kind).toBe('noop');
+    expect(gitCalls).toHaveLength(0);
+  });
+
   it('plan id with unsafe git-ref chars is sanitized in branch name', async () => {
     // Git ref-name rules reject `:`, whitespace, `..`, `~`, `^`,
     // and a handful of others. A plan id is not required to obey

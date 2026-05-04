@@ -433,4 +433,70 @@ describe('runCodeAuthor', () => {
     // Backward-compatible metadata shape: executor_result must be absent.
     expect(written!.metadata['executor_result']).toBeUndefined();
   });
+
+  it('with executor injected (noop): returns completed and stores dispatch_outcome=no-op on observation', async () => {
+    // Silent-success terminal: the drafter executed correctly and
+    // concluded the requested change is already in the desired
+    // state. The executor returns a `noop` variant. The invoker
+    // MUST translate that to `InvokeResult.completed` (not error)
+    // so plan-dispatch flips the plan to `succeeded` instead of
+    // `failed`. This regression closes the dogfeed-16 substrate
+    // gap surfaced 2026-04-30 (2 of 3 plans failed despite being
+    // semantically correct because the empty diff was treated as
+    // a git-apply failure).
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async () => ({
+      kind: 'noop',
+      notes: 'README already contains the requested line.',
+      confidence: 0.95,
+      modelUsed: 'claude-opus-4-7',
+      totalCostUsd: 0.013,
+      reason: 'drafter-emitted-empty-diff',
+    }));
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-noop',
+      { executor, idNonce: 'noop123' },
+    );
+
+    expect(result.kind).toBe('completed');
+    if (result.kind !== 'completed') throw new Error('unreachable');
+    // Summary distinguishes the no-op outcome from a PR-bearing
+    // dispatch so console renderers can render the correct verb.
+    expect(result.summary).toContain('silent-skip');
+    expect(result.summary).toContain('drafter-emitted-empty-diff');
+    expect(result.producedAtomIds).toHaveLength(1);
+
+    // Observation metadata carries the dispatch_outcome routing
+    // key plus the drafter-reported fields. Console renderers and
+    // any downstream consumer key off `dispatch_outcome === 'no-op'`
+    // to distinguish "completed silently because no work needed"
+    // from "completed with PR opened".
+    const exec = await getInvokedExecutorResult(host);
+    expect(exec['kind']).toBe('noop');
+    expect(exec['dispatch_outcome']).toBe('no-op');
+    expect(exec['reason']).toBe('drafter-emitted-empty-diff');
+    expect(exec['notes']).toMatch(/already contains/);
+    expect(exec['model_used']).toBe('claude-opus-4-7');
+    expect(exec['confidence']).toBe(0.95);
+    expect(exec['total_cost_usd']).toBe(0.013);
+    // No PR fields on a no-op: branch_name / pr_number / pr_html_url
+    // are intentionally absent so a metadata reader that conditions
+    // on them treats the no-op as nothing-to-link.
+    expect(exec['branch_name']).toBeUndefined();
+    expect(exec['pr_number']).toBeUndefined();
+    expect(exec['pr_html_url']).toBeUndefined();
+    expect(exec['commit_sha']).toBeUndefined();
+
+    // Observation content prose mentions the no-op so an operator
+    // reading the atom in the console sees the semantic outcome
+    // without parsing executor_result.
+    const written = await host.atoms.get(result.producedAtomIds[0]! as AtomId);
+    expect(written!.content).toMatch(/silent-skip no-op/);
+    expect(written!.content).toMatch(/drafter-emitted-empty-diff/);
+  });
 });

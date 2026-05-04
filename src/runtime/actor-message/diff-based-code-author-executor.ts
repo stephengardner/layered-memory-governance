@@ -356,6 +356,43 @@ export function buildDiffBasedCodeAuthorExecutor(
           };
         }
 
+        // Empty / whitespace-only diff is a silent-success no-op:
+        // the drafter executed correctly and concluded the
+        // requested change is already in the desired state (the
+        // target file already contains the line, the README already
+        // has the bullet, etc.). git apply --check rejects empty
+        // input with "No valid patches in input" and the dispatcher
+        // would then mark the plan failed even though the plan
+        // executed correctly. Detection is purely structural -- a
+        // whitespace-only string is not a valid unified diff -- so
+        // it stays in the executor (mechanism layer) per the
+        // substrate-purity discipline that keeps domain rules out
+        // of plan-dispatch's terminal mapper.
+        //
+        // Short-circuit BEFORE the cited-paths gate and BEFORE
+        // applyDraftBranch: a no-op diff means no PR is opened, no
+        // branch is pushed, no citations need verifying. The
+        // drafter notes (the LLM's explanation of why no change
+        // was needed) thread through to the invoker observation
+        // metadata so a downstream consumer can audit why the
+        // pipeline silently skipped this plan.
+        //
+        // The retry loop is also exited here: a competent drafter
+        // returning empty diff is asserting "no work needed", which
+        // a self-correction prompt cannot fix; re-rolling the LLM
+        // would either repeat the same correct judgment or
+        // hallucinate a change to satisfy the prompt.
+        if (draftResult.diff.trim().length === 0) {
+          return {
+            kind: 'noop',
+            notes: draftResult.notes,
+            confidence: draftResult.confidence,
+            modelUsed: draftResult.modelUsed,
+            totalCostUsd: draftResult.totalCostUsd,
+            reason: 'drafter-emitted-empty-diff',
+          };
+        }
+
         // Verify each path the drafter declared in `cited_paths`
         // exists on the working tree before opening the PR. The
         // drafter has no read access at draft-time and confabulates

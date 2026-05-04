@@ -222,6 +222,142 @@ describe('code-author dispatch (end-to-end)', () => {
     expect(snap['on_stop_action']).toBe('close-pr-with-revocation-comment');
   });
 
+  it('approved plan + executor returns noop (empty diff) -> plan flips to succeeded, NOT failed', async () => {
+    // Regression: dogfeed-16 substrate gap surfaced 2026-04-30.
+    // When the drafter correctly emits an empty diff (the target
+    // file is already in the desired state), the executor MUST NOT
+    // call `git apply --check` (which rejects empty input "No
+    // valid patches in input"). Before this fix, that rejection
+    // bubbled through plan-dispatch as a `failed` terminal even
+    // though the plan executed correctly. The fix surfaces a
+    // `noop` executor result that the invoker maps to
+    // `InvokeResult.completed`; plan-dispatch then flips the plan
+    // to `succeeded` and stamps `terminal_kind=succeeded`.
+    const host = await createMemoryHost();
+    await seedFence(host);
+
+    const planId = 'plan-test-noop-skip' as AtomId;
+    const plan: Atom = {
+      schema_version: 1,
+      id: planId,
+      content: '# Append a line that is already there\n\nNo-op case.',
+      type: 'plan',
+      layer: 'L1',
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'cto-actor', session_id: 'noop-e2e' },
+        derived_from: [],
+      },
+      confidence: 0.9,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'cto-actor' as PrincipalId,
+      taint: 'clean',
+      plan_state: 'approved',
+      metadata: {
+        title: 'Already-applied change',
+        delegation: {
+          sub_actor_principal_id: CODE_AUTHOR,
+          payload: { plan_id: planId },
+          correlation_id: 'corr-noop-e2e',
+          escalate_to: OPERATOR,
+        },
+      },
+    };
+    await host.atoms.put(plan);
+
+    // Stub executor that returns a noop result -- this stands in
+    // for `buildDiffBasedCodeAuthorExecutor` running with a drafter
+    // that correctly emits an empty diff. The integration assertion
+    // is on the dispatch + invoker sides; the executor's own empty-
+    // diff detection is unit-tested in the diff-based-code-author-
+    // executor test file.
+    const registry = new SubActorRegistry();
+    registry.register(CODE_AUTHOR, (payload, correlationId) =>
+      runCodeAuthor(
+        host,
+        payload as { plan_id: AtomId },
+        correlationId,
+        {
+          idNonce: 'noop001',
+          now: () => new Date(NOW).getTime(),
+          executor: {
+            execute: async () => ({
+              kind: 'noop',
+              notes: 'Target file already contains the requested line.',
+              confidence: 0.95,
+              modelUsed: 'claude-opus-4-7',
+              totalCostUsd: 0.012,
+              reason: 'drafter-emitted-empty-diff',
+            }),
+          },
+        },
+      ),
+    );
+
+    const tick = await runDispatchTick(host, registry, {
+      now: () => new Date(NOW).getTime(),
+    });
+    expect(tick.scanned).toBeGreaterThanOrEqual(1);
+    // dispatched counter increments for any non-error terminal,
+    // including a no-op success.
+    expect(tick.dispatched).toBe(1);
+    expect(tick.failed).toBe(0);
+
+    // Plan is now succeeded (NOT failed), with terminal_kind=succeeded.
+    // Before this fix, a no-op diff drove the plan to terminal_kind=
+    // failed via `apply-branch/diff-apply-failed`.
+    const finalPlan = await host.atoms.get(planId);
+    expect(finalPlan).not.toBeNull();
+    expect(finalPlan!.plan_state).toBe('succeeded');
+    expect(finalPlan!.metadata['terminal_kind']).toBe('succeeded');
+    expect(finalPlan!.metadata['error_message']).toBeUndefined();
+
+    // dispatch_result records the no-op observation id.
+    const dispatchResult = finalPlan!.metadata['dispatch_result'] as {
+      readonly kind?: string;
+      readonly produced_atom_ids?: ReadonlyArray<string>;
+    };
+    expect(dispatchResult.kind).toBe('completed');
+    expect(dispatchResult.produced_atom_ids).toBeDefined();
+    expect(dispatchResult.produced_atom_ids!.length).toBe(1);
+
+    // Observation atom carries the no-op routing key + drafter notes
+    // so console renderers can label the silent-skip outcome.
+    const observation = await host.atoms.get(dispatchResult.produced_atom_ids![0]! as AtomId);
+    expect(observation).not.toBeNull();
+    expect(observation!.metadata['kind']).toBe('code-author-invoked');
+    const exec = observation!.metadata['executor_result'] as Record<string, unknown>;
+    expect(exec['kind']).toBe('noop');
+    expect(exec['dispatch_outcome']).toBe('no-op');
+    expect(exec['reason']).toBe('drafter-emitted-empty-diff');
+    expect(exec['notes']).toMatch(/already contains/);
+
+    // No `plan.dispatch-failed` audit event was emitted -- the
+    // outcome routes through plan.dispatch-succeeded instead.
+    const failedEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-failed'] },
+      10,
+    );
+    expect(failedEvents.length).toBe(0);
+    const succeededEvents = await host.auditor.query(
+      { kind: ['plan.dispatch-succeeded'] },
+      10,
+    );
+    expect(succeededEvents.length).toBe(1);
+    expect(succeededEvents[0]!.refs.atom_ids).toContain(planId);
+  });
+
   it('approved plan + broken fence -> dispatch fails + plan flips to failed (fail-closed)', async () => {
     // Fence must be LOAD-BEARING for the invocation: an incomplete
     // fence at dispatch time must fail the plan, not silently
