@@ -39,6 +39,24 @@ import type {
 
 const NOW: Time = '2026-05-01T00:00:00.000Z' as Time;
 
+/**
+ * Shared AgentLoopAdapter.capabilities literal used by every stub
+ * sequencing adapter in the per-stage agentic test files. Extracted
+ * here per dev-extract-at-n-2: the brainstorm + spec + plan agentic
+ * tests all need the same shape, and a future review-stage agentic
+ * test will inherit the same constant.
+ *
+ * Tests that need a different `classify_failure` discriminator (e.g. a
+ * test that asserts on the substrate's failure-classification path)
+ * compose the spread `{...STUB_CAPABILITIES, classify_failure: ...}`
+ * locally rather than re-declaring the whole shape.
+ */
+export const STUB_CAPABILITIES: AgentLoopAdapter['capabilities'] = {
+  tracks_cost: true,
+  supports_signal: true,
+  classify_failure: () => 'structural',
+};
+
 export interface StubAdapterRecorder {
   lastInput?: AgentLoopInput;
 }
