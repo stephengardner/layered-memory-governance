@@ -58,6 +58,10 @@ import {
   type PrincipalStatsResponse,
 } from './principal-stats';
 import {
+  classifyPrincipal,
+  type PrincipalCategory,
+} from './principal-classifier';
+import {
   computeHeartbeat as computeLiveOpsHeartbeat,
   listActiveSessions as listLiveOpsActiveSessions,
   listLiveDeliberations as listLiveOpsDeliberations,
@@ -427,43 +431,111 @@ async function handlePrincipalsStats(): Promise<PrincipalStatsResponse> {
 }
 
 /*
- * Read the optional skill markdown for a principal. Skill docs live
- * at .claude/skills/<principal_id>/SKILL.md; not every principal has
- * one (e.g. apex-agent does not). Returns { content: null } when the
- * file is absent, distinct from a 500 on read error so the client can
- * cleanly fall through to "no soul content yet".
+ * Read the optional skill markdown for a principal AND classify the
+ * principal so the empty-state surface can render category-specific
+ * copy.
+ *
+ * Skill docs live at .claude/skills/<principal_id>/SKILL.md; not every
+ * principal has one. Three semantically different empty-state cases
+ * collapse to the same blank surface without classification:
+ *
+ *   - apex authority (apex-agent): role==='apex'. By design no
+ *     playbook. Authority root, not an executor.
+ *   - anchor authority (claude-agent): role==='agent' AND signs other
+ *     principals. Trust-relay layer; the children are the actors with
+ *     playbooks. By design no playbook of its own.
+ *   - leaf actor with skill debt (code-author, pr-fix-actor, ...): a
+ *     real authoring TODO; the empty surface here represents work
+ *     queued for an operator or future agent.
+ *
+ * Returning a single { content } shape would force the consumer to
+ * either render the same copy for all three cases (the bug the
+ * operator surfaced) or re-derive the classification on the client
+ * from data the client does not naturally have (the principal graph
+ * and the SKILL.md presence). The endpoint instead returns
+ * { category, content? } so the consumer narrows on the union literal
+ * and the substrate-pure decision tree (apps/console/server/
+ * principal-classifier.ts) is computed exactly once.
  *
  * Path-traversal defense: principal_id is constrained to the same
  * shape the principal-id slot uses elsewhere ([a-z0-9_-]+). A
  * non-conforming id yields a 400 (rather than a silent skip) so a
  * caller bug surfaces at the boundary rather than masking as
  * "no skill".
+ *
+ * Fail-closed posture: if the principal id resolves to a record that
+ * is not present in the principal store, we surface a 404 rather than
+ * defaulting to a generic "actor-skill-debt" empty state. A blank
+ * empty state for an unknown principal would mask the bug per the
+ * default-deny canon directives.
  */
 const PRINCIPAL_ID_RE = /^[a-z0-9_-]+$/;
 const SKILLS_DIR = resolve(REPO_ROOT, '.claude', 'skills');
 
+interface PrincipalSkillResponse {
+  readonly category: PrincipalCategory;
+  readonly content: string | null;
+}
+
 async function handlePrincipalSkill(params: {
   principal_id: string;
-}): Promise<{ content: string | null }> {
+}): Promise<PrincipalSkillResponse> {
   const id = String(params.principal_id ?? '').trim();
   if (!PRINCIPAL_ID_RE.test(id)) {
     throw new Error(`invalid principal_id: ${JSON.stringify(params.principal_id)}`);
   }
-  const path = join(SKILLS_DIR, id, 'SKILL.md');
-  try {
-    const content = await readFile(path, 'utf8');
-    return { content };
-  } catch (err) {
+
+  /*
+   * Resolve the principal record + the principal graph. The graph is
+   * needed so hasChildren is computed against the actual signed_by
+   * edges in the store, not against a guess from the id alone. Reading
+   * the full principal list once per skill request is acceptable: the
+   * console is a low-QPS surface, principal records are tiny, and the
+   * existing readAllPrincipals is the single canonical entry point per
+   * arch-atomstore-source-of-truth.
+   */
+  const principals = await readAllPrincipals();
+  const subject = principals.find((p) => p.id === id);
+  if (!subject) {
     /*
-     * ENOENT is the expected "no skill yet" case. Any other code is
-     * a real read error worth surfacing; rethrow so the route handler
-     * returns 500 with the message, rather than masking as null.
+     * principal-not-found is a hard 4xx because the id is well-formed
+     * (passed PRINCIPAL_ID_RE) yet does not resolve. A silent fallback
+     * to a generic empty state would hide the misroute; the consumer
+     * needs to see the real signal.
      */
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { content: null };
-    }
-    throw err;
+    throw new Error(`principal-not-found: ${id}`);
   }
+
+  /*
+   * Load the SKILL.md content. ENOENT is "no skill yet"; any other
+   * read error is a real problem and rethrows so the route handler
+   * returns 500 rather than masking as a clean empty state.
+   */
+  let content: string | null = null;
+  try {
+    const raw = await readFile(join(SKILLS_DIR, id, 'SKILL.md'), 'utf8');
+    content = raw;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+
+  /*
+   * hasSkill mirrors the consumer's empty-vs-content decision: a
+   * whitespace-only file is treated as no-skill so a `touch SKILL.md`
+   * placeholder does not classify the principal as actor-with-skill.
+   * The classifier sees the same bit the renderer eventually sees.
+   */
+  const hasSkill = content !== null && content.trim().length > 0;
+  const hasChildren = principals.some((p) => p.signed_by === id);
+
+  const category = classifyPrincipal({
+    role: subject.role,
+    signedBy: subject.signed_by ?? null,
+    hasChildren,
+    hasSkill,
+  });
+
+  return { category, content };
 }
 
 /*
@@ -2192,6 +2264,15 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const msg = (err as Error).message;
       if (msg.startsWith('invalid principal_id')) {
         sendErr(req, res, 400, 'principal-skill-bad-request', msg);
+      } else if (msg.startsWith('principal-not-found')) {
+        /*
+         * 404 surfaces the misroute to the consumer rather than
+         * defaulting to a generic empty state, per the default-deny
+         * posture in the principal-classifier deliberation. The
+         * consumer renders an error block; it does NOT pretend the
+         * principal exists with no skill.
+         */
+        sendErr(req, res, 404, 'principal-not-found', msg);
       } else {
         sendErr(req, res, 500, 'principal-skill-failed', msg);
       }

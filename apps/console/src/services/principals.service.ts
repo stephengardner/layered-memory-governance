@@ -31,13 +31,35 @@ export async function listPrincipals(signal?: AbortSignal): Promise<ReadonlyArra
 /*
  * Principal "soul" content: the markdown skill doc paired with this
  * principal at .claude/skills/<id>/SKILL.md, fetched via the API.
- * Returns null when no skill file exists so callers can render a
- * "no soul yet" placeholder distinct from a fetch error. The API
- * surface (server/index.ts handlePrincipalSkill) holds the
+ *
+ * The response carries TWO fields:
+ *
+ *   - `category`: a classifier outcome (always present) that names
+ *     why the empty state is empty when content is null. Four cases
+ *     today: 'authority-root' (apex authority, by design no playbook),
+ *     'authority-anchor' (agent that signs others, by design no
+ *     playbook), 'actor-with-skill' (skill exists; renders content),
+ *     'actor-skill-debt' (leaf actor whose SKILL.md has not been
+ *     authored yet, real debt). The classification is computed
+ *     server-side because the inputs (signed_by graph, file presence)
+ *     are not naturally available on the client.
+ *
+ *   - `content`: markdown body of SKILL.md, or null when no file
+ *     exists. The empty-state branch reads category to decide which
+ *     copy variant to render.
+ *
+ * The API surface (server/index.ts handlePrincipalSkill) holds the
  * canonical read; the console never reaches into .claude/ directly,
  * preserving the agent + UI single-source-of-truth contract.
  */
+export type PrincipalCategory =
+  | 'authority-root'
+  | 'authority-anchor'
+  | 'actor-with-skill'
+  | 'actor-skill-debt';
+
 export interface PrincipalSkill {
+  readonly category: PrincipalCategory;
   readonly content: string | null;
 }
 
