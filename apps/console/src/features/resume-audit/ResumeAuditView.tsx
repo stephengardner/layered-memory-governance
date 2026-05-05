@@ -114,7 +114,28 @@ export function ResumeAuditView() {
     setLastRefreshedAt(Date.now());
   };
 
-  const elapsedSeconds = Math.max(0, Math.round((now - lastRefreshedAt) / 1000));
+  /*
+   * Fold each query's `dataUpdatedAt` into the displayed timestamp
+   * so the indicator reflects actual data freshness, not only the
+   * paths that explicitly bump `lastRefreshedAt`. The global
+   * QueryClient ships `staleTime: 30_000`, so any of the three
+   * useQuery hooks can auto-refetch on remount or window focus
+   * after 30s without going through handleRefresh /
+   * handleWindowChange. Without this max(...), the indicator would
+   * report e.g. "Last refreshed 2 minutes ago" against just-loaded
+   * data, regressing the same staleness bug the window-chip thread
+   * was about. The tracked `lastRefreshedAt` remains in the max so
+   * the click-resets-to-0 semantics for the explicit Refresh path
+   * stay untouched (the click bumps it past the queries' updated
+   * timestamps before the optimistic-set landing).
+   */
+  const effectiveLastRefreshedAt = Math.max(
+    lastRefreshedAt,
+    summaryQuery.dataUpdatedAt,
+    recentQuery.dataUpdatedAt,
+    resetsQuery.dataUpdatedAt,
+  );
+  const elapsedSeconds = Math.max(0, Math.round((now - effectiveLastRefreshedAt) / 1000));
   const lastRefreshedLabel = `Last refreshed ${RELATIVE_TIME_FORMATTER.format(-elapsedSeconds, 'second')}`;
 
   return (
