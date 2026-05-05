@@ -5,7 +5,10 @@
  * creates a branch `agentic/<sanitized-corr-id>` checked out at the
  * requested baseRef, and (optionally) copies bot creds for specified
  * roles into the worktree's `.lag/apps/`. Release runs
- * `git worktree remove --force`.
+ * `git worktree remove --force` and, when acquire created the branch
+ * itself, also runs `git branch -D` against that branch so the next
+ * acquire with the same correlation-id prefix does not collide on
+ * `fatal: a branch named '...' already exists`.
  *
  * Threat model
  * ------------
@@ -25,15 +28,36 @@
  *
  * Release semantics
  * -----------------
- * `release()` runs `git worktree remove --force <path>` and treats
- * "not a working tree" stderr as success (idempotent: safe to call
- * twice). Note: `git worktree remove` does not delete the underlying
- * branch, and `git worktree prune` only removes administrative
- * metadata for vanished worktrees - it does NOT delete branches
- * either. Operators who want to clean up `agentic/<id>` branches
- * after release should run
- * `git for-each-ref --format='%(refname:short)' refs/heads/agentic/ | xargs -n1 git branch -D`
- * (after confirming none have unmerged work).
+ * `release()` runs `git worktree remove --force <path>`, treating
+ * "not a working tree" / "No such file" stderr as success
+ * (idempotent: safe to call twice).
+ *
+ * After the worktree is removed, the provider deletes the local
+ * branch via `git branch -D <branch>` IFF acquire created the branch
+ * itself (the legacy default path with no `checkoutBranch` input).
+ * This closes the substrate gap where a dispatch pipeline that fails
+ * BEFORE the executor pushes leaves an orphan `agentic/<id>` branch
+ * behind, so a subsequent pipeline with the same plan-id prefix
+ * collides at workspace-acquire time.
+ *
+ * The provider tracks branches it created in an in-memory map keyed
+ * by `Workspace.id`; a `release()` whose workspace was acquired by a
+ * DIFFERENT provider instance (process restart, fresh executor)
+ * cannot identify the branch and therefore does not delete it. This
+ * is bounded leakage (one orphan per process restart, not per
+ * pipeline run) and is acceptable indie-floor posture.
+ *
+ * `checkoutBranch` flows are NOT cleaned up: the branch was supplied
+ * by the caller (typically a PR HEAD), it pre-existed the acquire,
+ * and deleting it would break callers that expect the branch to
+ * survive the workspace-release boundary (e.g. PrFixActor preserving
+ * the PR HEAD branch across iterations).
+ *
+ * Branch deletion failure (e.g. "branch not found" from a concurrent
+ * cleanup, or "checked out elsewhere" if the worktree-remove step
+ * partially succeeded) is swallowed: the worktree is gone, the
+ * acquire path is unblocked, and the residual branch can be removed
+ * manually if it matters.
  */
 
 import { execa, type execa as ExecaType } from 'execa';
@@ -64,6 +88,18 @@ export interface GitWorktreeProviderOptions {
 export class GitWorktreeProvider implements WorkspaceProvider {
   private readonly worktreesRoot: string;
   private readonly exec: typeof ExecaType;
+  /**
+   * Map of `workspace.id` -> branch name the provider CREATED at
+   * acquire time. Populated only on the legacy default acquire path
+   * (no `checkoutBranch` input); empty for `checkoutBranch` flows so
+   * release() leaves caller-supplied branches alone.
+   *
+   * Lives in-process; a fresh provider instance has no entries and
+   * therefore cannot clean up branches a previous instance created.
+   * See `Release semantics` in the file-level JSDoc for the leak
+   * envelope.
+   */
+  private readonly createdBranches = new Map<string, string>();
 
   constructor(private readonly opts: GitWorktreeProviderOptions) {
     this.worktreesRoot = opts.worktreesRoot ?? join(opts.repoDir, '.worktrees', 'agentic');
@@ -89,6 +125,7 @@ export class GitWorktreeProvider implements WorkspaceProvider {
     //     commits land on the checked-out branch (fix-actor flow).
     //   - `input.checkoutBranch` absent: legacy default; create a new
     //     branch `agentic/<id>` off `baseRef` (code-author flow).
+    let createdBranch: string | undefined;
     if (input.checkoutBranch !== undefined && input.checkoutBranch.length > 0) {
       // Defense-in-depth branch-name validation. `execa` array form
       // already prevents shell injection; this guard rejects
@@ -111,6 +148,7 @@ export class GitWorktreeProvider implements WorkspaceProvider {
       if (create.exitCode !== 0) {
         throw new Error(`GitWorktreeProvider: worktree add failed: ${create.stderr}`);
       }
+      createdBranch = branch;
     }
     // Cred-copy is wrapped: if any mkdir/copyFile throws, the worktree
     // we just created would otherwise leak to disk + leave a dangling
@@ -145,8 +183,16 @@ export class GitWorktreeProvider implements WorkspaceProvider {
       // Best-effort cleanup; reject:false so a tear-down failure can't
       // shadow the original cred-copy error. Operators see the real
       // cause; orphaned worktrees surface via `git worktree prune`.
+      // Branch we just created is also dropped here so a retry with
+      // the same correlation-id is not blocked by a leftover ref.
       await this.exec('git', ['-C', this.opts.repoDir, 'worktree', 'remove', '--force', path], { reject: false });
+      if (createdBranch !== undefined) {
+        await this.exec('git', ['-C', this.opts.repoDir, 'branch', '-D', createdBranch], { reject: false });
+      }
       throw err;
+    }
+    if (createdBranch !== undefined) {
+      this.createdBranches.set(id, createdBranch);
     }
     return { id, path, baseRef: input.baseRef };
   }
@@ -158,10 +204,29 @@ export class GitWorktreeProvider implements WorkspaceProvider {
       const stderr = r.stderr ?? '';
       // Git's "not a working tree" / "is not a working tree" wording
       // varies across versions; match either for idempotence.
-      if (/not a working tree|is not a working tree|No such file/i.test(stderr)) {
-        return;
+      if (!/not a working tree|is not a working tree|No such file/i.test(stderr)) {
+        throw new Error(`GitWorktreeProvider: worktree remove failed: ${stderr}`);
       }
-      throw new Error(`GitWorktreeProvider: worktree remove failed: ${stderr}`);
+      // Worktree is already gone (prior release, manual cleanup, or
+      // crash). Fall through to branch cleanup so the second leak path
+      // closes too.
+    }
+    // Drop the branch the provider created at acquire time, if any.
+    // Map miss => either a `checkoutBranch` flow (caller owns the
+    // branch) or a release crossing provider instances; either way,
+    // do not touch the branch. Map hit => delete it so a subsequent
+    // acquire with the same correlation-id prefix is unblocked.
+    const createdBranch = this.createdBranches.get(workspace.id);
+    if (createdBranch !== undefined) {
+      this.createdBranches.delete(workspace.id);
+      // `-D` (force) is intentional: the branch may carry commits
+      // that were never pushed (the executor failed before push) or
+      // commits that were pushed and now live on `origin/<branch>`.
+      // `-d` would refuse the unmerged-locally case and re-create the
+      // exact symptom this fix targets. Failure is swallowed: a
+      // stuck branch is recoverable manually; surfacing here would
+      // mask the upstream success/error result.
+      await this.exec('git', ['-C', this.opts.repoDir, 'branch', '-D', createdBranch], { reject: false });
     }
   }
 }
