@@ -1,12 +1,13 @@
 /**
  * Default `ResumeStrategyRegistry` for the indie-floor LAG host.
  *
- * Phase 2 (this PR) wires the cto-actor and code-author descriptors
- * from `cto-actor-strategy.ts` and `code-author-strategy.ts` into a
- * single registry that runner scripts can consume in one call. The
- * registry primitive itself is unchanged from PR #305; this file is
- * the per-host composition that says "these are the actors my host
- * knows about by default."
+ * Phase 2 (PR #307) wired the cto-actor and code-author descriptors
+ * from `cto-actor-strategy.ts` and `code-author-strategy.ts`. Phase 3
+ * (this PR) adds `pr-fix-actor` from `pr-fix-actor-strategy.ts` so the
+ * canonical three-actor set (cto-actor, code-author, pr-fix-actor)
+ * registers in one call. The registry primitive itself is unchanged
+ * from PR #305; this file is the per-host composition that says
+ * "these are the actors my host knows about by default."
  *
  * Per spec section 9.2 the registry is a runner-side construct -
  * each runner script (`run-cto-actor.mjs`, `run-code-author.mjs`,
@@ -48,6 +49,11 @@ import {
   ctoActorResumeStrategyDescriptor,
 } from './cto-actor-strategy.js';
 import {
+  PR_FIX_ACTOR_PRINCIPAL_ID,
+  PR_FIX_ACTOR_WORK_ITEM_KEY_PREFIXES,
+  prFixActorResumeStrategyDescriptor,
+} from './pr-fix-actor-strategy.js';
+import {
   addDescriptor,
   createResumeStrategyRegistry,
   type PrincipalId as RegistryPrincipalId,
@@ -56,8 +62,8 @@ import {
 } from './registry.js';
 
 /**
- * Construct a fresh registry and register the canonical Phase 2
- * descriptors (`cto-actor` and `code-author`).
+ * Construct a fresh registry and register the canonical Phase 3
+ * descriptors (`cto-actor`, `code-author`, and `pr-fix-actor`).
  *
  * Returns the populated registry. Callers that want to extend the
  * default set add their own descriptors via `addDescriptor` on the
@@ -65,7 +71,7 @@ import {
  * a fresh registry via `createResumeStrategyRegistry` directly.
  *
  * The `host` parameter is reserved for future host-aware descriptor
- * variants and is intentionally unused in Phase 2; the parameter
+ * variants and is intentionally unused in Phase 3; the parameter
  * declaration documents the seam without populating it.
  */
 export function buildDefaultRegistry(_host: Host): ResumeStrategyRegistry {
@@ -87,6 +93,12 @@ export function buildDefaultRegistry(_host: Host): ResumeStrategyRegistry {
     CODE_AUTHOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
     codeAuthorResumeStrategyDescriptor as ResumeStrategyDescriptor,
     CODE_AUTHOR_WORK_ITEM_KEY_PREFIXES,
+  );
+  addDescriptor(
+    registry,
+    PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
+    prFixActorResumeStrategyDescriptor as ResumeStrategyDescriptor,
+    PR_FIX_ACTOR_WORK_ITEM_KEY_PREFIXES,
   );
   return registry;
 }

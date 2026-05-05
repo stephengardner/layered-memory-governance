@@ -43,6 +43,15 @@ import type { Atom, AtomId } from '../../../src/substrate/types.js';
 import type { Host } from '../../../src/substrate/interface.js';
 import type { CandidateSession } from './types.js';
 
+/**
+ * Branded principal-id literal for `pr-fix-actor`. Centralizes the
+ * cast-and-compare so the synchronous walker's three two-axis principal
+ * checks (start-observation filter, chain-traversal guard, dispatched-
+ * session-principal filter) all reference one symbol per
+ * `dev-extract-helpers-at-n-2`.
+ */
+const PR_FIX_ACTOR_PRINCIPAL: Atom['principal_id'] = 'pr-fix-actor' as Atom['principal_id'];
+
 interface PrIdentity {
   readonly owner: string;
   readonly repo: string;
@@ -163,6 +172,156 @@ export async function walkAuthorSessions(
     if (priorIds.length === 0) break;
     const priorId = priorIds[0]!;
     current = await host.atoms.get(priorId);
+  }
+
+  return candidates.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+}
+
+/**
+ * Synchronous walk input for `walkAuthorSessionsForPrFix`. The runner
+ * pre-fetches the atom list (recent observation atoms + their
+ * dispatched agent-session atoms) and the target PR identity. This
+ * shape mirrors `ActorWalkInput` from `strategy-common.ts`: a
+ * pre-fetched candidate pool plus a per-invocation scoping key, with
+ * the descriptor doing the filter + project work synchronously.
+ *
+ * Why a separate shape (not `ActorWalkInput`): pr-fix's PR identity
+ * lives on observation atoms, not on the agent-session atoms
+ * themselves (cto-actor and code-author stamp identity on the session
+ * atom directly via namespaced metadata; pr-fix predates that pattern
+ * and stamps it on the observation chain). The `observations` array
+ * and the `prIdentity` tuple are the inputs the synchronous walker
+ * needs to recover the legacy host-aware walk in
+ * `walkAuthorSessions` without spinning up host I/O at descriptor
+ * call time.
+ */
+export interface PrFixWalkInput {
+  /**
+   * Recent observation atoms (newest-first; the walker re-sorts via
+   * `provenance.derived_from` chain so insertion order does not
+   * affect correctness, only the sort cost).
+   */
+  readonly observations: ReadonlyArray<Atom>;
+  /**
+   * Agent-session atoms keyed by `dispatched_session_atom_id` on
+   * observations. Indexed by `id` so the walker resolves a
+   * dispatched-session reference in O(1).
+   */
+  readonly sessionsById: ReadonlyMap<string, Atom>;
+  /**
+   * The work-item PR identity. Observations whose PR identity does
+   * not match are filtered out (cross-PR leakage guard per spec
+   * section 8.3).
+   */
+  readonly prIdentity: { readonly owner: string; readonly repo: string; readonly number: number };
+}
+
+/**
+ * Synchronous variant of `walkAuthorSessions` that operates on a
+ * pre-fetched atom list. The Phase 3 registry descriptor uses this
+ * function as its `assembleCandidates` callback so the descriptor
+ * stays synchronous + host-free, mirroring the cto-actor and
+ * code-author descriptor shapes (PR #307).
+ *
+ * Two-axis filter (per spec section 8.3):
+ *   1. `principal_id === 'pr-fix-actor'` on every visited atom
+ *      (observation AND session).
+ *   2. `pr_fix_observation.{pr_owner, pr_repo, pr_number}` matches
+ *      `walk.prIdentity`.
+ *
+ * Both axes MUST pass; an observation that survives axis 1 but not
+ * axis 2 is silently skipped (cross-PR leakage guard). An observation
+ * that lacks the namespaced metadata slot is also skipped.
+ *
+ * Walks via `provenance.derived_from[0]` from the most-recent
+ * matching observation. The walker scans every observation in
+ * `walk.observations` and picks the one with the latest `created_at`
+ * (ISO-8601 lexicographic = chronological); insertion order does NOT
+ * affect correctness, so a runner that supplies observations in any
+ * order still gets the newest matching atom as the chain start. A
+ * cycle guard prevents infinite traversal on a malformed
+ * derived_from loop.
+ *
+ * Returns `CandidateSession[]` sorted newest-first by
+ * `started_at` (ISO-8601 lexicographic = chronological).
+ */
+export function walkAuthorSessionsForPrFix(
+  walk: PrFixWalkInput,
+): ReadonlyArray<CandidateSession> {
+  // Index observations by id so the chain walk follows
+  // `derived_from[0]` in O(1).
+  const obsById = new Map<string, Atom>();
+  for (const obs of walk.observations) {
+    obsById.set(String(obs.id), obs);
+  }
+
+  // Find the chain start: the most-recent observation matching the
+  // target PR identity AND authored by pr-fix-actor. The walker scans
+  // every observation and selects the one with the latest `created_at`
+  // (ISO-8601 lexicographic = chronological) so insertion order does
+  // NOT affect correctness; a runner that supplies observations in
+  // any order still produces the newest matching atom as the chain
+  // start, preserving the order-agnostic contract documented in this
+  // function's JSDoc.
+  let start: Atom | undefined;
+  for (const obs of walk.observations) {
+    if (obs.principal_id !== PR_FIX_ACTOR_PRINCIPAL) continue;
+    const id = readPrIdentity(obs);
+    if (id === undefined) continue;
+    if (!samePr(walk.prIdentity, id)) continue;
+    if (start === undefined || String(obs.created_at).localeCompare(String(start.created_at)) > 0) {
+      start = obs;
+    }
+  }
+  if (start === undefined) return [];
+
+  const candidates: CandidateSession[] = [];
+  const visited = new Set<string>();
+  let current: Atom | undefined = start;
+  while (current !== undefined) {
+    if (visited.has(String(current.id))) break;
+    visited.add(String(current.id));
+
+    // Stop at PR-boundary mismatches: only the starting PR's
+    // observations contribute candidates, regardless of whatever
+    // accidental cross-link a sibling PR's chain might present.
+    const currentPr = readPrIdentity(current);
+    if (currentPr === undefined || !samePr(walk.prIdentity, currentPr)) break;
+
+    // Two-axis filter, second axis: principal scope. The chain MUST
+    // remain within pr-fix-actor's atoms; if a sibling principal
+    // somehow appears on the chain, halt.
+    if (current.principal_id !== PR_FIX_ACTOR_PRINCIPAL) break;
+
+    const obsMeta = current.metadata as Record<string, unknown>;
+    const prFix = obsMeta['pr_fix_observation'] as Record<string, unknown> | undefined;
+    if (prFix !== undefined) {
+      const dispatchedId = prFix['dispatched_session_atom_id'];
+      if (typeof dispatchedId === 'string' && dispatchedId.length > 0) {
+        const sessionAtom = walk.sessionsById.get(dispatchedId);
+        if (sessionAtom !== undefined) {
+          // Two-axis filter: the dispatched session atom MUST also be
+          // pr-fix-actor's. A mismatched session atom (e.g., one
+          // accidentally referenced from another principal's
+          // observation) is skipped silently per spec section 8.3.
+          if (sessionAtom.principal_id === PR_FIX_ACTOR_PRINCIPAL) {
+            const candidate = asCandidate(sessionAtom);
+            if (candidate !== undefined) {
+              candidates.push(candidate);
+            }
+          }
+        }
+      }
+    }
+
+    // Walk to the prior observation via provenance. The pr-fix-actor's
+    // atom builder prepends `priorObservationAtomId` at index 0 of
+    // `derived_from`, so following [0] returns to the immediately
+    // preceding observation on this PR.
+    const priorIds = current.provenance.derived_from;
+    if (priorIds.length === 0) break;
+    const priorId = priorIds[0]!;
+    current = obsById.get(String(priorId));
   }
 
   return candidates.sort((a, b) => b.startedAt.localeCompare(a.startedAt));

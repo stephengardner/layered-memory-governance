@@ -1,14 +1,28 @@
 /**
- * ResumeStrategyRegistry - Phase 1 primitive (PR #301).
+ * ResumeStrategyRegistry - Phase 1 primitive (PR #305) plus the Phase 3
+ * canon-policy schema + adapter-bridge (PR #308).
  *
- * Source: spec §3.1 (descriptor shape), §6.4 (construction-time canon read,
- * acquire-time identify-then-reset ordering), §7.2 (indie-floor "resume off"
- * default via empty registry / missing policy → fallback).
+ * Source: spec §3.1 (descriptor shape), §5 (per-actor pol-resume-strategy
+ * atom), §6.4 (construction-time canon read, acquire-time identify-then-
+ * reset ordering), §7.2 (indie-floor "resume off" default via empty
+ * registry / missing policy → fallback).
  *
- * Phase 1 ships the primitive only: every consumer host boots with an empty
- * registry, so wrapIfEnabled returns the supplied fallback unchanged. Later
- * phases wire actual descriptors and run the ladder.
+ * Phase 1 shipped the primitive only: every consumer host booted with an
+ * empty registry, so wrapIfEnabled returned the supplied fallback
+ * unchanged. Phase 2 (PR #307) wired per-actor descriptors. Phase 3
+ * (this PR) adds the Zod schema for the per-principal canon policy
+ * atom (`pol-resume-strategy-<principal-id>`), a fail-closed validator
+ * that returns false on schema mismatch, and the AgentLoopAdapter-side
+ * bridge `wrapAgentLoopAdapterIfEnabled` so a runner script can wrap a
+ * fresh-spawn adapter with `ResumeAuthorAgentLoopAdapter` only when the
+ * canon policy enables it.
  */
+
+import { z } from 'zod';
+import type { AgentLoopAdapter, AgentLoopInput } from '../../../src/substrate/agent-loop.js';
+import type { Host } from '../../../src/substrate/interface.js';
+import { ResumeAuthorAgentLoopAdapter } from './loop.js';
+import type { CandidateSession, SessionResumeStrategy } from './types.js';
 
 export type PrincipalId = string & {
   readonly __principalIdBrand: unique symbol;
@@ -67,10 +81,70 @@ function ledgerFor(registry: ResumeStrategyRegistry): Map<string, PrincipalId> {
   return ledger;
 }
 
+/**
+ * Zod schema for the `pol-resume-strategy-<principal-id>` canon policy
+ * atom content shape per spec section 5.1.
+ *
+ * Required:
+ *   - `enabled: boolean`:the dial. False (or any non-true value) and
+ *     the wrapper short-circuits to fresh-spawn at construction time.
+ *
+ * Optional:
+ *   - `max_stale_hours: number`:per-actor staleness window override
+ *     (default 8 hours per spec section 5.3 / PR #171's
+ *     SameMachineCliResumeStrategy default).
+ *   - `fresh_spawn_kinds: string[]`:fresh-spawn ENUM kinds the
+ *     deployment opts into (per spec section 6.1). Strings are not
+ *     validated against the ENUM here because the substrate ENUM lives
+ *     elsewhere (`FreshSpawnExceptionKind` in a future PR); the policy
+ *     atom carries the kinds as opaque strings for this PR.
+ *
+ * `.passthrough()` is intentionally NOT used: the schema is closed so
+ * an extra unknown field surfaces at write time as a drift signal
+ * rather than silently passing through. A future schema evolution
+ * adds explicit fields with their own optionality.
+ */
+export const resumeStrategyPolicySchema = z
+  .object({
+    enabled: z.boolean(),
+    max_stale_hours: z.number().int().positive().optional(),
+    fresh_spawn_kinds: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+export type ResumeStrategyPolicy = z.infer<typeof resumeStrategyPolicySchema>;
+
+/**
+ * Strict-validate variant for callers that want loud failure on a
+ * malformed policy atom. Returns the parsed policy on success or
+ * `null` on schema mismatch; callers that want the underlying
+ * ZodError invoke `resumeStrategyPolicySchema.safeParse` directly.
+ *
+ * This is the SINGLE schema-parse site in the module; `policyEnables`
+ * delegates to it so a future schema-level hardening (e.g. a refinement
+ * that disables the policy on a sentinel value) lives in exactly one
+ * place per `dev-extract-helpers-at-n-2`.
+ */
+export function validatePolicy(policy: unknown): ResumeStrategyPolicy | null {
+  const parsed = resumeStrategyPolicySchema.safeParse(policy);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Validate a canon-supplied policy payload against the schema and
+ * return its `enabled` flag. Fail-closed: any schema mismatch (missing
+ * `enabled`, wrong type, extra unknown field, malformed numeric fields)
+ * returns `false` so a typo or a tampered atom cannot accidentally
+ * turn resume on. Per `inv-governance-before-autonomy`: governance
+ * before autonomy.
+ *
+ * The validator is intentionally pure: it does NOT log a mismatch
+ * here because (a) the registry is consumer-side and the consumer's
+ * audit channel may not exist (test harness, raw script), and
+ * (b) callers that want loud failure call `validatePolicy()` directly.
+ */
 function policyEnables(policy: unknown): boolean {
-  if (policy === null || typeof policy !== "object") return false;
-  const enabled = (policy as { enabled?: unknown }).enabled;
-  return enabled === true;
+  return validatePolicy(policy)?.enabled === true;
 }
 
 export function createResumeStrategyRegistry(): ResumeStrategyRegistry {
@@ -122,6 +196,96 @@ export function wrapIfEnabled<TInput, TResult>(
     if (shouldReset) return fallback(input);
     return fallback(input);
   };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: AgentLoopAdapter-side bridge.
+// ---------------------------------------------------------------------------
+//
+// `wrapIfEnabled` (above) operates on a generic `Acquirer<TInput, TResult>`
+// function. Phase 3 wires the registry into runner scripts that compose
+// `AgentLoopAdapter` instances; those callers want to wrap an adapter
+// with `ResumeAuthorAgentLoopAdapter` (PR #171) when the canon policy
+// is enabled and pass the adapter through unchanged when the policy is
+// disabled or absent.
+//
+// `wrapAgentLoopAdapterIfEnabled` is the bridge: same enable/disable
+// semantics as `wrapIfEnabled`, same canon-read short-circuit, but
+// returns an `AgentLoopAdapter` rather than an `Acquirer` so the
+// adapter's `capabilities` propagate to the actor.
+//
+// The bridge fetches policy via the supplied `RegistryHost.canon.read`
+// (same indirection as `wrapIfEnabled`) but takes additional
+// inputs that `Acquirer`-side callers don't need:
+//
+//   - `agentLoopHost: Host`:the substrate Host the wrapper passes to
+//     `ResumeAuthorAgentLoopAdapter` for atom IO at resume-patch time.
+//   - `strategies: ReadonlyArray<SessionResumeStrategy>`:the strategy
+//     ladder (e.g. `[new SameMachineCliResumeStrategy(...)]`) the
+//     wrapper iterates per-invocation.
+//   - `assembleCandidates: (input: AgentLoopInput) => Promise<...>`:
+//     the per-invocation candidate assembler. Runners typically close
+//     over the registered descriptor's `assembleCandidates` plus
+//     a host-side atom fetch; the bridge receives the closed-over
+//     callback so the descriptor's specific TWalk shape stays
+//     opaque to the bridge.
+
+export interface AgentLoopWrapOptions {
+  readonly agentLoopHost: Host;
+  readonly strategies: ReadonlyArray<SessionResumeStrategy>;
+  readonly assembleCandidates: (input: AgentLoopInput) => Promise<ReadonlyArray<CandidateSession>>;
+}
+
+/**
+ * Adapter-side bridge for the registry's enable/disable gate.
+ *
+ * Returns the supplied `fallback` unchanged when:
+ *   - The principal has no descriptor registered.
+ *   - The canon read throws.
+ *   - The canon-supplied policy fails Zod validation.
+ *   - The validated policy's `enabled` is not `true`.
+ *
+ * Returns a `ResumeAuthorAgentLoopAdapter` wrapping `fallback` when
+ * the policy is enabled. The wrapper inherits the fallback's
+ * capabilities so consumers see uniform `AdapterCapabilities`
+ * regardless of whether the wrap is composed in.
+ *
+ * The function is synchronous (returns the adapter directly, not a
+ * Promise) because all the I/O it does is the synchronous canon
+ * read; the wrapper's per-invocation work happens inside its own
+ * async `run(input)` method.
+ */
+export function wrapAgentLoopAdapterIfEnabled(
+  fallback: AgentLoopAdapter,
+  principalId: PrincipalId,
+  host: RegistryHost,
+  opts: AgentLoopWrapOptions,
+): AgentLoopAdapter {
+  const descriptor = host.registry.get(principalId);
+  if (!descriptor) return fallback;
+
+  let policy: unknown;
+  try {
+    policy = host.canon.read(`${POLICY_KEY_PREFIX}${String(principalId)}`);
+  } catch {
+    return fallback;
+  }
+  if (!policyEnables(policy)) return fallback;
+
+  // Policy is enabled: wrap with ResumeAuthorAgentLoopAdapter. The
+  // wrapper handles strategy iteration, fresh-spawn fallback on
+  // non-completed resume, and the resumed-session-atom patch. The
+  // descriptor's `identifyWorkItem` and `assembleCandidates` are
+  // closed-over by the runner before the call; the bridge does not
+  // re-derive the work-item key here. Reset-atom enforcement (per
+  // spec section 6.4) is layered on by the runner before the bridge
+  // call when needed; the bridge stays minimal.
+  return new ResumeAuthorAgentLoopAdapter({
+    fallback,
+    host: opts.agentLoopHost,
+    strategies: opts.strategies,
+    assembleCandidates: opts.assembleCandidates,
+  });
 }
 
 declare global {

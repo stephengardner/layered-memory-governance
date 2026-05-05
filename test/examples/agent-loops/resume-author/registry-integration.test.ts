@@ -1,0 +1,281 @@
+/**
+ * Integration tests for the Phase 3 registry-bridge against
+ * `MemoryHost`-shaped state (PR #308).
+ *
+ * Acceptance criterion (per spec section 11.3 / brief):
+ *   "Removing the `pol-resume-strategy-pr-fix-actor` atom from canon
+ *    flips PrFix back to fresh-spawn."
+ *
+ * The bridge under test is `wrapAgentLoopAdapterIfEnabled`. Test
+ * scenarios:
+ *   1. Policy ABSENT (canon read returns undefined / null) →
+ *      wrapper returns the fresh adapter unchanged. The fresh
+ *      adapter's `run` is invoked directly; no resume attempt.
+ *   2. Policy PRESENT + valid + enabled=true →
+ *      wrapper returns a `ResumeAuthorAgentLoopAdapter` instance.
+ *      The wrapped adapter's `run` calls the strategy ladder.
+ *   3. Policy PRESENT + valid + enabled=false →
+ *      wrapper returns the fresh adapter unchanged.
+ *   4. Policy PRESENT + malformed (Zod fails) →
+ *      wrapper returns the fresh adapter unchanged (fail-closed).
+ *   5. Descriptor not registered → wrapper returns the fresh
+ *      adapter unchanged regardless of policy.
+ */
+
+import { describe, it, expect } from 'vitest';
+import {
+  buildDefaultRegistry,
+} from '../../../../examples/agent-loops/resume-author/default-registry.js';
+import {
+  PR_FIX_ACTOR_PRINCIPAL_ID,
+} from '../../../../examples/agent-loops/resume-author/pr-fix-actor-strategy.js';
+import {
+  wrapAgentLoopAdapterIfEnabled,
+  type RegistryHost,
+  type PrincipalId as RegistryPrincipalId,
+} from '../../../../examples/agent-loops/resume-author/registry.js';
+import { ResumeAuthorAgentLoopAdapter } from '../../../../examples/agent-loops/resume-author/loop.js';
+import { createMemoryHost } from '../../../../src/adapters/memory/index.js';
+import type {
+  AgentLoopAdapter,
+  AgentLoopInput,
+  AgentLoopResult,
+} from '../../../../src/substrate/agent-loop.js';
+import type { CandidateSession } from '../../../../examples/agent-loops/resume-author/types.js';
+import type { AtomId } from '../../../../src/substrate/types.js';
+
+/**
+ * Stub fresh-spawn AgentLoopAdapter that records `run` calls so the
+ * test can verify whether the wrapper passed through unchanged or
+ * spawned a wrapped resume-aware adapter on top.
+ */
+class StubFreshAgentLoopAdapter implements AgentLoopAdapter {
+  readonly capabilities = {
+    tracks_cost: false,
+    supports_signal: false,
+    classify_failure: () => 'structural' as const,
+  };
+  readonly runCalls: AgentLoopInput[] = [];
+
+  async run(input: AgentLoopInput): Promise<AgentLoopResult> {
+    this.runCalls.push(input);
+    return {
+      kind: 'completed',
+      sessionAtomId: 'session-stub' as AtomId,
+      turnAtomIds: [],
+    };
+  }
+}
+
+/**
+ * Construct a `RegistryHost` whose `canon.read` consults a Map of
+ * pre-seeded policy payloads keyed by atom-id. Mirrors the shape
+ * runner scripts use: a thin canon-read indirection over the host's
+ * AtomStore, where the payload is `metadata.policy.content` from the
+ * policy atom.
+ */
+function mkRegistryHost(opts: {
+  readonly registryHost: ReturnType<typeof createMemoryHost>;
+  readonly canonContents: Map<string, unknown>;
+}): RegistryHost {
+  const registry = buildDefaultRegistry(opts.registryHost);
+  return {
+    registry,
+    canon: {
+      read: (key: string) => {
+        if (!opts.canonContents.has(key)) {
+          // Mirrors `host.atoms.get(...) -> null`: the consumer treats
+          // missing keys as policy disabled. Returning undefined here
+          // routes through the bridge's `policyEnables(undefined)
+          // -> false` path so the fresh adapter is returned unchanged.
+          return undefined;
+        }
+        return opts.canonContents.get(key);
+      },
+    },
+  };
+}
+
+const POLICY_ATOM_ID_PR_FIX = 'pol-resume-strategy-pr-fix-actor';
+
+const dummyAssemble = async (_input: AgentLoopInput): Promise<ReadonlyArray<CandidateSession>> => [];
+
+/**
+ * Helper: invoke `wrapAgentLoopAdapterIfEnabled` with the canonical
+ * test arguments. Eight test cases share the same six-line invocation
+ * shape (fresh, pr-fix-actor principal, registry host, three opts);
+ * extracting at N=2 per `dev-extract-helpers-at-n-2` keeps each test
+ * focused on its own setup-and-assertion.
+ */
+function callWrap(
+  fresh: AgentLoopAdapter,
+  agentLoopHost: ReturnType<typeof createMemoryHost>,
+  registryHost: RegistryHost,
+): AgentLoopAdapter {
+  return wrapAgentLoopAdapterIfEnabled(
+    fresh,
+    PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
+    registryHost,
+    {
+      agentLoopHost,
+      strategies: [],
+      assembleCandidates: dummyAssemble,
+    },
+  );
+}
+
+describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
+  it('policy ABSENT in canon → returns fresh adapter unchanged (regression check vs PR #171)', () => {
+    // The acceptance criterion: removing the
+    // `pol-resume-strategy-pr-fix-actor` atom flips PR-fix back to
+    // fresh-spawn. Encoded here as: a canon read that returns
+    // undefined for the policy key MUST cause the bridge to return
+    // the fresh adapter unchanged (capabilities and identity preserved).
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map(), // empty -> policy absent
+    });
+
+    const wrapped = callWrap(fresh, host, registryHost);
+    expect(wrapped).toBe(fresh);
+    expect(wrapped).not.toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
+  });
+
+  it('policy PRESENT + enabled=true → returns a ResumeAuthorAgentLoopAdapter wrapping the fresh adapter', () => {
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        [POLICY_ATOM_ID_PR_FIX, { enabled: true, max_stale_hours: 8 }],
+      ]),
+    });
+
+    const wrapped = callWrap(fresh, host, registryHost);
+    expect(wrapped).toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
+    expect(wrapped).not.toBe(fresh);
+    // Capabilities are mirrored from the fresh adapter so consumers
+    // see uniform behavior whether the wrap is composed in or not.
+    expect(wrapped.capabilities).toBe(fresh.capabilities);
+  });
+
+  it('policy PRESENT + enabled=false → returns fresh adapter unchanged', () => {
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        [POLICY_ATOM_ID_PR_FIX, { enabled: false }],
+      ]),
+    });
+
+    expect(callWrap(fresh, host, registryHost)).toBe(fresh);
+  });
+
+  it('policy PRESENT but malformed (missing enabled) → fail-closed: returns fresh adapter unchanged', () => {
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        // Missing the required `enabled` field; the Zod schema
+        // rejects this and the fail-closed validator returns false.
+        [POLICY_ATOM_ID_PR_FIX, { max_stale_hours: 8 }],
+      ]),
+    });
+
+    expect(callWrap(fresh, host, registryHost)).toBe(fresh);
+  });
+
+  it('policy PRESENT but extra unknown field → fail-closed (strict schema)', () => {
+    // The schema is `.strict()`: extra fields signal drift. A
+    // tampered atom with `kill_switch: true` (or any unknown) MUST
+    // NOT silently activate resume; the wrapper falls back to the
+    // fresh adapter.
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        [POLICY_ATOM_ID_PR_FIX, { enabled: true, kill_switch: true }],
+      ]),
+    });
+
+    expect(callWrap(fresh, host, registryHost)).toBe(fresh);
+  });
+
+  it('descriptor NOT registered → returns fresh adapter unchanged regardless of policy', () => {
+    // Even with a valid + enabled policy in canon, an unregistered
+    // principal goes through the descriptor-not-found short-circuit.
+    // This protects against a runner script that consults a registry
+    // missing its expected descriptor. NOTE: this case uses a
+    // ghost-actor principal that has no descriptor registered; we
+    // call the bridge directly to override the principal.
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        ['pol-resume-strategy-ghost-actor', { enabled: true }],
+      ]),
+    });
+
+    const wrapped = wrapAgentLoopAdapterIfEnabled(
+      fresh,
+      'ghost-actor' as unknown as RegistryPrincipalId,
+      registryHost,
+      {
+        agentLoopHost: host,
+        strategies: [],
+        assembleCandidates: dummyAssemble,
+      },
+    );
+    expect(wrapped).toBe(fresh);
+  });
+
+  it('canon read throws → fail-closed: returns fresh adapter unchanged', () => {
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registry = buildDefaultRegistry(host);
+    const throwingHost: RegistryHost = {
+      registry,
+      canon: {
+        read: () => {
+          throw new Error('atomstore offline');
+        },
+      },
+    };
+
+    expect(callWrap(fresh, host, throwingHost)).toBe(fresh);
+  });
+
+  it('removing the policy atom from canon flips back to fresh-spawn (acceptance criterion)', () => {
+    // Direct simulation of the regression check: the wrapper IS
+    // enabled with the policy present, and immediately returns to
+    // fresh-spawn semantics when the policy is removed. Two calls
+    // with different canon states; the `wrapped` adapters compare
+    // for instance identity.
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const canonStateA = new Map<string, unknown>([
+      [POLICY_ATOM_ID_PR_FIX, { enabled: true, max_stale_hours: 8 }],
+    ]);
+    const canonStateB = new Map<string, unknown>(); // policy removed
+    const hostA = mkRegistryHost({ registryHost: host, canonContents: canonStateA });
+    const hostB = mkRegistryHost({ registryHost: host, canonContents: canonStateB });
+
+    const wrappedA = callWrap(fresh, host, hostA);
+    const wrappedB = callWrap(fresh, host, hostB);
+
+    // With the policy present, the bridge produces a wrapped adapter
+    // distinct from the fresh-spawn instance.
+    expect(wrappedA).not.toBe(fresh);
+    expect(wrappedA).toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
+
+    // With the policy removed, the bridge passes through the fresh
+    // adapter by reference.
+    expect(wrappedB).toBe(fresh);
+  });
+});

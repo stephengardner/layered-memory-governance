@@ -14,15 +14,22 @@
  *   2. Principal              - pr-fix-actor from host.principals
  *   3. PrReviewAdapter        - GitHubPrReviewAdapter (D17 seam, shared
  *                               with pr-landing-actor; cheap shared dep).
- *   4. AgentLoopAdapter       - ResumeAuthorAgentLoopAdapter wrapping
- *                               ClaudeCodeAgentLoopAdapter as the
- *                               fresh-spawn fallback. Strategies tried
- *                               in order; today only the same-machine
- *                               CLI strategy is wired. The wrapper is
- *                               policy-free orchestration; it tries to
- *                               resume the original PR-authoring agent's
- *                               session and falls through to fresh-spawn
- *                               when no candidate resolves.
+ *   4. AgentLoopAdapter       - wrapAgentLoopAdapterIfEnabled gates the
+ *                               ResumeAuthorAgentLoopAdapter wrap on
+ *                               the per-actor canon policy atom
+ *                               `pol-resume-strategy-pr-fix-actor`.
+ *                               When the policy is present + valid +
+ *                               enabled=true, the bridge wraps the
+ *                               ClaudeCodeAgentLoopAdapter (fresh-spawn
+ *                               fallback) with strategies tried in
+ *                               order; today only same-machine CLI is
+ *                               wired. When the policy is absent /
+ *                               disabled / malformed, the bridge
+ *                               returns the fresh adapter unchanged
+ *                               (fail-closed). Run
+ *                               `node scripts/bootstrap-pol-resume-strategy.mjs`
+ *                               once per deployment to land the seeded
+ *                               PR #171-equivalent posture.
  *   5. WorkspaceProvider      - GitWorktreeProvider with checkoutBranch
  *                               support so the worktree pins to the PR's
  *                               HEAD branch.
@@ -70,9 +77,11 @@ import { createGhClient } from '../dist/external/github/index.js';
 // signal that the build path needs to be widened.
 import { ClaudeCodeAgentLoopAdapter } from '../dist/examples/agent-loops/claude-code/index.js';
 import {
-  ResumeAuthorAgentLoopAdapter,
+  buildDefaultRegistry,
   SameMachineCliResumeStrategy,
-  walkAuthorSessions,
+  validatePolicy,
+  walkAuthorSessionsForPrFix,
+  wrapAgentLoopAdapterIfEnabled,
 } from '../dist/examples/agent-loops/resume-author/index.js';
 import { FileBlobStore } from '../dist/examples/blob-stores/file/index.js';
 import { RegexRedactor } from '../dist/examples/redactors/regex-default/index.js';
@@ -228,66 +237,138 @@ async function main() {
   const blobStore = new FileBlobStore(args.blobRoot);
   const redactor = new RegexRedactor();
 
-  // Wrap the fresh-spawn adapter with the resume-author wrapper so
-  // PrFixActor's per-iteration agent-loop call resumes the original PR
-  // author's session when one is recoverable. Strategies tried in order;
-  // first non-null ResolvedSession wins. Today's reference driver wires
-  // ONLY [SameMachineCliResumeStrategy]: BlobShippedSessionResumeStrategy
-  // is shipped + constructible but NOT wired here. An operator that wants
-  // cross-machine session capture copies this driver and explicitly opts
-  // in via the four construction guards documented on the strategy class
-  // (default-deny `acknowledgeSessionDataFlow: true`, required redactor,
-  // destination guard, CLI-version pin).
+  // Phase 3 registry-based wrapping (PR #308): construct the default
+  // resume-strategy registry, consult the per-actor canon policy via a
+  // RegistryHost canon-read indirection, and wrap the fresh-spawn
+  // adapter with `ResumeAuthorAgentLoopAdapter` ONLY when
+  // `pol-resume-strategy-pr-fix-actor` is present in canon and
+  // `enabled: true` (validated against the registry's Zod schema).
+  // When the policy is absent / disabled / malformed, the bridge
+  // returns the fresh adapter unchanged (fail-closed).
   //
-  // assembleCandidates is invoked once per `agentLoop.run(input)` call.
-  // PrFixActor writes a generic observation atom (`type: 'observation'`,
-  // `metadata.kind: 'pr-fix-observation'`) in its observe() pass BEFORE
-  // calling the agent-loop, so the most-recent such atom in the store at
-  // run-time names the current iteration. We query for it here and walk
-  // backwards through `provenance.derived_from` collecting prior
-  // dispatched sessions on the same PR. The walker handles the
-  // PR-boundary scoping, cycle guard, and missing-extra fall-through;
-  // see examples/agent-loops/resume-author/walk-author-sessions.ts.
+  // The bridge mirrors PR #171 behavior when the policy seed exists
+  // (run `node scripts/bootstrap-pol-resume-strategy.mjs` once per
+  // deployment to land the seeded shape); removing the policy atom
+  // flips PR-fix back to fresh-spawn with no code change.
   //
-  // When the query returns no pr-fix-observation (first iteration on a
-  // brand-new PR), the callback returns []; the wrapper then iterates
-  // strategies, all return null, and the wrapper delegates to the
-  // fresh-spawn fallback. This is the correct first-iteration behavior:
-  // there is no author session to resume, so spawn fresh.
-  const agentLoopAdapter = new ResumeAuthorAgentLoopAdapter({
-    fallback: freshAgentLoop,
-    host,
-    // Single source of truth for the staleness window: strategy-level.
-    // The wrapper intentionally does not surface a top-level
-    // maxStaleHours knob (would be dead weight; strategies own their
-    // own windows).
-    strategies: [new SameMachineCliResumeStrategy({ maxStaleHours: 8 })],
-    assembleCandidates: async (_input) => {
-      // Filter the most-recent pr-fix observation atoms by the current
-      // PR identity (owner / repo / number) before walking the
-      // dispatched_session_atom_id chain. Under concurrent runs against
-      // a shared `.lag/`, the most-recent pr-fix-observation in store
-      // may belong to a sibling PR; without this filter the walker
-      // would walk that PR's session chain, the strategy would attempt
-      // to resume the wrong session, and the wrapper would silently
-      // degrade to fresh-spawn (a soft miss, not a corruption, but a
-      // scaling liability against the org-ceiling story).
-      const recent = await host.atoms.query({ type: ['observation'] }, 50);
-      const prFixObs = recent.atoms.find((a) => {
-        const meta = a.metadata;
-        if (meta === null || typeof meta !== 'object') return false;
-        if (meta.kind !== 'pr-fix-observation') return false;
-        const obs = meta.pr_fix_observation;
-        return obs !== null
-          && typeof obs === 'object'
-          && obs.pr_owner === owner
-          && obs.pr_repo === repo
-          && obs.pr_number === args.prNumber;
-      });
-      if (prFixObs === undefined) return [];
-      return walkAuthorSessions(host, prFixObs.id);
+  // Strategy ladder remains [SameMachineCliResumeStrategy] in the
+  // reference driver; an operator wanting cross-machine session
+  // capture copies this driver and explicitly opts into
+  // BlobShippedSessionResumeStrategy via its four construction
+  // guards. The descriptor's `ladder` is empty (per PR #307
+  // convention); the runner builds strategies here, parameterized by
+  // the canon policy's optional `max_stale_hours` field with the
+  // SameMachineCliResumeStrategy default (8h) as the floor.
+  //
+  // assembleCandidates is invoked once per `agentLoop.run(input)` call
+  // by the wrapper. The closure pre-fetches recent observations +
+  // their dispatched agent-session atoms scoped to the current PR
+  // identity, then delegates to the registered descriptor's
+  // synchronous walker (`walkAuthorSessionsForPrFix`). Two-axis filter
+  // (`principal_id === 'pr-fix-actor'` AND PR identity matches) is
+  // enforced by the walker per spec section 8.3.
+  const registry = buildDefaultRegistry(host);
+
+  // Read canon policy via the host's atom store. Per the bootstrap
+  // script, the policy payload lives at
+  // `metadata.policy.content` on the `pol-resume-strategy-<principal>`
+  // atom; the bridge's `policyEnables` validates the payload against
+  // the Zod schema and returns false on any mismatch (fail-closed).
+  // The canon-read closure is synchronous because `wrapIfEnabled`'s
+  // construction-time read fires once per runner invocation; the
+  // host.atoms cache means no I/O cost per `acquire`.
+  const policyAtomCacheById = new Map();
+  for (const policyId of [`pol-resume-strategy-${args.principalId}`]) {
+    const stored = await host.atoms.get(policyId);
+    policyAtomCacheById.set(policyId, stored);
+  }
+  const registryHost = {
+    registry,
+    canon: {
+      read: (key) => {
+        const atom = policyAtomCacheById.get(key);
+        if (!atom) return undefined;
+        const policy = atom?.metadata?.policy;
+        return policy?.content;
+      },
     },
-  });
+  };
+
+  // Strategy ladder: parameterized by canon policy's optional
+  // `max_stale_hours` if validated. The validator returns null on
+  // malformed input; in that case the bridge already short-circuits
+  // to fresh-spawn so the value here is never consulted.
+  const policyContent = registryHost.canon.read(`pol-resume-strategy-${args.principalId}`);
+  const validated = validatePolicy(policyContent);
+  const strategies = [
+    new SameMachineCliResumeStrategy({
+      maxStaleHours: validated?.max_stale_hours ?? 8,
+    }),
+  ];
+
+  // assembleCandidates closure: pre-fetch observations + sessions, then
+  // delegate to the registered descriptor's synchronous walker.
+  const assembleCandidates = async (_input) => {
+    const recent = await host.atoms.query({ type: ['observation'] }, 50);
+    // Filter observations to pr-fix-actor's atoms scoped to the current
+    // PR identity. The walker enforces the same two-axis filter again
+    // for defense-in-depth; this pre-filter shrinks the list passed in.
+    const observations = recent.atoms.filter((a) => {
+      if (a.principal_id !== 'pr-fix-actor') return false;
+      const meta = a.metadata;
+      if (meta === null || typeof meta !== 'object') return false;
+      if (meta.kind !== 'pr-fix-observation') return false;
+      const obs = meta.pr_fix_observation;
+      return obs !== null
+        && typeof obs === 'object'
+        && obs.pr_owner === owner
+        && obs.pr_repo === repo
+        && obs.pr_number === args.prNumber;
+    });
+    // Resolve each observation's dispatched_session_atom_id into a
+    // session atom; pass them as a Map for O(1) lookup in the walker.
+    const sessionsById = new Map();
+    for (const obs of observations) {
+      const meta = obs.metadata;
+      const prFix = meta?.pr_fix_observation;
+      const dispatchedId = prFix?.dispatched_session_atom_id;
+      if (typeof dispatchedId === 'string' && dispatchedId.length > 0) {
+        const sessionAtom = await host.atoms.get(dispatchedId);
+        if (sessionAtom !== null) {
+          sessionsById.set(String(sessionAtom.id), sessionAtom);
+        }
+      }
+    }
+    return walkAuthorSessionsForPrFix({
+      observations,
+      sessionsById,
+      prIdentity: { owner, repo, number: args.prNumber },
+    });
+  };
+
+  // Honor `--principal` override end-to-end: the policy cache key
+  // above used `args.principalId`, the wrap call MUST pass the same
+  // principal so the bridge's internal canon read hits the same key.
+  // A mismatch (e.g. cache keyed by the override but wrap keyed by a
+  // hard-coded literal) causes a silent fail-closed because the
+  // bridge looks up the wrong cache key, finds undefined, and falls
+  // through to fresh-spawn. Threading the override through both sites
+  // keeps `--principal pr-fix-actor` (the default) and
+  // `--principal something-else` (an org-ceiling alias) working
+  // identically: both look up `pol-resume-strategy-${principalId}`.
+  // The default registry is keyed by `pr-fix-actor`; an override that
+  // does not match a registered descriptor short-circuits cleanly via
+  // the bridge's descriptor-not-found path (returns the fresh adapter).
+  const agentLoopAdapter = wrapAgentLoopAdapterIfEnabled(
+    freshAgentLoop,
+    args.principalId,
+    registryHost,
+    {
+      agentLoopHost: host,
+      strategies,
+      assembleCandidates,
+    },
+  );
 
   // GitWorktreeProvider checks out the PR's existing HEAD branch (per
   // the AcquireInput.checkoutBranch substrate extension) so the agent's

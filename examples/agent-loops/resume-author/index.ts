@@ -7,7 +7,8 @@ export type { SameMachineCliResumeStrategyOptions } from './strategies/same-mach
 export { BlobShippedSessionResumeStrategy } from './strategies/blob-shipped.js';
 export type { BlobShippedStrategyOptions } from './strategies/blob-shipped.js';
 
-export { walkAuthorSessions } from './walk-author-sessions.js';
+export { walkAuthorSessions, walkAuthorSessionsForPrFix } from './walk-author-sessions.js';
+export type { PrFixWalkInput } from './walk-author-sessions.js';
 
 export {
   ctoActorResumeStrategyDescriptor,
@@ -22,7 +23,33 @@ export {
   CODE_AUTHOR_WORK_ITEM_KEY_PREFIXES,
 } from './code-author-strategy.js';
 
+export {
+  prFixActorResumeStrategyDescriptor,
+  PR_FIX_ACTOR_PRINCIPAL_ID,
+  PR_FIX_ACTOR_WORK_ITEM_KEY_PREFIXES,
+  encodePrFixWorkItemKey,
+} from './pr-fix-actor-strategy.js';
+export type { PrFixActorResumeInput } from './pr-fix-actor-strategy.js';
+
 export { buildDefaultRegistry } from './default-registry.js';
+
+export {
+  addDescriptor,
+  createResumeStrategyRegistry,
+  resumeStrategyPolicySchema,
+  validatePolicy,
+  WorkItemKeyCollisionError,
+  wrapAgentLoopAdapterIfEnabled,
+  wrapIfEnabled,
+} from './registry.js';
+export type {
+  AgentLoopWrapOptions,
+  PrincipalId as RegistryPrincipalId,
+  RegistryHost,
+  ResumeStrategyDescriptor,
+  ResumeStrategyPolicy,
+  ResumeStrategyRegistry,
+} from './registry.js';
 
 export type {
   ActorWalkInput,
