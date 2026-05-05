@@ -259,6 +259,25 @@ test.describe('resume-audit last-refreshed indicator', () => {
     await page.getByTestId('resume-audit-refresh').click();
     await expect(indicator).toHaveText(/Last refreshed 0 seconds? ago/);
   });
+
+  test('changing the window chip also resets the indicator (data is fresh)', async ({ page }) => {
+    /*
+     * Window-chip clicks flip the summaryQuery key, so TanStack
+     * Query auto-refetches and the data is fresh from that instant.
+     * The indicator must reset alongside or it would falsely report
+     * stale-data semantics against just-loaded data. Regression
+     * guard for the CR-flagged window-chip-change path.
+     */
+    await page.clock.install({ time: new Date('2026-05-05T14:00:00Z') });
+    await gotoResumeView(page);
+
+    const indicator = page.getByTestId('resume-audit-last-refreshed');
+    await page.clock.fastForward(7000);
+    await expect(indicator).toHaveText(/Last refreshed 7 seconds ago/);
+
+    await page.getByTestId('resume-audit-window-1h').click();
+    await expect(indicator).toHaveText(/Last refreshed 0 seconds? ago/);
+  });
 });
 
 test.describe('resume-audit refresh button', () => {

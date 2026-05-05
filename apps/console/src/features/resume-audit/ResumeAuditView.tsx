@@ -99,6 +99,21 @@ export function ResumeAuditView() {
     ]);
   };
 
+  /*
+   * Window-chip changes flip the summaryQuery key (line above
+   * threads windowHours into queryKey), which triggers an automatic
+   * refetch by TanStack Query. The data then becomes fresh while
+   * `lastRefreshedAt` still points at the previous reset instant,
+   * so the indicator would falsely show "Last refreshed 3 minutes
+   * ago" against just-loaded data. Reset alongside the chip change
+   * so the indicator stays truthful for any path that produces
+   * fresh data, not only the explicit Refresh button.
+   */
+  const handleWindowChange = (next: number) => {
+    setWindowHours(next);
+    setLastRefreshedAt(Date.now());
+  };
+
   const elapsedSeconds = Math.max(0, Math.round((now - lastRefreshedAt) / 1000));
   const lastRefreshedLabel = `Last refreshed ${RELATIVE_TIME_FORMATTER.format(-elapsedSeconds, 'second')}`;
 
@@ -146,7 +161,7 @@ export function ResumeAuditView() {
 
       <SummarySection
         windowHours={windowHours}
-        onWindowChange={setWindowHours}
+        onWindowChange={handleWindowChange}
         query={summaryQuery}
       />
       <RecentResumedSection query={recentQuery} />
