@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ScrollText, GitBranch, ShieldCheck } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -12,17 +12,15 @@ import {
 import { toErrorMessage } from '@/services/errors';
 import styles from './StageContextPanel.module.css';
 
-type TabName = 'soul' | 'chain' | 'canon';
+type SectionName = 'soul' | 'chain' | 'canon';
 
-/**
- * Static tab order for arrow-key navigation. Mirrors the render
- * order of the three TabButton calls in StageContextBody so the
- * keyboard sequence matches the visual sequence (ArrowRight on soul
- * lands on chain, ArrowRight on canon wraps to soul). Listed at
- * module scope rather than recomputed on each render so identity is
- * stable for the keyDown handler.
- */
-const TAB_ORDER: ReadonlyArray<TabName> = ['soul', 'chain', 'canon'];
+type ExpandedState = Readonly<Record<SectionName, boolean>>;
+
+const COLLAPSED_ALL: ExpandedState = Object.freeze({
+  soul: false,
+  chain: false,
+  canon: false,
+});
 
 interface Props {
   readonly atomId: string;
@@ -42,16 +40,30 @@ interface Props {
  *
  * The panel is collapsed by default so the plan-detail view does not
  * grow by hundreds of lines of markdown on every visit. Once open, a
- * three-tab layout keeps each lens distinct -- soul, chain, canon --
- * because they answer different operator questions and stacking them
- * vertically would force scrolling for any of the three.
+ * three-section disclosure layout keeps each lens distinct -- soul,
+ * chain, canon -- because they answer different operator questions.
+ *
+ * Layout posture:
+ *   - The panel renders a single DOM tree of three section blocks at
+ *     every viewport. Each block is a `<button>` header (carrying
+ *     `aria-expanded` + `aria-controls`) followed by a
+ *     `<section role="region">` body.
+ *   - The expand/collapse state is held as one boolean per section
+ *     (multi-open accordion); all three start collapsed on every
+ *     mount. Headers toggle their own boolean.
+ *   - The mobile (<=640px) and desktop (>640px) layouts share the
+ *     same DOM. CSS in `StageContextPanel.module.css` swaps the
+ *     visual presentation at the breakpoint. No `useMediaQuery` hook
+ *     is used; the layout swap is purely CSS so there is no SSR or
+ *     hydration hazard and a fresh render produces the same first
+ *     paint on both viewports.
  *
  * Behavior notes:
  *   - Atoms that are not pipeline-stage outputs render an empty-state
  *     header (the endpoint returns a stable empty shape).
  *   - Soul = null is informative: the operator sees a small empty
  *     state explaining the bundle was not vendored, rather than a
- *     blank tab.
+ *     blank section.
  *   - Markdown is rendered via react-markdown + remark-gfm so links
  *     and code blocks are sanitized through the library's default
  *     pipeline (no raw HTML pass-through). This matches the same
@@ -59,7 +71,7 @@ interface Props {
  */
 export function StageContextPanel({ atomId, defaultOpen = false }: Props) {
   const [open, setOpen] = useState(defaultOpen);
-  const [tab, setTab] = useState<TabName>('soul');
+  const [expanded, setExpanded] = useState<ExpandedState>(COLLAPSED_ALL);
 
   const query = useQuery({
     queryKey: ['atoms.stage-context', atomId],
@@ -67,6 +79,10 @@ export function StageContextPanel({ atomId, defaultOpen = false }: Props) {
     enabled: open,
     staleTime: 60_000,
   });
+
+  function toggleSection(name: SectionName) {
+    setExpanded((prev) => ({ ...prev, [name]: !prev[name] }));
+  }
 
   return (
     <section
@@ -119,8 +135,9 @@ export function StageContextPanel({ atomId, defaultOpen = false }: Props) {
           {query.isSuccess && query.data && (
             <StageContextBody
               context={query.data}
-              tab={tab}
-              onTabChange={setTab}
+              atomId={atomId}
+              expanded={expanded}
+              onToggleSection={toggleSection}
             />
           )}
         </div>
@@ -131,72 +148,18 @@ export function StageContextPanel({ atomId, defaultOpen = false }: Props) {
 
 interface BodyProps {
   readonly context: StageContext;
-  readonly tab: TabName;
-  readonly onTabChange: (next: TabName) => void;
+  readonly atomId: string;
+  readonly expanded: ExpandedState;
+  readonly onToggleSection: (name: SectionName) => void;
 }
 
-function StageContextBody({ context, tab, onTabChange }: BodyProps) {
-  const tablistRef = useRef<HTMLDivElement | null>(null);
-
+function StageContextBody({ context, atomId, expanded, onToggleSection }: BodyProps) {
   if (context.stage === null) {
     return (
       <p className={styles.empty} data-testid="stage-context-empty">
         This atom was not produced by a deep planning pipeline stage.
       </p>
     );
-  }
-
-  /**
-   * Roving-focus keyboard handler for the tablist. Implements the WAI-
-   * ARIA Authoring Practices `Tabs` pattern: ArrowLeft/ArrowRight cycle
-   * through the tab set with wrap-around, Home/End jump to the
-   * boundaries. Without this, inactive TabButtons carry tabIndex={-1}
-   * and are unreachable for keyboard-only operators -- a hard
-   * accessibility blocker on a panel meant to surface deep planning
-   * provenance to the very people who do post-merge audits.
-   *
-   * Focus management: after onTabChange fires, the next render flips
-   * tabIndex on the new active button to 0; we move focus to that
-   * button via a scoped querySelector against the tablist ref (rather
-   * than a global getElementById) so two stage-context panels on the
-   * same page (deliberation trail, plan detail) cannot cross-focus
-   * each other through duplicate ids. The deterministic id pattern
-   * (`stage-context-tab-${name}`) is the same one already emitted for
-   * `aria-labelledby` on each tabpanel, so consumers see a single
-   * stable contract.
-   */
-  function onTablistKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const idx = TAB_ORDER.indexOf(tab);
-    if (idx === -1) return;
-    let next: TabName | null = null;
-    switch (event.key) {
-      case 'ArrowRight':
-        next = TAB_ORDER[(idx + 1) % TAB_ORDER.length] ?? null;
-        break;
-      case 'ArrowLeft':
-        next = TAB_ORDER[(idx - 1 + TAB_ORDER.length) % TAB_ORDER.length] ?? null;
-        break;
-      case 'Home':
-        next = TAB_ORDER[0] ?? null;
-        break;
-      case 'End':
-        next = TAB_ORDER[TAB_ORDER.length - 1] ?? null;
-        break;
-      default:
-        return;
-    }
-    if (next === null || next === tab) return;
-    event.preventDefault();
-    onTabChange(next);
-    // Move focus to the freshly-active tab. Use the tablist root as
-    // the scoping element so two stage-context panels on the same
-    // page (deliberation trail, plan detail) cannot cross-focus.
-    const root = tablistRef.current;
-    if (root === null) return;
-    const target = root.querySelector<HTMLButtonElement>(
-      `#stage-context-tab-${next}`,
-    );
-    target?.focus();
   }
 
   return (
@@ -227,104 +190,110 @@ function StageContextBody({ context, tab, onTabChange }: BodyProps) {
       </header>
 
       <div
-        ref={tablistRef}
-        className={styles.tablist}
-        role="tablist"
-        aria-label="Stage context"
-        data-testid="stage-context-tablist"
-        onKeyDown={onTablistKeyDown}
+        className={styles.sectionList}
+        data-testid="stage-context-section-list"
       >
-        <TabButton
+        <Section
           name="soul"
-          active={tab === 'soul'}
-          onClick={() => onTabChange('soul')}
+          atomId={atomId}
+          expanded={expanded.soul}
+          onToggle={() => onToggleSection('soul')}
           icon={<ScrollText size={13} strokeWidth={1.75} aria-hidden="true" />}
           label="Soul"
-        />
-        <TabButton
+        >
+          <SoulTab soul={context.soul} skillBundle={context.skill_bundle} />
+        </Section>
+        <Section
           name="chain"
-          active={tab === 'chain'}
-          onClick={() => onTabChange('chain')}
+          atomId={atomId}
+          expanded={expanded.chain}
+          onToggle={() => onToggleSection('chain')}
           icon={<GitBranch size={13} strokeWidth={1.75} aria-hidden="true" />}
           label="Upstream chain"
           count={context.upstream_chain.length}
-        />
-        <TabButton
+        >
+          <ChainTab chain={context.upstream_chain} />
+        </Section>
+        <Section
           name="canon"
-          active={tab === 'canon'}
-          onClick={() => onTabChange('canon')}
+          atomId={atomId}
+          expanded={expanded.canon}
+          onToggle={() => onToggleSection('canon')}
           icon={<ShieldCheck size={13} strokeWidth={1.75} aria-hidden="true" />}
           label="Canon at runtime"
           count={context.canon_at_runtime.length}
-        />
-      </div>
-
-      {tab === 'soul' && (
-        <div
-          role="tabpanel"
-          aria-labelledby="stage-context-tab-soul"
-          className={styles.tabpanel}
-          data-testid="stage-context-soul"
-        >
-          <SoulTab soul={context.soul} skillBundle={context.skill_bundle} />
-        </div>
-      )}
-      {tab === 'chain' && (
-        <div
-          role="tabpanel"
-          aria-labelledby="stage-context-tab-chain"
-          className={styles.tabpanel}
-          data-testid="stage-context-chain"
-        >
-          <ChainTab chain={context.upstream_chain} />
-        </div>
-      )}
-      {tab === 'canon' && (
-        <div
-          role="tabpanel"
-          aria-labelledby="stage-context-tab-canon"
-          className={styles.tabpanel}
-          data-testid="stage-context-canon"
         >
           <CanonTab entries={context.canon_at_runtime} />
-        </div>
-      )}
+        </Section>
+      </div>
     </>
   );
 }
 
-function TabButton({
+function Section({
   name,
-  active,
-  onClick,
+  atomId,
+  expanded,
+  onToggle,
   icon,
   label,
   count,
+  children,
 }: {
-  readonly name: TabName;
-  readonly active: boolean;
-  readonly onClick: () => void;
+  readonly name: SectionName;
+  readonly atomId: string;
+  readonly expanded: boolean;
+  readonly onToggle: () => void;
   readonly icon: ReactNode;
   readonly label: string;
   readonly count?: number;
+  readonly children: ReactNode;
 }) {
+  /*
+   * Section ids include the atomId so two stage-context panels on
+   * the same page (deliberation trail, plan detail) cannot collide
+   * on duplicate aria-controls or aria-labelledby ids.
+   */
+  const buttonId = `stage-context-section-header-${name}-${atomId}`;
+  const regionId = `stage-context-section-region-${name}-${atomId}`;
   return (
-    <button
-      type="button"
-      role="tab"
-      id={`stage-context-tab-${name}`}
-      aria-selected={active}
-      tabIndex={active ? 0 : -1}
-      className={`${styles.tab} ${active ? styles.tabActive : ''}`}
-      onClick={onClick}
-      data-testid={`stage-context-tab-${name}`}
+    <div
+      className={styles.section}
+      data-testid={`stage-context-section-${name}`}
+      data-section={name}
+      data-expanded={expanded ? 'true' : 'false'}
     >
-      <span className={styles.tabIcon}>{icon}</span>
-      <span>{label}</span>
-      {typeof count === 'number' && (
-        <span className={styles.tabCount}>{count}</span>
-      )}
-    </button>
+      <button
+        type="button"
+        id={buttonId}
+        className={`${styles.sectionHeader} ${expanded ? styles.sectionHeaderExpanded : ''}`}
+        aria-expanded={expanded}
+        aria-controls={regionId}
+        onClick={onToggle}
+        data-testid={`stage-context-section-header-${name}`}
+      >
+        <span className={styles.sectionIcon}>{icon}</span>
+        <span className={styles.sectionLabel}>{label}</span>
+        {typeof count === 'number' && (
+          <span className={styles.sectionCount}>{count}</span>
+        )}
+        <ChevronDown
+          size={14}
+          strokeWidth={2}
+          className={styles.sectionChevron}
+          aria-hidden="true"
+        />
+      </button>
+      <section
+        id={regionId}
+        role="region"
+        aria-labelledby={buttonId}
+        className={styles.sectionRegion}
+        data-testid={`stage-context-section-region-${name}`}
+      >
+        {children}
+      </section>
+    </div>
   );
 }
 
