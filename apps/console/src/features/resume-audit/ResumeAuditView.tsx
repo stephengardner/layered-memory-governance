@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import type { UseQueryResult } from '@tanstack/react-query';
 import { motion, useReducedMotion } from 'framer-motion';
-import { Activity, AlertCircle, ArrowRightLeft, Clock3, RotateCcw, Users } from 'lucide-react';
+import { Activity, AlertCircle, ArrowRightLeft, Clock3, RefreshCw, RotateCcw, Users } from 'lucide-react';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { setRoute, routeHref, routeForAtomId, type Route } from '@/state/router.store';
@@ -12,12 +13,23 @@ import {
   getResumeResets,
   getResumeSummary,
   type ResumeAuditPrincipalStats,
+  type ResumeAuditRecentResponse,
   type ResumeAuditRecentSession,
   type ResumeAuditResetRecord,
+  type ResumeAuditResetsResponse,
   type ResumeAuditSummary,
 } from '@/services/resume-audit.service';
 import { toErrorMessage } from '@/services/errors';
 import styles from './ResumeAuditView.module.css';
+
+/**
+ * Module-scoped relative-time formatter. One instance reused across
+ * renders so each tick pays only the formatter call, not an allocator
+ * round-trip. Locale fixed to 'en' until a console-wide i18n source
+ * appears (the second consumer is the upgrade trigger per
+ * `dev-dry-extract-at-second-duplication`).
+ */
+const RELATIVE_TIME_FORMATTER = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
 
 /**
  * Resume audit dashboard.
@@ -39,27 +51,196 @@ import styles from './ResumeAuditView.module.css';
  * Mobile-first per `dev-web-mobile-first-required`: single-column at
  * <60rem, two-column ratio grid + side-by-side recent + resets at
  * larger widths. No useEffect for data; TanStack Query owns lifecycle.
+ *
+ * Three queries are held at this root so the Refresh control can drive
+ * a coordinated refetch across all sections (per the `Last refreshed`
+ * indicator below). Section components consume the query results via
+ * props so each section still owns its own loading / error / empty
+ * branches.
  */
 export function ResumeAuditView() {
   const [windowHours, setWindowHours] = useState<number>(24);
 
+  const summaryQuery = useQuery({
+    queryKey: ['resume-audit', 'summary', windowHours],
+    queryFn: ({ signal }) => getResumeSummary(windowHours, signal),
+  });
+  const recentQuery = useQuery({
+    queryKey: ['resume-audit', 'recent'],
+    queryFn: ({ signal }) => getResumeRecent(20, signal),
+  });
+  const resetsQuery = useQuery({
+    queryKey: ['resume-audit', 'resets'],
+    queryFn: ({ signal }) => getResumeResets(20, signal),
+  });
+
+  const someFetching =
+    summaryQuery.isFetching || recentQuery.isFetching || resetsQuery.isFetching;
+
+  /*
+   * Last-refreshed instant (the explicit-action floor for the
+   * indicator). Refresh button + window-chip change each call
+   * `setLastRefreshedAt(Date.now())` so the indicator snaps to 0s
+   * for any path that *intentionally* produces fresh data. The
+   * `LastRefreshedIndicator` leaf folds in each query's
+   * `dataUpdatedAt` so auto-refetch under TanStack Query's 30s
+   * `staleTime` is also reflected without going through these
+   * handlers. The tick lives in the leaf so only the label
+   * re-renders each second; the parent dashboard tree is not
+   * invalidated by the 1Hz timer per the `no-jank` guideline.
+   */
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<number>(() => Date.now());
+
+  const handleRefresh = () => {
+    setLastRefreshedAt(Date.now());
+    void Promise.all([
+      summaryQuery.refetch(),
+      recentQuery.refetch(),
+      resetsQuery.refetch(),
+    ]);
+  };
+
+  /*
+   * Window-chip changes flip the summaryQuery key (line above
+   * threads windowHours into queryKey), which triggers an automatic
+   * refetch by TanStack Query. The data then becomes fresh while
+   * `lastRefreshedAt` still points at the previous reset instant,
+   * so the indicator would falsely show "Last refreshed 3 minutes
+   * ago" against just-loaded data. Reset alongside the chip change
+   * so the indicator stays truthful for any path that produces
+   * fresh data, not only the explicit Refresh button.
+   */
+  const handleWindowChange = (next: number) => {
+    setWindowHours(next);
+    setLastRefreshedAt(Date.now());
+  };
+
   return (
     <section className={styles.view} data-testid="resume-audit-view">
       <header className={styles.intro}>
-        <h2 className={styles.heroTitle}>Resume audit</h2>
-        <p className={styles.heroSubtitle}>
-          Cross-actor view of resume-vs-fresh-spawn behavior. The
-          substrate writes resume telemetry on each agent-session
-          atom; this dashboard projects those fields so an operator
-          can see whether actors are inheriting prior context as
-          intended, or silently fresh-spawning every iteration.
-        </p>
+        <div className={styles.introText}>
+          <h2 className={styles.heroTitle}>Resume audit</h2>
+          <p className={styles.heroSubtitle}>
+            Cross-actor view of resume-vs-fresh-spawn behavior. The
+            substrate writes resume telemetry on each agent-session
+            atom; this dashboard projects those fields so an operator
+            can see whether actors are inheriting prior context as
+            intended, or silently fresh-spawning every iteration.
+          </p>
+        </div>
+        <div className={styles.refreshGroup}>
+          <LastRefreshedIndicator
+            lastRefreshedAt={lastRefreshedAt}
+            summaryUpdatedAt={summaryQuery.dataUpdatedAt}
+            recentUpdatedAt={recentQuery.dataUpdatedAt}
+            resetsUpdatedAt={resetsQuery.dataUpdatedAt}
+          />
+          <button
+            type="button"
+            className={styles.refreshButton}
+            onClick={handleRefresh}
+            disabled={someFetching}
+            aria-busy={someFetching}
+            aria-label="Refresh"
+            data-testid="resume-audit-refresh"
+          >
+            <RefreshCw
+              size={14}
+              strokeWidth={2}
+              aria-hidden="true"
+              className={someFetching ? styles.refreshSpinning : ''}
+              data-testid={someFetching ? 'resume-audit-refresh-spinner' : undefined}
+            />
+            <span className={styles.refreshLabel}>Refresh</span>
+          </button>
+        </div>
       </header>
 
-      <SummarySection windowHours={windowHours} onWindowChange={setWindowHours} />
-      <RecentResumedSection />
-      <RecentResetsSection />
+      <SummarySection
+        windowHours={windowHours}
+        onWindowChange={handleWindowChange}
+        query={summaryQuery}
+      />
+      <RecentResumedSection query={recentQuery} />
+      <RecentResetsSection query={resetsQuery} />
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Last-refreshed indicator (leaf component).
+//
+// Owns the 1-second `now` tick locally so only this leaf re-renders
+// each second; the parent dashboard + its three section subtrees are
+// not invalidated by the timer per the `no-jank` interaction
+// guideline. `dataUpdatedAt` props are read each render and folded
+// into the displayed timestamp via Math.max so the indicator reflects
+// actual data freshness (auto-refetch + explicit Refresh + window-chip
+// change all update it) rather than only the paths that bump the
+// parent's tracked `lastRefreshedAt`.
+// ---------------------------------------------------------------------------
+
+interface LastRefreshedIndicatorProps {
+  readonly lastRefreshedAt: number;
+  readonly summaryUpdatedAt: number;
+  readonly recentUpdatedAt: number;
+  readonly resetsUpdatedAt: number;
+}
+
+function LastRefreshedIndicator({
+  lastRefreshedAt,
+  summaryUpdatedAt,
+  recentUpdatedAt,
+  resetsUpdatedAt,
+}: LastRefreshedIndicatorProps) {
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  /*
+   * Fold each query's `dataUpdatedAt` into the displayed timestamp
+   * so the indicator reflects actual data freshness, not only the
+   * paths that explicitly bump `lastRefreshedAt`. The global
+   * QueryClient ships `staleTime: 30_000`, so any of the three
+   * useQuery hooks can auto-refetch on remount or window focus
+   * after 30s without going through handleRefresh /
+   * handleWindowChange. Without this max(...), the indicator would
+   * report e.g. "Last refreshed 2 minutes ago" against just-loaded
+   * data. The tracked `lastRefreshedAt` remains in the max so the
+   * click-resets-to-0 semantics for the explicit Refresh path stay
+   * untouched (the click bumps it past the queries' updated
+   * timestamps before the optimistic-set landing).
+   */
+  const effectiveLastRefreshedAt = Math.max(
+    lastRefreshedAt,
+    summaryUpdatedAt,
+    recentUpdatedAt,
+    resetsUpdatedAt,
+  );
+  const elapsedSeconds = Math.max(0, Math.round((now - effectiveLastRefreshedAt) / 1000));
+  const lastRefreshedLabel = `Last refreshed ${RELATIVE_TIME_FORMATTER.format(-elapsedSeconds, 'second')}`;
+
+  /*
+   * The visible label updates every second (from the `now` tick),
+   * so leaving an `aria-live` region here would cause screen
+   * readers to chant "Last refreshed N seconds ago" every second,
+   * which is exactly the disruption `aria-live` is meant to avoid.
+   * The label remains available to AT in the DOM via this span;
+   * routine ticks are not announced. Should we ever want to announce
+   * on explicit refresh, the right shape is a separate sr-only
+   * live-region element written only inside the parent's
+   * `handleRefresh`, not on the per-second tick.
+   */
+  return (
+    <span
+      className={styles.lastRefreshed}
+      data-testid="resume-audit-last-refreshed"
+    >
+      {lastRefreshedLabel}
+    </span>
   );
 }
 
@@ -78,14 +259,10 @@ const WINDOW_OPTIONS: ReadonlyArray<{ readonly hours: number; readonly label: st
 interface SummarySectionProps {
   readonly windowHours: number;
   readonly onWindowChange: (next: number) => void;
+  readonly query: UseQueryResult<ResumeAuditSummary>;
 }
 
-function SummarySection({ windowHours, onWindowChange }: SummarySectionProps) {
-  const query = useQuery({
-    queryKey: ['resume-audit', 'summary', windowHours],
-    queryFn: ({ signal }) => getResumeSummary(windowHours, signal),
-  });
-
+function SummarySection({ windowHours, onWindowChange, query }: SummarySectionProps) {
   return (
     <section className={styles.section} aria-labelledby="resume-audit-summary-heading">
       <header className={styles.sectionHead}>
@@ -287,12 +464,11 @@ function ratioToneClass(ratio: number | null): string {
 // Section 2: recent resumed sessions.
 // ---------------------------------------------------------------------------
 
-function RecentResumedSection() {
-  const query = useQuery({
-    queryKey: ['resume-audit', 'recent'],
-    queryFn: ({ signal }) => getResumeRecent(20, signal),
-  });
+interface RecentResumedSectionProps {
+  readonly query: UseQueryResult<ResumeAuditRecentResponse>;
+}
 
+function RecentResumedSection({ query }: RecentResumedSectionProps) {
   return (
     <section className={styles.section} aria-labelledby="resume-audit-recent-heading">
       <header className={styles.sectionHead}>
@@ -387,12 +563,11 @@ function RecentResumedRow({ session }: { session: ResumeAuditRecentSession }) {
 // Section 3: recent reset signals.
 // ---------------------------------------------------------------------------
 
-function RecentResetsSection() {
-  const query = useQuery({
-    queryKey: ['resume-audit', 'resets'],
-    queryFn: ({ signal }) => getResumeResets(20, signal),
-  });
+interface RecentResetsSectionProps {
+  readonly query: UseQueryResult<ResumeAuditResetsResponse>;
+}
 
+function RecentResetsSection({ query }: RecentResetsSectionProps) {
   return (
     <section className={styles.section} aria-labelledby="resume-audit-resets-heading">
       <header className={styles.sectionHead}>

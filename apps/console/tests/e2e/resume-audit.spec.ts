@@ -213,6 +213,74 @@ test.describe('sidebar nav', () => {
   });
 });
 
+test.describe('resume-audit last-refreshed indicator', () => {
+  /*
+   * Each test in this describe block freezes the page clock to a
+   * deterministic origin, then calls `fastForward(...)` to drive the
+   * 1-second tick without paying a real-time wait. Hoisted into a
+   * `beforeEach` so the install line is single-source per CR feedback
+   * (DRY at N=2 within this describe block).
+   */
+  test.beforeEach(async ({ page }) => {
+    await page.clock.install({ time: new Date('2026-05-05T14:00:00Z') });
+  });
+
+  test('renders "0 seconds ago" on mount, ticks to 1 second after one second', async ({ page }) => {
+    await gotoResumeView(page);
+
+    const indicator = page.getByTestId('resume-audit-last-refreshed');
+    await expect(indicator).toBeVisible();
+    /*
+     * On mount, lastRefreshedAt and now are both Date.now() so the
+     * elapsed-seconds clamp evaluates to 0. `Intl.RelativeTimeFormat`
+     * with `numeric: 'always'` emits "0 seconds ago" for 0.
+     */
+    await expect(indicator).toHaveText(/Last refreshed 0 seconds? ago/);
+
+    await page.clock.fastForward(1100);
+    await expect(indicator).toHaveText(/Last refreshed 1 second ago/);
+
+    await page.clock.fastForward(2000);
+    await expect(indicator).toHaveText(/Last refreshed 3 seconds ago/);
+  });
+
+  test('clicking Refresh resets the indicator back to 0 seconds', async ({ page }) => {
+    await gotoResumeView(page);
+
+    const indicator = page.getByTestId('resume-audit-last-refreshed');
+    await page.clock.fastForward(5000);
+    await expect(indicator).toHaveText(/Last refreshed 5 seconds ago/);
+
+    /*
+     * Click the Refresh button - onClick must call
+     * setLastRefreshedAt(Date.now()) synchronously so the indicator
+     * snaps back to "0 seconds ago" on the next render. The button
+     * also kicks off the three refetches but those are not the
+     * subject of this test.
+     */
+    await page.getByTestId('resume-audit-refresh').click();
+    await expect(indicator).toHaveText(/Last refreshed 0 seconds? ago/);
+  });
+
+  test('changing the window chip also resets the indicator (data is fresh)', async ({ page }) => {
+    /*
+     * Window-chip clicks flip the summaryQuery key, so TanStack
+     * Query auto-refetches and the data is fresh from that instant.
+     * The indicator must reset alongside or it would falsely report
+     * stale-data semantics against just-loaded data. Regression
+     * guard for the CR-flagged window-chip-change path.
+     */
+    await gotoResumeView(page);
+
+    const indicator = page.getByTestId('resume-audit-last-refreshed');
+    await page.clock.fastForward(7000);
+    await expect(indicator).toHaveText(/Last refreshed 7 seconds ago/);
+
+    await page.getByTestId('resume-audit-window-1h').click();
+    await expect(indicator).toHaveText(/Last refreshed 0 seconds? ago/);
+  });
+});
+
 test.describe('resume-audit refresh button', () => {
   test('refetches all three sections without reloading the page', async ({ page }) => {
     interface Hold {

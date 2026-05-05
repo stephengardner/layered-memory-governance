@@ -18,7 +18,108 @@
 .intro {
   display: flex;
   flex-direction: column;
+  gap: var(--space-3);
+}
+
+@media (min-width: 60rem) {
+  .intro {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+}
+
+.introText {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Refresh group: "Last refreshed Xs ago" indicator + Refresh button.
+ *
+ * Top-right of the dashboard header on desktop; below the hero
+ * subtitle on mobile (single column from the .intro flex-direction).
+ * The indicator is rendered as a sibling span with stable test-id so
+ * the e2e suite can assert the live tick + click-resets-to-0 behavior.
+ * ------------------------------------------------------------------------- */
+
+.refreshGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.lastRefreshed {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.refreshButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  min-height: var(--size-touch-target-min);
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard),
+              border-color var(--duration-fast) var(--easing-standard);
+}
+
+.refreshButton:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.refreshButton:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.refreshButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.refreshLabel {
+  letter-spacing: 0.02em;
+}
+
+/*
+ * Spinner animation for the Refresh icon while any of the three
+ * useQuery hooks is in-flight. Disabled under prefers-reduced-motion
+ * per `dev-web-interaction-app-grade-discipline`.
+ */
+@keyframes refreshSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/*
+ * Spinner cadence: doubled-up `--duration-slow` (640ms) gives a calm
+ * full rotation while keeping the value inside the token system per
+ * `dev-web-no-hardcoded-values`. A dedicated --duration-rotate token
+ * would be cleaner but is a substrate-wide token-pack edit and out of
+ * scope for this PR.
+ */
+.refreshSpinning {
+  animation: refreshSpin calc(var(--duration-slow) * 2) linear infinite;
+  transform-origin: center;
 }
 
 .heroTitle {
@@ -605,11 +706,16 @@
   .recentSessionId,
   .resetAtomLink,
   .recentPriorLink,
-  .helpButton {
+  .helpButton,
+  .refreshButton {
     transition: none;
   }
 
   .principalCard:hover {
     transform: none;
+  }
+
+  .refreshSpinning {
+    animation: none;
   }
 }
