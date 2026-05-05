@@ -115,6 +115,22 @@ export const resumeStrategyPolicySchema = z
 export type ResumeStrategyPolicy = z.infer<typeof resumeStrategyPolicySchema>;
 
 /**
+ * Strict-validate variant for callers that want loud failure on a
+ * malformed policy atom. Returns the parsed policy on success or
+ * `null` on schema mismatch; callers that want the underlying
+ * ZodError invoke `resumeStrategyPolicySchema.safeParse` directly.
+ *
+ * This is the SINGLE schema-parse site in the module; `policyEnables`
+ * delegates to it so a future schema-level hardening (e.g. a refinement
+ * that disables the policy on a sentinel value) lives in exactly one
+ * place per `dev-extract-helpers-at-n-2`.
+ */
+export function validatePolicy(policy: unknown): ResumeStrategyPolicy | null {
+  const parsed = resumeStrategyPolicySchema.safeParse(policy);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
  * Validate a canon-supplied policy payload against the schema and
  * return its `enabled` flag. Fail-closed: any schema mismatch (missing
  * `enabled`, wrong type, extra unknown field, malformed numeric fields)
@@ -128,20 +144,7 @@ export type ResumeStrategyPolicy = z.infer<typeof resumeStrategyPolicySchema>;
  * (b) callers that want loud failure call `validatePolicy()` directly.
  */
 function policyEnables(policy: unknown): boolean {
-  const parsed = resumeStrategyPolicySchema.safeParse(policy);
-  if (!parsed.success) return false;
-  return parsed.data.enabled === true;
-}
-
-/**
- * Strict-validate variant for callers that want loud failure on a
- * malformed policy atom. Returns the parsed policy on success or
- * `null` on schema mismatch; callers that want the underlying
- * ZodError invoke `resumeStrategyPolicySchema.safeParse` directly.
- */
-export function validatePolicy(policy: unknown): ResumeStrategyPolicy | null {
-  const parsed = resumeStrategyPolicySchema.safeParse(policy);
-  return parsed.success ? parsed.data : null;
+  return validatePolicy(policy)?.enabled === true;
 }
 
 export function createResumeStrategyRegistry(): ResumeStrategyRegistry {

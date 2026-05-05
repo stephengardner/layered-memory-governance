@@ -46,6 +46,7 @@ import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import {
   buildPolicies,
+  diffPolicyAtom,
   policyAtom,
 } from './lib/resume-strategy-canon-policies.mjs';
 
@@ -69,60 +70,6 @@ if (!OPERATOR_ID || OPERATOR_ID.length === 0) {
       + 'in .lag/principals/.',
   );
   process.exit(2);
-}
-
-/**
- * Compare a stored pol-resume-strategy atom's payload to the expected
- * shape. Returns a list of drift descriptors (empty = in sync). Mirrors
- * diffPolicyAtom from bootstrap-reaper-canon.mjs so the bootstraps
- * use one drift-check pattern. Compares both metadata.policy fields
- * (subject, principal_id, reason, content) and the four integrity
- * fields (principal_id, provenance.kind / source / derived_from)
- * because re-attribution under unchanged content would silently
- * re-author the policy without changing any payload field.
- */
-function diffPolicyAtom(existing, expected) {
-  const diffs = [];
-  if (existing.type !== expected.type) diffs.push(`type: ${existing.type} -> ${expected.type}`);
-  if (existing.layer !== expected.layer) diffs.push(`layer: ${existing.layer} -> ${expected.layer}`);
-  if (existing.content !== expected.content) {
-    diffs.push('content (rationale): stored vs expected differ; rewrite or bump id to supersede');
-  }
-  if (existing.principal_id !== expected.principal_id) {
-    diffs.push(
-      `principal_id: stored=${JSON.stringify(existing.principal_id)} `
-        + `expected=${JSON.stringify(expected.principal_id)}`,
-    );
-  }
-  const ev = existing.provenance ?? {};
-  const xv = expected.provenance;
-  if (ev.kind !== xv.kind) {
-    diffs.push(
-      `provenance.kind: stored=${JSON.stringify(ev.kind)} `
-        + `expected=${JSON.stringify(xv.kind)}`,
-    );
-  }
-  if (JSON.stringify(ev.source ?? {}) !== JSON.stringify(xv.source)) {
-    diffs.push(
-      `provenance.source: stored=${JSON.stringify(ev.source)} `
-        + `expected=${JSON.stringify(xv.source)}`,
-    );
-  }
-  if (JSON.stringify(ev.derived_from ?? []) !== JSON.stringify(xv.derived_from)) {
-    diffs.push(
-      `provenance.derived_from: stored=${JSON.stringify(ev.derived_from)} `
-        + `expected=${JSON.stringify(xv.derived_from)}`,
-    );
-  }
-  const ep = existing.metadata?.policy ?? {};
-  const xp = expected.metadata.policy;
-  const keys = new Set([...Object.keys(ep), ...Object.keys(xp)]);
-  for (const k of keys) {
-    if (JSON.stringify(ep[k]) !== JSON.stringify(xp[k])) {
-      diffs.push(`policy.${k}: stored=${JSON.stringify(ep[k])} expected=${JSON.stringify(xp[k])}`);
-    }
-  }
-  return diffs;
 }
 
 async function main() {

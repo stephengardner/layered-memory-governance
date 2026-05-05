@@ -100,6 +100,30 @@ const POLICY_ATOM_ID_PR_FIX = 'pol-resume-strategy-pr-fix-actor';
 
 const dummyAssemble = async (_input: AgentLoopInput): Promise<ReadonlyArray<CandidateSession>> => [];
 
+/**
+ * Helper: invoke `wrapAgentLoopAdapterIfEnabled` with the canonical
+ * test arguments. Eight test cases share the same six-line invocation
+ * shape (fresh, pr-fix-actor principal, registry host, three opts);
+ * extracting at N=2 per `dev-extract-helpers-at-n-2` keeps each test
+ * focused on its own setup-and-assertion.
+ */
+function callWrap(
+  fresh: AgentLoopAdapter,
+  agentLoopHost: ReturnType<typeof createMemoryHost>,
+  registryHost: RegistryHost,
+): AgentLoopAdapter {
+  return wrapAgentLoopAdapterIfEnabled(
+    fresh,
+    PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
+    registryHost,
+    {
+      agentLoopHost,
+      strategies: [],
+      assembleCandidates: dummyAssemble,
+    },
+  );
+}
+
 describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
   it('policy ABSENT in canon → returns fresh adapter unchanged (regression check vs PR #171)', () => {
     // The acceptance criterion: removing the
@@ -114,16 +138,7 @@ describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
       canonContents: new Map(), // empty -> policy absent
     });
 
-    const wrapped = wrapAgentLoopAdapterIfEnabled(
-      fresh,
-      PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
-      registryHost,
-      {
-        agentLoopHost: host,
-        strategies: [],
-        assembleCandidates: dummyAssemble,
-      },
-    );
+    const wrapped = callWrap(fresh, host, registryHost);
     expect(wrapped).toBe(fresh);
     expect(wrapped).not.toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
   });
@@ -138,16 +153,7 @@ describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
       ]),
     });
 
-    const wrapped = wrapAgentLoopAdapterIfEnabled(
-      fresh,
-      PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
-      registryHost,
-      {
-        agentLoopHost: host,
-        strategies: [],
-        assembleCandidates: dummyAssemble,
-      },
-    );
+    const wrapped = callWrap(fresh, host, registryHost);
     expect(wrapped).toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
     expect(wrapped).not.toBe(fresh);
     // Capabilities are mirrored from the fresh adapter so consumers
@@ -165,17 +171,7 @@ describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
       ]),
     });
 
-    const wrapped = wrapAgentLoopAdapterIfEnabled(
-      fresh,
-      PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
-      registryHost,
-      {
-        agentLoopHost: host,
-        strategies: [],
-        assembleCandidates: dummyAssemble,
-      },
-    );
-    expect(wrapped).toBe(fresh);
+    expect(callWrap(fresh, host, registryHost)).toBe(fresh);
   });
 
   it('policy PRESENT but malformed (missing enabled) → fail-closed: returns fresh adapter unchanged', () => {
@@ -190,17 +186,7 @@ describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
       ]),
     });
 
-    const wrapped = wrapAgentLoopAdapterIfEnabled(
-      fresh,
-      PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
-      registryHost,
-      {
-        agentLoopHost: host,
-        strategies: [],
-        assembleCandidates: dummyAssemble,
-      },
-    );
-    expect(wrapped).toBe(fresh);
+    expect(callWrap(fresh, host, registryHost)).toBe(fresh);
   });
 
   it('policy PRESENT but extra unknown field → fail-closed (strict schema)', () => {
@@ -217,24 +203,16 @@ describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
       ]),
     });
 
-    const wrapped = wrapAgentLoopAdapterIfEnabled(
-      fresh,
-      PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
-      registryHost,
-      {
-        agentLoopHost: host,
-        strategies: [],
-        assembleCandidates: dummyAssemble,
-      },
-    );
-    expect(wrapped).toBe(fresh);
+    expect(callWrap(fresh, host, registryHost)).toBe(fresh);
   });
 
   it('descriptor NOT registered → returns fresh adapter unchanged regardless of policy', () => {
     // Even with a valid + enabled policy in canon, an unregistered
     // principal goes through the descriptor-not-found short-circuit.
     // This protects against a runner script that consults a registry
-    // missing its expected descriptor.
+    // missing its expected descriptor. NOTE: this case uses a
+    // ghost-actor principal that has no descriptor registered; we
+    // call the bridge directly to override the principal.
     const host = createMemoryHost();
     const fresh = new StubFreshAgentLoopAdapter();
     const registryHost = mkRegistryHost({
@@ -270,17 +248,7 @@ describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
       },
     };
 
-    const wrapped = wrapAgentLoopAdapterIfEnabled(
-      fresh,
-      PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
-      throwingHost,
-      {
-        agentLoopHost: host,
-        strategies: [],
-        assembleCandidates: dummyAssemble,
-      },
-    );
-    expect(wrapped).toBe(fresh);
+    expect(callWrap(fresh, host, throwingHost)).toBe(fresh);
   });
 
   it('removing the policy atom from canon flips back to fresh-spawn (acceptance criterion)', () => {
@@ -298,26 +266,8 @@ describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
     const hostA = mkRegistryHost({ registryHost: host, canonContents: canonStateA });
     const hostB = mkRegistryHost({ registryHost: host, canonContents: canonStateB });
 
-    const wrappedA = wrapAgentLoopAdapterIfEnabled(
-      fresh,
-      PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
-      hostA,
-      {
-        agentLoopHost: host,
-        strategies: [],
-        assembleCandidates: dummyAssemble,
-      },
-    );
-    const wrappedB = wrapAgentLoopAdapterIfEnabled(
-      fresh,
-      PR_FIX_ACTOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
-      hostB,
-      {
-        agentLoopHost: host,
-        strategies: [],
-        assembleCandidates: dummyAssemble,
-      },
-    );
+    const wrappedA = callWrap(fresh, host, hostA);
+    const wrappedB = callWrap(fresh, host, hostB);
 
     // With the policy present, the bridge produces a wrapped adapter
     // distinct from the fresh-spawn instance.

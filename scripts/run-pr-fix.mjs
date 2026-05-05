@@ -78,7 +78,6 @@ import { createGhClient } from '../dist/external/github/index.js';
 import { ClaudeCodeAgentLoopAdapter } from '../dist/examples/agent-loops/claude-code/index.js';
 import {
   buildDefaultRegistry,
-  PR_FIX_ACTOR_PRINCIPAL_ID,
   SameMachineCliResumeStrategy,
   validatePolicy,
   walkAuthorSessionsForPrFix,
@@ -347,9 +346,22 @@ async function main() {
     });
   };
 
+  // Honor `--principal` override end-to-end: the policy cache key
+  // above used `args.principalId`, the wrap call MUST pass the same
+  // principal so the bridge's internal canon read hits the same key.
+  // A mismatch (e.g. cache keyed by the override but wrap keyed by a
+  // hard-coded literal) causes a silent fail-closed because the
+  // bridge looks up the wrong cache key, finds undefined, and falls
+  // through to fresh-spawn. Threading the override through both sites
+  // keeps `--principal pr-fix-actor` (the default) and
+  // `--principal something-else` (an org-ceiling alias) working
+  // identically: both look up `pol-resume-strategy-${principalId}`.
+  // The default registry is keyed by `pr-fix-actor`; an override that
+  // does not match a registered descriptor short-circuits cleanly via
+  // the bridge's descriptor-not-found path (returns the fresh adapter).
   const agentLoopAdapter = wrapAgentLoopAdapterIfEnabled(
     freshAgentLoop,
-    PR_FIX_ACTOR_PRINCIPAL_ID,
+    args.principalId,
     registryHost,
     {
       agentLoopHost: host,

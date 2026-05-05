@@ -43,6 +43,15 @@ import type { Atom, AtomId } from '../../../src/substrate/types.js';
 import type { Host } from '../../../src/substrate/interface.js';
 import type { CandidateSession } from './types.js';
 
+/**
+ * Branded principal-id literal for `pr-fix-actor`. Centralizes the
+ * cast-and-compare so the synchronous walker's three two-axis principal
+ * checks (start-observation filter, chain-traversal guard, dispatched-
+ * session-principal filter) all reference one symbol per
+ * `dev-extract-helpers-at-n-2`.
+ */
+const PR_FIX_ACTOR_PRINCIPAL: Atom['principal_id'] = 'pr-fix-actor' as Atom['principal_id'];
+
 interface PrIdentity {
   readonly owner: string;
   readonly repo: string;
@@ -225,8 +234,11 @@ export interface PrFixWalkInput {
  * that lacks the namespaced metadata slot is also skipped.
  *
  * Walks via `provenance.derived_from[0]` from the most-recent
- * matching observation (the runner provides them newest-first; the
- * walker picks the first PR-matching one as the chain start). A
+ * matching observation. The walker scans every observation in
+ * `walk.observations` and picks the one with the latest `created_at`
+ * (ISO-8601 lexicographic = chronological); insertion order does NOT
+ * affect correctness, so a runner that supplies observations in any
+ * order still gets the newest matching atom as the chain start. A
  * cycle guard prevents infinite traversal on a malformed
  * derived_from loop.
  *
@@ -243,18 +255,23 @@ export function walkAuthorSessionsForPrFix(
     obsById.set(String(obs.id), obs);
   }
 
-  // Find the chain start: the most-recent observation that matches the
-  // target PR identity AND was authored by pr-fix-actor. The runner
-  // typically supplies observations newest-first, but the walker does
-  // not assume the order; it scans for the first matching atom.
+  // Find the chain start: the most-recent observation matching the
+  // target PR identity AND authored by pr-fix-actor. The walker scans
+  // every observation and selects the one with the latest `created_at`
+  // (ISO-8601 lexicographic = chronological) so insertion order does
+  // NOT affect correctness; a runner that supplies observations in
+  // any order still produces the newest matching atom as the chain
+  // start, preserving the order-agnostic contract documented in this
+  // function's JSDoc.
   let start: Atom | undefined;
   for (const obs of walk.observations) {
-    if (obs.principal_id !== ('pr-fix-actor' as Atom['principal_id'])) continue;
+    if (obs.principal_id !== PR_FIX_ACTOR_PRINCIPAL) continue;
     const id = readPrIdentity(obs);
     if (id === undefined) continue;
     if (!samePr(walk.prIdentity, id)) continue;
-    start = obs;
-    break;
+    if (start === undefined || String(obs.created_at).localeCompare(String(start.created_at)) > 0) {
+      start = obs;
+    }
   }
   if (start === undefined) return [];
 
@@ -274,7 +291,7 @@ export function walkAuthorSessionsForPrFix(
     // Two-axis filter, second axis: principal scope. The chain MUST
     // remain within pr-fix-actor's atoms; if a sibling principal
     // somehow appears on the chain, halt.
-    if (current.principal_id !== ('pr-fix-actor' as Atom['principal_id'])) break;
+    if (current.principal_id !== PR_FIX_ACTOR_PRINCIPAL) break;
 
     const obsMeta = current.metadata as Record<string, unknown>;
     const prFix = obsMeta['pr_fix_observation'] as Record<string, unknown> | undefined;
@@ -287,7 +304,7 @@ export function walkAuthorSessionsForPrFix(
           // pr-fix-actor's. A mismatched session atom (e.g., one
           // accidentally referenced from another principal's
           // observation) is skipped silently per spec section 8.3.
-          if (sessionAtom.principal_id === ('pr-fix-actor' as Atom['principal_id'])) {
+          if (sessionAtom.principal_id === PR_FIX_ACTOR_PRINCIPAL) {
             const candidate = asCandidate(sessionAtom);
             if (candidate !== undefined) {
               candidates.push(candidate);
