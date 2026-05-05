@@ -451,6 +451,177 @@ export async function probeOrphanedPrByBranch({
   return { number, htmlUrl: url };
 }
 
+/**
+ * Parse a GitHub remote URL into `{ owner, repo }`.
+ *
+ * Accepts the two forms `git remote get-url origin` actually emits in
+ * this codebase:
+ *   - https://github.com/<owner>/<repo>(.git)?
+ *   - git@github.com:<owner>/<repo>(.git)?
+ *
+ * The transient x-access-token form
+ * (`https://x-access-token:<token>@github.com/...`) is also accepted
+ * so a worktree whose remote was rewritten in-place by a previous
+ * dispatch (the historical -u footgun fixed in PR #169) still parses
+ * cleanly. The userinfo is stripped before the path component is
+ * matched.
+ *
+ * Returns `null` for any non-GitHub URL, malformed input, or empty
+ * owner/repo. The caller treats null as "could not verify", which
+ * the sanity check below converts into a fail-fast escalation rather
+ * than a silent skip; an unparseable remote is a strong signal that
+ * the dispatch is not pointed at the configured repo.
+ */
+export function parseGitHubRemoteUrl(url) {
+  if (typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return null;
+  // HTTPS form (with optional userinfo for the x-access-token rewrite
+  // path). The userinfo is captured loosely so a token containing
+  // `:` does not break the parse; we discard it either way.
+  const httpsMatch = /^https:\/\/(?:[^@/]+@)?github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/.exec(trimmed);
+  if (httpsMatch) {
+    const owner = httpsMatch[1];
+    const repo = httpsMatch[2];
+    if (owner.length === 0 || repo.length === 0) return null;
+    return { owner, repo };
+  }
+  // SSH form. Single-pattern: `git@github.com:<owner>/<repo>(.git)?`.
+  const sshMatch = /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/.exec(trimmed);
+  if (sshMatch) {
+    const owner = sshMatch[1];
+    const repo = sshMatch[2];
+    if (owner.length === 0 || repo.length === 0) return null;
+    return { owner, repo };
+  }
+  return null;
+}
+
+/**
+ * Verify that the local checkout at `repoDir` points at the same
+ * `(owner, repo)` the dispatcher resolved upstream (via `gh repo view`
+ * or the `GH_REPO` env var).
+ *
+ * Why this exists
+ * ---------------
+ * The dispatch chain reads `repoDir = resolve(LAG_REPO_DIR ?? process.cwd())`
+ * and resolves `(owner, repo)` separately through `resolveOwnerRepo`.
+ * Those two reads can disagree:
+ *   - `LAG_REPO_DIR` env var leaked from a sibling shell pointing at a
+ *     different checkout;
+ *   - `process.cwd()` is a different repo because the operator invoked
+ *     run-cto-actor.mjs from one;
+ *   - `GH_REPO` env or `gh repo view` returns a stale value (e.g. the
+ *     gh CLI pointed at an unrelated active repo);
+ *   - `repoDir`'s `origin` remote was reconfigured to a non-target
+ *     repo without re-running the dispatch wiring.
+ *
+ * On every one of those paths the executor would acquire a worktree
+ * off the wrong checkout, the drafter would see no relevant tree, and
+ * the dispatch silently no-ops with `drafter-emitted-empty-diff`. The
+ * guard fails closed at register-time so the operator sees the
+ * mismatch immediately instead of after a billable LLM call.
+ *
+ * Pure-function shape
+ * -------------------
+ * The reader is injected so tests can pin every branch without
+ * spawning git. `gitRemoteUrlReader(repoDir)` returns the URL string
+ * (typically the stdout of `git remote get-url origin`), or `null`
+ * when no `origin` remote is configured. Throwing is also valid; the
+ * caller maps any exception to a fail-closed result.
+ *
+ * Returns `{ ok: true }` on match, or `{ ok: false, reason }` on any
+ * fail-closed condition. The reason string is operator-facing prose.
+ */
+export async function verifyDispatchRepoIdentity({
+  repoDir,
+  expectedOwner,
+  expectedRepo,
+  gitRemoteUrlReader,
+}) {
+  if (typeof repoDir !== 'string' || repoDir.length === 0) {
+    return {
+      ok: false,
+      reason: 'repoDir must be a non-empty string',
+    };
+  }
+  if (typeof expectedOwner !== 'string' || expectedOwner.length === 0) {
+    return {
+      ok: false,
+      reason: 'expectedOwner must be a non-empty string',
+    };
+  }
+  if (typeof expectedRepo !== 'string' || expectedRepo.length === 0) {
+    return {
+      ok: false,
+      reason: 'expectedRepo must be a non-empty string',
+    };
+  }
+  if (typeof gitRemoteUrlReader !== 'function') {
+    return {
+      ok: false,
+      reason: 'gitRemoteUrlReader must be a function',
+    };
+  }
+  let url;
+  try {
+    url = await gitRemoteUrlReader(repoDir);
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      reason: `git remote get-url origin failed for repoDir='${repoDir}': ${cause}. `
+        + `The dispatcher resolved ${expectedOwner}/${expectedRepo} via gh repo view / GH_REPO, `
+        + 'but the local checkout has no readable origin. Set LAG_REPO_DIR to the correct '
+        + 'checkout or configure the origin remote before dispatching.',
+    };
+  }
+  if (url === null || (typeof url === 'string' && url.length === 0)) {
+    return {
+      ok: false,
+      reason: `repoDir='${repoDir}' has no 'origin' remote configured. `
+        + `The dispatcher resolved ${expectedOwner}/${expectedRepo} via gh repo view / GH_REPO; `
+        + 'an unconfigured origin means the dispatch would push to a remote the resolved '
+        + "owner/repo can't authenticate. Add 'origin' or set LAG_REPO_DIR to the right checkout.",
+    };
+  }
+  const parsed = parseGitHubRemoteUrl(url);
+  if (parsed === null) {
+    return {
+      ok: false,
+      reason: `repoDir='${repoDir}' origin remote url '${url}' is not a parseable GitHub URL. `
+        + 'Supported shapes: https://github.com/owner/repo[.git] or git@github.com:owner/repo[.git]. '
+        + 'The dispatch flow ships only against GitHub-hosted repos; reconfigure origin or fix '
+        + 'LAG_REPO_DIR.',
+    };
+  }
+  // Case-insensitive comparison: GitHub treats owner/repo as case-
+  // insensitive in both REST API path params and clone URLs (a user
+  // who cloned `https://github.com/StephenGardner/Layered-Autonomous-
+  // Governance.git` and a `gh repo view` returning the canonical
+  // lowercase form must compare equal). A strict-equal check would
+  // false-flag the mixed-case clone as a wrong-repo dispatch and
+  // block the operator from running until they re-cloned with
+  // matching casing -- exactly the kind of papercut this guard
+  // exists to prevent, not produce.
+  if (
+    parsed.owner.toLowerCase() !== expectedOwner.toLowerCase()
+    || parsed.repo.toLowerCase() !== expectedRepo.toLowerCase()
+  ) {
+    return {
+      ok: false,
+      reason: `repoDir='${repoDir}' origin remote points at ${parsed.owner}/${parsed.repo}, `
+        + `but the dispatcher resolved ${expectedOwner}/${expectedRepo} via gh repo view / GH_REPO. `
+        + 'These MUST agree: the executor acquires its workspace off this checkout and pushes '
+        + 'with credentials minted for the resolved owner/repo, so a mismatch means the LLM '
+        + 'sees the wrong tree (silent-skip / drafter-emitted-empty-diff) and the push would '
+        + "land on the wrong remote. Either re-run with LAG_REPO_DIR pointing at the correct "
+        + 'checkout, or correct GH_REPO so it matches the local origin.',
+    };
+  }
+  return { ok: true };
+}
+
 function rewriteGitRemoteArg(args, token, repoOwner, repoName) {
   if (!Array.isArray(args)) return null;
   const valueTaking = new Set(['-c', '-C']);
