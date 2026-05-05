@@ -21,6 +21,7 @@ import {
 } from '@/services/atoms.service';
 import { atomTypeTone } from '@/features/atom-type-tones/tones';
 import { StageContextPanel } from '@/features/stage-context/StageContextPanel';
+import { AuditChainView } from '@/features/audit-chain/AuditChainView';
 import {
   routeForAtomId,
   routeHref,
@@ -228,6 +229,8 @@ function AtomDetailBody({ atom }: { atom: AnyAtom }) {
       <Renderer atom={atom} />
 
       <StageContextPanel atomId={atom.id} />
+
+      <AuditChainView atomId={atom.id} />
 
       <RefList
         title="Derived from"

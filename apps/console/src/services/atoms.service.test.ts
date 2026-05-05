@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getAtomById, listReferencers } from './atoms.service';
+import { getAtomById, listReferencers, getAuditChain } from './atoms.service';
 import { transport } from './transport';
 
 /*
@@ -136,5 +136,74 @@ describe('listReferencers (atom-wide)', () => {
     vi.spyOn(transport, 'call').mockResolvedValue([]);
     const out = await listReferencers('orphan-atom');
     expect(out).toEqual([]);
+  });
+});
+
+/*
+ * `getAuditChain` wraps transport.call('atoms.audit-chain'). The
+ * audit-chain projection returns { atoms, edges, truncated }; the
+ * service wrapper passes max_depth through when supplied and folds
+ * the 404 atom-not-found case to null so the caller can render a
+ * targeted empty state.
+ */
+describe('getAuditChain', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns the audit-chain payload from a successful call', async () => {
+    const payload = {
+      atoms: [
+        { id: 'seed', type: 'plan', layer: 'L0', content: '', principal_id: 'cto-actor', confidence: 0.9, created_at: '2026-04-29T00:00:00Z' },
+        { id: 'parent', type: 'spec-output', layer: 'L0', content: '', principal_id: 'spec-author', confidence: 0.9, created_at: '2026-04-29T00:00:00Z' },
+      ],
+      edges: [{ from: 'seed', to: 'parent' }],
+      truncated: { depth_reached: false, missing_ancestors: 0 },
+    };
+    const mock = vi.spyOn(transport, 'call').mockResolvedValue(payload);
+    const out = await getAuditChain('seed');
+    expect(out).toEqual(payload);
+    expect(mock).toHaveBeenCalledWith(
+      'atoms.audit-chain',
+      { atom_id: 'seed' },
+      undefined,
+    );
+  });
+
+  it('passes max_depth + abort signal through to transport when provided', async () => {
+    const ctrl = new AbortController();
+    const mock = vi.spyOn(transport, 'call').mockResolvedValue({
+      atoms: [],
+      edges: [],
+      truncated: { depth_reached: false, missing_ancestors: 0 },
+    });
+    await getAuditChain('seed', { max_depth: 3, signal: ctrl.signal });
+    expect(mock).toHaveBeenCalledWith(
+      'atoms.audit-chain',
+      { atom_id: 'seed', max_depth: 3 },
+      { signal: ctrl.signal },
+    );
+  });
+
+  it('returns null when the backend reports atom-not-found (Error.name)', async () => {
+    const err = new Error('atom-not-found: no atom with id mystery');
+    err.name = 'atom-not-found';
+    vi.spyOn(transport, 'call').mockRejectedValue(err);
+    const out = await getAuditChain('mystery');
+    expect(out).toBeNull();
+  });
+
+  it('returns null when the message starts with atom-not-found (legacy shape)', async () => {
+    const err = new Error('atom-not-found: legacy shape');
+    vi.spyOn(transport, 'call').mockRejectedValue(err);
+    const out = await getAuditChain('mystery');
+    expect(out).toBeNull();
+  });
+
+  it('rethrows other transport errors (network, 500)', async () => {
+    const err = new Error('http-500: server crashed');
+    err.name = 'http-500';
+    vi.spyOn(transport, 'call').mockRejectedValue(err);
+    await expect(getAuditChain('seed')).rejects.toThrow(/http-500/);
   });
 });
