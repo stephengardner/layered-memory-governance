@@ -1,0 +1,66 @@
+/*
+ * Tokenized styles for the Live Ops freshness badge. Co-located with
+ * the component so the file is single-feature-grouped, and so the
+ * shared values (gap, dot size, pulse keyframe) read alongside the
+ * component that consumes them.
+ *
+ * No hardcoded px / hex / rgba -- every primitive resolves through a
+ * design token. Stylelint enforces this; CR also flagged the prior
+ * inline-style approach for the same reason.
+ */
+
+@keyframes liveOpsStatusPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.45);
+    opacity: 0.4;
+  }
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.01em;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-pill);
+  display: inline-block;
+}
+
+.badge[data-state='running'] .dot {
+  background: var(--status-success);
+  /*
+   * The pulse cadence (~1.6s) intentionally exceeds the design-token
+   * --duration-slow (320ms) by an order of magnitude -- those tokens
+   * govern UI transitions, not infinite animations. Hardcoding the
+   * literal here is the right call rather than minting a single-use
+   * "--duration-pulse" token.
+   */
+  animation: liveOpsStatusPulse 1600ms ease-in-out infinite;
+}
+
+.badge[data-state='idle'] .dot {
+  background: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .badge[data-state='running'] .dot {
+    animation: none;
+  }
+}

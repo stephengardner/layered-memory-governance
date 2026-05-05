@@ -29,6 +29,7 @@ import { storage } from '@/services/storage.service';
 import { toErrorMessage } from '@/services/errors';
 import { isOperatorTrackingDisabled } from './pulseTrackingDisabled';
 import styles from './LiveOpsView.module.css';
+import { LiveOpsStatusBadge } from './LiveOpsStatusBadge';
 
 /**
  * LiveOpsView - the "everything happening right now" dashboard.
@@ -46,6 +47,36 @@ import styles from './LiveOpsView.module.css';
  */
 
 const REFRESH_INTERVAL_MS = 2000;
+
+/*
+ * Until the snapshot payload carries `most_recent_agent_turn_at`
+ * directly (server-side change deferred to a follow-up PR -- see
+ * apps/console/server/live-ops-types.ts), derive the timestamp from
+ * `active_sessions[].last_turn_at`. Any turn fresh enough to flip
+ * the badge to Running (<60s) is by definition inside the 15-minute
+ * `ACTIVE_SESSION_TURN_WINDOW_MS` window the server already filters
+ * on, so this approximation is exact for the freshness threshold.
+ */
+function mostRecentAgentTurnFromSnapshot(
+  data: LiveOpsSnapshot | undefined,
+): string | null {
+  if (!data) return null;
+  // Compare parsed epoch values rather than strings: ISO strings with
+  // different precision/offset variants (`...Z` vs `...+00:00`, sub-
+  // millisecond suffixes, etc.) can mis-order under lexicographic
+  // comparison. The original ISO string is preserved on `best` so the
+  // returned value still flows through computeLiveOpsStatus's parser.
+  let best: string | null = null;
+  let bestTs = Number.NEGATIVE_INFINITY;
+  for (const session of data.active_sessions) {
+    const ts = session.last_turn_at ? Date.parse(session.last_turn_at) : NaN;
+    if (Number.isFinite(ts) && ts > bestTs) {
+      bestTs = ts;
+      best = session.last_turn_at;
+    }
+  }
+  return best;
+}
 
 export function LiveOpsView() {
   const query = useQuery({
@@ -65,6 +96,9 @@ export function LiveOpsView() {
             Refreshes every {REFRESH_INTERVAL_MS / 1000}s while this tab is open.
           </p>
         </div>
+        <LiveOpsStatusBadge
+          mostRecentAgentTurnAt={mostRecentAgentTurnFromSnapshot(query.data)}
+        />
         <PulseIndicator
           fetching={query.isFetching}
           computedAt={query.data?.computed_at ?? null}
