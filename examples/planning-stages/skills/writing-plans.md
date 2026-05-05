@@ -107,10 +107,10 @@ parsing markdown.
 ### Path-enumeration worked example
 
 Suppose your plan introduces two strategies behind an existing
-registry, with a test for each, and a CLI flag wired through the
-runner. The deliverable set is exactly five files. A correctly
-scoped plan body lists every one as the path target on its own step
-line:
+registry, with a test for each. The deliverable set is exactly
+five files: the two strategy implementations, the registry edit
+that wires them, and the two tests. A correctly scoped plan body
+lists every one as the path target on its own step line:
 
 ```markdown
 ## Concrete steps
