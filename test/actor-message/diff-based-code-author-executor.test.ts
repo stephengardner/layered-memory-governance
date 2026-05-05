@@ -1650,4 +1650,82 @@ describe('verifyCitedPaths', () => {
     }
     await cleanup();
   });
+
+  it('accepts a citation that matches a target path even when the file does not yet exist', async () => {
+    // Regression: the autonomous-dispatch drafter rejected any plan
+    // that introduced new files because verifyCitedPaths checked only
+    // working-tree existence. With `targetPaths` forwarded, a citation
+    // matching a declared target path is accepted as a to-be-created
+    // file -- the plan's diff is the ground truth, and the path will
+    // exist after the diff applies. Confirms Option B from the fix
+    // spec: extend verifyCitedPaths with a targetPaths arg, no new
+    // schema field on cited_paths entries.
+    const r = await verifyCitedPaths(
+      ['test/e2e/new-spec.test.ts'],
+      tmp,
+      ['test/e2e/new-spec.test.ts'],
+    );
+    expect(r).toEqual({ kind: 'ok' });
+    await cleanup();
+  });
+
+  it('still rejects a citation that does NOT match any target path and does not exist', async () => {
+    // Discipline: targetPaths is exact-match only. A citation outside
+    // the declared target set still hits the existence check; the
+    // hallucination guard is preserved for paths the drafter pulled
+    // out of thin air.
+    const r = await verifyCitedPaths(
+      ['docs/imaginary.md'],
+      tmp,
+      ['test/e2e/new-spec.test.ts'],
+    );
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).toContain('does not exist');
+      expect(r.message).toContain('"docs/imaginary.md"');
+    }
+    await cleanup();
+  });
+
+  it('still rejects a path-traversal attempt even when listed in targetPaths', async () => {
+    // The targetPaths bypass loosens the existence check only.
+    // Path-traversal + absolute-path + empty-string guards still
+    // apply: a malformed plan that declares `../etc/passwd` as a
+    // target cannot launder it through into a citation.
+    const r = await verifyCitedPaths(
+      ['../etc/passwd'],
+      tmp,
+      ['../etc/passwd'],
+    );
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).toContain('escapes the repository root');
+    }
+    await cleanup();
+  });
+
+  it('accepts a mix of existing citations and to-be-created targetPath citations', async () => {
+    // Real-world shape: a plan modifies an existing file AND creates
+    // a new one, citing both. The verifier accepts both; existing
+    // ones via fs.access, to-be-created via targetPaths membership.
+    const r = await verifyCitedPaths(
+      ['README.md', 'src/runtime/new-strategy.ts'],
+      tmp,
+      ['src/runtime/new-strategy.ts'],
+    );
+    expect(r).toEqual({ kind: 'ok' });
+    await cleanup();
+  });
+
+  it('back-compat: verifyCitedPaths called without targetPaths still rejects missing paths', async () => {
+    // Default-arg behaviour: callers that pre-date the targetPaths
+    // arg continue to get strict existence enforcement. No silent
+    // loosening of the gate for code paths that have not opted in.
+    const r = await verifyCitedPaths(['docs/missing.md'], tmp);
+    expect(r.kind).toBe('error');
+    if (r.kind === 'error') {
+      expect(r.message).toContain('does not exist');
+    }
+    await cleanup();
+  });
 });

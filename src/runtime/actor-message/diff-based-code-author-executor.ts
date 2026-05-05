@@ -403,9 +403,17 @@ export function buildDiffBasedCodeAuthorExecutor(
         // is resolved against repoDir and rejected if it escapes.
         // Empty `cited_paths` is the back-compat path (drafter
         // declared no citations) and skips the gate.
+        //
+        // `targetPaths` is forwarded so a citation that matches a
+        // path the plan WILL CREATE OR MODIFY is accepted even when
+        // it does not yet exist on the working tree. Without this,
+        // any plan that introduces a new file (e.g. a new test, a
+        // new strategy module) would be rejected at the fence
+        // because its declared target citation cannot resolve.
         const citationVerifyResult = await verifyCitedPaths(
           draftResult.citedPaths,
           repoDirArg,
+          targetPaths,
         );
         if (citationVerifyResult.kind === 'error') {
           return {
@@ -617,14 +625,28 @@ export function buildSelfCorrectingPrompt({
  *
  * Empty `citedPaths` is the back-compat path: drafter declared no
  * citations, nothing to verify, return ok.
+ *
+ * `targetPaths` (optional) lists paths the plan declared it WILL
+ * CREATE OR MODIFY. A citation that matches a target path is
+ * accepted even when it does not yet exist on the working tree:
+ * the plan's diff is the ground truth for that path's future
+ * existence, and rejecting the citation would block any plan that
+ * introduces a new file. Path-traversal + absolute-path + empty-
+ * string guards still apply -- the bypass only loosens the
+ * existence check, never the safety checks. Comparison is exact-
+ * string match against `targetPaths`; callers normalising paths
+ * (e.g. trimming trailing separators) must do so before reaching
+ * this boundary so the set is consistent with `+++ b/<path>`.
  */
 export async function verifyCitedPaths(
   citedPaths: ReadonlyArray<string>,
   repoDir: string,
+  targetPaths: ReadonlyArray<string> = [],
 ): Promise<{ kind: 'ok' } | { kind: 'error'; message: string }> {
   if (citedPaths.length === 0) return { kind: 'ok' };
   const repoRoot = resolve(repoDir);
   const repoRootWithSep = repoRoot.endsWith(sep) ? repoRoot : repoRoot + sep;
+  const targetSet = new Set(targetPaths);
   for (const cited of citedPaths) {
     if (typeof cited !== 'string' || cited.length === 0) {
       return {
@@ -645,6 +667,13 @@ export async function verifyCitedPaths(
         message: `cited_paths entry escapes the repository root: ${JSON.stringify(cited)}`,
       };
     }
+    // A citation that matches a declared target path is the plan's
+    // intent to create-or-modify that path. The diff is the ground
+    // truth for the path's future state; the existence check would
+    // reject any plan introducing a new file. Skip the access call
+    // for these entries; the path-traversal + absolute + empty-
+    // string guards above still apply.
+    if (targetSet.has(cited)) continue;
     try {
       await access(resolved);
     } catch {

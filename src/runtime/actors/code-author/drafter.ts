@@ -261,7 +261,10 @@ export const DRAFT_SYSTEM_PROMPT = [
   '   derived from the diff headers. Omit the field, or emit an empty array, when prose',
   '   makes no path citations. The caller verifies each entry against the working tree;',
   '   a citation that does not exist is treated as confabulation and rejected. If you are',
-  '   unsure a path exists, omit the citation rather than guess.',
+  '   unsure a path exists, omit the citation rather than guess. A citation that matches',
+  '   a path in the DATA block\'s `target_paths` array is accepted even when the path does',
+  '   not yet exist (the plan declared it will be created); use this to cite a new file',
+  '   the diff is itself introducing.',
 ].join('\n');
 
 interface JudgeDraftOutput {
