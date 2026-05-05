@@ -349,9 +349,8 @@ function formatTickReport(report: LoopTickReport): string {
       : '';
   // Only render plan-* segments when the corresponding pass actually
   // ran this tick (report field non-null). A disabled pass stays
-  // invisible in the per-tick stdout to keep the line scannable on
-  // the indie-floor where these defaults are on but commonly
-  // produce zero work.
+  // invisible in the per-tick stdout to keep the line scannable when
+  // these defaults are on but commonly produce zero work.
   const reconcile =
     report.planReconcileReport !== null
       ? ` reconcile(matched=${report.planReconcileReport.matched}/transitioned=${report.planReconcileReport.transitioned})`

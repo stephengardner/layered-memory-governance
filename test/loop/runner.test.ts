@@ -745,7 +745,7 @@ describe('LoopRunner.tick plan-observation refresh integration', () => {
     expect(refreshCalls).toBe(0);
   });
 
-  it('enabled-but-refresher-absent silently skips and does not transition', async () => {
+  it('enabled-but-refresher-absent silently skips and warns ONCE across many ticks', async () => {
     const host = createMemoryHost();
     await host.atoms.put(
       samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
@@ -756,7 +756,7 @@ describe('LoopRunner.tick plan-observation refresh integration', () => {
         observed_at: '2026-04-29T00:00:00.000Z',
       }),
     );
-    // Capture stderr so we can assert the once-per-tick gap warning.
+    // Capture stderr so we can assert the once-per-runner gap warning.
     const original = console.error;
     const captured: string[] = [];
     console.error = (...args: unknown[]) => {
@@ -768,13 +768,17 @@ describe('LoopRunner.tick plan-observation refresh integration', () => {
         runPlanObservationRefreshPass: true,
         // No prObservationRefresher supplied.
       });
-      const report = await runner.tick();
-      expect(report.planObservationRefreshReport).toBeNull();
-      expect(
-        captured.some(
-          (l) => l.includes('[plan-obs-refresh]') && l.includes('no prObservationRefresher seam'),
-        ),
-      ).toBe(true);
+      // Run 5 ticks. Long-running daemons would otherwise flood stderr
+      // at 1440 warnings/day on a 60s interval; the once-per-runner
+      // latch caps it at one.
+      for (let i = 0; i < 5; i += 1) {
+        const report = await runner.tick();
+        expect(report.planObservationRefreshReport).toBeNull();
+      }
+      const gapWarnings = captured.filter(
+        (l) => l.includes('[plan-obs-refresh]') && l.includes('no prObservationRefresher seam'),
+      );
+      expect(gapWarnings.length).toBe(1);
     } finally {
       console.error = original;
     }

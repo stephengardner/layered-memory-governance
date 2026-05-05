@@ -114,12 +114,19 @@ export class LoopRunner {
   /**
    * Refresher seam for the pr-observation refresh pass. `null` when
    * the pass is disabled OR when the caller did not wire a refresher
-   * (the silent-skip path; the tick loop logs the gap once per tick).
-   * The framework consumes the adapter only through the
-   * `PrObservationRefresher` interface; concrete construction
-   * happens outside framework code.
+   * (the silent-skip path). The framework consumes the adapter only
+   * through the `PrObservationRefresher` interface; concrete
+   * construction happens outside framework code.
    */
   private readonly prObservationRefresher: PrObservationRefresher | null;
+  /**
+   * Latch for the once-per-runner gap-warning when the refresh pass
+   * is enabled but no refresher seam was supplied. Daemons can run
+   * for days; the warning fires on the FIRST silent-skip tick only,
+   * subsequent ticks stay quiet so a misconfigured run does not
+   * flood stderr. Reset is implicit on runner re-construction.
+   */
+  private warnedMissingRefresher: boolean = false;
   private tickCounter: number = 0;
   private errorCounter: number = 0;
   private lastReport: LoopTickReport | null = null;
@@ -381,12 +388,17 @@ export class LoopRunner {
     // null; other passes continue.
     if (this.options.runPlanObservationRefreshPass) {
       if (this.prObservationRefresher === null) {
-        // eslint-disable-next-line no-console
-        console.error(
-          '[plan-obs-refresh] WARN: runPlanObservationRefreshPass=true but no '
-            + 'prObservationRefresher seam supplied; pass is skipped this tick. '
-            + 'Wire one through LoopOptions.prObservationRefresher to activate.',
-        );
+        if (!this.warnedMissingRefresher) {
+          this.warnedMissingRefresher = true;
+          // eslint-disable-next-line no-console
+          console.error(
+            '[plan-obs-refresh] WARN: runPlanObservationRefreshPass=true but no '
+              + 'prObservationRefresher seam supplied; pass is skipped this tick. '
+              + 'Wire one through LoopOptions.prObservationRefresher to activate. '
+              + '(This warning is logged once per runner; subsequent silent-skip '
+              + 'ticks stay quiet.)',
+          );
+        }
       } else {
         try {
           planObservationRefreshReport = await this.planObservationRefreshPass(
