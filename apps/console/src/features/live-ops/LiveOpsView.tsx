@@ -26,6 +26,7 @@ import { setRoute } from '@/state/router.store';
 import { planStateTone } from '@/features/plan-state/tones';
 import { pipelineStateTone } from '@/features/pipelines-viewer/tones';
 import { storage } from '@/services/storage.service';
+import { toErrorMessage } from '@/services/errors';
 import { isOperatorTrackingDisabled } from './pulseTrackingDisabled';
 import styles from './LiveOpsView.module.css';
 
@@ -243,9 +244,19 @@ function PipelinesTile() {
         </p>
       )}
       {query.isError && (
-        <p className={styles.empty} data-testid="live-ops-pipelines-error">
-          Could not load pipelines snapshot.
-        </p>
+        /*
+         * Earlier this rendered <p className={styles.empty}> with the
+         * same muted-italic styling as the empty state - an error
+         * looked indistinguishable from "no pipelines yet". The
+         * canonical ErrorState surfaces a danger-toned title +
+         * monospace detail so the operator sees the failure for what
+         * it is.
+         */
+        <ErrorState
+          title="Failed to load pipelines"
+          message={toErrorMessage(query.error)}
+          testId="live-ops-pipelines-error"
+        />
       )}
       {query.isSuccess && rows.length === 0 && (
         <EmptyRow testId="live-ops-pipelines-empty">

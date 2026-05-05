@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchActorActivity, type ActorActivityEntry } from '@/services/actor-activity.service';
+import { toErrorMessage } from '@/services/errors';
+import { ErrorState } from '@/components/state-display/StateDisplay';
 import { routeForAtomId, setRoute } from '@/state/router.store';
 import styles from './PrincipalActivity.module.css';
 
@@ -44,12 +46,22 @@ export function PrincipalActivity({ principalId, limit = 25 }: Props) {
   }
 
   if (query.isError) {
+    /*
+     * ErrorState is the canonical primitive for query failures
+     * (per dev-web-state-tones equivalent). Earlier this rendered a
+     * bespoke <p className={styles.error}> that drifted from the
+     * shared design - a flat "Could not load activity: <message>"
+     * paragraph instead of the title + monospace-detail card every
+     * other view uses.
+     */
     return (
       <section className={styles.section} data-testid="principal-activity-error">
         <h3 className={styles.heading}>Recent activity</h3>
-        <p className={styles.error}>
-          Could not load activity: {query.error instanceof Error ? query.error.message : String(query.error)}
-        </p>
+        <ErrorState
+          title="Failed to load activity"
+          message={toErrorMessage(query.error)}
+          testId="principal-activity-error-state"
+        />
       </section>
     );
   }

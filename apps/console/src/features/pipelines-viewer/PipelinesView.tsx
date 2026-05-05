@@ -6,6 +6,7 @@ import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { listPipelines, type PipelineSummary } from '@/services/pipelines.service';
+import { toErrorMessage } from '@/services/errors';
 import { storage } from '@/services/storage.service';
 import { setRoute, useRouteId, routeHref } from '@/state/router.store';
 import { PipelineDetailView } from './PipelineDetailView';
@@ -100,7 +101,7 @@ function PipelinesList() {
       {query.isError && (
         <ErrorState
           title="Could not load pipelines"
-          message={query.error instanceof Error ? query.error.message : String(query.error)}
+          message={toErrorMessage(query.error)}
           testId="pipelines-error"
         />
       )}

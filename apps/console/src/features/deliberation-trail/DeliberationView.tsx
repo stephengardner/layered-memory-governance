@@ -15,6 +15,7 @@ import {
   type DeliberationSummary,
   type DeliberationDetail,
 } from '@/services/deliberation.service';
+import { toErrorMessage } from '@/services/errors';
 import { planStateTone } from '@/features/plan-state/tones';
 import {
   routeForAtomId,
@@ -75,7 +76,7 @@ function DeliberationList() {
       {query.isError && (
         <ErrorState
           title="Could not load deliberation trail"
-          message={query.error instanceof Error ? query.error.message : String(query.error)}
+          message={toErrorMessage(query.error)}
           testId="deliberation-error"
         />
       )}
@@ -196,7 +197,7 @@ function DeliberationDetailView({ planId }: { planId: string }) {
     return (
       <ErrorState
         title="Could not load deliberation"
-        message={query.error instanceof Error ? query.error.message : String(query.error)}
+        message={toErrorMessage(query.error)}
         testId="deliberation-detail-error"
       />
     );

@@ -8,6 +8,7 @@ import {
 } from '@/services/principals.service';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
+import { toErrorMessage } from '@/services/errors';
 import { setRoute } from '@/state/router.store';
 import styles from './PrincipalTreeView.module.css';
 
@@ -113,7 +114,7 @@ export function PrincipalTreeView() {
       {query.isError && (
         <ErrorState
           title="Could not load hierarchy"
-          message={query.error instanceof Error ? query.error.message : String(query.error)}
+          message={toErrorMessage(query.error)}
           testId="principal-tree-error"
         />
       )}

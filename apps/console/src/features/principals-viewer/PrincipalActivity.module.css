@@ -41,14 +41,6 @@
   color: var(--text-secondary);
 }
 
-.error {
-  margin: 0;
-  font-size: var(--font-size-sm);
-  color: var(--status-danger);
-  overflow-wrap: break-word;
-  overflow-wrap: anywhere;
-}
-
 .skeleton {
   height: 8rem;
   border-radius: var(--radius-sm);
