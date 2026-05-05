@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { AlertTriangle, CheckCircle2, ExternalLink, FileCheck, GitBranch, GitMerge, GitPullRequest, MinusCircle, Send, ShieldAlert, XCircle } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import {
@@ -43,14 +43,25 @@ export function PipelineLifecycle({ pipelineId }: { pipelineId: string }) {
     queryKey: ['pipeline', pipelineId, 'lifecycle'],
     queryFn: ({ signal }) => getPipelineLifecycle(pipelineId, signal),
     refetchInterval: (queryState) => {
-      // Stop polling once the pipeline has reached merged/closed terminal.
-      // 'merge' is the canonical settled signal; if the row exists with
-      // a target_plan_state we are done. Otherwise poll every 10s.
-      if (queryState.state.error) return false;
+      // Polling rules:
+      //   - On a recoverable 404 (pipeline-not-found from a yet-to-dispatch
+      //     pipeline), keep polling. The endpoint will start returning
+      //     a populated envelope once a dispatch-record lands.
+      //   - On any other error, back off so a transport problem doesn't
+      //     hammer the backend.
+      //   - On data: stop polling once a merge row of any shape exists
+      //     (settled atom OR synthesized from a pr-observation reporting
+      //     pr_state=MERGED). Both shapes are terminal for this surface.
+      //   - Otherwise poll every 10s while the pipeline is still in flight.
+      const err = queryState.state.error;
+      if (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('pipeline-not-found')) return 10_000;
+        return false;
+      }
       const data = queryState.state.data;
       if (!data) return 10_000;
-      if (data.merge && data.merge.target_plan_state) return false;
-      // No PR yet: still poll because dispatch may land soon.
+      if (data.merge) return false;
       return 10_000;
     },
     refetchOnWindowFocus: true,
@@ -154,14 +165,25 @@ function Row({
   tone?: 'success' | 'danger' | 'warning' | 'info' | 'muted';
   children?: React.ReactNode;
 }) {
+  // Honor prefers-reduced-motion per dev-web-interaction-quality-no-jank.
+  // useReducedMotion subscribes to the browser preference; when true we
+  // mount the row at its final state and skip the entry animation.
+  // The visual jump is invisible because the rows render once on mount;
+  // operators with motion sensitivity get the static layout immediately.
+  const reduceMotion = useReducedMotion();
+  const motionProps = reduceMotion
+    ? { initial: false, animate: { opacity: 1, y: 0 } }
+    : {
+      initial: { opacity: 0, y: 4 },
+      animate: { opacity: 1, y: 0 },
+      transition: { duration: 0.18 },
+    };
   return (
     <motion.li
       className={styles.row}
       data-testid={testId}
       data-tone={tone ?? 'neutral'}
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18 }}
+      {...motionProps}
     >
       <span className={styles.rowIcon} aria-hidden="true" data-tone={tone ?? 'neutral'}>
         {icon}
@@ -280,28 +302,50 @@ function CodeAuthorRow({ data }: { data: PipelineLifecycleData }) {
       />
     );
   }
+  if (invoked.kind === 'dispatched') {
+    return (
+      <Row
+        testId="pipeline-lifecycle-code-author"
+        icon={<CheckCircle2 size={14} strokeWidth={2} aria-hidden="true" />}
+        label="Code-author invocation"
+        value={invoked.pr_number ? `PR #${invoked.pr_number} opened` : 'dispatched'}
+        tone="success"
+        detail={
+          <>
+            {invoked.commit_sha && (
+              <div className={styles.metaLine}>
+                <span className={styles.metaLabel}>Commit</span>
+                <code className={styles.metaCode}>{invoked.commit_sha.slice(0, 12)}</code>
+                <span className={styles.metaLabel}>At</span>
+                <time dateTime={invoked.at}>{formatRelative(invoked.at)}</time>
+              </div>
+            )}
+            <div className={styles.atomRefRow}>
+              <span className={styles.metaLabel}>Atom</span>
+              <AtomRef id={invoked.atom_id} variant="chip" />
+            </div>
+          </>
+        }
+      />
+    );
+  }
+  // Unknown kind fallback: a malformed atom (kind === null OR an
+  // executor that wrote a kind we don't recognize). Render neutral
+  // rather than misleading success. The substrate's own validators
+  // should ensure this rarely fires; when it does, the operator gets
+  // the atom ref and can drill in to debug.
   return (
     <Row
       testId="pipeline-lifecycle-code-author"
-      icon={<CheckCircle2 size={14} strokeWidth={2} aria-hidden="true" />}
+      icon={<MinusCircle size={14} strokeWidth={2} aria-hidden="true" />}
       label="Code-author invocation"
-      value={invoked.pr_number ? `PR #${invoked.pr_number} opened` : 'dispatched'}
-      tone="success"
+      value={<span className={styles.muted}>unknown executor result</span>}
+      tone="muted"
       detail={
-        <>
-          {invoked.commit_sha && (
-            <div className={styles.metaLine}>
-              <span className={styles.metaLabel}>Commit</span>
-              <code className={styles.metaCode}>{invoked.commit_sha.slice(0, 12)}</code>
-              <span className={styles.metaLabel}>At</span>
-              <time dateTime={invoked.at}>{formatRelative(invoked.at)}</time>
-            </div>
-          )}
-          <div className={styles.atomRefRow}>
-            <span className={styles.metaLabel}>Atom</span>
-            <AtomRef id={invoked.atom_id} variant="chip" />
-          </div>
-        </>
+        <div className={styles.atomRefRow}>
+          <span className={styles.metaLabel}>Atom</span>
+          <AtomRef id={invoked.atom_id} variant="chip" />
+        </div>
       }
     />
   );

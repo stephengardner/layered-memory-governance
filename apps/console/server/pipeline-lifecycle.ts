@@ -107,8 +107,15 @@ function pickPlanAtom(
  * Pick the most recent code-author-invoked observation atom whose
  * metadata.plan_id matches. The executor writes one per dispatch; a
  * re-dispatch produces a fresh atom, so picking the latest gives the
- * live invocation result. Mirrors the latest-wins semantics
- * handlePlanLifecycle uses for the same atom kind.
+ * live invocation result.
+ *
+ * Strict kind filter: ONLY `kind === 'code-author-invoked'` qualifies.
+ * handlePlanLifecycle uses a looser `*-invoked` glob because that
+ * surface stitches every executor's invocation row; this projection
+ * is specifically the post-dispatch lifecycle for the code-author
+ * sub-actor. Accepting other `*-invoked` kinds here would silently
+ * mix pr-fix-invoked / future-actor-invoked into the row and
+ * mislead the operator about which executor opened the PR.
  */
 function pickCodeAuthorInvoked(
   atoms: ReadonlyArray<PipelineLifecycleSourceAtom>,
@@ -119,8 +126,7 @@ function pickCodeAuthorInvoked(
     if (atom.type !== 'observation') continue;
     if (!isCleanLive(atom)) continue;
     const meta = (atom.metadata ?? {}) as Record<string, unknown>;
-    const kind = readString(meta, 'kind');
-    if (kind !== 'code-author-invoked' && (kind === null || !kind.endsWith('-invoked'))) continue;
+    if (readString(meta, 'kind') !== 'code-author-invoked') continue;
     if (readString(meta, 'plan_id') !== planId) continue;
     if (!chosen || atom.created_at > chosen.created_at) chosen = atom;
   }
@@ -472,12 +478,20 @@ export function buildPipelineLifecycle(
   let mergeBlock: PipelineLifecycleMerge | null = null;
   if (mergeAtom) {
     const meta = (mergeAtom.metadata ?? {}) as Record<string, unknown>;
+    // Prefer a commit SHA on the settled atom itself, then fall back
+    // to the head_sha on the latest pr-observation so the operator
+    // doesn't lose the merge commit on the row when the reconciler
+    // doesn't propagate it yet. Earlier shape unconditionally
+    // returned null for the commit, which CR flagged as a regression
+    // for any chain that already has the observation pinned.
+    const commitFromMergeAtom = readString(meta, 'merge_commit_sha')
+      ?? readString(meta, 'head_sha');
     mergeBlock = {
       atom_id: mergeAtom.id,
       plan_id: planId,
       pr_state: readString(meta, 'pr_state'),
       target_plan_state: readString(meta, 'target_plan_state'),
-      merge_commit_sha: null,
+      merge_commit_sha: commitFromMergeAtom ?? observationBlock?.head_sha ?? null,
       settled_at: readString(meta, 'settled_at') ?? mergeAtom.created_at,
       merger_principal_id: mergeAtom.principal_id,
     };

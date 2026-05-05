@@ -377,6 +377,35 @@ describe('buildPipelineLifecycle: code-author-invoked', () => {
     expect(result.code_author_invoked?.stage).toBe('apply-branch/diff-apply-failed');
   });
 
+  it('rejects observation atoms whose kind is a non-code-author *-invoked variant', () => {
+    /*
+     * The pickCodeAuthorInvoked filter MUST be strict on kind. A
+     * future actor (pr-fix, drafter, etc.) may write an atom with
+     * `kind: 'pr-fix-invoked'` against the same plan; if our loose
+     * `*-invoked` glob accepted it, the lifecycle row would silently
+     * surface the wrong executor's result and mislead the operator
+     * about which sub-actor opened the PR.
+     */
+    const plan = atom({
+      id: 'plan-feat-cto-actor-pipeline-strict-kind-0',
+      type: 'plan',
+      created_at: NOW,
+      metadata: { pipeline_id: 'pipeline-strict-kind' },
+    });
+    const wrongKind = atom({
+      id: 'pr-fix-invoked-plan-feat-strict-kind-0',
+      type: 'observation',
+      created_at: NOW,
+      metadata: {
+        kind: 'pr-fix-invoked',
+        plan_id: 'plan-feat-cto-actor-pipeline-strict-kind-0',
+        executor_result: { kind: 'dispatched', pr_number: 999 },
+      },
+    });
+    const result = buildPipelineLifecycle([plan, wrongKind], 'pipeline-strict-kind');
+    expect(result.code_author_invoked).toBeNull();
+  });
+
   it('picks the most recent invocation when a plan was re-dispatched', () => {
     const plan = atom({
       id: 'plan-feat-cto-actor-pipeline-test-7-0',
@@ -551,6 +580,76 @@ describe('buildPipelineLifecycle: pr-observation + merge', () => {
     expect(result.merge?.target_plan_state).toBe('succeeded');
     expect(result.merge?.merger_principal_id).toBe('pr-landing-agent');
     expect(result.merge?.pr_state).toBe('MERGED');
+  });
+
+  it('lifts merge_commit_sha from the settled atom when present', () => {
+    const obs = atom({
+      id: 'pr-observation-with-head-sha',
+      type: 'observation',
+      created_at: NOW,
+      content: 'check-runs: 0',
+      metadata: {
+        kind: 'pr-observation',
+        plan_id: 'plan-feat-cto-actor-pipeline-test-8-0',
+        head_sha: 'observation-sha',
+        pr_state: 'MERGED',
+        merge_state_status: 'CLEAN',
+        observed_at: NOW,
+        counts: { line_comments: 0, body_nits: 0, submitted_reviews: 0, check_runs: 0, legacy_statuses: 0 },
+      },
+    });
+    const settled = atom({
+      id: 'plan-merge-settled-with-commit',
+      type: 'plan-merge-settled',
+      created_at: NOW,
+      principal_id: 'pr-landing-agent',
+      metadata: {
+        plan_id: 'plan-feat-cto-actor-pipeline-test-8-0',
+        pr_state: 'MERGED',
+        target_plan_state: 'succeeded',
+        settled_at: NOW,
+        merge_commit_sha: 'settled-commit-sha',
+      },
+    });
+    const result = buildPipelineLifecycle([plan, obs, settled], 'pipeline-test-8');
+    // Settled atom's merge_commit_sha wins when present.
+    expect(result.merge?.merge_commit_sha).toBe('settled-commit-sha');
+  });
+
+  it('falls back to observation head_sha when settled atom has no commit', () => {
+    const obs = atom({
+      id: 'pr-observation-with-head-fallback',
+      type: 'observation',
+      created_at: NOW,
+      content: 'check-runs: 0',
+      metadata: {
+        kind: 'pr-observation',
+        plan_id: 'plan-feat-cto-actor-pipeline-test-8-0',
+        head_sha: 'observation-fallback-sha',
+        pr_state: 'MERGED',
+        merge_state_status: 'CLEAN',
+        observed_at: NOW,
+        counts: { line_comments: 0, body_nits: 0, submitted_reviews: 0, check_runs: 0, legacy_statuses: 0 },
+      },
+    });
+    const settled = atom({
+      id: 'plan-merge-settled-no-commit',
+      type: 'plan-merge-settled',
+      created_at: NOW,
+      principal_id: 'pr-landing-agent',
+      metadata: {
+        plan_id: 'plan-feat-cto-actor-pipeline-test-8-0',
+        pr_state: 'MERGED',
+        target_plan_state: 'succeeded',
+        settled_at: NOW,
+        // No merge_commit_sha on the settled atom; UI must fall back
+        // to the observation's head_sha so the merged commit is still
+        // visible. Earlier shape returned null here, losing the
+        // operator-relevant identifier on every settled merge.
+      },
+    });
+    const result = buildPipelineLifecycle([plan, obs, settled], 'pipeline-test-8');
+    expect(result.merge?.merge_commit_sha).toBe('observation-fallback-sha');
   });
 
   it('synthesizes a merge block from pr-observation when plan-merge-settled is absent', () => {

@@ -249,10 +249,13 @@
   color: var(--accent);
   text-decoration: none;
   font-weight: var(--font-weight-semibold);
-  /* Mobile floor: tap target meets the 44px minimum even for an
-     inline link. Padding adds vertical chunk without forcing a block
-     layout, and an explicit min-height guarantees the box height. */
-  min-height: 28px;
+  /* Tap-target floor: the 44px min lives in tokens.css as
+     --size-touch-target-min (Apple HIG / Material baseline) and
+     satisfies dev-web-mobile-first-required's tap-target rule for
+     the inline PR link. The Row primitive already provides the
+     visual chunk; this min-height is the explicit guarantee for
+     touch input. */
+  min-height: var(--size-touch-target-min);
 }
 
 .prLink:hover {

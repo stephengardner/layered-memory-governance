@@ -203,18 +203,15 @@ test.describe('pipelines list view', () => {
     await expect(dispatchRow.or(empty)).toBeVisible({ timeout: 10_000 });
 
     // On mobile, if the PR link exists, its tap target meets the 44px
-    // floor (or close to it -- it's an inline link so we only assert
-    // height, not width). Skip when the link is not present.
+    // floor per --size-touch-target-min (Apple HIG / Material baseline).
+    // Skip when the link is not present.
     if (viewport && viewport.width <= 480) {
       const prLink = page.getByTestId('pipeline-lifecycle-pr-link');
       if (await prLink.isVisible().catch(() => false)) {
         const box = await prLink.boundingBox();
         expect(box, 'pr link box').not.toBeNull();
         if (box) {
-          // 28px floor matches the CSS min-height; the row itself is
-          // larger and meets the 44px tap target. The link inside is
-          // a secondary affordance.
-          expect(box.height, 'pr link height >= 28').toBeGreaterThanOrEqual(28);
+          expect(box.height, 'pr link height >= 44').toBeGreaterThanOrEqual(44);
         }
       }
     }
