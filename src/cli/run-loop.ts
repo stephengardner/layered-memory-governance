@@ -23,6 +23,39 @@ import { LoopRunner } from '../loop/runner.js';
 import type { Embedder, Host } from '../interface.js';
 import type { PrincipalId } from '../types.js';
 import type { LoopTickReport } from '../loop/types.js';
+import type { PrObservationRefresher } from '../runtime/plans/pr-observation-refresh.js';
+
+/**
+ * Optional injection point: a deployment-side factory that builds the
+ * PR-observation refresher seam used by the refresh pass. Threading
+ * the factory through here (vs. importing a concrete adapter inside
+ * `src/`) keeps framework code mechanism-only: the CLI module never
+ * knows how a refresher is constructed, only that the deployment
+ * provides one. The bin entrypoint at `bin/lag-run-loop.js` is the
+ * deployment-side wrapper that supplies the factory.
+ *
+ * Returning `null` from the factory (or omitting it entirely)
+ * activates the silent-skip path documented on
+ * `LoopOptions.runPlanObservationRefreshPass`: the pass warns once
+ * per runner and otherwise does no work.
+ */
+export type PrObservationRefresherFactory =
+  () => Promise<PrObservationRefresher | null> | PrObservationRefresher | null;
+
+/**
+ * Options for `runLoopMain`. Today the only deployment-side seam is
+ * the refresher factory; future opt-in injection points live here so
+ * the bin entrypoint stays the single composition root.
+ */
+export interface RunLoopMainOptions {
+  /**
+   * Optional. Called when the refresh pass is enabled to obtain the
+   * `PrObservationRefresher` adapter. Absent (or returning null)
+   * leaves the refresh pass in silent-skip per the LoopRunner
+   * contract.
+   */
+  readonly prObservationRefresherFactory?: PrObservationRefresherFactory;
+}
 
 type EmbedderChoice = 'trigram' | 'onnx-minilm';
 
@@ -48,6 +81,18 @@ interface CliArgs {
   readonly reaperWarnMs: number | null;
   /** Override the abandon-bucket TTL in ms; null = use reaper default. */
   readonly reaperAbandonMs: number | null;
+  /**
+   * Run the plan-state reconcile pass on every loop tick. Default
+   * `true`. Disable via `--no-reconcile-plan-state`.
+   */
+  readonly reconcilePlanState: boolean;
+  /**
+   * Run the pr-observation refresh pass on every loop tick. Default
+   * `true`. Disable via `--no-refresh-plan-observations`. Requires
+   * the bin entrypoint to inject a refresher factory; absent, the
+   * pass silent-skips per the LoopRunner contract.
+   */
+  readonly refreshPlanObservations: boolean;
 }
 
 function parseCliArgs(): CliArgs | null {
@@ -68,6 +113,12 @@ function parseCliArgs(): CliArgs | null {
         'reaper-principal': { type: 'string' },
         'reaper-warn-ms': { type: 'string' },
         'reaper-abandon-ms': { type: 'string' },
+        // Approval-cycle ticks (reconcile + refresh) default ON;
+        // negated flags are the explicit opt-out.
+        'reconcile-plan-state': { type: 'boolean', default: true },
+        'no-reconcile-plan-state': { type: 'boolean', default: false },
+        'refresh-plan-observations': { type: 'boolean', default: true },
+        'no-refresh-plan-observations': { type: 'boolean', default: false },
         help: { type: 'boolean', default: false },
       },
       allowPositionals: false,
@@ -152,6 +203,15 @@ function parseCliArgs(): CliArgs | null {
       }
       reaperAbandonMs = n;
     }
+    // Reconcile / refresh defaults: --no-* flags win over the positive
+    // form. This matches the --embed-cache / --no-embed-cache pattern
+    // already in this CLI.
+    const reconcilePlanState = Boolean(values['no-reconcile-plan-state'])
+      ? false
+      : Boolean(values['reconcile-plan-state']);
+    const refreshPlanObservations = Boolean(values['no-refresh-plan-observations'])
+      ? false
+      : Boolean(values['refresh-plan-observations']);
     return {
       rootDir,
       palacePath: values['palace-path'] ?? null,
@@ -166,6 +226,8 @@ function parseCliArgs(): CliArgs | null {
       reaperPrincipal,
       reaperWarnMs,
       reaperAbandonMs,
+      reconcilePlanState,
+      refreshPlanObservations,
     };
   } catch (err) {
     console.error('Error parsing args:', err instanceof Error ? err.message : String(err));
@@ -198,6 +260,20 @@ function printUsage(): void {
       '                            value > LAG_OPERATOR_ID env. No silent default.',
       '  --reaper-warn-ms <ms>     Override warn-bucket TTL (default 24h).',
       '  --reaper-abandon-ms <ms>  Override abandon-bucket TTL (default 72h).',
+      '  --reconcile-plan-state         Run the plan-state reconcile pass on every tick',
+      '                                 (default on). Transitions plans whose linked',
+      '                                 pr-observation atoms carry a terminal pr_state from',
+      '                                 executing/approved to succeeded/abandoned.',
+      '  --no-reconcile-plan-state      Disable the reconcile pass.',
+      '  --refresh-plan-observations    Run the pr-observation refresh pass on every tick',
+      '                                 (default on). Re-observes stale OPEN observations',
+      '                                 whose linked plan is still executing so the',
+      '                                 reconcile pass sees terminal state on PRs that',
+      '                                 merged or closed since the last observation.',
+      '                                 Spawns scripts/run-pr-landing.mjs --observe-only',
+      '                                 per refresh; bounded by an in-tick refresh cap.',
+      '  --no-refresh-plan-observations Disable the refresh pass (e.g. for sandboxed',
+      '                                 deployments that cannot spawn child processes).',
       '  --help                    Print this message.',
     ].join('\n'),
   );
@@ -271,16 +347,35 @@ function formatTickReport(report: LoopTickReport): string {
     report.reaperReport !== null
       ? ` reaper(swept=${report.reaperReport.swept}/abandoned=${report.reaperReport.abandoned}/warn=${report.reaperReport.warned})`
       : '';
+  // Only render plan-* segments when the corresponding pass actually
+  // ran this tick (report field non-null). A disabled pass stays
+  // invisible in the per-tick stdout to keep the line scannable when
+  // these defaults are on but commonly produce zero work.
+  const reconcile =
+    report.planReconcileReport !== null
+      ? ` reconcile(matched=${report.planReconcileReport.matched}/transitioned=${report.planReconcileReport.transitioned})`
+      : '';
+  const refresh =
+    report.planObservationRefreshReport !== null
+      ? ` obs-refresh(refreshed=${report.planObservationRefreshReport.refreshed})`
+      : '';
   return (
     `tick ${report.tickNumber}: ` +
     `decayed=${report.atomsDecayed} ` +
     `l2+=${report.l2Promoted}/-=${report.l2Rejected} ` +
     `l3+=${report.l3Proposed} ` +
-    `canon=${report.canonApplied}${reaper}${err}${kill}`
+    `canon=${report.canonApplied}${reaper}${reconcile}${refresh}${err}${kill}`
   );
 }
 
-async function main(): Promise<number> {
+/**
+ * Run the lag-run-loop CLI. Exported so the bin entrypoint can call
+ * it with deployment-side seams (e.g. a refresher factory) injected
+ * as options. Keeping this exported (vs. a top-level side-effect
+ * `await main()`) is what lets the bin layer compose the vendor-
+ * specific wiring without dragging it into framework src/.
+ */
+export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number> {
   const args = parseCliArgs();
   if (args === null) return 1;
 
@@ -295,6 +390,31 @@ async function main(): Promise<number> {
         (args.reaperAbandonMs !== null ? `  abandon=${args.reaperAbandonMs}ms` : ''),
     );
   }
+  // Build the refresher only when the refresh pass is enabled and a
+  // factory was injected. Without a factory, the pass silently skips
+  // per the LoopRunner contract; framework code stays mechanism-only
+  // because the concrete adapter is constructed entirely outside src/.
+  let refresher: PrObservationRefresher | null = null;
+  if (args.refreshPlanObservations && opts.prObservationRefresherFactory !== undefined) {
+    try {
+      refresher = await opts.prObservationRefresherFactory();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[plan-obs-refresh] WARN: refresher factory threw: `
+          + `${err instanceof Error ? err.message : String(err)}; refresh pass will silent-skip.`,
+      );
+      refresher = null;
+    }
+  }
+  console.log(
+    `[boot] reconcile-plan-state: ${args.reconcilePlanState ? 'ENABLED' : 'DISABLED'}`,
+  );
+  console.log(
+    `[boot] refresh-plan-observations: ${
+      args.refreshPlanObservations ? (refresher !== null ? 'ENABLED' : 'ENABLED (refresher unresolved; will silent-skip)') : 'DISABLED'
+    }`,
+  );
 
   const runner = new LoopRunner(host, {
     principalId: args.principal,
@@ -304,6 +424,9 @@ async function main(): Promise<number> {
     ...(args.reaperPrincipal !== null ? { reaperPrincipal: args.reaperPrincipal } : {}),
     ...(args.reaperWarnMs !== null ? { reaperWarnMs: args.reaperWarnMs } : {}),
     ...(args.reaperAbandonMs !== null ? { reaperAbandonMs: args.reaperAbandonMs } : {}),
+    runPlanReconcilePass: args.reconcilePlanState,
+    runPlanObservationRefreshPass: args.refreshPlanObservations,
+    ...(refresher !== null ? { prObservationRefresher: refresher } : {}),
     onTick: report => {
       console.log(formatTickReport(report));
       for (const e of report.errors) {
@@ -330,9 +453,3 @@ async function main(): Promise<number> {
   // until SIGINT/SIGTERM.
   return 0;
 }
-
-const exitCode = await main().catch(err => {
-  console.error('fatal:', err instanceof Error ? err.stack ?? err.message : String(err));
-  return 2;
-});
-if (exitCode !== 0) process.exit(exitCode);
