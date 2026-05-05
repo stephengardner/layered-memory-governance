@@ -87,6 +87,19 @@ import {
   type StageContextAtom,
   type StageContextResponse,
 } from './stage-context';
+import {
+  clampLimit as clampResumeAuditLimit,
+  clampWindowHours as clampResumeAuditWindowHours,
+  listRecentResets as listResumeAuditResets,
+  listRecentResumed as listResumeAuditRecent,
+  summarizeResumeStats,
+} from './resume-audit';
+import type {
+  ResumeAuditRecentResponse,
+  ResumeAuditResetsResponse,
+  ResumeAuditSourceAtom,
+  ResumeAuditSummary,
+} from './resume-audit-types';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -1535,6 +1548,46 @@ async function handlePipelinesLiveOps(): Promise<PipelineLiveOpsResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Resume audit: cross-actor projection of resume-vs-fresh-spawn telemetry.
+//
+// Reads `agent-session` atoms (whose `metadata.agent_session.extra`
+// fields are set by the resume-author wrapper that the registered
+// runners use, per the resume-by-default extension Phases 1-3) plus
+// `resume-reset` / `resume-reset-consumed` atoms (the operator-reset
+// escape hatch). Three handlers project that data into wire shapes
+// the Console consumes:
+//   - /api/resume.summary   : per-principal resume-vs-fresh-spawn ratio
+//   - /api/resume.recent    : N most recent successful resumes
+//   - /api/resume.resets    : N most recent operator-reset signals
+// ---------------------------------------------------------------------------
+
+// Re-uses the broad atom-shape filter via a downcast to the narrow
+// shape the resume-audit helpers consume; same pattern the pipelines
+// + live-ops handlers use, extracted at N>2 per `dev-extract-at-n=2`.
+async function readResumeAuditSourceAtoms(): Promise<ReadonlyArray<ResumeAuditSourceAtom>> {
+  const all = await readAllAtoms();
+  return all as unknown as ReadonlyArray<ResumeAuditSourceAtom>;
+}
+
+async function handleResumeSummary(windowHours: number | null): Promise<ResumeAuditSummary> {
+  const sourceAtoms = await readResumeAuditSourceAtoms();
+  const effective = clampResumeAuditWindowHours(windowHours);
+  return summarizeResumeStats(sourceAtoms, Date.now(), effective);
+}
+
+async function handleResumeRecent(limit: number | null): Promise<ResumeAuditRecentResponse> {
+  const sourceAtoms = await readResumeAuditSourceAtoms();
+  const effective = clampResumeAuditLimit(limit);
+  return listResumeAuditRecent(sourceAtoms, Date.now(), effective);
+}
+
+async function handleResumeResets(limit: number | null): Promise<ResumeAuditResetsResponse> {
+  const sourceAtoms = await readResumeAuditSourceAtoms();
+  const effective = clampResumeAuditLimit(limit);
+  return listResumeAuditResets(sourceAtoms, Date.now(), effective);
+}
+
+// ---------------------------------------------------------------------------
 // Plan lifecycle: end-to-end timeline of a single plan's autonomous-loop
 // chain. Stitches together the five (sometimes six) state-transition
 // atoms that a `plan` traverses from operator-intent through to merged:
@@ -2614,6 +2667,45 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'pipelines-live-ops-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/resume.summary' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const raw = body['window_hours'];
+    const windowHours = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    try {
+      const data = await handleResumeSummary(windowHours);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'resume-summary-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/resume.recent' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const raw = body['limit'];
+    const limit = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    try {
+      const data = await handleResumeRecent(limit);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'resume-recent-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/resume.resets' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const raw = body['limit'];
+    const limit = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    try {
+      const data = await handleResumeResets(limit);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'resume-resets-failed', (err as Error).message);
     }
     return;
   }

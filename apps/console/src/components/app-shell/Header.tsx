@@ -53,6 +53,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Pipelines',
     subtitle: 'Deep planning runs: brainstorm, spec, plan, review, dispatch with per-stage audit findings',
   },
+  resume: {
+    title: 'Resume audit',
+    subtitle: 'Cross-actor view of resume-vs-fresh-spawn behavior plus operator-reset signals',
+  },
   'plan-lifecycle': {
     title: 'Plan Lifecycle',
     subtitle: 'End-to-end view of every plan\'s autonomous-loop chain — intent through merge',

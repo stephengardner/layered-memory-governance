@@ -18,6 +18,7 @@ import { TimelineView } from '@/features/timeline-viewer/TimelineView';
 import { MetricsRollupView } from '@/features/metrics-rollup/MetricsRollupView';
 import { ActorActivityView } from '@/features/actor-activity/ActorActivityView';
 import { LiveOpsView } from '@/features/live-ops/LiveOpsView';
+import { ResumeAuditView } from '@/features/resume-audit/ResumeAuditView';
 import { AtomDetailView } from '@/features/atom-detail-viewer/AtomDetailView';
 import { EmptyState } from '@/components/state-display/StateDisplay';
 import { PageTransition } from '@/components/page-transition/PageTransition';
@@ -94,6 +95,7 @@ function renderRoute(r: Route, id: string | null) {
     case 'graph': return <GraphView />;
     case 'timeline': return <TimelineView />;
     case 'actor-activity': return <ActorActivityView />;
+    case 'resume': return <ResumeAuditView />;
     case 'atom':
       /*
        * The atom-detail viewer requires an id segment. A bare /atom
