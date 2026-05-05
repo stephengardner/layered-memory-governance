@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ScrollText, GitBranch, ShieldCheck } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -13,6 +13,16 @@ import { toErrorMessage } from '@/services/errors';
 import styles from './StageContextPanel.module.css';
 
 type TabName = 'soul' | 'chain' | 'canon';
+
+/**
+ * Static tab order for arrow-key navigation. Mirrors the render
+ * order of the three TabButton calls in StageContextBody so the
+ * keyboard sequence matches the visual sequence (ArrowRight on soul
+ * lands on chain, ArrowRight on canon wraps to soul). Listed at
+ * module scope rather than recomputed on each render so identity is
+ * stable for the keyDown handler.
+ */
+const TAB_ORDER: ReadonlyArray<TabName> = ['soul', 'chain', 'canon'];
 
 interface Props {
   readonly atomId: string;
@@ -126,12 +136,67 @@ interface BodyProps {
 }
 
 function StageContextBody({ context, tab, onTabChange }: BodyProps) {
+  const tablistRef = useRef<HTMLDivElement | null>(null);
+
   if (context.stage === null) {
     return (
       <p className={styles.empty} data-testid="stage-context-empty">
         This atom was not produced by a deep planning pipeline stage.
       </p>
     );
+  }
+
+  /**
+   * Roving-focus keyboard handler for the tablist. Implements the WAI-
+   * ARIA Authoring Practices `Tabs` pattern: ArrowLeft/ArrowRight cycle
+   * through the tab set with wrap-around, Home/End jump to the
+   * boundaries. Without this, inactive TabButtons carry tabIndex={-1}
+   * and are unreachable for keyboard-only operators -- a hard
+   * accessibility blocker on a panel meant to surface deep planning
+   * provenance to the very people who do post-merge audits.
+   *
+   * Focus management: after onTabChange fires, the next render flips
+   * tabIndex on the new active button to 0; we move focus to that
+   * button via a scoped querySelector against the tablist ref (rather
+   * than a global getElementById) so two stage-context panels on the
+   * same page (deliberation trail, plan detail) cannot cross-focus
+   * each other through duplicate ids. The deterministic id pattern
+   * (`stage-context-tab-${name}`) is the same one already emitted for
+   * `aria-labelledby` on each tabpanel, so consumers see a single
+   * stable contract.
+   */
+  function onTablistKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const idx = TAB_ORDER.indexOf(tab);
+    if (idx === -1) return;
+    let next: TabName | null = null;
+    switch (event.key) {
+      case 'ArrowRight':
+        next = TAB_ORDER[(idx + 1) % TAB_ORDER.length] ?? null;
+        break;
+      case 'ArrowLeft':
+        next = TAB_ORDER[(idx - 1 + TAB_ORDER.length) % TAB_ORDER.length] ?? null;
+        break;
+      case 'Home':
+        next = TAB_ORDER[0] ?? null;
+        break;
+      case 'End':
+        next = TAB_ORDER[TAB_ORDER.length - 1] ?? null;
+        break;
+      default:
+        return;
+    }
+    if (next === null || next === tab) return;
+    event.preventDefault();
+    onTabChange(next);
+    // Move focus to the freshly-active tab. Use the tablist root as
+    // the scoping element so two stage-context panels on the same
+    // page (deliberation trail, plan detail) cannot cross-focus.
+    const root = tablistRef.current;
+    if (root === null) return;
+    const target = root.querySelector<HTMLButtonElement>(
+      `#stage-context-tab-${next}`,
+    );
+    target?.focus();
   }
 
   return (
@@ -162,10 +227,12 @@ function StageContextBody({ context, tab, onTabChange }: BodyProps) {
       </header>
 
       <div
+        ref={tablistRef}
         className={styles.tablist}
         role="tablist"
         aria-label="Stage context"
         data-testid="stage-context-tablist"
+        onKeyDown={onTablistKeyDown}
       >
         <TabButton
           name="soul"
@@ -237,7 +304,7 @@ function TabButton({
   readonly name: TabName;
   readonly active: boolean;
   readonly onClick: () => void;
-  readonly icon: React.ReactNode;
+  readonly icon: ReactNode;
   readonly label: string;
   readonly count?: number;
 }) {

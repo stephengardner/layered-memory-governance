@@ -243,6 +243,29 @@ describe('buildCanonAtRuntime', () => {
     const out = buildCanonAtRuntime(undefined, 'unknown-actor', makeLookup([]));
     expect(out).toEqual([]);
   });
+
+  it('returns empty (no policy fallback) when canon_directives_applied is present but all ids are unresolvable', () => {
+    // Contract: when the stage stamped explicit ids onto the atom,
+    // those ids are authoritative -- if every one fails to resolve at
+    // render-time, the panel renders an empty canon list rather than
+    // silently falling back to the per-principal policy. The metadata
+    // path and the policy path are mutually exclusive: metadata-present
+    // means the runner already decided the relevant set, even if the
+    // referenced atom has since been pruned. Falling through to policy
+    // would lie to the operator about which directives actually
+    // governed the stage.
+    const policy = atom({
+      id: 'pol-llm-tool-policy-brainstorm-actor',
+      type: 'directive',
+      content: 'policy body',
+    });
+    const out = buildCanonAtRuntime(
+      { canon_directives_applied: ['pruned-directive-id'] },
+      'brainstorm-actor',
+      makeLookup([policy]),
+    );
+    expect(out).toEqual([]);
+  });
 });
 
 describe('buildStageContext', () => {

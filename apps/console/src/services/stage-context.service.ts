@@ -13,13 +13,24 @@ import { transport } from './transport';
 export interface StageContextChainEntry {
   readonly id: string;
   readonly type: string;
-  readonly content_preview: string;
+  /**
+   * First ~240 chars of the atom's content, newline-collapsed. Empty
+   * string when the atom has no rendered preview (atoms with empty
+   * `content` field, or future server changes that omit the field
+   * entirely). The panel guards `entry.content_preview && ...` at the
+   * call sites; widening the type to `string | null` matches that
+   * defensive read so a future server change cannot silently flip
+   * the contract from under the renderer.
+   */
+  readonly content_preview: string | null;
 }
 
 export interface StageContextCanonEntry {
   readonly id: string;
   readonly type: string;
-  readonly content_preview: string;
+  /** First ~240 chars of the canon atom's content, newline-collapsed.
+   * Same nullability contract as `StageContextChainEntry.content_preview`. */
+  readonly content_preview: string | null;
   /** 'metadata' (recorded at run-time) or 'policy' (resolved as fallback). */
   readonly source: 'metadata' | 'policy';
 }
