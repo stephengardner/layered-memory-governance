@@ -43,12 +43,22 @@ async function fetchSummary(page: Page): Promise<ResumeSummary> {
   return body?.data;
 }
 
+/**
+ * Navigate to /resume and wait for the view to mount. Centralizes the
+ * repeated goto + visibility-check pair that every test in this spec
+ * starts with, per the repo duplication rule (extract at N=2). Returns
+ * the view locator for chained assertions in the caller.
+ */
+async function gotoResumeView(page: Page) {
+  await page.goto('/resume');
+  const view = page.getByTestId('resume-audit-view');
+  await expect(view).toBeVisible({ timeout: 10_000 });
+  return view;
+}
+
 test.describe('resume-audit dashboard', () => {
   test('renders the page header and either an empty state or the principal grid', async ({ page }) => {
-    await page.goto('/resume');
-
-    const view = page.getByTestId('resume-audit-view');
-    await expect(view).toBeVisible({ timeout: 10_000 });
+    const view = await gotoResumeView(page);
 
     // The hero title is always present.
     await expect(view).toContainText('Resume audit');
@@ -74,8 +84,7 @@ test.describe('resume-audit dashboard', () => {
   });
 
   test('window chips toggle with aria-pressed semantics', async ({ page }) => {
-    await page.goto('/resume');
-    await expect(page.getByTestId('resume-audit-view')).toBeVisible({ timeout: 10_000 });
+    await gotoResumeView(page);
 
     const w24 = page.getByTestId('resume-audit-window-24h');
     const w1h = page.getByTestId('resume-audit-window-1h');
@@ -90,8 +99,7 @@ test.describe('resume-audit dashboard', () => {
   });
 
   test('recent + resets sections render their loading or settled state', async ({ page }) => {
-    await page.goto('/resume');
-    await expect(page.getByTestId('resume-audit-view')).toBeVisible({ timeout: 10_000 });
+    await gotoResumeView(page);
 
     /*
      * Each of the three sections renders one of: loading / error /
@@ -111,8 +119,7 @@ test.describe('resume-audit dashboard', () => {
   });
 
   test('reset help popover toggles and shows the decide-script invocation', async ({ page }) => {
-    await page.goto('/resume');
-    await expect(page.getByTestId('resume-audit-view')).toBeVisible({ timeout: 10_000 });
+    await gotoResumeView(page);
 
     const helpButton = page.getByTestId('resume-audit-reset-help-button');
     await expect(helpButton).toBeVisible();
@@ -135,8 +142,7 @@ test.describe('resume-audit dashboard', () => {
      * window.innerWidth + scrollWidth at runtime so the test stays
      * meaningful regardless of which project is running.
      */
-    await page.goto('/resume');
-    await expect(page.getByTestId('resume-audit-view')).toBeVisible({ timeout: 10_000 });
+    await gotoResumeView(page);
 
     const widths = await page.evaluate(() => ({
       inner: window.innerWidth,
@@ -165,8 +171,7 @@ test.describe('resume-audit dashboard', () => {
     const summary = await fetchSummary(page);
     test.skip(summary.principals.length === 0, 'no agent-session atoms in window; cannot verify click-through');
 
-    await page.goto('/resume');
-    await expect(page.getByTestId('resume-audit-view')).toBeVisible({ timeout: 10_000 });
+    await gotoResumeView(page);
 
     const firstCard = page.getByTestId('resume-audit-principal-card').first();
     await expect(firstCard).toBeVisible();
