@@ -11,6 +11,7 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/state-display
 import { listPlans, type PlanAtom } from '@/services/plans.service';
 import { storage } from '@/services/storage.service';
 import { planStateTone } from '@/features/plan-state/tones';
+import { StageContextPanel } from '@/features/stage-context/StageContextPanel';
 import { useRouteId, setRoute, routeHref } from '@/state/router.store';
 import { formatClarifyStubTitle } from './clarifyStubTitle';
 import {
@@ -449,6 +450,15 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
           </motion.footer>
         )}
       </AnimatePresence>
+
+      {/*
+        Focus-mode only: surface the stage-context panel so the
+        operator can read the soul + chain + canon for any
+        pipeline-emitted plan. Hidden in grid mode to keep cards
+        compact -- the panel itself stays collapsed by default once
+        rendered, so opening it is a deliberate operator action.
+      */}
+      {focused && <StageContextPanel atomId={plan.id} />}
     </article>
   );
 }

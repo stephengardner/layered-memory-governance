@@ -1,0 +1,434 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: var(--size-touch-target-min);
+  padding: var(--space-2) var(--space-1);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  text-align: left;
+  letter-spacing: -0.01em;
+  border-radius: var(--radius-sm);
+  transition: background var(--duration-fast) var(--easing-standard);
+}
+
+.toggle:hover {
+  background: color-mix(in srgb, var(--surface-overlay) 35%, transparent);
+}
+
+.toggle:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.toggleChevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform var(--duration-fast) var(--easing-standard);
+}
+
+.toggleOpen .toggleChevron {
+  transform: rotate(180deg);
+}
+
+.toggleHint {
+  margin-left: auto;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-regular);
+  color: var(--text-tertiary);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.empty {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.empty code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 0 var(--space-1);
+  background: var(--surface-raised);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+}
+
+.skeleton {
+  height: 8rem;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--surface-raised) 0%,
+    color-mix(in srgb, var(--surface-raised) 70%, var(--text-tertiary) 30%) 50%,
+    var(--surface-raised) 100%
+  );
+  background-size: 200% 100%;
+  animation: stage-context-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes stage-context-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background: var(--surface-raised);
+  }
+
+  .toggleChevron {
+    transition: none;
+  }
+
+  /*
+   * Suppress hover/active background+color transitions on the
+   * collapsible toggle and the tab buttons too. Per
+   * dev-web-app-grade-interactions 'transitions honor
+   * prefers-reduced-motion'; leaving these live would still flash
+   * background-color on hover/active even with the chevron rotation
+   * disabled.
+   */
+  .toggle,
+  .tab {
+    transition: none;
+  }
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.metaGrid {
+  display: grid;
+  grid-template-columns: minmax(6rem, auto) 1fr;
+  column-gap: var(--space-5);
+  row-gap: var(--space-2);
+  margin: 0;
+}
+
+.metaLabel {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+
+.metaValue {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.metaValue code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 0 var(--space-1);
+  background: var(--surface-raised);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+}
+
+.tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  background: var(--surface-raised);
+  border-radius: var(--radius-sm);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--size-touch-target-min);
+  padding: var(--space-2) var(--space-4);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
+}
+
+.tab:hover {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--surface-overlay) 50%, transparent);
+}
+
+.tab:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.tabActive {
+  background: var(--surface-base);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 var(--stroke-hairline) var(--border-subtle);
+}
+
+.tabIcon {
+  display: inline-flex;
+  align-items: center;
+  color: currentcolor;
+}
+
+.tabCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  padding: 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  background: var(--surface-overlay);
+  border-radius: var(--radius-pill);
+}
+
+.tabActive .tabCount {
+  color: var(--text-primary);
+}
+
+.tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Soul markdown -- mirrors PrincipalSkill.module.css so the visual
+   rhythm of `.markdown` blocks stays consistent across surfaces. */
+.markdown {
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
+  color: var(--text-secondary);
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+  max-height: 32rem;
+  overflow-y: auto;
+  padding-right: var(--space-3);
+}
+
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  margin: var(--space-4) 0 var(--space-2);
+  letter-spacing: -0.02em;
+  line-height: var(--line-height-tight);
+}
+
+.markdown h1 { font-size: var(--font-size-lg); }
+.markdown h2 { font-size: var(--font-size-md); }
+.markdown h3 {
+  font-size: var(--font-size-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+}
+
+.markdown p {
+  margin: var(--space-3) 0;
+}
+
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 0 var(--space-1);
+  background: var(--surface-raised);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.markdown pre {
+  background: var(--surface-raised);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: var(--font-size-xs);
+}
+
+.markdown pre code {
+  background: transparent;
+  padding: 0;
+  color: var(--text-secondary);
+}
+
+.markdown ul, .markdown ol {
+  margin: var(--space-3) 0;
+  padding-left: var(--space-6);
+}
+
+.markdown li {
+  margin: var(--space-1) 0;
+}
+
+.markdown a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: var(--stroke-hairline) dashed
+    color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.markdown a:hover {
+  color: var(--accent-hover);
+}
+
+.markdown strong {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.chainList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chainItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border-radius: var(--radius-sm);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.chainHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.chainTypeChip {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+
+.chainPreview {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  color: var(--text-secondary);
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.canonList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.canonItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border-radius: var(--radius-sm);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.canonHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.canonSource {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+
+.canonPreview {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  color: var(--text-secondary);
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Compact-mobile breakpoint. Uses rem rather than raw px to align
+ * with the rest of the Console's responsive vocabulary
+ * (40rem/48rem/56rem in TimelineView, ControlPanelView, etc.). 30rem
+ * = 480px at the default 16px root, matching the original intent
+ * (small-phone width where the tab-row should reclaim padding and
+ * the hint label can drop).
+ */
+@media (max-width: 30rem) {
+  .panel {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .toggleHint {
+    display: none;
+  }
+
+  .tab {
+    padding: var(--space-2) var(--space-3);
+  }
+}

@@ -82,6 +82,11 @@ import {
   buildPlanStateLifecycle,
   type PlanStateLifecycle,
 } from './plan-state-lifecycle';
+import {
+  buildStageContext,
+  type StageContextAtom,
+  type StageContextResponse,
+} from './stage-context';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -530,6 +535,29 @@ async function handleAtomGet(id: string): Promise<Atom | null> {
   }
   const all = await readAllAtoms();
   return all.find((a) => a.id === id) ?? null;
+}
+
+/*
+ * Stage context handler: project the soul + upstream chain + canon-at-
+ * runtime for a pipeline-stage atom. Returns the empty-shape response
+ * (stage:null + empty arrays) when the atom is not a pipeline-stage
+ * output, so the client renders the panel header with empty-state tabs
+ * rather than a 404 -- transparency, not a hard miss.
+ *
+ * The atom-lookup callback is closed over the atomIndex (or a fresh
+ * disk read when the index is not primed), keeping the projection
+ * helper itself pure / fs-free per the substrate-context contract.
+ */
+async function handleAtomStageContext(id: string): Promise<StageContextResponse | null> {
+  const seed = await handleAtomGet(id);
+  if (!seed) return null;
+  const all = await readAllAtoms();
+  const byId = new Map<string, Atom>(all.map((a) => [a.id, a]));
+  const lookup = (target: string): StageContextAtom | null => {
+    const atom = byId.get(target);
+    return atom ? (atom as StageContextAtom) : null;
+  };
+  return buildStageContext(seed as StageContextAtom, lookup);
 }
 
 /*
@@ -2400,6 +2428,33 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'atoms-references-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.stage-context' && req.method === 'POST') {
+    /*
+     * Stage Context endpoint: returns soul + upstream-chain + canon-at-
+     * runtime for a pipeline-stage atom. Read-only projection over the
+     * atomIndex; routes through buildStageContext so the helper stays
+     * pure-data-in / pure-data-out and is unit-testable independent of
+     * the HTTP layer.
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const atomId = typeof body['atom_id'] === 'string' ? (body['atom_id'] as string) : '';
+    if (!atomId) {
+      sendErr(req, res, 400, 'missing-atom-id', 'atoms.stage-context requires { atom_id: string }');
+      return;
+    }
+    try {
+      const data = await handleAtomStageContext(atomId);
+      if (!data) {
+        sendErr(req, res, 404, 'atom-not-found', `no atom with id ${atomId}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'atoms-stage-context-failed', (err as Error).message);
     }
     return;
   }

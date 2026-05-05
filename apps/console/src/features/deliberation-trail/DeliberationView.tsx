@@ -17,6 +17,7 @@ import {
 } from '@/services/deliberation.service';
 import { toErrorMessage } from '@/services/errors';
 import { planStateTone } from '@/features/plan-state/tones';
+import { StageContextPanel } from '@/features/stage-context/StageContextPanel';
 import {
   routeForAtomId,
   routeHref,
@@ -362,6 +363,8 @@ function DeliberationTrail({ data }: { data: DeliberationDetail }) {
           <p className={styles.revisitText}>{what_breaks_if_revisit}</p>
         </Section>
       )}
+
+      <StageContextPanel atomId={plan.id} />
     </section>
   );
 }
