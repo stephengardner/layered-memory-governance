@@ -121,6 +121,22 @@ export function assembleActorCandidates(
 }
 
 /**
+ * Traverse `atom.metadata` along a dotted path and return the leaf
+ * value (possibly `undefined`), short-circuiting on any non-object
+ * segment. Shared by `readMetaString` and `readMetaNumber` and any
+ * future typed reader (e.g. `readMetaBoolean`) so the null-guarded
+ * loop is not copy-pasted at N=3 per `dev-extract-helpers-at-n-2`.
+ */
+function traverseMetaPath(atom: Atom, path: ReadonlyArray<string>): unknown {
+  let cursor: unknown = atom.metadata;
+  for (const segment of path) {
+    if (cursor === null || typeof cursor !== 'object') return undefined;
+    cursor = (cursor as Record<string, unknown>)[segment];
+  }
+  return cursor;
+}
+
+/**
  * Read a string field at a dotted path under `atom.metadata`. Returns
  * `undefined` when any segment is missing or non-string. Used by the
  * per-actor `extractWorkItemKey` callbacks to read namespaced fields
@@ -130,12 +146,8 @@ export function readMetaString(
   atom: Atom,
   path: ReadonlyArray<string>,
 ): string | undefined {
-  let cursor: unknown = atom.metadata;
-  for (const segment of path) {
-    if (cursor === null || typeof cursor !== 'object') return undefined;
-    cursor = (cursor as Record<string, unknown>)[segment];
-  }
-  return typeof cursor === 'string' ? cursor : undefined;
+  const value = traverseMetaPath(atom, path);
+  return typeof value === 'string' ? value : undefined;
 }
 
 /**
@@ -148,10 +160,6 @@ export function readMetaNumber(
   atom: Atom,
   path: ReadonlyArray<string>,
 ): number | undefined {
-  let cursor: unknown = atom.metadata;
-  for (const segment of path) {
-    if (cursor === null || typeof cursor !== 'object') return undefined;
-    cursor = (cursor as Record<string, unknown>)[segment];
-  }
-  return typeof cursor === 'number' && Number.isFinite(cursor) ? cursor : undefined;
+  const value = traverseMetaPath(atom, path);
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }

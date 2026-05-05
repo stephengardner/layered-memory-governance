@@ -12,54 +12,12 @@ import {
 } from '../../../../examples/agent-loops/resume-author/registry.js';
 import type {
   Atom,
-  AtomId,
   PrincipalId,
   Time,
 } from '../../../../src/substrate/types.js';
 import type { AgentLoopInput } from '../../../../src/substrate/agent-loop.js';
 import type { ActorWalkInput } from '../../../../examples/agent-loops/resume-author/strategy-common.js';
-
-/**
- * Build a generic atom-skeleton mirroring the shape used in
- * `walk-author-sessions.test.ts`. Specific test factories layer the
- * agent-session metadata + cto-actor namespaced fields on top.
- */
-function mkBaseAtom(
-  id: string,
-  type: Atom['type'],
-  createdAt: Time,
-  principalId: PrincipalId,
-  metadata: Record<string, unknown>,
-): Atom {
-  return {
-    schema_version: 1,
-    id: id as AtomId,
-    content: id,
-    type,
-    layer: 'L0',
-    provenance: {
-      kind: 'agent-observed',
-      source: { agent_id: String(principalId) },
-      derived_from: [],
-    },
-    confidence: 1,
-    created_at: createdAt,
-    last_reinforced_at: createdAt,
-    expires_at: null,
-    supersedes: [],
-    superseded_by: [],
-    scope: 'project',
-    signals: {
-      agrees_with: [],
-      conflicts_with: [],
-      validation_status: 'unchecked',
-      last_validated_at: null,
-    },
-    principal_id: principalId,
-    taint: 'clean',
-    metadata,
-  };
-}
+import { mkBaseAtom } from './test-helpers.js';
 
 function mkCtoSessionAtom(opts: {
   readonly id: string;
