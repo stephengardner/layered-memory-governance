@@ -48,21 +48,33 @@ needs to be revisited. The output captures:
 - **Read the codebase**, not your imagination. Use Read, Grep, and
   Glob to verify every cited path resolves on disk and every cited
   symbol is real. A made-up citation is worse than no citation.
-- **Enumerate every step-deliverable path.** Every file your steps
-  CREATE or MODIFY must appear as an explicit literal path in a step
-  body (so a downstream extractor can find it). The drafter that
-  executes this plan operates under a path scope-fence: it pre-reads
-  exactly the paths it can extract from your plan and the LLM is
-  instructed to modify ONLY those paths. If a step says "create
-  `pkg/foo.ts`" but `pkg/foo.ts` never appears as a literal path in
-  any step body, the drafter has no entry for it, the diff for that
-  file is dropped, and the executor reports a silent no-op. Treat the
+- **Enumerate every step-deliverable path, new AND edited.** Every
+  file your steps CREATE or MODIFY must appear as an explicit literal
+  path in a step body (so a downstream extractor can find it). This
+  includes BOTH new files the plan introduces AND existing files the
+  plan edits. The most common failure mode: the planner enumerates the
+  new files (the new component, the new test) but omits the existing
+  files the new code must be wired into (the parent component that
+  mounts it, the index that re-exports it, the route registration).
+  If a step says "edit `apps/console/src/views/ResumeAuditView.tsx` to
+  mount the new filter", `ResumeAuditView.tsx` MUST appear as a
+  literal path in a step body even though it already exists on disk.
+  The drafter that executes this plan operates under a path
+  scope-fence: it pre-reads exactly the paths it can extract from
+  your plan and the LLM is instructed to modify ONLY those paths. If
+  a step says "create `pkg/foo.ts`" but `pkg/foo.ts` never appears as
+  a literal path in any step body, the drafter has no entry for it,
+  the diff for that file is dropped, and the executor reports a
+  silent no-op. The same is true for an edit: a step that says
+  "wire X into the existing parent component" with no literal path
+  to that parent file fails the scope-fence the same way. Treat the
   union of file paths named across step bodies as the authoritative
-  scope of the plan; if the union is missing a deliverable, the plan
-  is incomplete and you must NOT emit it. Read-only paths that the
-  drafter only consults for context (not modifies) belong in prose
-  (e.g., "see how `examples/.../foo.ts` does X"); deliverable paths
-  belong as the bolded path target on the relevant step line.
+  scope of the plan; if the union is missing any deliverable
+  (whether new or edited), the plan is incomplete and you must NOT
+  emit it. Read-only paths that the drafter only consults for
+  context (not modifies) belong in prose (e.g., "see how
+  `examples/.../foo.ts` does X"); deliverable paths belong as the
+  bolded path target on the relevant step line.
 - **No placeholders.** "TBD", "TODO", "fill in later", "handle edge
   cases", "add appropriate error handling" are plan failures. Every
   step contains the actual content an engineer needs.
@@ -135,6 +147,66 @@ strategy file under `pkg/resume/` for cto-actor") fails this rule:
 the literal path is missing, the extractor cannot find it, and the
 drafter ships an empty diff for that file.
 
+### Mixed new-and-edited worked example
+
+Most plans that add a new feature to an existing surface touch
+BOTH new files and existing files. The classic failure shape is a
+plan that enumerates the new component plus its test but omits the
+existing parent that mounts the new component.
+
+INCORRECT (silent skip at the drafter):
+
+```markdown
+## Concrete steps
+
+1. **Add PrincipalFilter component** -
+   `apps/console/src/components/PrincipalFilter.tsx`
+   <code block with the new component>
+2. **Cover PrincipalFilter** -
+   `apps/console/src/components/PrincipalFilter.test.tsx`
+   <code block with the new test>
+3. Mount PrincipalFilter in the resume audit view's top bar and
+   wire the selected-principal predicate into each section.
+```
+
+Step 3 names the existing parent in prose only (no literal path),
+so the path extractor returns just the two new files. The drafter
+reads only those, refuses to emit edits to a parent it cannot see
+in scope, and reports the bail message "cannot implement this plan
+as described within the declared `target_paths`".
+
+CORRECT:
+
+```markdown
+## Concrete steps
+
+1. **Add PrincipalFilter component** -
+   `apps/console/src/components/PrincipalFilter.tsx`
+   <code block with the new component>
+2. **Cover PrincipalFilter** -
+   `apps/console/src/components/PrincipalFilter.test.tsx`
+   <code block with the new test>
+3. **Mount PrincipalFilter in the resume audit view top bar** -
+   `apps/console/src/views/ResumeAuditView.tsx`
+   <code block adding the useState, computing distinctPrincipals,
+   and rendering PrincipalFilter where the existing top bar lives>
+4. **Wire the selected-principal predicate into the dashboard
+   sections** -
+   `apps/console/src/views/ResumeAuditView.tsx`
+   <code block applying the predicate to each of the three
+   sections; this step shares a path with step 3 by design,
+   because the extractor de-duplicates and the drafter receives
+   one entry per file>
+```
+
+Both steps 3 and 4 name `ResumeAuditView.tsx` as a literal path,
+so the extractor adds it to the deliverable set. The drafter reads
+the existing file, computes hunks against its actual contents, and
+emits edits that the executor accepts. A plan that lists only the
+two new files in this scenario is incomplete and must NOT be
+emitted; revise it to enumerate every existing file the steps edit
+before you finish.
+
 ## Output contract
 
 Emit ONE JSON object as the final text content of your last turn,
@@ -200,9 +272,11 @@ Self-check:
 - Are the steps bite-sized and concrete (exact file paths, exact
   commands, no placeholders)?
 - Does every file your steps CREATE or MODIFY appear as a literal
-  path in at least one step body (path-enumeration rule)? Read-only
-  context paths in prose are fine; deliverable paths must be
-  enumerable.
+  path in at least one step body (path-enumeration rule)? This
+  applies to BOTH new files AND existing files the plan edits;
+  walk every step and confirm the file it touches is on a step
+  line as a bolded path target. Read-only context paths in prose
+  are fine; deliverable paths must be enumerable.
 - Are the alternatives_rejected substantively distinct, with clear
   one-line trade-off reasons?
 - Is the JSON valid and matches the schema?
