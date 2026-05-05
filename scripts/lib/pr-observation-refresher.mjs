@@ -78,7 +78,12 @@ export function createPrLandingObserveRefresher(options = {}) {
     async refresh(args) {
       validateRefreshArgs(args);
       const { pr, plan_id } = args;
-      await execa('node', [
+      // process.execPath rather than bare `node` so the spawned
+      // child inherits this process's node version. Bare-`node`
+      // resolves through PATH and on nvm-managed hosts can land on
+      // an older shim that fails to parse the modern ES features
+      // the spawned scripts use.
+      await execa(process.execPath, [
         RUN_PR_LANDING,
         '--pr', String(pr.number),
         '--owner', pr.owner,

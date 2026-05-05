@@ -61,7 +61,12 @@ async function main() {
 
   if (args.trigger) {
     console.log(`[intend] triggering CTO with intent id: ${atom.id}`);
-    const child = spawn('node', [
+    // process.execPath rather than bare `node` so the CTO child
+    // inherits this script's node version. Bare `node` resolves to
+    // whatever the shell PATH points at, which on nvm-managed hosts
+    // can be an older version that fails to parse the modern ES
+    // features the spawned scripts use.
+    const child = spawn(process.execPath, [
       resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs'),
       '--request', args.request,
       '--intent-id', atom.id,
