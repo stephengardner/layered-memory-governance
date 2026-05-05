@@ -595,7 +595,19 @@ export async function verifyDispatchRepoIdentity({
         + 'LAG_REPO_DIR.',
     };
   }
-  if (parsed.owner !== expectedOwner || parsed.repo !== expectedRepo) {
+  // Case-insensitive comparison: GitHub treats owner/repo as case-
+  // insensitive in both REST API path params and clone URLs (a user
+  // who cloned `https://github.com/StephenGardner/Layered-Autonomous-
+  // Governance.git` and a `gh repo view` returning the canonical
+  // lowercase form must compare equal). A strict-equal check would
+  // false-flag the mixed-case clone as a wrong-repo dispatch and
+  // block the operator from running until they re-cloned with
+  // matching casing -- exactly the kind of papercut this guard
+  // exists to prevent, not produce.
+  if (
+    parsed.owner.toLowerCase() !== expectedOwner.toLowerCase()
+    || parsed.repo.toLowerCase() !== expectedRepo.toLowerCase()
+  ) {
     return {
       ok: false,
       reason: `repoDir='${repoDir}' origin remote points at ${parsed.owner}/${parsed.repo}, `

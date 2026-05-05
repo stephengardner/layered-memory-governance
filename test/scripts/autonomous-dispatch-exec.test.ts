@@ -968,6 +968,38 @@ describe('verifyDispatchRepoIdentity', () => {
     expect(result).toEqual({ ok: true });
   });
 
+  it('compares owner/repo case-insensitively', async () => {
+    // GitHub treats owner/repo as case-insensitive in API path
+    // params and clone URLs. A user who cloned with mixed-case
+    // (e.g. `git clone https://github.com/StephenGardner/Layered-
+    // Autonomous-Governance.git`) would otherwise be falsely
+    // rejected here when `gh repo view` returns the canonical
+    // lowercase form. The guard MUST fire on real repo mismatches,
+    // never on case-only differences.
+    const reader = async () => 'https://github.com/StephenGardner/Layered-Autonomous-Governance.git';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/path/to/memory-governance',
+      expectedOwner: 'stephengardner',
+      expectedRepo: 'layered-autonomous-governance',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('compares owner/repo case-insensitively in the reverse direction', async () => {
+    // Symmetric guard: an inverted case (canonical-lowercase remote
+    // vs uppercase resolved owner/repo) must also normalize. Pins
+    // the toLowerCase() applied to both sides, not just one.
+    const reader = async () => 'https://github.com/stephengardner/layered-autonomous-governance.git';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/path/to/memory-governance',
+      expectedOwner: 'StephenGardner',
+      expectedRepo: 'Layered-Autonomous-Governance',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
   it('fails closed when the local origin points at a different repo', async () => {
     // Substrate gap #266 reproducer: the plan targets
     // memory-governance but the dispatched checkout points at an
