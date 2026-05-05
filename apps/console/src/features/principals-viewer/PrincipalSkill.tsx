@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getPrincipalSkill } from '@/services/principals.service';
+import { ErrorState } from '@/components/state-display/StateDisplay';
 import styles from './PrincipalSkill.module.css';
 
 /**
@@ -38,12 +39,21 @@ export function PrincipalSkill({ principalId }: Props) {
   }
 
   if (query.isError) {
+    /*
+     * ErrorState is the canonical primitive for query failures.
+     * Earlier this rendered a bespoke <p className={styles.error}>
+     * that drifted from the shared design - a flat error string
+     * instead of the title + monospace-detail card pattern used
+     * by every other view in the console.
+     */
     return (
       <section className={styles.section} data-testid="principal-skill-error">
         <h3 className={styles.heading}>Skill</h3>
-        <p className={styles.error}>
-          Could not load skill content: {query.error instanceof Error ? query.error.message : String(query.error)}
-        </p>
+        <ErrorState
+          title="Failed to load skill content"
+          message={query.error instanceof Error ? query.error.message : String(query.error)}
+          testId="principal-skill-error-state"
+        />
       </section>
     );
   }

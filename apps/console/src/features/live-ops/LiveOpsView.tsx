@@ -243,9 +243,19 @@ function PipelinesTile() {
         </p>
       )}
       {query.isError && (
-        <p className={styles.empty} data-testid="live-ops-pipelines-error">
-          Could not load pipelines snapshot.
-        </p>
+        /*
+         * Earlier this rendered <p className={styles.empty}> with the
+         * same muted-italic styling as the empty state - an error
+         * looked indistinguishable from "no pipelines yet". The
+         * canonical ErrorState surfaces a danger-toned title +
+         * monospace detail so the operator sees the failure for what
+         * it is.
+         */
+        <ErrorState
+          title="Failed to load pipelines"
+          message={query.error instanceof Error ? query.error.message : String(query.error)}
+          testId="live-ops-pipelines-error"
+        />
       )}
       {query.isSuccess && rows.length === 0 && (
         <EmptyRow testId="live-ops-pipelines-empty">
