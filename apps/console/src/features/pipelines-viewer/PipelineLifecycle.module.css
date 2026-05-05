@@ -1,0 +1,269 @@
+/*
+ * Post-dispatch lifecycle section. Stacks below the existing stage
+ * timeline in PipelineDetailView. Each row carries a leading icon +
+ * label/value pair + optional detail block.
+ *
+ * Tone is driven via [data-tone] attributes on the row + icon so the
+ * styling stays inside this file (no per-call style props). Tones map
+ * to the semantic status tokens in tokens.css.
+ *
+ * Mobile-first per dev-web-mobile-first-required: the row is a single
+ * column at 390px (icon stacks above the body); progressive
+ * enhancement at 30rem widens to a leading-icon layout. No horizontal
+ * scroll on any width.
+ */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.sectionIcon {
+  display: inline-flex;
+  color: var(--text-tertiary);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.loading,
+.empty,
+.error {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.error {
+  color: var(--status-danger);
+  font-style: normal;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+@media (min-width: 30rem) {
+  .row {
+    flex-direction: row;
+    gap: var(--space-4);
+    align-items: flex-start;
+  }
+}
+
+.row[data-tone="success"] {
+  border-color: color-mix(in srgb, var(--status-success) 30%, transparent);
+}
+
+.row[data-tone="danger"] {
+  border-color: color-mix(in srgb, var(--status-danger) 35%, transparent);
+}
+
+.row[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--status-warning) 35%, transparent);
+}
+
+.row[data-tone="info"] {
+  border-color: color-mix(in srgb, var(--status-info) 30%, transparent);
+}
+
+.rowIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-7);
+  height: var(--space-7);
+  border-radius: var(--radius-pill);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.rowIcon[data-tone="success"] {
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 40%, transparent);
+}
+
+.rowIcon[data-tone="danger"] {
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 40%, transparent);
+}
+
+.rowIcon[data-tone="warning"] {
+  color: var(--status-warning);
+  border-color: color-mix(in srgb, var(--status-warning) 40%, transparent);
+}
+
+.rowIcon[data-tone="info"] {
+  color: var(--status-info);
+  border-color: color-mix(in srgb, var(--status-info) 40%, transparent);
+}
+
+.rowMain {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.rowHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.rowLabel {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-medium);
+}
+
+.rowValue {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.muted {
+  color: var(--text-muted);
+  font-style: italic;
+  font-weight: var(--font-weight-regular);
+}
+
+.rowDetail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.metaLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.metaLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.metaCode {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  background: var(--surface-base);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  word-break: break-all;
+}
+
+.atomRefRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.errorBlock {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: color-mix(in srgb, var(--status-danger) 8%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-danger) 30%, transparent);
+  border-radius: var(--radius-xs);
+  color: var(--status-danger);
+}
+
+.errorBlock p {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-primary);
+  line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
+  flex: 1;
+}
+
+.prTitle {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  line-height: var(--line-height-relaxed);
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.prLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: var(--font-weight-semibold);
+  /* Tap-target floor: the 44px min lives in tokens.css as
+     --size-touch-target-min (Apple HIG / Material baseline) and
+     satisfies dev-web-mobile-first-required's tap-target rule for
+     the inline PR link. The Row primitive already provides the
+     visual chunk; this min-height is the explicit guarantee for
+     touch input. */
+  min-height: var(--size-touch-target-min);
+}
+
+.prLink:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.prLink:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}

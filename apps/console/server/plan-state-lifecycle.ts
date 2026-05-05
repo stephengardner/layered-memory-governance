@@ -26,6 +26,7 @@
  * separated so each renders independently and the focused timeline
  * doesn't have to know about pr-observation / settled atoms.
  */
+import { readString } from './projection-helpers.js';
 
 /**
  * Minimal slice of an atom this projection consumes. Keeping the
@@ -86,17 +87,6 @@ export interface PlanStateLifecycleStep {
 
 export interface PlanStateLifecycle {
   readonly steps: ReadonlyArray<PlanStateLifecycleStep>;
-}
-
-/**
- * Coerce an unknown metadata value to a non-empty string, or null.
- * Mirrors the pattern in handlePlanLifecycle: a typed guard at the
- * boundary so a legacy atom shape (number, bool, missing) never
- * propagates into a string-typed projection field.
- */
-function readString(meta: Readonly<Record<string, unknown>>, key: string): string | null {
-  const v = meta[key];
-  return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
 /*

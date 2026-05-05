@@ -78,6 +78,11 @@ import type {
   PipelineLiveOpsResult,
   PipelineSourceAtom,
 } from './pipelines-types';
+import { buildPipelineLifecycle } from './pipeline-lifecycle';
+import type {
+  PipelineLifecycle,
+  PipelineLifecycleSourceAtom,
+} from './pipeline-lifecycle-types';
 import {
   buildPlanStateLifecycle,
   type PlanStateLifecycle,
@@ -1547,6 +1552,44 @@ async function handlePipelinesLiveOps(): Promise<PipelineLiveOpsResult> {
   return listLiveOpsPipelines(sourceAtoms, Date.now());
 }
 
+/**
+ * /api/pipelines.lifecycle handler. Stitches the post-dispatch chain
+ * for a single pipeline (dispatch-record + plan + code-author-invoked
+ * + pr-observation + plan-merge-settled) into one wire shape so the
+ * /pipelines/<id> view can render the full intent-to-merge picture
+ * below the existing stage timeline.
+ *
+ * Returns null when no pipeline atom matches AND no dispatch-record
+ * matches; the route layer then emits 404 (`pipeline-not-found`) so
+ * the client renders the same empty state /api/pipelines.detail uses.
+ *
+ * Notably permissive: a dispatch-record without a corresponding
+ * pipeline atom (legacy / partial chain) still returns a populated
+ * dispatch_record block. The projection's null-tolerance is by design
+ * so the operator sees what the substrate actually wrote rather than
+ * a misleading "nothing here" empty state.
+ */
+async function handlePipelineLifecycle(pipelineId: string): Promise<PipelineLifecycle | null> {
+  const all = await readAllAtoms();
+  // Same downcast pattern the pipelines + resume-audit handlers use:
+  // the lifecycle helper consumes a narrow subset of the Atom envelope
+  // so the cast keeps tests pure (the unit test fixtures don't need
+  // to fabricate confidence/signals/scope/layer/expires_at).
+  const sourceAtoms = all as unknown as ReadonlyArray<PipelineLifecycleSourceAtom>;
+  const result = buildPipelineLifecycle(sourceAtoms, pipelineId);
+  // Treat "no atoms reference this pipeline at all" as not-found so
+  // the client distinguishes a stale URL from a pipeline that is
+  // genuinely pre-dispatch. The pipeline-detail surface has the same
+  // 404 contract.
+  if (
+    result.dispatch_record === null
+    && result.plan_id === null
+  ) {
+    return null;
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Resume audit: cross-actor projection of resume-vs-fresh-spawn telemetry.
 //
@@ -2667,6 +2710,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'pipelines-live-ops-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipelines.lifecycle' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
+    if (!pipelineId) {
+      sendErr(req, res, 400, 'missing-pipeline-id', 'pipelines.lifecycle requires { pipeline_id: string }');
+      return;
+    }
+    try {
+      const data = await handlePipelineLifecycle(pipelineId);
+      if (data === null) {
+        sendErr(req, res, 404, 'pipeline-not-found', `no pipeline atom or dispatch-record found for ${pipelineId}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pipeline-lifecycle-failed', (err as Error).message);
     }
     return;
   }

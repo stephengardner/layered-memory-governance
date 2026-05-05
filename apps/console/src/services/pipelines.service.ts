@@ -36,11 +36,21 @@ export type {
   PipelineSummary,
 } from '../../server/pipelines-types';
 
+export type {
+  PipelineLifecycle,
+  PipelineLifecycleCheckCounts,
+  PipelineLifecycleCodeAuthorInvocation,
+  PipelineLifecycleDispatchRecord,
+  PipelineLifecycleMerge,
+  PipelineLifecycleObservation,
+} from '../../server/pipeline-lifecycle-types';
+
 import type {
   PipelineDetail,
   PipelineListResult,
   PipelineLiveOpsResult,
 } from '../../server/pipelines-types';
+import type { PipelineLifecycle } from '../../server/pipeline-lifecycle-types';
 
 export async function listPipelines(signal?: AbortSignal): Promise<PipelineListResult> {
   return transport.call<PipelineListResult>(
@@ -67,6 +77,27 @@ export async function listLiveOpsPipelines(
   return transport.call<PipelineLiveOpsResult>(
     'pipelines.live-ops',
     undefined,
+    signal ? { signal } : undefined,
+  );
+}
+
+/**
+ * Fetch the pipeline post-dispatch lifecycle chain: dispatch-record
+ * counts, code-author-invoked observation, latest pr-observation, and
+ * plan-merge-settled atom for the resolved plan id.
+ *
+ * Used by PipelineDetailView to render the "Post-dispatch lifecycle"
+ * section below the existing stage timeline. Returns the full envelope
+ * regardless of which downstream blocks are populated; the UI renders
+ * progressively as each phase materializes.
+ */
+export async function getPipelineLifecycle(
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<PipelineLifecycle> {
+  return transport.call<PipelineLifecycle>(
+    'pipelines.lifecycle',
+    { pipeline_id: pipelineId },
     signal ? { signal } : undefined,
   );
 }

@@ -42,6 +42,7 @@ import {
   RESUME_AUDIT_MAX_WINDOW_HOURS,
   RESUME_AUDIT_MIN_WINDOW_HOURS,
 } from './resume-audit-types.js';
+import { readString } from './projection-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers (mirror the same shape as pipelines.ts).
@@ -54,11 +55,6 @@ function parseIsoTs(value: string | undefined | null): number {
 
 function readMeta(atom: ResumeAuditSourceAtom): Record<string, unknown> {
   return (atom.metadata ?? {}) as Record<string, unknown>;
-}
-
-function readString(meta: Record<string, unknown>, key: string): string | null {
-  const v = meta[key];
-  return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
 function isCleanLive(atom: ResumeAuditSourceAtom): boolean {
