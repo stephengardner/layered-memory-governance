@@ -66,6 +66,7 @@ import {
   parseRepoSlug,
   probeOrphanedPrByBranch,
   truncatePlanIdLabel,
+  verifyDispatchRepoIdentity,
 } from '../lib/autonomous-dispatch-exec.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -107,6 +108,30 @@ export default async function register(host, registry) {
   const remote = process.env.GH_REMOTE ?? 'origin';
 
   const { owner, repo } = await resolveOwnerRepo();
+
+  // Sanity-check that repoDir's origin remote agrees with the
+  // resolved (owner, repo). Without this guard, a stale LAG_REPO_DIR
+  // env var or an out-of-sync GH_REPO can dispatch the executor
+  // against a different checkout entirely; the executor then
+  // acquires its workspace off the wrong tree and the drafter
+  // silent-skips with `drafter-emitted-empty-diff` because the
+  // plan's target_paths don't exist in the unrelated checkout. The
+  // observed failure mode (substrate gap #266, pipeline-cto-
+  // 1777989833339-vx1cvf, 2026-05-05): the plan targeted
+  // `apps/console/src/features/resume-audit/` but the dispatched
+  // worktree was unrelated; the LLM noted that the working
+  // directory had no `apps/console/` tree present and silent-
+  // skipped. Failing closed at register-time surfaces the
+  // misconfiguration before any LLM call burns budget.
+  const repoIdentityCheck = await verifyDispatchRepoIdentity({
+    repoDir,
+    expectedOwner: owner,
+    expectedRepo: repo,
+    gitRemoteUrlReader: defaultGitRemoteUrlReader,
+  });
+  if (!repoIdentityCheck.ok) {
+    throw new Error(`[autonomous-dispatch] ${repoIdentityCheck.reason}`);
+  }
 
   const appRecord = loadAppRecord(role, stateDir);
   const privateKey = readFileSync(join(stateDir, 'apps', 'keys', `${role}.pem`), 'utf8');
@@ -477,4 +502,37 @@ function buildGhAuthedExecImpl({ tokenCache }) {
     };
     return execa(file, args, { ...options, env });
   };
+}
+
+/**
+ * Default reader passed to verifyDispatchRepoIdentity at register
+ * time. Spawns `git -C <repoDir> remote get-url origin` and returns
+ * the trimmed stdout, or `null` when no `origin` remote is configured
+ * (git exits non-zero with a "no such remote" stderr in that case).
+ *
+ * Any other failure (the repoDir is not a git repo, git is not on
+ * PATH) propagates as a thrown error so the verifier can surface the
+ * underlying cause in its operator-facing reason string.
+ */
+async function defaultGitRemoteUrlReader(repoDir) {
+  const result = await execa(
+    'git',
+    ['-C', repoDir, 'remote', 'get-url', 'origin'],
+    { reject: false },
+  );
+  if (result.exitCode !== 0) {
+    const stderr = (result.stderr ?? '').toLowerCase();
+    // git emits "no such remote 'origin'" when origin is unconfigured.
+    // Surface that as null so the verifier returns the dedicated
+    // "no origin remote" message instead of leaking git's wording.
+    if (stderr.includes('no such remote')) {
+      return null;
+    }
+    throw new Error(
+      `git -C ${repoDir} remote get-url origin exited ${result.exitCode}: `
+      + (result.stderr ?? '').trim(),
+    );
+  }
+  const url = (result.stdout ?? '').trim();
+  return url.length === 0 ? null : url;
 }
