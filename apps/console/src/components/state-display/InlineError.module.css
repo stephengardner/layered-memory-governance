@@ -1,0 +1,68 @@
+/*
+ * InlineError module.
+ *
+ * Visual contract: a single-line, subdued error hint that fits inside
+ * an already-loaded surface (an expanded canon card section, the
+ * referenced-by block on atom-detail, the principal-grid header).
+ * Where ErrorState centers a danger-toned card on the canvas,
+ * InlineError reads as a quiet annotation -- "this auxiliary block
+ * could not load" rather than "the page failed".
+ *
+ * Token discipline: every numeric / color value below resolves to a
+ * token from src/tokens/tokens.css; no raw px or hex per
+ * dev-web-tokens-only. Mobile-first per dev-web-mobile-first-required:
+ * the layout is single-line at any viewport, with overflow-wrap on the
+ * detail strip so a long error message wraps inside the parent card
+ * rather than blowing out the column on a 390px viewport.
+ */
+
+.inlineError {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+  color: var(--text-tertiary);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  /*
+   * Subdued opacity so the hint reads as ambient context. ErrorState
+   * is full-opacity because it IS the surface; InlineError is a
+   * quieter sibling sitting next to other content. 0.85 is enough to
+   * register at a glance without commanding focus.
+   */
+  opacity: 0.85;
+}
+
+.icon {
+  color: var(--status-danger);
+  /*
+   * Pull the icon up so its visual centerline aligns with the
+   * baseline-aligned text. AlertCircle renders with its center mid-
+   * cap-height; without a shift the icon sits above the text baseline.
+   */
+  transform: translateY(var(--space-px));
+  flex-shrink: 0;
+}
+
+.label {
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.detail {
+  font-family: var(--font-mono);
+  color: var(--status-danger);
+  /*
+   * Allow a long error message (e.g. a stack trace's first line) to
+   * wrap inside the inline box rather than overflow horizontally.
+   * Mobile-first: a 390px column with a 60-char message must still
+   * fit inside the parent card without horizontal scroll.
+   */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}

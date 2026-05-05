@@ -5,6 +5,8 @@ import { listPrincipals, getPrincipalsStats } from '@/services/principals.servic
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
+import { InlineError } from '@/components/state-display/InlineError';
+import { toErrorMessage } from '@/services/errors';
 import { useRouteId, setRoute } from '@/state/router.store';
 import { PrincipalActivity } from './PrincipalActivity';
 import { PrincipalCard } from './PrincipalCard';
@@ -102,6 +104,25 @@ export function PrincipalsView() {
               <StatsHeader
                 total={principals.length}
                 label={`principal${principals.length === 1 ? '' : 's'}`}
+                /*
+                 * Surface a stats-fetch failure here instead of silently
+                 * absorbing it (earlier the cards just rendered the no-
+                 * stats fallback shape with no chip strip, leaving the
+                 * operator unable to tell whether stats were genuinely
+                 * empty or the endpoint was down). InlineError sits in
+                 * the StatsHeader detail slot so the failure reads as a
+                 * quiet annotation next to the principal count rather
+                 * than dominating the toolbar like a top-level
+                 * ErrorState card would.
+                 */
+                detail={
+                  statsQuery.isError ? (
+                    <InlineError
+                      message={toErrorMessage(statsQuery.error)}
+                      testId="principals-stats-error"
+                    />
+                  ) : undefined
+                }
               />
               <div className={styles.layoutToggle} role="tablist" aria-label="Layout">
                 <button

@@ -10,7 +10,10 @@ import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
 import { RawJson } from '@/components/raw-json/RawJson';
 import { TimeAgo } from '@/components/time-ago/TimeAgo';
 import { AttributionAuditDialog } from '@/components/attribution-audit/AttributionAuditDialog';
+import { InlineError } from '@/components/state-display/InlineError';
+import { subBlockState } from '@/components/state-display/subBlockState';
 import { asAlternative, listReferencers, listAtomChain, listAtomCascade, reinforceAtom, markAtomStale, type CanonAtom } from '@/services/canon.service';
+import { toErrorMessage } from '@/services/errors';
 import { requireActorId } from '@/services/session.service';
 import { useCurrentActorId } from '@/hooks/useCurrentActorId';
 import { routeForAtomId, routeHref } from '@/state/router.store';
@@ -282,7 +285,27 @@ function ReferencedBy({ atomId }: { atomId: string }) {
     staleTime: 30_000,
   });
   const refs = query.data ?? [];
-  if (query.isPending || refs.length === 0) return null;
+  /*
+   * Earlier this short-circuited the entire section on `query.isPending
+   * || refs.length === 0`, which silently absorbed isError as "no
+   * data". A failed reverse-reference fetch in an expanded canon card
+   * was indistinguishable from an atom that legitimately has zero
+   * referencers. The InlineError branch surfaces the failure quietly
+   * without dominating the surrounding card surface the way ErrorState
+   * would; see InlineError.tsx for the full sub-block tone contract.
+   */
+  const state = subBlockState(query, refs.length === 0);
+  if (state.kind === 'pending' || state.kind === 'empty') return null;
+  if (state.kind === 'error') {
+    return (
+      <Section title="Referenced by">
+        <InlineError
+          message={toErrorMessage(state.error)}
+          testId={`referenced-by-error-${atomId}`}
+        />
+      </Section>
+    );
+  }
   return (
     <Section title={`Referenced by (${refs.length})`}>
       <AtomPillList atoms={refs} testIdPrefix="referenced-by" />
@@ -302,7 +325,18 @@ function WhyThisAtom({ atomId }: { atomId: string }) {
     staleTime: 30_000,
   });
   const chain = query.data ?? [];
-  if (query.isPending || chain.length === 0) return null;
+  const state = subBlockState(query, chain.length === 0);
+  if (state.kind === 'pending' || state.kind === 'empty') return null;
+  if (state.kind === 'error') {
+    return (
+      <Section title="Why this atom exists">
+        <InlineError
+          message={toErrorMessage(state.error)}
+          testId={`provenance-chain-error-${atomId}`}
+        />
+      </Section>
+    );
+  }
   return (
     <Section title={`Why this atom exists (${chain.length} ancestor${chain.length === 1 ? '' : 's'})`}>
       <AtomPillList atoms={chain} testIdPrefix="provenance-chain" />
@@ -323,7 +357,18 @@ function CascadeIfTainted({ atomId }: { atomId: string }) {
     staleTime: 30_000,
   });
   const cascade = query.data ?? [];
-  if (query.isPending || cascade.length === 0) return null;
+  const state = subBlockState(query, cascade.length === 0);
+  if (state.kind === 'pending' || state.kind === 'empty') return null;
+  if (state.kind === 'error') {
+    return (
+      <Section title="If compromised, taint cascades to">
+        <InlineError
+          message={toErrorMessage(state.error)}
+          testId={`cascade-error-${atomId}`}
+        />
+      </Section>
+    );
+  }
   return (
     <Section title={`If compromised, taint cascades to (${cascade.length})`}>
       <AtomPillList atoms={cascade} testIdPrefix="cascade" />

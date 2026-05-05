@@ -11,6 +11,9 @@ import {
   ErrorState,
   LoadingState,
 } from '@/components/state-display/StateDisplay';
+import { InlineError } from '@/components/state-display/InlineError';
+import { subBlockState } from '@/components/state-display/subBlockState';
+import { toErrorMessage } from '@/services/errors';
 import {
   getAtomById,
   listReferencers,
@@ -371,7 +374,28 @@ function ReferencedByBlock({ atomId }: { atomId: string }) {
    * non-L3 referencer from the operator's view.
    */
   const refs: ReadonlyArray<AnyAtom> = query.data ?? [];
-  if (query.isPending || refs.length === 0) return null;
+  /*
+   * Earlier this short-circuited on `query.isPending || refs.length
+   * === 0`, silently absorbing isError as "no referencers". A failed
+   * fetch of the reverse-link block was indistinguishable from an
+   * atom that legitimately has zero referencers. The InlineError
+   * branch surfaces the failure quietly inside a labeled section so
+   * the operator sees that the surface is partial; the rest of the
+   * atom-detail page (header, attributes, type-renderer body) renders
+   * normally because they hang off independent queries.
+   */
+  const state = subBlockState(query, refs.length === 0);
+  if (state.kind === 'pending' || state.kind === 'empty') return null;
+  if (state.kind === 'error') {
+    return (
+      <Section title="Referenced by" testId="atom-detail-referenced-by">
+        <InlineError
+          message={toErrorMessage(state.error)}
+          testId="atom-detail-referenced-by-error"
+        />
+      </Section>
+    );
+  }
   return (
     <RefList
       title="Referenced by"
