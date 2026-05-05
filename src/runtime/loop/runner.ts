@@ -35,6 +35,12 @@ import {
   type LoopTickReport,
 } from './types.js';
 import type { AtomFilter } from '../../types.js';
+import {
+  DEFAULT_REAPER_TTLS,
+  runReaperSweep,
+  type ReaperTtls,
+  type RunReaperSweepResult,
+} from '../plans/reaper.js';
 
 /**
  * A canon target after resolution: the manager is instantiated, and the
@@ -60,12 +66,23 @@ export class LoopRunner {
       | 'principalId'
       | 'maxAtomsPerTick'
       | 'l3HumanGateTimeoutMs'
+      | 'runReaperPass'
     >
   >;
   private readonly l2Engine: PromotionEngine;
   private readonly l3Engine: PromotionEngine;
   private readonly canonTargets: ReadonlyArray<ResolvedCanonTarget>;
   private readonly onTick: ((report: LoopTickReport) => void | Promise<void>) | null;
+  private readonly reaperPrincipal: PrincipalId | null;
+  private readonly reaperTtls: ReaperTtls;
+  /**
+   * `null` means we have not yet checked the principal exists in the
+   * host's PrincipalStore. We defer the lookup to the first reaper
+   * pass (vs. failing in the constructor) because the constructor
+   * is sync; once the lookup runs we cache the result so subsequent
+   * ticks do not re-hit the store.
+   */
+  private reaperPrincipalChecked: boolean = false;
   private tickCounter: number = 0;
   private errorCounter: number = 0;
   private lastReport: LoopTickReport | null = null;
@@ -86,7 +103,46 @@ export class LoopRunner {
       principalId: options.principalId,
       maxAtomsPerTick: options.maxAtomsPerTick ?? 1000,
       l3HumanGateTimeoutMs: options.l3HumanGateTimeoutMs ?? 250,
+      runReaperPass: options.runReaperPass ?? false,
     };
+    // Validate the reaper config at construction time (vs. first
+    // tick) so a misconfigured wiring fails the boot-up path instead
+    // of silently producing one bad tick. Validation is gated on
+    // `runReaperPass` so existing callers paying nothing for the
+    // feature observe no behavior change.
+    if (this.options.runReaperPass) {
+      const rp = options.reaperPrincipal;
+      if (typeof rp !== 'string' || rp.trim().length === 0) {
+        throw new Error(
+          'LoopRunner: runReaperPass=true requires reaperPrincipal (non-empty string)',
+        );
+      }
+      this.reaperPrincipal = rp as PrincipalId;
+      const warnMs = options.reaperWarnMs ?? DEFAULT_REAPER_TTLS.staleWarnMs;
+      const abandonMs = options.reaperAbandonMs ?? DEFAULT_REAPER_TTLS.staleAbandonMs;
+      if (!Number.isInteger(warnMs) || warnMs <= 0) {
+        throw new Error(
+          `LoopRunner: reaperWarnMs must be a positive integer ms (got ${String(warnMs)})`,
+        );
+      }
+      if (!Number.isInteger(abandonMs) || abandonMs <= 0) {
+        throw new Error(
+          `LoopRunner: reaperAbandonMs must be a positive integer ms (got ${String(abandonMs)})`,
+        );
+      }
+      if (abandonMs <= warnMs) {
+        throw new Error(
+          `LoopRunner: reaperAbandonMs (${abandonMs}) must be strictly greater than reaperWarnMs (${warnMs})`,
+        );
+      }
+      this.reaperTtls = {
+        staleWarnMs: warnMs,
+        staleAbandonMs: abandonMs,
+      };
+    } else {
+      this.reaperPrincipal = null;
+      this.reaperTtls = DEFAULT_REAPER_TTLS;
+    }
     const principal = this.options.principalId as PrincipalId;
     // `promotionThresholds` is passed through so callers can opt out of
     // the L3 requireValidation default (e.g. when a ValidatorRegistry
@@ -134,6 +190,7 @@ export class LoopRunner {
     let l2Rejected = 0;
     let l3Proposed = 0;
     let canonApplied = 0;
+    let reaperReport: LoopTickReport['reaperReport'] = null;
 
     if (this.host.scheduler.killswitchCheck()) {
       killSwitchTriggered = true;
@@ -150,6 +207,7 @@ export class LoopRunner {
         l3Proposed,
         canonApplied,
         errors,
+        reaperReport,
       };
       this.lastReport = report;
       return report;
@@ -235,6 +293,24 @@ export class LoopRunner {
       }
     }
 
+    // --- Reaper pass --------------------------------------------------------
+    // Default-disabled. When enabled, transitions stale `proposed`
+    // plans to `abandoned` so the slate stays a triage list and not
+    // an everything-ever-drafted backlog. A reaper failure logs to
+    // errors but does NOT fail the tick: the reaper is best-effort
+    // cleanup and one aborted sweep should not stall the rest of the
+    // loop's responsibilities.
+    if (this.options.runReaperPass && this.reaperPrincipal !== null) {
+      try {
+        reaperReport = await this.reaperPass(this.reaperPrincipal);
+      } catch (err) {
+        this.errorCounter += 1;
+        errors.push(
+          `reaper-pass: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     const finishedAt = this.host.clock.now();
     const report: LoopTickReport = {
       tickNumber,
@@ -248,6 +324,7 @@ export class LoopRunner {
       l3Proposed,
       canonApplied,
       errors,
+      reaperReport,
     };
     this.lastReport = report;
 
@@ -256,6 +333,10 @@ export class LoopRunner {
     this.host.auditor.metric('loop.atoms_expired', atomsExpired);
     this.host.auditor.metric('loop.l2_promoted', l2Promoted);
     this.host.auditor.metric('loop.l3_proposed', l3Proposed);
+    if (reaperReport !== null) {
+      this.host.auditor.metric('loop.reaper_swept', reaperReport.swept);
+      this.host.auditor.metric('loop.reaper_abandoned', reaperReport.abandoned);
+    }
 
     await this.host.auditor.log({
       kind: 'loop.tick',
@@ -269,6 +350,14 @@ export class LoopRunner {
         l2_promoted: l2Promoted,
         l3_proposed: l3Proposed,
         canon_applied: canonApplied,
+        ...(reaperReport !== null
+          ? {
+              reaper_swept: reaperReport.swept,
+              reaper_abandoned: reaperReport.abandoned,
+              reaper_warned: reaperReport.warned,
+              reaper_fresh: reaperReport.fresh,
+            }
+          : {}),
       },
     });
 
@@ -392,6 +481,48 @@ export class LoopRunner {
       }
     }
     return updated;
+  }
+
+  /**
+   * Run a single reaper sweep and shape the result into the per-tick
+   * report struct. Validates the configured principal exists in the
+   * host's PrincipalStore on first call so a misconfigured wiring
+   * fails loud (rather than producing audit rows attributed to a
+   * non-existent identity).
+   */
+  private async reaperPass(
+    principal: PrincipalId,
+  ): Promise<NonNullable<LoopTickReport['reaperReport']>> {
+    if (!this.reaperPrincipalChecked) {
+      const found = await this.host.principals.get(principal);
+      if (found === null) {
+        // Do NOT flip reaperPrincipalChecked here. A later
+        // (re-)provision of the principal must be picked up on the
+        // next tick rather than permanently skipped by a one-shot
+        // boot-time miss. The thrown error is caught by the tick
+        // loop and surfaced via errors[]; this preserves the loud-
+        // fail signal without poisoning the cache.
+        throw new Error(
+          `LoopRunner: reaperPrincipal '${String(principal)}' not found in host.principals`,
+        );
+      }
+      this.reaperPrincipalChecked = true;
+    }
+    const sweep: RunReaperSweepResult = await runReaperSweep(
+      this.host,
+      principal,
+      this.reaperTtls,
+    );
+    const fresh = sweep.classifications.fresh.length;
+    const warned = sweep.classifications.warn.length;
+    const abandonClassified = sweep.classifications.abandon.length;
+    const abandoned = sweep.apply.abandoned.length;
+    return {
+      swept: fresh + warned + abandonClassified,
+      abandoned,
+      warned,
+      fresh,
+    };
   }
 }
 

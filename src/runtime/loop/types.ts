@@ -154,6 +154,40 @@ export interface LoopOptions {
    * tick report. CLIs and monitors use this to stream progress.
    */
   readonly onTick?: (report: LoopTickReport) => void | Promise<void>;
+  /**
+   * Run the stale-plan reaper as part of every tick. Default `false`
+   * so existing callers and test harnesses observe no behavior change.
+   * Long-running deployments that want plan-state cleanup to self-
+   * sustain enable this from the CLI flag (`--reap-stale-plans`) or
+   * pass it directly when wiring a custom runner.
+   *
+   * When enabled, `reaperPrincipal` is required (validated at
+   * constructor time); the reaper uses it to attribute every audit
+   * row produced by a `proposed -> abandoned` transition.
+   */
+  readonly runReaperPass?: boolean;
+  /**
+   * Principal id the reaper attributes its abandonment transitions
+   * to. Required when `runReaperPass: true`; ignored otherwise. The
+   * value is validated against the host's PrincipalStore on the
+   * first reaper pass so a typo (or a fresh deployment that has not
+   * provisioned the principal) fails loud rather than producing an
+   * audit row attributed to a non-existent identity.
+   */
+  readonly reaperPrincipal?: string;
+  /**
+   * Override the warn-bucket TTL for the reaper, in milliseconds.
+   * Defaults to `DEFAULT_REAPER_TTLS.staleWarnMs` from the reaper
+   * module. Validated as a positive integer when supplied.
+   */
+  readonly reaperWarnMs?: number;
+  /**
+   * Override the abandon-bucket TTL for the reaper, in milliseconds.
+   * Defaults to `DEFAULT_REAPER_TTLS.staleAbandonMs` from the reaper
+   * module. Validated as a positive integer greater than the warn
+   * threshold when supplied.
+   */
+  readonly reaperAbandonMs?: number;
 }
 
 /**
@@ -191,6 +225,27 @@ export interface LoopTickReport {
   readonly l3Proposed: number;
   readonly canonApplied: number;
   readonly errors: ReadonlyArray<string>;
+  /**
+   * Per-tick reaper summary. `null` when the reaper pass is disabled
+   * (the default). When enabled, populated with the bucket counts
+   * from the sweep: `swept` is the total count of plans the reaper
+   * looked at, `abandoned` is the count of `proposed -> abandoned`
+   * transitions actually applied, `warned` is the count of plans in
+   * the warn bucket (>= warnMs but < abandonMs), and `fresh` is the
+   * count of plans whose age stayed under the warn threshold.
+   *
+   * A reaper internal failure logs to `errors` but leaves
+   * `reaperReport` set to `null` for that tick - the field is the
+   * positive signal of a successful pass, not a status flag.
+   */
+  readonly reaperReport:
+    | {
+        readonly swept: number;
+        readonly abandoned: number;
+        readonly warned: number;
+        readonly fresh: number;
+      }
+    | null;
 }
 
 export interface LoopStats {

@@ -36,6 +36,18 @@ interface CliArgs {
   readonly gateTimeoutMs: number;
   readonly embedderChoice: EmbedderChoice;
   readonly embedCache: boolean;
+  readonly reapStalePlans: boolean;
+  /**
+   * Resolved reaper principal id. `null` when --reap-stale-plans is
+   * not enabled. When enabled, populated via the precedence chain:
+   * --reaper-principal flag > LAG_REAPER_PRINCIPAL env > --principal
+   * (which itself defaults to "lag-loop") > LAG_OPERATOR_ID env.
+   */
+  readonly reaperPrincipal: string | null;
+  /** Override the warn-bucket TTL in ms; null = use reaper default. */
+  readonly reaperWarnMs: number | null;
+  /** Override the abandon-bucket TTL in ms; null = use reaper default. */
+  readonly reaperAbandonMs: number | null;
 }
 
 function parseCliArgs(): CliArgs | null {
@@ -52,6 +64,10 @@ function parseCliArgs(): CliArgs | null {
         embedder: { type: 'string', default: 'trigram' },
         'embed-cache': { type: 'boolean', default: true },
         'no-embed-cache': { type: 'boolean', default: false },
+        'reap-stale-plans': { type: 'boolean', default: false },
+        'reaper-principal': { type: 'string' },
+        'reaper-warn-ms': { type: 'string' },
+        'reaper-abandon-ms': { type: 'string' },
         help: { type: 'boolean', default: false },
       },
       allowPositionals: false,
@@ -90,16 +106,66 @@ function parseCliArgs(): CliArgs | null {
     }
     // --no-embed-cache explicitly disables; else honor --embed-cache (default true).
     const embedCache = Boolean(values['no-embed-cache']) ? false : Boolean(values['embed-cache']);
+    const principal = String(values['principal']);
+    const reapStalePlans = Boolean(values['reap-stale-plans']);
+    // Resolution order documented in the CLI usage. Loud-fail when
+    // --reap-stale-plans is on but no source resolves a non-empty
+    // value; we never silently default the reaper attribution.
+    let reaperPrincipal: string | null = null;
+    if (reapStalePlans) {
+      const flagValue = values['reaper-principal'];
+      const envReaper = process.env.LAG_REAPER_PRINCIPAL;
+      const envOperator = process.env.LAG_OPERATOR_ID;
+      const candidate =
+        (typeof flagValue === 'string' && flagValue.trim().length > 0 ? flagValue : null)
+        ?? (typeof envReaper === 'string' && envReaper.trim().length > 0 ? envReaper : null)
+        ?? (typeof principal === 'string' && principal.trim().length > 0 ? principal : null)
+        ?? (typeof envOperator === 'string' && envOperator.trim().length > 0 ? envOperator : null);
+      if (!candidate) {
+        console.error(
+          'Error: --reap-stale-plans requires a reaper principal. Set --reaper-principal, '
+            + 'LAG_REAPER_PRINCIPAL, --principal, or LAG_OPERATOR_ID.',
+        );
+        return null;
+      }
+      reaperPrincipal = candidate;
+    }
+    let reaperWarnMs: number | null = null;
+    if (typeof values['reaper-warn-ms'] === 'string') {
+      const n = parseInt(String(values['reaper-warn-ms']), 10);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+        console.error(
+          `Error: --reaper-warn-ms must be a positive integer ms. Got ${String(values['reaper-warn-ms'])}.`,
+        );
+        return null;
+      }
+      reaperWarnMs = n;
+    }
+    let reaperAbandonMs: number | null = null;
+    if (typeof values['reaper-abandon-ms'] === 'string') {
+      const n = parseInt(String(values['reaper-abandon-ms']), 10);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+        console.error(
+          `Error: --reaper-abandon-ms must be a positive integer ms. Got ${String(values['reaper-abandon-ms'])}.`,
+        );
+        return null;
+      }
+      reaperAbandonMs = n;
+    }
     return {
       rootDir,
       palacePath: values['palace-path'] ?? null,
       canonMd: values['canon-md'] ?? null,
       intervalMs,
       bootstrapLimit,
-      principal: String(values['principal']),
+      principal,
       gateTimeoutMs,
       embedderChoice: embedderChoice as EmbedderChoice,
       embedCache,
+      reapStalePlans,
+      reaperPrincipal,
+      reaperWarnMs,
+      reaperAbandonMs,
     };
   } catch (err) {
     console.error('Error parsing args:', err instanceof Error ? err.message : String(err));
@@ -125,6 +191,13 @@ function printUsage(): void {
       '  --embedder <name>         Retrieval embedder: trigram | onnx-minilm (default trigram).',
       '  --embed-cache             Wrap embedder in a disk cache at rootDir/embed-cache/ (default true).',
       '  --no-embed-cache          Disable embed cache.',
+      '  --reap-stale-plans        Run the stale-plan reaper on every tick (default off).',
+      '  --reaper-principal <id>   Principal id the reaper attributes abandonment',
+      '                            transitions to. Resolution order when --reap-stale-plans',
+      '                            is on: this flag > LAG_REAPER_PRINCIPAL env > --principal',
+      '                            value > LAG_OPERATOR_ID env. No silent default.',
+      '  --reaper-warn-ms <ms>     Override warn-bucket TTL (default 24h).',
+      '  --reaper-abandon-ms <ms>  Override abandon-bucket TTL (default 72h).',
       '  --help                    Print this message.',
     ].join('\n'),
   );
@@ -194,12 +267,16 @@ async function buildHost(args: CliArgs): Promise<{
 function formatTickReport(report: LoopTickReport): string {
   const err = report.errors.length > 0 ? ` errors=${report.errors.length}` : '';
   const kill = report.killSwitchTriggered ? ' [KILL SWITCH]' : '';
+  const reaper =
+    report.reaperReport !== null
+      ? ` reaper(swept=${report.reaperReport.swept}/abandoned=${report.reaperReport.abandoned}/warn=${report.reaperReport.warned})`
+      : '';
   return (
     `tick ${report.tickNumber}: ` +
     `decayed=${report.atomsDecayed} ` +
     `l2+=${report.l2Promoted}/-=${report.l2Rejected} ` +
     `l3+=${report.l3Proposed} ` +
-    `canon=${report.canonApplied}${err}${kill}`
+    `canon=${report.canonApplied}${reaper}${err}${kill}`
   );
 }
 
@@ -211,11 +288,22 @@ async function main(): Promise<number> {
   console.log(`[boot] host kind=${kind} root=${args.rootDir}`);
   if (args.canonMd) console.log(`[boot] canon target: ${args.canonMd}`);
   console.log(`[boot] interval=${args.intervalMs}ms  gate=${args.gateTimeoutMs}ms  principal=${args.principal}`);
+  if (args.reapStalePlans) {
+    console.log(
+      `[boot] reaper: ENABLED  principal=${args.reaperPrincipal ?? '(unresolved)'}` +
+        (args.reaperWarnMs !== null ? `  warn=${args.reaperWarnMs}ms` : '') +
+        (args.reaperAbandonMs !== null ? `  abandon=${args.reaperAbandonMs}ms` : ''),
+    );
+  }
 
   const runner = new LoopRunner(host, {
     principalId: args.principal,
     l3HumanGateTimeoutMs: args.gateTimeoutMs,
     ...(args.canonMd !== null ? { canonTargetPath: args.canonMd } : {}),
+    runReaperPass: args.reapStalePlans,
+    ...(args.reaperPrincipal !== null ? { reaperPrincipal: args.reaperPrincipal } : {}),
+    ...(args.reaperWarnMs !== null ? { reaperWarnMs: args.reaperWarnMs } : {}),
+    ...(args.reaperAbandonMs !== null ? { reaperAbandonMs: args.reaperAbandonMs } : {}),
     onTick: report => {
       console.log(formatTickReport(report));
       for (const e of report.errors) {
