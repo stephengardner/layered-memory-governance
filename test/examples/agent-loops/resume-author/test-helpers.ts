@@ -7,8 +7,8 @@
  * actor test (e.g. an upcoming `auditor-strategy.test.ts`) imports the
  * skeleton rather than copy-pasting it again.
  *
- * The skeleton mirrors the shape used in `walk-author-sessions.test.ts`
- * — that file pre-dates the per-actor descriptor split and remains
+ * The skeleton mirrors the shape used in `walk-author-sessions.test.ts`;
+ * that file pre-dates the per-actor descriptor split and remains
  * pinned to its own local copy by design (it tests a sibling walk
  * mechanism with subtly different invariants). Per-actor descriptor
  * tests share this file.
