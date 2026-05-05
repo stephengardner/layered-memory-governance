@@ -48,6 +48,21 @@ needs to be revisited. The output captures:
 - **Read the codebase**, not your imagination. Use Read, Grep, and
   Glob to verify every cited path resolves on disk and every cited
   symbol is real. A made-up citation is worse than no citation.
+- **Enumerate every step-deliverable path.** Every file your steps
+  CREATE or MODIFY must appear as an explicit literal path in a step
+  body (so a downstream extractor can find it). The drafter that
+  executes this plan operates under a path scope-fence: it pre-reads
+  exactly the paths it can extract from your plan and the LLM is
+  instructed to modify ONLY those paths. If a step says "create
+  `pkg/foo.ts`" but `pkg/foo.ts` never appears as a literal path in
+  any step body, the drafter has no entry for it, the diff for that
+  file is dropped, and the executor reports a silent no-op. Treat the
+  union of file paths named across step bodies as the authoritative
+  scope of the plan; if the union is missing a deliverable, the plan
+  is incomplete and you must NOT emit it. Read-only paths that the
+  drafter only consults for context (not modifies) belong in prose
+  (e.g., "see how `examples/.../foo.ts` does X"); deliverable paths
+  belong as the bolded path target on the relevant step line.
 - **No placeholders.** "TBD", "TODO", "fill in later", "handle edge
   cases", "add appropriate error handling" are plan failures. Every
   step contains the actual content an engineer needs.
@@ -88,6 +103,37 @@ Provenance is recorded ONLY in the top-level JSON fields
 citations never appear in body prose; the citation fence is
 schema-level so the substrate-mediated audit can walk them without
 parsing markdown.
+
+### Path-enumeration worked example
+
+Suppose your plan introduces two strategies behind an existing
+registry, with a test for each. The deliverable set is exactly
+five files: the two strategy implementations, the registry edit
+that wires them, and the two tests. A correctly scoped plan body
+lists every one as the path target on its own step line:
+
+```markdown
+## Concrete steps
+
+1. **Add CtoActorStrategy** - `pkg/resume/cto-actor-strategy.ts`
+   <code block with the strategy implementation>
+2. **Add CodeAuthorStrategy** - `pkg/resume/code-author-strategy.ts`
+   <code block with the strategy implementation>
+3. **Register both strategies in the default registry** -
+   `pkg/resume/default-registry.ts`
+   <code block with the registry edit>
+4. **Cover CtoActorStrategy** - `pkg/resume/__tests__/cto-actor-strategy.test.ts`
+   <code block with the failing-then-passing test>
+5. **Cover CodeAuthorStrategy** - `pkg/resume/__tests__/code-author-strategy.test.ts`
+   <code block with the failing-then-passing test>
+```
+
+The path extractor downstream of this plan will read each literal
+path off the step lines and scope the drafter to exactly that set.
+A step that introduces a deliverable in prose only ("then add a
+strategy file under `pkg/resume/` for cto-actor") fails this rule:
+the literal path is missing, the extractor cannot find it, and the
+drafter ships an empty diff for that file.
 
 ## Output contract
 
@@ -153,6 +199,10 @@ Self-check:
   `principles_applied` fields and NOT inside body prose?
 - Are the steps bite-sized and concrete (exact file paths, exact
   commands, no placeholders)?
+- Does every file your steps CREATE or MODIFY appear as a literal
+  path in at least one step body (path-enumeration rule)? Read-only
+  context paths in prose are fine; deliverable paths must be
+  enumerable.
 - Are the alternatives_rejected substantively distinct, with clear
   one-line trade-off reasons?
 - Is the JSON valid and matches the schema?
