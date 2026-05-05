@@ -10,6 +10,7 @@
 import type { AtomFilter, AtomType, Time } from '../../types.js';
 import type { RenderOptions } from '../../canon-md/index.js';
 import type { PromotionThresholds } from '../../promotion/index.js';
+import type { PrObservationRefresher } from '../plans/pr-observation-refresh.js';
 
 export interface HalfLifeConfig {
   /** Per-atom-type half-life in milliseconds. `directive` long, `ephemeral` short. */
@@ -188,6 +189,67 @@ export interface LoopOptions {
    * threshold when supplied.
    */
   readonly reaperAbandonMs?: number;
+  /**
+   * Run the plan-state reconcile pass on every tick. Default `false`
+   * so existing callers and test harnesses observe no behavior change.
+   * When enabled, transitions plans whose linked pr-observation atoms
+   * carry a terminal pr_state ('MERGED' / 'CLOSED') from
+   * 'executing' / 'approved' to 'succeeded' / 'abandoned'.
+   *
+   * The pass is in-process (pure read of observation atoms + atom
+   * writes via the host). When zero matching observations exist the
+   * tick is a cheap scan of the observation atom set; cost scales
+   * with the count of pr-observation atoms, bounded by `maxScan`
+   * inside the tick (default 5000).
+   *
+   * Closes the substrate gap surfaced when 3 plans stayed
+   * 'executing' indefinitely after their PRs merged because no tick
+   * was driving the writeback. Indie-floor deployments enable via
+   * the `--reconcile-plan-state` lag-run-loop flag; an org-ceiling
+   * deployment that observes PRs through a webhook flow (where the
+   * webhook itself writes the terminal observation) leaves it off.
+   */
+  readonly runPlanReconcilePass?: boolean;
+  /**
+   * Run the pr-observation refresh pass on every tick. Default
+   * `false`. Requires `prObservationRefresher` to be supplied; when
+   * the seam is absent the pass is silently skipped even if this
+   * flag is true (loud-fail at construction is wrong here because a
+   * deployment may want to opt into the reconcile pass without
+   * wiring a refresher seam, which is a coherent posture for a
+   * webhook-backed observation flow).
+   *
+   * When enabled, refreshes pr-observation atoms whose pr_state is
+   * non-terminal AND whose linked Plan is still executing AND whose
+   * observed_at age exceeds the freshness threshold (read from
+   * `pol-pr-observation-freshness-threshold-ms` canon, default 5
+   * minutes). The seam shells out to a deployment-side adapter
+   * (`PrObservationRefresher`); per-tick refresh count is bounded
+   * inside the tick (default 50).
+   *
+   * Closes the upstream half of the same substrate gap as
+   * `runPlanReconcilePass`: a PR that merged or closed mid-run
+   * leaves a stale OPEN observation that the reconcile pass cannot
+   * act on; the refresh tick rewrites it with terminal state which
+   * the reconcile tick then transitions on the next pass.
+   */
+  readonly runPlanObservationRefreshPass?: boolean;
+  /**
+   * Pluggable adapter the refresh tick calls when an observation
+   * needs to be re-observed. Required when
+   * `runPlanObservationRefreshPass: true` activates the pass; absent
+   * causes the pass to silently skip every tick (logged once per
+   * tick at the layer boundary so an operator scanning logs sees
+   * the gap).
+   *
+   * The substrate framework never imports a GitHub adapter; the
+   * deployment-side wiring (e.g. `createPrLandingObserveRefresher`
+   * in scripts/lib/pr-observation-refresher.mjs) constructs the
+   * adapter and passes it through here. Per
+   * dev-substrate-not-prescription, the GitHub-shaped concern stays
+   * outside src/.
+   */
+  readonly prObservationRefresher?: PrObservationRefresher;
 }
 
 /**
@@ -244,6 +306,45 @@ export interface LoopTickReport {
         readonly abandoned: number;
         readonly warned: number;
         readonly fresh: number;
+      }
+    | null;
+  /**
+   * Per-tick plan-state reconcile summary. `null` when the reconcile
+   * pass is disabled (the default). When enabled, populated with the
+   * tick's counts: `scanned` is the total pr-observation atoms
+   * inspected, `matched` is observations that linked to a plan and
+   * carried terminal pr_state, `transitioned` is plans actually
+   * flipped this tick, and `claimConflicts` is observations skipped
+   * because a prior tick (or another worker) already wrote the
+   * settle marker.
+   *
+   * A reconcile failure logs to `errors` and leaves
+   * `planReconcileReport` set to `null`; the field is the positive
+   * signal of a successful pass, not a status flag.
+   */
+  readonly planReconcileReport:
+    | {
+        readonly scanned: number;
+        readonly matched: number;
+        readonly transitioned: number;
+        readonly claimConflicts: number;
+      }
+    | null;
+  /**
+   * Per-tick pr-observation refresh summary. `null` when the refresh
+   * pass is disabled OR when the pass is enabled but the refresher
+   * seam is absent (the silent-skip path; the operator sees the gap
+   * via the once-per-tick log line, not via this field). When the
+   * pass actually runs, populated with `scanned` (observations
+   * inspected), `refreshed` (refresher.refresh calls succeeded),
+   * and `skipped` (a histogram of skip reasons including 'fresh',
+   * 'plan-not-executing', 'rate-limited', 'refresh-failed', etc.).
+   */
+  readonly planObservationRefreshReport:
+    | {
+        readonly scanned: number;
+        readonly refreshed: number;
+        readonly skipped: Readonly<Record<string, number>>;
       }
     | null;
 }

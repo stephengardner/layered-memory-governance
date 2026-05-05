@@ -42,6 +42,15 @@ import {
   type RunReaperSweepResult,
 } from '../plans/reaper.js';
 import { readReaperTtlsFromCanon } from './reaper-ttls.js';
+import {
+  runPlanStateReconcileTick,
+  type PlanReconcileTickResult,
+} from '../plans/pr-merge-reconcile.js';
+import {
+  runPlanObservationRefreshTick,
+  type PlanObservationRefreshResult,
+  type PrObservationRefresher,
+} from '../plans/pr-observation-refresh.js';
 
 /**
  * A canon target after resolution: the manager is instantiated, and the
@@ -68,6 +77,8 @@ export class LoopRunner {
       | 'maxAtomsPerTick'
       | 'l3HumanGateTimeoutMs'
       | 'runReaperPass'
+      | 'runPlanReconcilePass'
+      | 'runPlanObservationRefreshPass'
     >
   >;
   private readonly l2Engine: PromotionEngine;
@@ -100,6 +111,16 @@ export class LoopRunner {
    * ticks do not re-hit the store.
    */
   private reaperPrincipalChecked: boolean = false;
+  /**
+   * Refresher seam for the pr-observation refresh pass. `null` when
+   * the pass is disabled OR when the operator opted into the pass
+   * but did not wire a refresher (the silent-skip path; the tick
+   * loop logs the gap once per tick to surface the misconfiguration).
+   * Substrate purity: the framework never imports a GitHub adapter;
+   * the deployment-side wiring constructs the adapter and threads
+   * it through `LoopOptions.prObservationRefresher`.
+   */
+  private readonly prObservationRefresher: PrObservationRefresher | null;
   private tickCounter: number = 0;
   private errorCounter: number = 0;
   private lastReport: LoopTickReport | null = null;
@@ -121,7 +142,19 @@ export class LoopRunner {
       maxAtomsPerTick: options.maxAtomsPerTick ?? 1000,
       l3HumanGateTimeoutMs: options.l3HumanGateTimeoutMs ?? 250,
       runReaperPass: options.runReaperPass ?? false,
+      runPlanReconcilePass: options.runPlanReconcilePass ?? false,
+      runPlanObservationRefreshPass: options.runPlanObservationRefreshPass ?? false,
     };
+    // Capture the refresher seam at construction time. Storing here
+    // (vs. reading off `options` per tick) keeps the per-tick path
+    // free of optional-property reads on the caller's options object,
+    // and matches the framework's rule that adapter seams are bound
+    // once at boot. The caller may opt into the refresh pass without
+    // supplying a refresher; we silently skip per tick rather than
+    // loud-fail at construction because a deployment that observes
+    // PRs through a webhook may want the reconcile pass enabled
+    // alongside a deliberately absent refresher.
+    this.prObservationRefresher = options.prObservationRefresher ?? null;
     // Validate the reaper config at construction time (vs. first
     // tick) so a misconfigured wiring fails the boot-up path instead
     // of silently producing one bad tick. Validation is gated on
@@ -216,6 +249,8 @@ export class LoopRunner {
     let l3Proposed = 0;
     let canonApplied = 0;
     let reaperReport: LoopTickReport['reaperReport'] = null;
+    let planReconcileReport: LoopTickReport['planReconcileReport'] = null;
+    let planObservationRefreshReport: LoopTickReport['planObservationRefreshReport'] = null;
 
     if (this.host.scheduler.killswitchCheck()) {
       killSwitchTriggered = true;
@@ -233,6 +268,8 @@ export class LoopRunner {
         canonApplied,
         errors,
         reaperReport,
+        planReconcileReport,
+        planObservationRefreshReport,
       };
       this.lastReport = report;
       return report;
@@ -336,6 +373,69 @@ export class LoopRunner {
       }
     }
 
+    // --- Plan-observation refresh pass --------------------------------------
+    // Refresh BEFORE reconcile so a stale OPEN observation that was
+    // refreshed to a terminal state this tick becomes available for
+    // the reconcile pass on the SAME tick (not next tick). This is
+    // the same ordering scripts/run-approval-cycle.mjs uses for the
+    // daemon driver; mirroring it here keeps the in-process LoopRunner
+    // path and the daemon path observably equivalent. A failure logs
+    // to errors and leaves planObservationRefreshReport=null; other
+    // passes continue.
+    //
+    // Silent-skip when the seam is absent: an operator who opts into
+    // the pass without wiring a refresher (e.g. a misconfiguration,
+    // or a deployment that wants the reconcile pass alone) sees
+    // exactly one stderr line per tick naming the gap rather than a
+    // construction-time throw. The construction-time throw would block
+    // the legitimate "reconcile-only" posture, which is a coherent
+    // choice for a webhook-backed observation flow where the webhook
+    // itself writes terminal observations.
+    if (this.options.runPlanObservationRefreshPass) {
+      if (this.prObservationRefresher === null) {
+        // eslint-disable-next-line no-console
+        console.error(
+          '[plan-obs-refresh] WARN: runPlanObservationRefreshPass=true but no '
+            + 'prObservationRefresher seam supplied; pass is skipped this tick. '
+            + 'Wire one through LoopOptions.prObservationRefresher to activate.',
+        );
+      } else {
+        try {
+          planObservationRefreshReport = await this.planObservationRefreshPass(
+            this.prObservationRefresher,
+          );
+        } catch (err) {
+          this.errorCounter += 1;
+          errors.push(
+            `plan-obs-refresh: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
+    // --- Plan-state reconcile pass ------------------------------------------
+    // Default-disabled. When enabled, transitions plans whose linked
+    // pr-observation atoms carry a terminal pr_state from
+    // 'executing'/'approved' to 'succeeded'/'abandoned'. Closes the
+    // substrate gap where plans stay in 'executing' indefinitely after
+    // their PR merges; the reaper pass handles 'proposed' plans, this
+    // pass handles 'executing' plans whose PR has terminated.
+    //
+    // Pure in-process: no external I/O; cost scales with the count of
+    // pr-observation atoms (bounded inside the tick by maxScan,
+    // default 5000). A reconcile failure logs to errors and leaves
+    // planReconcileReport=null without failing the tick.
+    if (this.options.runPlanReconcilePass) {
+      try {
+        planReconcileReport = await this.planReconcilePass();
+      } catch (err) {
+        this.errorCounter += 1;
+        errors.push(
+          `plan-reconcile: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     const finishedAt = this.host.clock.now();
     const report: LoopTickReport = {
       tickNumber,
@@ -350,6 +450,8 @@ export class LoopRunner {
       canonApplied,
       errors,
       reaperReport,
+      planReconcileReport,
+      planObservationRefreshReport,
     };
     this.lastReport = report;
 
@@ -361,6 +463,23 @@ export class LoopRunner {
     if (reaperReport !== null) {
       this.host.auditor.metric('loop.reaper_swept', reaperReport.swept);
       this.host.auditor.metric('loop.reaper_abandoned', reaperReport.abandoned);
+    }
+    if (planReconcileReport !== null) {
+      this.host.auditor.metric('loop.plan_reconcile_scanned', planReconcileReport.scanned);
+      this.host.auditor.metric(
+        'loop.plan_reconcile_transitioned',
+        planReconcileReport.transitioned,
+      );
+    }
+    if (planObservationRefreshReport !== null) {
+      this.host.auditor.metric(
+        'loop.plan_obs_refresh_scanned',
+        planObservationRefreshReport.scanned,
+      );
+      this.host.auditor.metric(
+        'loop.plan_obs_refresh_refreshed',
+        planObservationRefreshReport.refreshed,
+      );
     }
 
     await this.host.auditor.log({
@@ -381,6 +500,20 @@ export class LoopRunner {
               reaper_abandoned: reaperReport.abandoned,
               reaper_warned: reaperReport.warned,
               reaper_fresh: reaperReport.fresh,
+            }
+          : {}),
+        ...(planReconcileReport !== null
+          ? {
+              plan_reconcile_scanned: planReconcileReport.scanned,
+              plan_reconcile_matched: planReconcileReport.matched,
+              plan_reconcile_transitioned: planReconcileReport.transitioned,
+              plan_reconcile_claim_conflicts: planReconcileReport.claimConflicts,
+            }
+          : {}),
+        ...(planObservationRefreshReport !== null
+          ? {
+              plan_obs_refresh_scanned: planObservationRefreshReport.scanned,
+              plan_obs_refresh_refreshed: planObservationRefreshReport.refreshed,
             }
           : {}),
       },
@@ -583,6 +716,52 @@ export class LoopRunner {
       abandoned,
       warned,
       fresh,
+    };
+  }
+
+  /**
+   * Run one plan-state reconcile pass. Pure delegate to the
+   * existing `runPlanStateReconcileTick` mechanism; LoopRunner adds
+   * scheduling + audit only. Substrate purity is preserved: the tick
+   * function is in a separate module and continues to be the single
+   * source of truth for the reconcile algorithm. The daemon driver
+   * (scripts/run-approval-cycle.mjs) and the in-process LoopRunner
+   * call the SAME function so observable behavior cannot drift.
+   */
+  private async planReconcilePass(): Promise<
+    NonNullable<LoopTickReport['planReconcileReport']>
+  > {
+    const result: PlanReconcileTickResult = await runPlanStateReconcileTick(this.host);
+    return {
+      scanned: result.scanned,
+      matched: result.matched,
+      transitioned: result.transitioned,
+      claimConflicts: result.claimConflicts,
+    };
+  }
+
+  /**
+   * Run one pr-observation refresh pass. Pure delegate to the
+   * existing `runPlanObservationRefreshTick` mechanism; LoopRunner
+   * adds scheduling + audit only. The pluggable `PrObservationRefresher`
+   * seam is supplied at construction time via
+   * `LoopOptions.prObservationRefresher`; the framework never knows
+   * how the refresher writes the new observation atom, only that it
+   * does. The freshness threshold is read inside the tick from the
+   * `pol-pr-observation-freshness-threshold-ms` canon atom (default
+   * 5 minutes).
+   */
+  private async planObservationRefreshPass(
+    refresher: PrObservationRefresher,
+  ): Promise<NonNullable<LoopTickReport['planObservationRefreshReport']>> {
+    const result: PlanObservationRefreshResult = await runPlanObservationRefreshTick(
+      this.host,
+      refresher,
+    );
+    return {
+      scanned: result.scanned,
+      refreshed: result.refreshed,
+      skipped: result.skipped,
     };
   }
 }
