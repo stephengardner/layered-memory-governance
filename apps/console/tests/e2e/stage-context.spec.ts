@@ -12,10 +12,12 @@ import { test, expect, type Page } from '@playwright/test';
  *   1. The panel renders on every surface (collapsed by default).
  *   2. Clicking the toggle expands the panel and triggers the
  *      lazy stage-context fetch.
- *   3. Once expanded, the three tab buttons (Soul, Upstream chain,
- *      Canon at runtime) all render with role="tab" and the tab
- *      strip carries role="tablist".
- *   4. Switching between tabs swaps the visible tabpanel.
+ *   3. Once expanded, the three section headers (Soul, Upstream
+ *      chain, Canon at runtime) render as <button> elements
+ *      carrying aria-expanded + aria-controls, each followed by a
+ *      <section role="region"> region.
+ *   4. Clicking a section header toggles its aria-expanded between
+ *      "false" and "true" and reveals/hides the matching region.
  *   5. For pipeline-stage atoms, the metadata grid surfaces the
  *      stage name, principal id, and skill bundle.
  *
@@ -81,7 +83,7 @@ test.describe('stage context panel', () => {
     await expect(toggle).toContainText('Stage context');
   });
 
-  test('toggle expands the panel and renders all 3 tabs', async ({ page }) => {
+  test('toggle expands the panel and renders all 3 disclosure sections', async ({ page }) => {
     const target = await findPipelineStageAtom(page);
     test.skip(target === null, 'no pipeline-stage atoms in fixture');
 
@@ -95,35 +97,59 @@ test.describe('stage context panel', () => {
     await expect(panel).toHaveAttribute('data-open', 'true');
     await expect(page.getByTestId('stage-context-body')).toBeVisible();
 
-    // Tablist contract: role="tablist" + 3 tabs with role="tab".
-    const tablist = page.getByTestId('stage-context-tablist');
-    await expect(tablist).toBeVisible();
-    await expect(tablist).toHaveAttribute('role', 'tablist');
+    /*
+     * Disclosure contract: a section-list wrapper plus three section
+     * blocks. Each section block has a <button> header with
+     * aria-expanded + aria-controls and a <section role="region">
+     * body keyed by aria-labelledby on the matching button id.
+     */
+    const sectionList = page.getByTestId('stage-context-section-list');
+    await expect(sectionList).toBeVisible();
 
-    const soulTab = page.getByTestId('stage-context-tab-soul');
-    const chainTab = page.getByTestId('stage-context-tab-chain');
-    const canonTab = page.getByTestId('stage-context-tab-canon');
-    await expect(soulTab).toBeVisible();
-    await expect(chainTab).toBeVisible();
-    await expect(canonTab).toBeVisible();
-    await expect(soulTab).toHaveAttribute('role', 'tab');
-    await expect(chainTab).toHaveAttribute('role', 'tab');
-    await expect(canonTab).toHaveAttribute('role', 'tab');
+    const soulHeader = page.getByTestId('stage-context-section-header-soul');
+    const chainHeader = page.getByTestId('stage-context-section-header-chain');
+    const canonHeader = page.getByTestId('stage-context-section-header-canon');
+    await expect(soulHeader).toBeVisible();
+    await expect(chainHeader).toBeVisible();
+    await expect(canonHeader).toBeVisible();
 
-    // Default tab is Soul.
-    await expect(soulTab).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByTestId('stage-context-soul')).toBeVisible();
+    /*
+     * All three sections start collapsed on every mount per the
+     * operator-stated all-collapsed-on-first-paint rule. The same
+     * rule is asserted on the dedicated mobile spec at 390x844.
+     */
+    await expect(soulHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(chainHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(canonHeader).toHaveAttribute('aria-expanded', 'false');
 
-    // Switch to Chain.
-    await chainTab.click();
-    await expect(chainTab).toHaveAttribute('aria-selected', 'true');
-    await expect(soulTab).toHaveAttribute('aria-selected', 'false');
-    await expect(page.getByTestId('stage-context-chain')).toBeVisible();
+    /*
+     * Click each header in turn. Multi-open accordion: clicking one
+     * does not close another. aria-expanded flips from "false" to
+     * "true" and the matching region becomes visible.
+     */
+    const soulRegion = page.getByTestId('stage-context-section-region-soul');
+    const chainRegion = page.getByTestId('stage-context-section-region-chain');
+    const canonRegion = page.getByTestId('stage-context-section-region-canon');
 
-    // Switch to Canon.
-    await canonTab.click();
-    await expect(canonTab).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByTestId('stage-context-canon')).toBeVisible();
+    await soulHeader.click();
+    await expect(soulHeader).toHaveAttribute('aria-expanded', 'true');
+    await expect(soulRegion).toBeVisible();
+
+    await chainHeader.click();
+    await expect(chainHeader).toHaveAttribute('aria-expanded', 'true');
+    await expect(chainRegion).toBeVisible();
+    /* Soul stays open: multi-open accordion. */
+    await expect(soulHeader).toHaveAttribute('aria-expanded', 'true');
+
+    await canonHeader.click();
+    await expect(canonHeader).toHaveAttribute('aria-expanded', 'true');
+    await expect(canonRegion).toBeVisible();
+
+    /* Click again to collapse a single section without affecting the others. */
+    await soulHeader.click();
+    await expect(soulHeader).toHaveAttribute('aria-expanded', 'false');
+    await expect(chainHeader).toHaveAttribute('aria-expanded', 'true');
+    await expect(canonHeader).toHaveAttribute('aria-expanded', 'true');
   });
 
   test('surfaces the stage name + principal id when expanded on a pipeline-stage atom', async ({ page }) => {
@@ -170,13 +196,15 @@ test.describe('stage context panel - mobile', () => {
 
     /*
      * Per canon dev-web-mobile-first-required: 390px viewport must
-     * not exhibit horizontal scroll. Compare body scrollWidth vs
-     * clientWidth -- the panel must lay out within the available
-     * width even on the narrowest mobile profile we ship.
+     * not exhibit horizontal scroll. Compare documentElement
+     * scrollWidth vs clientWidth -- the panel must lay out within
+     * the available width even on the narrowest mobile profile we
+     * ship. Use documentElement (not body) because body width is
+     * influenced by margins and ignores overflow on the document.
      */
     const overflows = await page.evaluate(() => {
-      const body = document.body;
-      return body.scrollWidth - body.clientWidth;
+      const root = document.documentElement;
+      return root.scrollWidth - root.clientWidth;
     });
     expect(overflows).toBeLessThanOrEqual(0);
   });

@@ -106,20 +106,21 @@
     background: var(--surface-raised);
   }
 
-  .toggleChevron {
+  .toggleChevron,
+  .sectionChevron {
     transition: none;
   }
 
   /*
    * Suppress hover/active background+color transitions on the
-   * collapsible toggle and the tab buttons too. Per
+   * collapsible toggle and the section header buttons. Per
    * dev-web-app-grade-interactions 'transitions honor
    * prefers-reduced-motion'; leaving these live would still flash
    * background-color on hover/active even with the chevron rotation
    * disabled.
    */
   .toggle,
-  .tab {
+  .sectionHeader {
     transition: none;
   }
 }
@@ -162,22 +163,36 @@
   color: var(--text-primary);
 }
 
-.tablist {
+/*
+ * Section list: three disclosure blocks (soul / chain / canon).
+ * The same DOM serves both desktop (>640px) and mobile (<=640px);
+ * the visual swap is purely CSS so there is no SSR/hydration hazard.
+ *
+ * Desktop default rules below render the three section headers as a
+ * horizontal row reminiscent of the prior tab-strip; the mobile
+ * @media block at the bottom of this file restacks them as a
+ * full-width vertical accordion.
+ */
+.sectionList {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-1);
-  background: var(--surface-raised);
-  border-radius: var(--radius-sm);
+  flex-direction: column;
+  gap: var(--space-3);
 }
 
-.tab {
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sectionHeader {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  width: 100%;
   min-height: var(--size-touch-target-min);
   padding: var(--space-2) var(--space-4);
-  background: transparent;
+  background: var(--surface-raised);
   border: 0;
   border-radius: var(--radius-sm);
   font-family: var(--font-sans);
@@ -185,33 +200,41 @@
   font-weight: var(--font-weight-medium);
   color: var(--text-tertiary);
   cursor: pointer;
+  text-align: left;
   transition: background var(--duration-fast) var(--easing-standard),
     color var(--duration-fast) var(--easing-standard);
 }
 
-.tab:hover {
+.sectionHeader:hover {
   color: var(--text-secondary);
   background: color-mix(in srgb, var(--surface-overlay) 50%, transparent);
 }
 
-.tab:focus-visible {
+.sectionHeader:focus-visible {
   outline: var(--stroke-rail) solid var(--border-focus);
   outline-offset: var(--stroke-rail);
 }
 
-.tabActive {
+.sectionHeaderExpanded {
   background: var(--surface-base);
   color: var(--text-primary);
   box-shadow: 0 0 0 var(--stroke-hairline) var(--border-subtle);
 }
 
-.tabIcon {
+.sectionIcon {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   color: currentcolor;
 }
 
-.tabCount {
+.sectionLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sectionCount {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -224,11 +247,35 @@
   border-radius: var(--radius-pill);
 }
 
-.tabActive .tabCount {
+.sectionHeaderExpanded .sectionCount {
   color: var(--text-primary);
 }
 
-.tabpanel {
+.sectionChevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform var(--duration-fast) var(--easing-standard);
+  /*
+   * Hidden at desktop -- the section header looks like a tab there;
+   * a chevron would read as visual noise. The mobile media-query at
+   * the bottom of this file makes it visible and rotates it on
+   * expand to provide the disclosure affordance.
+   */
+  display: none;
+}
+
+/*
+ * Disclosure semantics: hide regions whose section is collapsed.
+ * Uses the [data-expanded] attribute on the section wrapper rather
+ * than aria-expanded on the button so the rule is unambiguous and
+ * does not rely on adjacent-sibling ordering inside the .section
+ * container.
+ */
+.section[data-expanded='false'] .sectionRegion {
+  display: none;
+}
+
+.sectionRegion {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -412,14 +459,21 @@
 }
 
 /*
- * Compact-mobile breakpoint. Uses rem rather than raw px to align
- * with the rest of the Console's responsive vocabulary
- * (40rem/48rem/56rem in TimelineView, ControlPanelView, etc.). 30rem
- * = 480px at the default 16px root, matching the original intent
- * (small-phone width where the tab-row should reclaim padding and
- * the hint label can drop).
+ * Mobile (<=640px): stack section headers as a full-width vertical
+ * accordion. Each header is its own tap target, full width with a
+ * chevron affordance reflecting expand state. Tap target height
+ * floor stays at the design-system var(--size-touch-target-min)
+ * which resolves to >=44px per the token system contract; this
+ * media-query does not lower it.
+ *
+ * The breakpoint is 640px (40rem at the default 16px root) per the
+ * operator-stated mobile threshold from the deep planning pipeline
+ * intent. Existing surfaces in this Console use 30rem (480px) for
+ * smaller-than-mobile compaction (see the prior block above);
+ * 40rem here is intentionally wider so a small-tablet portrait
+ * viewport (~600-700px) also picks up the accordion shape.
  */
-@media (max-width: 30rem) {
+@media (max-width: 40rem) {
   .panel {
     padding: var(--space-3) var(--space-4);
   }
@@ -428,7 +482,34 @@
     display: none;
   }
 
-  .tab {
+  .sectionList {
+    gap: var(--space-2);
+  }
+
+  .sectionHeader {
+    /*
+     * 44px tap-target floor matching the operator's stated minimum
+     * (and the dev-web-mobile-first-required canon directive). The
+     * design token resolves to >=44px already; this rule is the
+     * explicit local floor so a future token revision cannot regress
+     * this surface below 44px without surfacing here.
+     */
+    min-height: 44px;
     padding: var(--space-2) var(--space-3);
+  }
+
+  .sectionChevron {
+    /*
+     * Reveal the chevron on mobile and rotate it 180deg when the
+     * matching section is expanded. Provides the disclosure
+     * affordance the desktop layout did not need (where the active
+     * tab was conveyed by background contrast).
+     */
+    display: inline-flex;
+    margin-left: auto;
+  }
+
+  .sectionHeader[aria-expanded='true'] .sectionChevron {
+    transform: rotate(180deg);
   }
 }
