@@ -658,13 +658,20 @@ async function handleAtomGet(id: string): Promise<Atom | null> {
  */
 async function handleAtomsExists(ids: ReadonlyArray<string>): Promise<ReadonlyArray<{ id: string; exists: boolean }>> {
   /*
-   * Defensive priming: if the watcher is still cold, prime once so we
-   * never report `exists: false` for an atom that's actually on disk.
-   * After the first call the atomIndex is hot and subsequent batches
-   * are O(N) Map lookups.
+   * Defensive priming: if the watcher is still cold, prime the
+   * atomIndex map once so we never report `exists: false` for an
+   * atom that's actually on disk. `primeAtomIndex` is the function
+   * that actually populates the map -- `readAllAtoms` reads from
+   * disk into a one-shot array on the cold-start branch but does
+   * NOT mutate atomIndex, so calling it here would leave us still
+   * looking at an empty map. CR (cr-precheck v0.4.2 finding,
+   * 2026-05-05) caught this priming-vs-reading mismatch.
+   *
+   * After the first call atomIndexPrimed=true and subsequent
+   * batches are O(N) Map lookups.
    */
   if (!atomIndexPrimed) {
-    await readAllAtoms();
+    await primeAtomIndex();
   }
   return ids.map((id) => ({ id, exists: atomIndex.has(`${id}.json`) }));
 }
@@ -2726,6 +2733,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
      * resolve to any atom in the store. A plan citing N principles
      * pays one round trip instead of N atoms.get calls.
      *
+     * Validation contract: every input id must be a non-empty string.
+     * Silently dropping malformed entries would change response
+     * cardinality (caller sees fewer entries than it sent), which
+     * makes Map<id, exists> reconstruction fragile. Reject with 400
+     * instead so the bad caller fails loud. CR (cr-precheck v0.4.2
+     * finding, 2026-05-05) caught the original silent-filter shape.
+     *
      * Hard cap on input size protects the server from a malformed
      * caller asking for tens of thousands of ids at once. The cap
      * matches the deliberation list cap (DELIBERATION_LIST_CAP=200)
@@ -2744,7 +2758,17 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendErr(req, res, 400, 'too-many-ids', `atoms.exists rejects more than ${MAX_IDS} ids per call`);
       return;
     }
-    const ids = raw.filter((v): v is string => typeof v === 'string' && v.length > 0);
+    if (!raw.every((v): v is string => typeof v === 'string' && v.length > 0)) {
+      sendErr(
+        req,
+        res,
+        400,
+        'invalid-ids',
+        'atoms.exists requires ids to be an array of non-empty strings',
+      );
+      return;
+    }
+    const ids = raw as ReadonlyArray<string>;
     try {
       const data = await handleAtomsExists(ids);
       sendOk(req, res, data);

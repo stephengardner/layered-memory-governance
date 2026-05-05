@@ -72,39 +72,6 @@ function pickPlanWithDeliberation(plans: ReadonlyArray<ListAtom>): ListAtom | nu
   return null;
 }
 
-/*
- * Find a plan with at least one ALL-CAPS clearly-not-a-real-atom
- * principle (`intent-` prefix that won't resolve, or a fabricated
- * id). Real plans in our fixture cite intent-* atoms which DO exist
- * but live as operator-intent rather than canon. The missing-atom
- * affordance fires when the cited id has no matching atom anywhere,
- * so we look specifically for a plan citing such an id.
- *
- * Returns null if no fixture plan qualifies; the test skips.
- */
-async function pickPlanWithMissingPrinciple(
-  page: Page,
-  plans: ReadonlyArray<ListAtom>,
-): Promise<{ plan: ListAtom; missingId: string } | null> {
-  for (const p of plans) {
-    const meta = (p.metadata ?? {}) as Record<string, unknown>;
-    const principles = Array.isArray(meta['principles_applied']) ? meta['principles_applied'] : [];
-    if (principles.length === 0) continue;
-    /*
-     * Hit the batched existence endpoint so we know which (if any)
-     * cited principle is genuinely absent in the store.
-     */
-    const ids = principles.filter((v): v is string => typeof v === 'string' && v.length > 0);
-    const response = await page.request.post('/api/atoms.exists', { data: { ids } });
-    if (!response.ok()) continue;
-    const body = await response.json();
-    const entries: ReadonlyArray<{ id: string; exists: boolean }> = body?.data ?? [];
-    const missing = entries.find((e) => !e.exists);
-    if (missing) return { plan: p, missingId: missing.id };
-  }
-  return null;
-}
-
 test.describe('deliberation surface (inline on plan + canon detail)', () => {
   test('atom-detail viewer renders the deliberation block on a plan with deliberation metadata', async ({ page }) => {
     const plans = await fetchPlans(page);
@@ -266,37 +233,17 @@ test.describe('deliberation surface (inline on plan + canon detail)', () => {
     await expect(block.getByRole('heading', { name: 'Deliberation' })).toBeVisible();
   });
 
-  test('principle chip with a missing-atom citation renders the strikethrough variant + tooltip', async ({ page }) => {
-    const plans = await fetchPlans(page);
-    const found = await pickPlanWithMissingPrinciple(page, plans);
-    test.skip(found === null, 'no plan citing a missing principle in fixture');
-
-    await page.goto(`/atom/${encodeURIComponent(found!.plan.id)}`);
-    await expect(page.getByTestId('atom-detail-deliberation')).toBeVisible({
-      timeout: 10_000,
-    });
-
-    /*
-     * The block waits for the atoms.exists query to resolve before
-     * marking any chip as missing -- the spec says we don't paint
-     * citations as broken during the loading window. So we poll
-     * the data-missing attribute on the target id until it
-     * settles to "true".
-     */
-    const chip = page.locator(
-      `[data-testid="atom-detail-deliberation-principle"][data-atom-id="${found!.missingId}"]`,
-    );
-    await expect(chip).toBeVisible({ timeout: 10_000 });
-    await expect(chip).toHaveAttribute('data-missing', 'true', { timeout: 10_000 });
-    /*
-     * The tooltip uses the native HTML `title` attribute. We only
-     * assert the prefix ("Missing atom:") so a future copy edit on
-     * the rest of the message does not break the test.
-     */
-    const title = await chip.getAttribute('title');
-    expect(title).toMatch(/Missing atom:/);
-  });
-
+  /*
+   * Note on missing-principle coverage: the load-bearing assertion
+   * (chip renders as strikethrough + missing tooltip when the cited
+   * id does not resolve) is exercised below by mocking the
+   * /api/atoms.exists response. We deliberately do NOT add a
+   * fixture-dependent variant that walks real plans for a broken
+   * citation -- doing so would skip cleanly on every run because
+   * the dogfood fixture has no plan citing a fabricated id, and a
+   * skipped test teaches future readers nothing about coverage. The
+   * mocked variant runs deterministically every CI pass.
+   */
   test('mocked missing-atom resolution paints the strikethrough chip even when fixture has no missing citation', async ({ page }) => {
     /*
      * Real fixture data may or may not include a plan citing a

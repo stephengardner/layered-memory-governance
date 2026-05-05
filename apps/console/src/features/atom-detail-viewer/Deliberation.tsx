@@ -20,7 +20,7 @@ import styles from './Deliberation.module.css';
  *   1. Principles applied   -- "what canon was this grounded in"
  *                              (clickable, with missing-atom
  *                              treatment if the cited id does not
- *                              resolve to an existing canon atom)
+ *                              resolve to an existing atom in the store)
  *   2. Alternatives rejected -- "what other paths were considered
  *                              and why each was demoted"
  *   3. What breaks if revisited -- "the 3-month-later regret check",
@@ -156,10 +156,10 @@ function PrinciplesAppliedBlock({ principles }: { principles: ReadonlyArray<stri
 }
 
 /**
- * Single principle chip. When the cited id resolves to a canon atom
- * (the common case) we render an `AtomRef`-style anchor that routes
- * via the standard `setRoute(routeForAtomId(id), id)` flow, gaining
- * the shared hover-card preview for free.
+ * Single principle chip. When the cited id resolves to an atom in the
+ * store (the common case) we render an `AtomRef`-style anchor that
+ * routes via the standard `setRoute(routeForAtomId(id), id)` flow,
+ * gaining the shared hover-card preview for free.
  *
  * When the id does NOT resolve, we render a strikethrough chip with
  * a `title` attribute (browser-native tooltip) explaining the gap.
@@ -169,6 +169,12 @@ function PrinciplesAppliedBlock({ principles }: { principles: ReadonlyArray<stri
  * surfacing this asymmetry is exactly the kind of after-the-fact
  * read that catches drafter-confabulation drift the substrate-level
  * mitigation cannot fully prevent today.
+ *
+ * Note: "existing atom" here means "any atom in the store", not just
+ * canon. The atoms.exists endpoint resolves against the entire
+ * atomIndex (canon + plans + intents + observations + everything).
+ * A plan citing an intent-* atom that exists is NOT marked missing;
+ * a plan citing a fabricated id that exists nowhere is.
  */
 function PrincipleChip({ id, missing }: { readonly id: string; readonly missing: boolean }) {
   if (missing) {
@@ -177,7 +183,7 @@ function PrincipleChip({ id, missing }: { readonly id: string; readonly missing:
       <a
         className={styles.principleChipMissing}
         href={routeHref(target, id)}
-        title={`Missing atom: ${id} is cited as a principle but does not resolve to an existing canon atom.`}
+        title={`Missing atom: ${id} is cited as a principle but does not resolve to an existing atom in the store.`}
         data-testid="atom-detail-deliberation-principle"
         data-atom-id={id}
         data-missing="true"
