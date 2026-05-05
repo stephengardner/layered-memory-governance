@@ -110,6 +110,52 @@ test.describe('pipelines list view', () => {
     await expect(page.getByTestId('pipeline-detail-findings')).toBeVisible();
   });
 
+  test('drill-in renders the post-dispatch lifecycle section', async ({ page }) => {
+    /*
+     * The post-dispatch lifecycle section stitches the chain of atoms
+     * that lives downstream of dispatch-stage (dispatch-record +
+     * code-author-invoked + pr-observation + plan-merge-settled). The
+     * section always renders below the stages list — even when the
+     * pipeline never crossed dispatch, the section shows an empty
+     * placeholder so the operator knows the surface exists.
+     *
+     * Discovery is dynamic: pick the first pipeline from the list, drill
+     * in, and assert the lifecycle section is present + has the six row
+     * test ids regardless of which downstream blocks are populated.
+     */
+    const pipelines = await fetchPipelines(page);
+    test.skip(pipelines.length === 0, 'no pipeline atoms in store; cannot verify lifecycle');
+
+    const target = pipelines[0]!;
+    await page.goto(`/pipelines/${encodeURIComponent(target.pipeline_id)}`);
+
+    const section = page.getByTestId('pipeline-lifecycle');
+    await expect(section).toBeVisible({ timeout: 10_000 });
+    await expect(section).toContainText('Post-dispatch lifecycle');
+
+    /*
+     * Wait for the lifecycle query to resolve before asserting on row
+     * test ids: the loading placeholder shares the section's test id
+     * but doesn't render the rows. Once any post-dispatch data lands
+     * OR the empty placeholder shows, the rows become discoverable.
+     * Two outcomes are valid: either the six rows render (data exists)
+     * or the empty placeholder shows (no atoms yet).
+     */
+    const empty = page.getByTestId('pipeline-lifecycle-empty');
+    const dispatchRow = page.getByTestId('pipeline-lifecycle-dispatch');
+    await expect(dispatchRow.or(empty)).toBeVisible({ timeout: 10_000 });
+
+    if (await dispatchRow.isVisible().catch(() => false)) {
+      // Data path: every row test id is present.
+      await expect(page.getByTestId('pipeline-lifecycle-dispatch')).toBeVisible();
+      await expect(page.getByTestId('pipeline-lifecycle-code-author')).toBeVisible();
+      await expect(page.getByTestId('pipeline-lifecycle-pr')).toBeVisible();
+      await expect(page.getByTestId('pipeline-lifecycle-review')).toBeVisible();
+      await expect(page.getByTestId('pipeline-lifecycle-ci')).toBeVisible();
+      await expect(page.getByTestId('pipeline-lifecycle-merge')).toBeVisible();
+    }
+  });
+
   test('drill-in for an unknown id renders the empty state with a back affordance', async ({ page }) => {
     /*
      * Use a fake id that the projection guarantees will never match a
@@ -125,6 +171,50 @@ test.describe('pipelines list view', () => {
     await backButton.click();
     await expect(page).toHaveURL(/\/pipelines$/);
     await expect(page.getByTestId('pipelines-view')).toBeVisible({ timeout: 10_000 });
+  });
+
+  test('drill-in on mobile renders the lifecycle section without horizontal scroll', async ({ page, viewport }) => {
+    /*
+     * Mobile-first per dev-web-mobile-first-required: the lifecycle
+     * section's row layout MUST stack to a single column at 390px.
+     * Skip when no pipeline data is available on the dev's machine —
+     * the test is meaningful only when we can drill in.
+     */
+    const pipelines = await fetchPipelines(page);
+    test.skip(pipelines.length === 0, 'no pipeline atoms; cannot verify lifecycle mobile layout');
+    const target = pipelines[0]!;
+    await page.goto(`/pipelines/${encodeURIComponent(target.pipeline_id)}`);
+    await expect(page.getByTestId('pipeline-detail-view')).toBeVisible({ timeout: 10_000 });
+
+    const widths = await page.evaluate(() => ({
+      inner: window.innerWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(
+      widths.scroll,
+      `inner=${widths.inner} scroll=${widths.scroll}`,
+    ).toBeLessThanOrEqual(widths.inner + 1);
+
+    // Wait for either the lifecycle data or empty state to render
+    // before any geometry assertions; this makes the test resilient to
+    // the lifecycle query's network latency.
+    const dispatchRow = page.getByTestId('pipeline-lifecycle-dispatch');
+    const empty = page.getByTestId('pipeline-lifecycle-empty');
+    await expect(dispatchRow.or(empty)).toBeVisible({ timeout: 10_000 });
+
+    // On mobile, if the PR link exists, its tap target meets the 44px
+    // floor per --size-touch-target-min (Apple HIG / Material baseline).
+    // Skip when the link is not present.
+    if (viewport && viewport.width <= 480) {
+      const prLink = page.getByTestId('pipeline-lifecycle-pr-link');
+      if (await prLink.isVisible().catch(() => false)) {
+        const box = await prLink.boundingBox();
+        expect(box, 'pr link box').not.toBeNull();
+        if (box) {
+          expect(box.height, 'pr link height >= 44').toBeGreaterThanOrEqual(44);
+        }
+      }
+    }
   });
 
   test('mobile (390px) viewport renders without horizontal scroll', async ({ page, viewport }) => {

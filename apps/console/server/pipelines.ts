@@ -40,6 +40,7 @@ import type {
   PipelineStageSummary,
   PipelineSummary,
 } from './pipelines-types.js';
+import { readString } from './projection-helpers.js';
 
 /**
  * Hard cap on summaries returned in a single list response. Pipelines
@@ -94,10 +95,12 @@ function readMeta(atom: PipelineSourceAtom): Record<string, unknown> {
   return (atom.metadata ?? {}) as Record<string, unknown>;
 }
 
-function readString(meta: Record<string, unknown>, key: string): string | null {
-  const v = meta[key];
-  return typeof v === 'string' && v.length > 0 ? v : null;
-}
+// readString is shared with the sibling projection modules via
+// projection-helpers.ts; readNumber stays local because this module
+// returns 0 on missing/non-numeric values whereas the lifecycle
+// modules return null. Aligning the two contracts is a follow-up;
+// extracting one now would silently change the fallback shape in
+// the consumers we don't touch.
 
 function readNumber(meta: Record<string, unknown>, key: string): number {
   const v = meta[key];

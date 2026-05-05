@@ -588,3 +588,315 @@ describe('LoopRunner.tick reaper TTL resolution chain', () => {
     expect(tick2.reaperReport?.fresh).toBe(1);
   });
 });
+
+/**
+ * Build a pr-observation atom suitable for the in-process reconcile +
+ * refresh ticks. The shape mirrors the inline factory in
+ * test/runtime/plans/pr-merge-reconcile.test.ts; it's rebuilt here
+ * locally rather than re-extracted into test/fixtures.ts because the
+ * reconcile-test uses a slightly different arg shape (overrides bag
+ * vs. positional arg) and merging the two would force every existing
+ * call site to rewrite. Per dev-no-hacky-workarounds, the parallel
+ * factories share the schema-1 atom contract; if a third call site
+ * lands the right move is the extraction not the third copy.
+ */
+function prObservationAtom(
+  id: string,
+  overrides: {
+    readonly pr_state?: string;
+    readonly merge_state_status?: string;
+    readonly plan_id?: string;
+    readonly observed_at?: string;
+  } = {},
+): Atom {
+  const meta: Record<string, unknown> = {
+    kind: 'pr-observation',
+    pr: { owner: 'o', repo: 'r', number: 42 },
+    plan_id: overrides.plan_id ?? 'p1',
+    pr_state: overrides.pr_state ?? 'OPEN',
+    merge_state_status: overrides.merge_state_status ?? 'CLEAN',
+  };
+  if (overrides.observed_at !== undefined) {
+    meta['observed_at'] = overrides.observed_at;
+  }
+  return {
+    schema_version: 1,
+    id: id as AtomId,
+    content: 'pr-observation body',
+    type: 'observation',
+    layer: 'L1',
+    provenance: {
+      kind: 'agent-observed',
+      source: { agent_id: 'lag-pr-landing' },
+      derived_from: [],
+    },
+    confidence: 1.0,
+    created_at: '2026-04-30T00:00:00.000Z' as Time,
+    last_reinforced_at: '2026-04-30T00:00:00.000Z' as Time,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: 'lag-pr-landing' as PrincipalId,
+    taint: 'clean',
+    metadata: meta,
+  };
+}
+
+describe('LoopRunner.tick plan-reconcile integration', () => {
+  it('default (runPlanReconcilePass: false) leaves planReconcileReport null and does not transition', async () => {
+    const host = createMemoryHost();
+    // Seed a plan + merged-pr-observation that WOULD reconcile if the
+    // pass were enabled. With reconcile off, the plan stays executing.
+    await host.atoms.put(
+      samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
+    );
+    await host.atoms.put(prObservationAtom('obs1', { pr_state: 'MERGED' }));
+    const runner = new LoopRunner(host, { principalId: principal });
+    const report = await runner.tick();
+    expect(report.planReconcileReport).toBeNull();
+    const plan = await host.atoms.get('p1' as AtomId);
+    expect(plan?.plan_state).toBe('executing');
+  });
+
+  it('enabled reconciles a merged-PR plan from executing to succeeded in one tick', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
+    );
+    await host.atoms.put(prObservationAtom('obs1', { pr_state: 'MERGED' }));
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanReconcilePass: true,
+    });
+    const report = await runner.tick();
+    expect(report.planReconcileReport).not.toBeNull();
+    expect(report.planReconcileReport?.matched).toBe(1);
+    expect(report.planReconcileReport?.transitioned).toBe(1);
+    const plan = await host.atoms.get('p1' as AtomId);
+    expect(plan?.plan_state).toBe('succeeded');
+    // Audit row carries the reconcile counts.
+    const audits = await host.auditor.query({ kind: ['loop.tick'] }, 5);
+    const last = audits[audits.length - 1];
+    expect(last?.details?.['plan_reconcile_transitioned']).toBe(1);
+  });
+
+  it('reconcile-pass internal failure does not fail the tick (best-effort semantics)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
+    );
+    await host.atoms.put(prObservationAtom('obs1', { pr_state: 'MERGED' }));
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanReconcilePass: true,
+    });
+    // Stub host.atoms.put to throw on the marker atom write the
+    // reconcile pass relies on. Other writes (decay, etc.) keep
+    // working. The error must surface in errors[] without aborting
+    // the tick.
+    const realPut = host.atoms.put.bind(host.atoms);
+    (host.atoms as { put: typeof host.atoms.put }).put = async (atom) => {
+      if (atom.type === 'plan-merge-settled') {
+        throw new Error('synthetic reconcile failure');
+      }
+      return realPut(atom);
+    };
+    const report = await runner.tick();
+    expect(report.planReconcileReport).toBeNull();
+    expect(report.errors.some((e) => e.startsWith('plan-reconcile:'))).toBe(true);
+    // Plan is still executing (transition aborted on the failed marker write).
+    const plan = await host.atoms.get('p1' as AtomId);
+    expect(plan?.plan_state).toBe('executing');
+  });
+});
+
+describe('LoopRunner.tick plan-observation refresh integration', () => {
+  it('default (runPlanObservationRefreshPass: false) leaves planObservationRefreshReport null and does not call the refresher', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
+    );
+    // Stale OPEN observation that WOULD refresh if the pass were on.
+    await host.atoms.put(
+      prObservationAtom('obs1', {
+        pr_state: 'OPEN',
+        observed_at: '2026-04-29T00:00:00.000Z',
+      }),
+    );
+    let refreshCalls = 0;
+    const refresher = {
+      async refresh() {
+        refreshCalls += 1;
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      prObservationRefresher: refresher,
+    });
+    const report = await runner.tick();
+    expect(report.planObservationRefreshReport).toBeNull();
+    expect(refreshCalls).toBe(0);
+  });
+
+  it('enabled-but-refresher-absent silently skips and warns ONCE across many ticks', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
+    );
+    await host.atoms.put(
+      prObservationAtom('obs1', {
+        pr_state: 'OPEN',
+        observed_at: '2026-04-29T00:00:00.000Z',
+      }),
+    );
+    // Capture stderr so we can assert the once-per-runner gap warning.
+    const original = console.error;
+    const captured: string[] = [];
+    console.error = (...args: unknown[]) => {
+      captured.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      const runner = new LoopRunner(host, {
+        principalId: principal,
+        runPlanObservationRefreshPass: true,
+        // No prObservationRefresher supplied.
+      });
+      // Run 5 ticks. Long-running daemons would otherwise flood stderr
+      // at 1440 warnings/day on a 60s interval; the once-per-runner
+      // latch caps it at one.
+      for (let i = 0; i < 5; i += 1) {
+        const report = await runner.tick();
+        expect(report.planObservationRefreshReport).toBeNull();
+      }
+      const gapWarnings = captured.filter(
+        (l) => l.includes('[plan-obs-refresh]') && l.includes('no prObservationRefresher seam'),
+      );
+      expect(gapWarnings.length).toBe(1);
+    } finally {
+      console.error = original;
+    }
+  });
+
+  it('enabled-with-refresher refreshes a stale OPEN observation and reports the count', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
+    );
+    // Observed_at far enough in the past to clear the default 5min freshness.
+    await host.atoms.put(
+      prObservationAtom('obs1', {
+        pr_state: 'OPEN',
+        observed_at: '2026-04-29T00:00:00.000Z',
+      }),
+    );
+    const refreshCalls: Array<{ pr: { number: number }; plan_id: string }> = [];
+    const refresher = {
+      async refresh(args: { pr: { owner: string; repo: string; number: number }; plan_id: string }) {
+        refreshCalls.push({ pr: { number: args.pr.number }, plan_id: args.plan_id });
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanObservationRefreshPass: true,
+      prObservationRefresher: refresher,
+    });
+    const report = await runner.tick();
+    expect(report.planObservationRefreshReport).not.toBeNull();
+    expect(report.planObservationRefreshReport?.refreshed).toBe(1);
+    expect(refreshCalls.length).toBe(1);
+    expect(refreshCalls[0]?.pr.number).toBe(42);
+    expect(refreshCalls[0]?.plan_id).toBe('p1');
+    // Audit row carries the refresh counts.
+    const audits = await host.auditor.query({ kind: ['loop.tick'] }, 5);
+    const last = audits[audits.length - 1];
+    expect(last?.details?.['plan_obs_refresh_refreshed']).toBe(1);
+  });
+
+  it('refresh-pass refresher failure does not fail the tick (counted as skipped)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
+    );
+    await host.atoms.put(
+      prObservationAtom('obs1', {
+        pr_state: 'OPEN',
+        observed_at: '2026-04-29T00:00:00.000Z',
+      }),
+    );
+    const refresher = {
+      async refresh(): Promise<void> {
+        throw new Error('synthetic refresher failure');
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanObservationRefreshPass: true,
+      prObservationRefresher: refresher,
+    });
+    const report = await runner.tick();
+    // The tick framework's error handling treats a refresher throw as
+    // a skip-with-reason inside runPlanObservationRefreshTick, NOT as
+    // a thrown tick error: the refresh tick catches the inner throw
+    // and bumps skipped['refresh-failed']. The outer LoopRunner sees
+    // a successful pass with refreshed=0.
+    expect(report.planObservationRefreshReport).not.toBeNull();
+    expect(report.planObservationRefreshReport?.refreshed).toBe(0);
+    expect(report.planObservationRefreshReport?.skipped['refresh-failed']).toBe(1);
+  });
+});
+
+describe('LoopRunner.tick plan-reconcile + refresh combined wiring (e2e)', () => {
+  it('refresh runs BEFORE reconcile so a stale OPEN observation rewritten this tick is reconciled the SAME tick', async () => {
+    // This is the canonical end-to-end test the operator asked for:
+    // a plan in 'executing' with a stale OPEN observation; the
+    // refresher writes a fresh terminal observation; the reconcile
+    // pass picks it up on the same tick and flips the plan.
+    const host = createMemoryHost();
+    await host.atoms.put(
+      samplePlanAtom('p1', '2026-04-30T00:00:00.000Z', { plan_state: 'executing' }),
+    );
+    await host.atoms.put(
+      prObservationAtom('obs1', {
+        pr_state: 'OPEN',
+        observed_at: '2026-04-29T00:00:00.000Z',
+      }),
+    );
+    // A faithful refresher writes a fresh observation atom carrying
+    // the terminal pr_state. The framework's reconcile pass reads
+    // observation atoms of any age (the freshness threshold guards
+    // refresh, NOT reconcile), so as long as the new atom is in the
+    // store before reconcilePass runs, the same tick transitions p1.
+    const refresher = {
+      async refresh(args: {
+        pr: { owner: string; repo: string; number: number };
+        plan_id: string;
+      }): Promise<void> {
+        await host.atoms.put(
+          prObservationAtom('obs2', {
+            pr_state: 'MERGED',
+            plan_id: args.plan_id,
+            observed_at: '2026-04-30T00:00:00.000Z',
+          }),
+        );
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanObservationRefreshPass: true,
+      runPlanReconcilePass: true,
+      prObservationRefresher: refresher,
+    });
+    const report = await runner.tick();
+    expect(report.planObservationRefreshReport?.refreshed).toBe(1);
+    expect(report.planReconcileReport?.transitioned).toBe(1);
+    const plan = await host.atoms.get('p1' as AtomId);
+    expect(plan?.plan_state).toBe('succeeded');
+  });
+});

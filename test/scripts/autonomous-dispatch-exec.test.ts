@@ -28,10 +28,12 @@ import {
   isTransientPrCreationGatewayError,
   looksLikeGitPush,
   parseEmbeddedAtomFromPrBody,
+  parseGitHubRemoteUrl,
   parsePlanIdFromPrBody,
   parseRepoSlug,
   probeOrphanedPrByBranch,
   truncatePlanIdLabel,
+  verifyDispatchRepoIdentity,
 } from '../../scripts/lib/autonomous-dispatch-exec.mjs';
 
 const TOKEN = 'ghs_test_installation_token_0123456789';
@@ -883,5 +885,240 @@ describe('probeOrphanedPrByBranch', () => {
       execImpl: undefined as unknown as Parameters<typeof probeOrphanedPrByBranch>[0]['execImpl'],
     });
     expect(result).toBe(null);
+  });
+});
+
+describe('parseGitHubRemoteUrl', () => {
+  it('parses https://github.com/owner/repo (no .git)', () => {
+    expect(parseGitHubRemoteUrl('https://github.com/foo/bar')).toEqual({ owner: 'foo', repo: 'bar' });
+  });
+
+  it('parses https://github.com/owner/repo.git', () => {
+    expect(parseGitHubRemoteUrl('https://github.com/foo/bar.git')).toEqual({ owner: 'foo', repo: 'bar' });
+  });
+
+  it('parses an x-access-token rewritten URL (token-stripped)', () => {
+    // The historical -u-leak path (PR #169 fix) and the dispatch
+    // wrapper's transient rewrite both produce this shape. The
+    // verifier MUST still see the underlying owner/repo so the
+    // sanity check does not false-flag a legitimately-authed
+    // remote.
+    const url = 'https://x-access-token:ghs_redacted_token_value@github.com/stephengardner/layered-autonomous-governance.git';
+    expect(parseGitHubRemoteUrl(url)).toEqual({
+      owner: 'stephengardner',
+      repo: 'layered-autonomous-governance',
+    });
+  });
+
+  it('parses git@github.com:owner/repo (SSH form, no .git)', () => {
+    expect(parseGitHubRemoteUrl('git@github.com:foo/bar')).toEqual({ owner: 'foo', repo: 'bar' });
+  });
+
+  it('parses git@github.com:owner/repo.git', () => {
+    expect(parseGitHubRemoteUrl('git@github.com:foo/bar.git')).toEqual({ owner: 'foo', repo: 'bar' });
+  });
+
+  it('returns null for non-GitHub hosts', () => {
+    expect(parseGitHubRemoteUrl('https://gitlab.com/foo/bar.git')).toBe(null);
+    expect(parseGitHubRemoteUrl('https://bitbucket.org/foo/bar')).toBe(null);
+    expect(parseGitHubRemoteUrl('git@gitlab.com:foo/bar.git')).toBe(null);
+  });
+
+  it('returns null for empty / non-string input', () => {
+    expect(parseGitHubRemoteUrl('')).toBe(null);
+    expect(parseGitHubRemoteUrl('   ')).toBe(null);
+    expect(parseGitHubRemoteUrl(undefined as unknown as string)).toBe(null);
+    expect(parseGitHubRemoteUrl(null as unknown as string)).toBe(null);
+    expect(parseGitHubRemoteUrl(42 as unknown as string)).toBe(null);
+  });
+
+  it('returns null for malformed shapes', () => {
+    expect(parseGitHubRemoteUrl('https://github.com/foo')).toBe(null); // missing repo
+    expect(parseGitHubRemoteUrl('https://github.com/')).toBe(null);    // empty
+    expect(parseGitHubRemoteUrl('github.com/foo/bar')).toBe(null);     // no scheme
+    expect(parseGitHubRemoteUrl('git@github.com/foo/bar')).toBe(null); // wrong SSH separator
+  });
+});
+
+describe('verifyDispatchRepoIdentity', () => {
+  // The reader is the seam tests inject; production wires it to
+  // `git -C <repoDir> remote get-url origin`. Each case below pins
+  // a specific failure or success path the verifier maps over the
+  // reader's return value.
+
+  it('returns ok=true when the local origin matches the resolved owner/repo', async () => {
+    const reader = async (_repoDir: string) => 'https://github.com/stephengardner/layered-autonomous-governance.git';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/path/to/memory-governance',
+      expectedOwner: 'stephengardner',
+      expectedRepo: 'layered-autonomous-governance',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('accepts the SSH form when the parsed owner/repo matches', async () => {
+    const reader = async () => 'git@github.com:stephengardner/layered-autonomous-governance.git';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/path/to/memory-governance',
+      expectedOwner: 'stephengardner',
+      expectedRepo: 'layered-autonomous-governance',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('compares owner/repo case-insensitively', async () => {
+    // GitHub treats owner/repo as case-insensitive in API path
+    // params and clone URLs. A user who cloned with mixed-case
+    // (e.g. `git clone https://github.com/StephenGardner/Layered-
+    // Autonomous-Governance.git`) would otherwise be falsely
+    // rejected here when `gh repo view` returns the canonical
+    // lowercase form. The guard MUST fire on real repo mismatches,
+    // never on case-only differences.
+    const reader = async () => 'https://github.com/StephenGardner/Layered-Autonomous-Governance.git';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/path/to/memory-governance',
+      expectedOwner: 'stephengardner',
+      expectedRepo: 'layered-autonomous-governance',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('compares owner/repo case-insensitively in the reverse direction', async () => {
+    // Symmetric guard: an inverted case (canonical-lowercase remote
+    // vs uppercase resolved owner/repo) must also normalize. Pins
+    // the toLowerCase() applied to both sides, not just one.
+    const reader = async () => 'https://github.com/stephengardner/layered-autonomous-governance.git';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/path/to/memory-governance',
+      expectedOwner: 'StephenGardner',
+      expectedRepo: 'Layered-Autonomous-Governance',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('fails closed when the local origin points at a different repo', async () => {
+    // Substrate gap #266 reproducer: the plan targets
+    // memory-governance but the dispatched checkout points at an
+    // unrelated repo. Without this guard, the executor would
+    // acquire a worktree off the wrong checkout, the drafter
+    // would see no `apps/console/` tree, and the dispatch would
+    // silent-skip with `drafter-emitted-empty-diff`.
+    const reader = async () => 'https://github.com/example-user/some-other-repo.git';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/Users/opens/some/other/checkout',
+      expectedOwner: 'stephengardner',
+      expectedRepo: 'layered-autonomous-governance',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable: result.ok was true');
+    expect(result.reason).toContain('/Users/opens/some/other/checkout');
+    expect(result.reason).toContain('example-user/some-other-repo');
+    expect(result.reason).toContain('stephengardner/layered-autonomous-governance');
+    expect(result.reason).toContain('LAG_REPO_DIR');
+  });
+
+  it('fails closed when the reader returns null (no origin remote)', async () => {
+    // git emits "no such remote 'origin'" for a freshly-init repo
+    // without a configured upstream. The reader maps that to null
+    // so the verifier returns the dedicated message.
+    const reader = async () => null;
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/tmp/fresh-repo',
+      expectedOwner: 'stephengardner',
+      expectedRepo: 'layered-autonomous-governance',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable: result.ok was true');
+    expect(result.reason).toContain("no 'origin' remote");
+    expect(result.reason).toContain('/tmp/fresh-repo');
+  });
+
+  it('fails closed when the reader returns an empty string', async () => {
+    // Defensive: some git versions print an empty stdout instead
+    // of exiting non-zero; treat empty-string as no-origin.
+    const reader = async () => '';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/tmp/empty-stdout-repo',
+      expectedOwner: 'foo',
+      expectedRepo: 'bar',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable: result.ok was true');
+    expect(result.reason).toContain("no 'origin' remote");
+  });
+
+  it('fails closed when the origin URL is unparseable (non-GitHub)', async () => {
+    const reader = async () => 'https://gitlab.com/foo/bar.git';
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/path/to/some-repo',
+      expectedOwner: 'foo',
+      expectedRepo: 'bar',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable: result.ok was true');
+    expect(result.reason).toContain('not a parseable GitHub URL');
+    expect(result.reason).toContain('https://gitlab.com/foo/bar.git');
+  });
+
+  it('fails closed and surfaces the underlying error when the reader throws', async () => {
+    // Git not on PATH, repoDir is not a git repo, etc.: the
+    // reader throws and the verifier maps that into the gh-repo-
+    // view-vs-local-origin failure message so the operator can act.
+    const reader = async (_repoDir: string) => {
+      throw new Error('fatal: not a git repository');
+    };
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/tmp/not-a-git-repo',
+      expectedOwner: 'foo',
+      expectedRepo: 'bar',
+      gitRemoteUrlReader: reader,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable: result.ok was true');
+    expect(result.reason).toContain('fatal: not a git repository');
+    expect(result.reason).toContain('foo/bar');
+  });
+
+  it('rejects malformed inputs without consulting the reader', async () => {
+    // Track whether the reader was called so we know the validation
+    // gates ran before any git spawn would have happened.
+    let readerCalls = 0;
+    const reader = async () => {
+      readerCalls += 1;
+      return 'https://github.com/foo/bar.git';
+    };
+    const cases = [
+      { repoDir: '', expectedOwner: 'foo', expectedRepo: 'bar' },
+      { repoDir: '/x', expectedOwner: '', expectedRepo: 'bar' },
+      { repoDir: '/x', expectedOwner: 'foo', expectedRepo: '' },
+    ];
+    for (const c of cases) {
+      const result = await verifyDispatchRepoIdentity({
+        ...c,
+        gitRemoteUrlReader: reader,
+      });
+      expect(result.ok).toBe(false);
+    }
+    expect(readerCalls).toBe(0);
+  });
+
+  it('rejects when gitRemoteUrlReader is not a function', async () => {
+    const result = await verifyDispatchRepoIdentity({
+      repoDir: '/x',
+      expectedOwner: 'foo',
+      expectedRepo: 'bar',
+      gitRemoteUrlReader: undefined as unknown as Parameters<typeof verifyDispatchRepoIdentity>[0]['gitRemoteUrlReader'],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable: result.ok was true');
+    expect(result.reason).toContain('gitRemoteUrlReader must be a function');
   });
 });

@@ -18,6 +18,7 @@ import {
   stageStateTone,
 } from './tones';
 import { formatDurationMs, formatRelative, formatUsd } from './PipelinesView';
+import { PipelineLifecycle } from './PipelineLifecycle';
 import styles from './PipelineDetailView.module.css';
 
 /**
@@ -226,6 +227,8 @@ function PipelineDetailBody({ data }: { data: PipelineDetail }) {
           ))}
         </ol>
       </Section>
+
+      <PipelineLifecycle pipelineId={pipeline.id} />
 
       <Section
         icon={<ListChecks size={14} strokeWidth={2} aria-hidden="true" />}

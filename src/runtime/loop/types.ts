@@ -10,6 +10,7 @@
 import type { AtomFilter, AtomType, Time } from '../../types.js';
 import type { RenderOptions } from '../../canon-md/index.js';
 import type { PromotionThresholds } from '../../promotion/index.js';
+import type { PrObservationRefresher } from '../plans/pr-observation-refresh.js';
 
 export interface HalfLifeConfig {
   /** Per-atom-type half-life in milliseconds. `directive` long, `ephemeral` short. */
@@ -188,6 +189,51 @@ export interface LoopOptions {
    * threshold when supplied.
    */
   readonly reaperAbandonMs?: number;
+  /**
+   * Run the plan-state reconcile pass on every tick. Default `false`
+   * so existing callers observe no behavior change. When enabled,
+   * transitions plans whose linked pr-observation atoms carry a
+   * terminal pr_state from 'executing' / 'approved' to
+   * 'succeeded' / 'abandoned'.
+   *
+   * The pass is in-process: scans observation atoms via the host's
+   * AtomStore and writes plan transitions through the host. Cost
+   * scales with the count of pr-observation atoms, bounded inside
+   * the tick by `maxScan` (default 5000).
+   */
+  readonly runPlanReconcilePass?: boolean;
+  /**
+   * Run the pr-observation refresh pass on every tick. Default
+   * `false`. When the flag is true and `prObservationRefresher` is
+   * supplied, the pass refreshes pr-observation atoms whose
+   * pr_state is non-terminal, whose linked Plan is still executing,
+   * and whose observed_at age exceeds the freshness threshold (read
+   * from canon `pol-pr-observation-freshness-threshold-ms`, default
+   * 5 minutes). Per-tick refresh count is bounded inside the tick
+   * (default 50).
+   *
+   * When the flag is true but `prObservationRefresher` is absent,
+   * the pass silently skips and logs once per tick. This permits
+   * the reconcile pass to run alone on deployments where terminal
+   * observations are written by an external driver. A constructor-
+   * time throw would forbid that posture and is wrong for a
+   * mechanism-only API.
+   *
+   * Sequencing: when both passes are enabled, the refresh pass runs
+   * first within a tick so a stale non-terminal observation
+   * rewritten to terminal state by the refresher is reconciled on
+   * the SAME tick (not next pass).
+   */
+  readonly runPlanObservationRefreshPass?: boolean;
+  /**
+   * Pluggable adapter the refresh tick calls when an observation
+   * needs to be re-observed. Optional; absent activates the silent-
+   * skip path documented on `runPlanObservationRefreshPass`. The
+   * framework consumes the adapter only through the
+   * `PrObservationRefresher` interface; concrete adapter
+   * construction happens entirely outside framework code.
+   */
+  readonly prObservationRefresher?: PrObservationRefresher;
 }
 
 /**
@@ -244,6 +290,45 @@ export interface LoopTickReport {
         readonly abandoned: number;
         readonly warned: number;
         readonly fresh: number;
+      }
+    | null;
+  /**
+   * Per-tick plan-state reconcile summary. `null` when the reconcile
+   * pass is disabled (the default). When enabled, populated with the
+   * tick's counts: `scanned` is the total pr-observation atoms
+   * inspected, `matched` is observations that linked to a plan and
+   * carried terminal pr_state, `transitioned` is plans actually
+   * flipped this tick, and `claimConflicts` is observations skipped
+   * because a prior tick (or another worker) already wrote the
+   * settle marker.
+   *
+   * A reconcile failure logs to `errors` and leaves
+   * `planReconcileReport` set to `null`; the field is the positive
+   * signal of a successful pass, not a status flag.
+   */
+  readonly planReconcileReport:
+    | {
+        readonly scanned: number;
+        readonly matched: number;
+        readonly transitioned: number;
+        readonly claimConflicts: number;
+      }
+    | null;
+  /**
+   * Per-tick pr-observation refresh summary. `null` when the refresh
+   * pass is disabled OR when the pass is enabled but the refresher
+   * seam is absent (the silent-skip path; the operator sees the gap
+   * via the once-per-tick log line, not via this field). When the
+   * pass actually runs, populated with `scanned` (observations
+   * inspected), `refreshed` (refresher.refresh calls succeeded),
+   * and `skipped` (a histogram of skip reasons including 'fresh',
+   * 'plan-not-executing', 'rate-limited', 'refresh-failed', etc.).
+   */
+  readonly planObservationRefreshReport:
+    | {
+        readonly scanned: number;
+        readonly refreshed: number;
+        readonly skipped: Readonly<Record<string, number>>;
       }
     | null;
 }
