@@ -52,6 +52,30 @@ function captureStderr(): {
   };
 }
 
+/**
+ * Run readReaperTtlsFromCanon with stderr captured, restoring the
+ * original console.error in a finally block so a thrown reader does
+ * not leak the patched global into later tests. Returns the reader's
+ * result alongside the captured calls so the assertion shape stays
+ * identical to the previous inline pattern. Extracted per the
+ * substrate's N=2 duplication rule (the inline shape repeated five
+ * times across the malformed-payload tests below).
+ */
+async function readWithCapturedStderr(
+  host: ReturnType<typeof createMemoryHost>,
+): Promise<{
+  readonly ttls: Awaited<ReturnType<typeof readReaperTtlsFromCanon>>;
+  readonly calls: ReadonlyArray<ReadonlyArray<unknown>>;
+}> {
+  const cap = captureStderr();
+  try {
+    const ttls = await readReaperTtlsFromCanon(host);
+    return { ttls, calls: cap.calls };
+  } finally {
+    cap.restore();
+  }
+}
+
 function policyAtom(id: string, warn: unknown, abandon: unknown): Atom {
   return {
     schema_version: 1,
@@ -110,33 +134,27 @@ describe('readReaperTtlsFromCanon', () => {
   it('returns null + warns when warn_ms is non-integer', async () => {
     const host = createMemoryHost();
     await host.atoms.put(policyAtom('pol-bad-warn', 1.5, 60_000));
-    const cap = captureStderr();
-    const ttls = await readReaperTtlsFromCanon(host);
-    cap.restore();
+    const { ttls, calls } = await readWithCapturedStderr(host);
     expect(ttls).toBeNull();
-    expect(cap.calls.length).toBeGreaterThan(0);
-    expect(String(cap.calls[0]?.[0])).toContain('malformed payload');
+    expect(calls.length).toBeGreaterThan(0);
+    expect(String(calls[0]?.[0])).toContain('malformed payload');
   });
 
   it('returns null + warns when warn_ms is zero or negative', async () => {
     const host = createMemoryHost();
     await host.atoms.put(policyAtom('pol-zero', 0, 60_000));
-    const cap = captureStderr();
-    const ttls = await readReaperTtlsFromCanon(host);
-    cap.restore();
+    const { ttls, calls } = await readWithCapturedStderr(host);
     expect(ttls).toBeNull();
-    expect(cap.calls.length).toBeGreaterThan(0);
+    expect(calls.length).toBeGreaterThan(0);
   });
 
   it('returns null + warns when abandon_ms <= warn_ms (would merge buckets)', async () => {
     const host = createMemoryHost();
     await host.atoms.put(policyAtom('pol-inverted', 5_000, 5_000));
-    const cap = captureStderr();
-    const ttls = await readReaperTtlsFromCanon(host);
-    cap.restore();
+    const { ttls, calls } = await readWithCapturedStderr(host);
     expect(ttls).toBeNull();
-    expect(cap.calls.length).toBeGreaterThan(0);
-    expect(String(cap.calls[0]?.[0])).toContain('abandon > warn');
+    expect(calls.length).toBeGreaterThan(0);
+    expect(String(calls[0]?.[0])).toContain('abandon > warn');
   });
 
   it('returns null + warns when warn_ms is missing', async () => {
@@ -144,21 +162,17 @@ describe('readReaperTtlsFromCanon', () => {
     // policyAtom builder expects two values; pass undefined to omit the
     // numeric value while preserving the subject discriminator.
     await host.atoms.put(policyAtom('pol-missing', undefined, 60_000));
-    const cap = captureStderr();
-    const ttls = await readReaperTtlsFromCanon(host);
-    cap.restore();
+    const { ttls, calls } = await readWithCapturedStderr(host);
     expect(ttls).toBeNull();
-    expect(cap.calls.length).toBeGreaterThan(0);
+    expect(calls.length).toBeGreaterThan(0);
   });
 
   it('returns null + warns when abandon_ms is non-numeric', async () => {
     const host = createMemoryHost();
     await host.atoms.put(policyAtom('pol-string-abandon', 5_000, 'forever'));
-    const cap = captureStderr();
-    const ttls = await readReaperTtlsFromCanon(host);
-    cap.restore();
+    const { ttls, calls } = await readWithCapturedStderr(host);
     expect(ttls).toBeNull();
-    expect(cap.calls.length).toBeGreaterThan(0);
+    expect(calls.length).toBeGreaterThan(0);
   });
 
   it('ignores tainted canon atoms', async () => {
