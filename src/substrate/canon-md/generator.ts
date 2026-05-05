@@ -43,6 +43,7 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'circuit-breaker-reset',
   'plan-approval-vote',
   'plan-merge-settled',
+  'telegram-push-record',
   'operator-intent',
   // L1 audit/replay records (agent-session + agent-turn). Always
   // filtered out by the canon applier; placed at the end so the
@@ -89,6 +90,11 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   // dumps non-L3 atoms for debugging.
   'plan-approval-vote': 'Plan Approval Votes',
   'plan-merge-settled': 'Plan Merge Settlements',
+  // Operational idempotence record from the LoopRunner notify pass.
+  // L0; the canon applier filters to L3 and never renders these in
+  // a CLAUDE.md target. Included here for deterministic ordering if
+  // a caller explicitly dumps non-L3 atoms for debugging.
+  'telegram-push-record': 'Telegram Push Records',
   'operator-intent': 'Operator Intent',
   // Agent-session and agent-turn are L1 audit/replay records, not
   // canonical knowledge; the canon applier filters to L3 and never

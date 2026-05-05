@@ -56,6 +56,16 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // records; they tie a plan to its terminal PR outcome. Confidence
   // decay is irrelevant for a historical record.
   'plan-merge-settled': 365 * 24 * 60 * 60 * 1000,  // ~1 year
+  // Telegram-push-record atoms are per-plan idempotence markers
+  // emitted by the LoopRunner notify pass. The half-life is set
+  // intentionally LONGER than the proposed-plan reaper window
+  // (default 72h) so a long-tail proposed plan does not get
+  // re-notified once its push-record decays below the floor; the
+  // record's existence is what suppresses the re-push, not its
+  // confidence value, but a 1-week half-life keeps the queryable
+  // record in the warm set for routine audit reads without growing
+  // an AtomType-specific expiry policy on the substrate.
+  'telegram-push-record': 7 * 24 * 60 * 60 * 1000,  // ~1 week
   // Operator-intent atoms capture operator directives interactively.
   // They are canonical governance signals with persistence similar to
   // directives; do not decay during the session.
