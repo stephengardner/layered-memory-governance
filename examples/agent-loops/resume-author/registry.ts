@@ -1,5 +1,5 @@
 /**
- * ResumeStrategyRegistry — Phase 1 primitive (PR #301).
+ * ResumeStrategyRegistry - Phase 1 primitive (PR #301).
  *
  * Source: spec §3.1 (descriptor shape), §6.4 (construction-time canon read,
  * acquire-time identify-then-reset ordering), §7.2 (indie-floor "resume off"
@@ -159,7 +159,10 @@ if (import.meta.vitest) {
   ): RegistryHost => ({
     registry,
     canon: { read: canonRead },
-    resetAtom: resetIsSet ? { isSet: resetIsSet } : undefined,
+    // exactOptionalPropertyTypes: omit resetAtom entirely when no reset
+    // function is supplied; assigning `undefined` to an optional property is
+    // a type error under the project's tsconfig.
+    ...(resetIsSet ? { resetAtom: { isSet: resetIsSet } } : {}),
   });
 
   describe("ResumeStrategyRegistry", () => {
@@ -206,7 +209,10 @@ if (import.meta.vitest) {
       await wrapped("b");
       await wrapped("c");
       expect(reads.mock.calls.length).toBe(1);
-      expect(reads.mock.calls[0][0]).toBe("pol-resume-strategy-alice");
+      // noUncheckedIndexedAccess: destructure with non-null assertion after
+      // the length check above guarantees calls[0] exists.
+      const [firstPolicyReadArg] = reads.mock.calls[0]!;
+      expect(firstPolicyReadArg).toBe("pol-resume-strategy-alice");
     });
 
     it("acquire(input) invokes identifyWorkItem with the supplied input", async () => {
@@ -218,7 +224,10 @@ if (import.meta.vitest) {
       const wrapped = wrapIfEnabled(fallback, pid("alice"), host);
       await wrapped({ jobId: 42 });
       expect(identify.mock.calls.length).toBe(1);
-      expect(identify.mock.calls[0][0]).toEqual({ jobId: 42 });
+      // noUncheckedIndexedAccess: destructure with non-null assertion after
+      // the length check above guarantees calls[0] exists.
+      const [firstIdentifyArg] = identify.mock.calls[0]!;
+      expect(firstIdentifyArg).toEqual({ jobId: 42 });
     });
 
     it("acquire runs reset-atom check after work-item identification", async () => {
