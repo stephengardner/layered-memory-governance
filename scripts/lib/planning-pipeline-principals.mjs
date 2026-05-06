@@ -12,10 +12,12 @@
 // and host side effects stay in the script. Mirrors the inbox-canon-policies
 // extraction pattern.
 //
-// All four principals carry the read-only posture (Read + Grep + Glob
+// All five principals carry the read-only posture (Read + Grep + Glob
 // allowed, the eleven-tool deny-list blocked) per the deep-planning-
 // pipeline spec section 6 and dev-actor-scoped-llm-tool-policy. Provenance
 // chains to the seed operator-intent so the precursor is auditable.
+// plan-author was added 2026-05-06 to close the gap where plan-stage
+// previously inherited cto-actor's broader strategic-planner canon.
 
 const BOOTSTRAP_TIME = '2026-04-28T12:00:00.000Z';
 
@@ -72,6 +74,17 @@ export const PLANNING_PIPELINE_POLICIES = Object.freeze([
       + 'authorized output and ships through the framework atom-write path.',
   },
   {
+    principalId: 'plan-author',
+    rationale:
+      'Plan-stage author posture: Read + Grep + Glob allowed so target_paths, '
+      + 'sub-actor delegation, and cited canon ids can be verified against '
+      + 'ground truth at draft time. Writes + Bash + Web* denied; the plan '
+      + 'atom is the only authorized output and ships through the framework '
+      + 'atom-write path. Mirrors the spec-author and brainstorm-actor '
+      + 'postures so all five pipeline-stage principals share one '
+      + 'read-only-author shape.',
+  },
+  {
     principalId: 'pipeline-auditor',
     rationale:
       'Pipeline-auditor posture: Read + Grep + Glob allowed so cited path '
@@ -122,6 +135,20 @@ export const PLANNING_PIPELINE_PRINCIPALS = Object.freeze([
     constraints: [
       'No L2/L3 writes. No merges. Cited paths must be verified before the '
         + 'spec atom persists.',
+    ],
+  },
+  {
+    id: 'plan-author',
+    name: 'Plan author (deep-planning pipeline stage 3)',
+    goals: [
+      'Translate the verified spec into a concrete plan atom whose '
+        + 'target_paths, delegation, and citations resolve against ground '
+        + 'truth and the spec\'s cited canon.',
+    ],
+    constraints: [
+      'No L2/L3 writes. No merges. Cited paths must be verified before the '
+        + 'plan atom persists. Delegation sub_actor_principal_id must be '
+        + 'drawn from the verified sub-actor allowlist.',
     ],
   },
   {
