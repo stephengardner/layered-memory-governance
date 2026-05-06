@@ -198,10 +198,18 @@ export class LoopRunner {
     // principalId when no override is supplied; this keeps
     // attribution consistent with the rest of the loop's audit
     // rows by default and lets a deployment override only when it
-    // wants a dedicated push-bot identity.
+    // wants a dedicated push-bot identity. Validate non-empty
+    // (mirrors the reaperPrincipal guard) so a misconfigured
+    // wiring fails the boot path rather than producing audit rows
+    // attributed to an empty principal id.
     this.planProposalNotifier = options.planProposalNotifier ?? null;
-    this.planProposalNotifyPrincipal = (options.planProposalNotifyPrincipal
-      ?? options.principalId) as PrincipalId;
+    const rawNotifyPrincipal = options.planProposalNotifyPrincipal ?? options.principalId;
+    if (typeof rawNotifyPrincipal !== 'string' || rawNotifyPrincipal.trim().length === 0) {
+      throw new Error(
+        'LoopRunner: planProposalNotifyPrincipal (or principalId fallback) must be a non-empty string',
+      );
+    }
+    this.planProposalNotifyPrincipal = rawNotifyPrincipal as PrincipalId;
     // Validate the reaper config at construction time (vs. first
     // tick) so a misconfigured wiring fails the boot-up path instead
     // of silently producing one bad tick. Validation is gated on
@@ -858,8 +866,9 @@ export class LoopRunner {
    * only. The pluggable `PlanProposalNotifier` seam is supplied at
    * construction time via `LoopOptions.planProposalNotifier`. The
    * principal allowlist is read inside the tick from the canon
-   * `telegram-plan-trigger-principals` policy subject (default
-   * cto-actor + cpo-actor when no canon override exists).
+   * `telegram-plan-trigger-principals` policy subject; concrete
+   * principal names are carried by canon, bootstrap, and docs
+   * rather than embedded here.
    */
   private async planProposalNotifyPass(
     notifier: PlanProposalNotifier,

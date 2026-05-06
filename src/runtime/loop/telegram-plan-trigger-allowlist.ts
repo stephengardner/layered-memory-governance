@@ -24,10 +24,14 @@ import type { Host } from '../../interface.js';
 import type { PrincipalId } from '../../types.js';
 
 /**
- * Default indie-floor allowlist. A solo developer running LAG
- * without canon override gets phone-pings on the two planning-shaped
- * principals' newly-proposed plans. Org-ceiling deployments
- * override this set via the policy atom.
+ * Default indie-floor allowlist. The concrete principal names
+ * encoded here are the framework's no-canon fallback so a fresh
+ * deployment without a seeded policy atom still gets a useful
+ * notify pass. The seed canon written by the bootstrap script
+ * (under scripts/) carries the same names, and the policy atom is
+ * authoritative the moment it lands. Org-ceiling deployments
+ * override the entire set via the canon policy atom rather than
+ * editing this constant.
  */
 export const DEFAULT_PRINCIPAL_ALLOWLIST: ReadonlyArray<PrincipalId> = Object.freeze([
   'cto-actor' as PrincipalId,

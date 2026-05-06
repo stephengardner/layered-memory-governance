@@ -4,7 +4,7 @@
 
 **Goal:** Auto-push every newly-proposed plan atom from cto-actor / cpo-actor (canon-tunable allowlist) to Telegram exactly once per plan, via a new LoopRunner tick that mirrors the PR #318 (approval-cycle) shape.
 
-**Architecture:** New tick function `runPlanProposalNotifyTick` in `src/runtime/plans/plan-trigger-telegram.ts` (mechanism only — atom query, allowlist filter, idempotence-record check, delegate to a `PlanProposalNotifier` seam). LoopRunner gains `runPlanProposalNotifyPass` flag + `planProposalNotifier` seam. CLI gains `--notify-proposed-plans` (default ON). Bin entrypoint factory builds the Telegram-shaped adapter from `scripts/lib/telegram-plan-trigger.mjs`. Idempotence via `type: 'telegram-push-record'` atoms with `provenance.derived_from: [planId]` so re-tick of the same state is a no-op. Allowlist comes from canon policy atom `pol-telegram-plan-trigger-principals` with `['cto-actor', 'cpo-actor']` defaults.
+**Architecture:** New tick function `runPlanProposalNotifyTick` in `src/runtime/plans/plan-trigger-telegram.ts` (mechanism only -- atom query, allowlist filter, idempotence-record check, delegate to a `PlanProposalNotifier` seam). LoopRunner gains `runPlanProposalNotifyPass` flag + `planProposalNotifier` seam. CLI gains `--notify-proposed-plans` (default ON). Bin entrypoint factory builds the Telegram-shaped adapter from `scripts/lib/telegram-plan-trigger.mjs`. Idempotence via `type: 'telegram-push-record'` atoms with `provenance.derived_from: [planId]` so re-tick of the same state is a no-op. Allowlist comes from canon policy atom `pol-telegram-plan-trigger-principals` with `['cto-actor', 'cpo-actor']` defaults.
 
 **Tech Stack:** TypeScript (framework src/), Node.js .mjs (deployment-side scripts), Vitest, fetch (Telegram bot API).
 
@@ -25,14 +25,16 @@
 | `bin/lag-run-loop.js` | MODIFY | Build the notifier factory; pass to runLoopMain. |
 | `scripts/lib/telegram-plan-trigger.mjs` | NEW | Deployment-side adapter; reads env, POSTs to Telegram. |
 | `scripts/lib/plan-summary.mjs` | NEW | Pure plan-summary formatter (extracted at N=3 per `dev-dry-extract-at-second-duplication`). |
-| `scripts/lib/plan-approve-telegram.mjs` | MODIFY | Re-export `formatPlanSummary` from `plan-summary.mjs` (zero behavior change). |
+| `scripts/lib/plan-approve-telegram.mjs` | MODIFY | Wrap shared `extractPlanTitleAndBody` (zero behavior change for existing callers). |
 | `scripts/plan-discuss-telegram.mjs` | MODIFY | Replace inline summary extractor with import from `plan-summary.mjs`. |
-| `bootstrap/canon/telegram-plan-trigger-canon.mjs` | NEW (or inline in existing bootstrap) | Seed `pol-telegram-plan-trigger-principals` directive atom. |
+| `scripts/bootstrap-telegram-plan-trigger-canon.mjs` | NEW | Idempotent installer for the policy atom; supports `--dry-run`. |
+| `scripts/lib/telegram-plan-trigger-canon-policies.mjs` | NEW | Pure POLICIES factory imported by both the bootstrap script and the drift test. |
 | `test/runtime/plans/plan-trigger-telegram.test.ts` | NEW | Unit tests on the tick function. |
 | `test/loop/runner.test.ts` | MODIFY | LoopRunner integration tests for the new pass (default-off, missing-seam, enabled, idempotence, allowlist, rate-limit, best-effort-failure). |
 | `test/loop/telegram-plan-trigger-allowlist.test.ts` | NEW | Canon reader tests. |
-| `test/scripts/lib/plan-summary.test.ts` | NEW | Pure formatter tests. |
-| `test/scripts/lib/telegram-plan-trigger.test.ts` | NEW | Adapter validation + factory env-handling tests. |
+| `test/scripts/plan-summary.test.ts` | NEW | Pure formatter tests. |
+| `test/scripts/telegram-plan-trigger.test.ts` | NEW | Adapter validation + factory env-handling tests. |
+| `test/scripts/bootstrap-telegram-plan-trigger-canon.test.ts` | NEW | Drift test pinning POLICIES vs DEFAULT_PRINCIPAL_ALLOWLIST. |
 
 ---
 
@@ -114,7 +116,7 @@ Expected: clean. The literal addition to `AtomType` propagates everywhere via Ty
 npx vitest run test/loop/runner.test.ts
 ```
 
-Expected: all 29 tests still pass (no behavior change yet — only added a literal to a union).
+Expected: all 29 tests still pass (no behavior change yet -- only added a literal to a union).
 
 - [ ] **Step 1.5: Commit**
 
@@ -185,7 +187,7 @@ describe('formatPlanSummary', () => {
 });
 ```
 
-Run: `npx vitest run test/scripts/lib/plan-summary.test.ts`. Expected: FAIL — module not found.
+Run: `npx vitest run test/scripts/lib/plan-summary.test.ts`. Expected: FAIL -- module not found.
 
 - [ ] **Step 2.3: Implement the formatter**
 
@@ -250,7 +252,7 @@ Run all existing tests:
 npx vitest run test/scripts/lib/plan-approve-telegram.test.ts test/scripts/plan-approve-telegram.test.ts 2>&1 | tail -20
 ```
 
-Expected: green. If a test fails, the migration is wrong (regression — fix before commit).
+Expected: green. If a test fails, the migration is wrong (regression -- fix before commit).
 
 - [ ] **Step 2.5: Commit**
 
@@ -375,7 +377,7 @@ describe('readPlanTriggerAllowlist', () => {
 });
 ```
 
-Run: `npx vitest run test/loop/telegram-plan-trigger-allowlist.test.ts`. Expected: FAIL — module not found.
+Run: `npx vitest run test/loop/telegram-plan-trigger-allowlist.test.ts`. Expected: FAIL -- module not found.
 
 - [ ] **Step 3.2: Implement the canon reader**
 
@@ -392,7 +394,7 @@ Create `src/runtime/loop/telegram-plan-trigger-allowlist.ts`:
  * DEFAULT_PRINCIPAL_ALLOWLIST when no policy atom exists or the value
  * is malformed (non-array, non-string entries, etc).
  *
- * An explicitly EMPTY array in the policy atom is honored — that is
+ * An explicitly EMPTY array in the policy atom is honored -- that is
  * the org-ceiling opt-out path. The fallback only triggers on
  * absent / malformed.
  *
@@ -433,7 +435,7 @@ export async function readPlanTriggerAllowlist(host: Host): Promise<ReadonlyArra
       // typo'd principal stay in the allowlist forever invisibly).
       const valid = raw.every((p) => typeof p === 'string' && p.length > 0);
       if (!valid) continue;
-      // Empty array is honored — that's the explicit opt-out.
+      // Empty array is honored -- that's the explicit opt-out.
       return Object.freeze(raw.map((p) => p as PrincipalId));
     }
     cursor = page.nextCursor === null ? undefined : page.nextCursor;
@@ -635,7 +637,7 @@ describe('runPlanProposalNotifyTick', () => {
 });
 ```
 
-Run: `npx vitest run test/runtime/plans/plan-trigger-telegram.test.ts`. Expected: FAIL — module not found.
+Run: `npx vitest run test/runtime/plans/plan-trigger-telegram.test.ts`. Expected: FAIL -- module not found.
 
 - [ ] **Step 4.2: Implement the tick**
 
@@ -1141,7 +1143,7 @@ describe('LoopRunner.tick plan-proposal notify integration', () => {
 });
 ```
 
-Run: `npx vitest run test/loop/runner.test.ts`. Expected: FAIL — 6 tests fail because LoopRunner doesn't have the wiring yet.
+Run: `npx vitest run test/loop/runner.test.ts`. Expected: FAIL -- 6 tests fail because LoopRunner doesn't have the wiring yet.
 
 - [ ] **Step 5.3: Wire the new pass into LoopRunner**
 
@@ -1282,7 +1284,7 @@ In the audit log details:
 npx vitest run test/loop/runner.test.ts -t "plan-proposal notify"
 ```
 
-Expected: 6/6 PASS. (If a test fails, debug — `vitest --reporter=verbose` to see which.)
+Expected: 6/6 PASS. (If a test fails, debug -- `vitest --reporter=verbose` to see which.)
 
 Then run the full LoopRunner suite:
 
@@ -1420,7 +1422,7 @@ node bin/lag-run-loop.js --help 2>&1 | grep -A 2 "notify-proposed"
 
 Expected: the new flags render in --help.
 
-- [ ] **Step 6.3: Run full test suite (no new tests for CLI yet — bin smoke covers it)**
+- [ ] **Step 6.3: Run full test suite (no new tests for CLI yet -- bin smoke covers it)**
 
 ```bash
 npx vitest run
@@ -1570,7 +1572,7 @@ describe('createTelegramPlanProposalNotifier', () => {
 });
 ```
 
-Run: `npx vitest run test/scripts/lib/telegram-plan-trigger.test.ts`. Expected: FAIL — module not found.
+Run: `npx vitest run test/scripts/lib/telegram-plan-trigger.test.ts`. Expected: FAIL -- module not found.
 
 - [ ] **Step 7.2: Implement the adapter**
 
@@ -2016,7 +2018,7 @@ grep -rn -iE "design/|adr-|inv-|dev-|pol-|arch-" src/runtime/plans/plan-trigger-
 
 Expected first: OK. Second: OK. Third: any matches must be in JSDoc comments only and reference policy NAMES (not paths), which is allowed since we cite policy SUBJECTS (the substrate-level identifier) not the CLAUDE.md atom IDs.
 
-Wait — re-reading `feedback_src_docs_mechanism_only_no_design_links`: "no design/ADR paths, no canon ids, no specific adapter/actor names in framework code docs". The new src/ files reference `pol-telegram-plan-trigger-principals` (a canon id). That's a violation.
+Wait -- re-reading `feedback_src_docs_mechanism_only_no_design_links`: "no design/ADR paths, no canon ids, no specific adapter/actor names in framework code docs". The new src/ files reference `pol-telegram-plan-trigger-principals` (a canon id). That's a violation.
 
 Fix: scrub the src/ JSDoc to refer to the POLICY SUBJECT only ("the telegram-plan-trigger-principals policy"), not the canon atom id.
 
@@ -2079,20 +2081,20 @@ node scripts/gh-as.mjs lag-ceo pr create \
   --body "$(cat <<'EOF'
 ## Summary
 
-LoopRunner.tick() now auto-fires a Telegram push for every newly-proposed plan atom from the canon-defined principal allowlist (default: cto-actor + cpo-actor). Closes the substrate gap surfaced by the operator 2026-05-05: "and am I supposed to ever be telegrammed or no" — yes, but auto-trigger ships in this PR.
+LoopRunner.tick() now auto-fires a Telegram push for every newly-proposed plan atom from the canon-defined principal allowlist (default: cto-actor + cpo-actor). Closes the substrate gap surfaced by the operator 2026-05-05: "and am I supposed to ever be telegrammed or no" -- yes, but auto-trigger ships in this PR.
 
 This is the same shape as PR #318 (approval-cycle wiring): pluggable seam, default-OFF framework option flipped to ON at the indie-floor CLI, idempotence via a marker atom, best-effort tick (failure logs to errors[] without aborting the loop).
 
 ## What's new
 
-- **`runPlanProposalNotifyTick(host, notifier, principal, options)`** — pure tick function in `src/runtime/plans/plan-trigger-telegram.ts`. Mechanism-only: scans proposed plans, filters by allowlist, checks idempotence, delegates to a `PlanProposalNotifier` seam.
-- **`telegram-push-record` atom type** — written per successful notify with `provenance.derived_from: [planId]`. Re-tick of the same state is a no-op.
-- **`pol-telegram-plan-trigger-principals` canon policy** — allowlist (canon-tunable; defaults to cto-actor + cpo-actor).
-- **`PlanProposalNotifier` seam + `LoopOptions.runPlanProposalNotifyPass`** — same pattern as `PrObservationRefresher` from PR #318.
-- **`--notify-proposed-plans` CLI flag** — default ON at the indie-floor; `--no-notify-proposed-plans` for sandboxed deployments.
-- **`scripts/lib/telegram-plan-trigger.mjs`** — deployment-side adapter; reads TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env, formats message, POSTs sendMessage. Returns null when env is incomplete -> framework silent-skips per the LoopRunner contract.
-- **`scripts/lib/plan-summary.mjs`** — pure formatter extracted at N=3 callers per `dev-dry-extract-at-second-duplication`.
-- **`scripts/bootstrap-telegram-plan-trigger-canon.mjs`** — idempotent installer for the policy atom.
+- **`runPlanProposalNotifyTick(host, notifier, principal, options)`** -- pure tick function in `src/runtime/plans/plan-trigger-telegram.ts`. Mechanism-only: scans proposed plans, filters by allowlist, checks idempotence, delegates to a `PlanProposalNotifier` seam.
+- **`telegram-push-record` atom type** -- written per successful notify with `provenance.derived_from: [planId]`. Re-tick of the same state is a no-op.
+- **`pol-telegram-plan-trigger-principals` canon policy** -- allowlist (canon-tunable; defaults to cto-actor + cpo-actor).
+- **`PlanProposalNotifier` seam + `LoopOptions.runPlanProposalNotifyPass`** -- same pattern as `PrObservationRefresher` from PR #318.
+- **`--notify-proposed-plans` CLI flag** -- default ON at the indie-floor; `--no-notify-proposed-plans` for sandboxed deployments.
+- **`scripts/lib/telegram-plan-trigger.mjs`** -- deployment-side adapter; reads TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env, formats message, POSTs sendMessage. Returns null when env is incomplete -> framework silent-skips per the LoopRunner contract.
+- **`scripts/lib/plan-summary.mjs`** -- pure formatter extracted at N=3 callers per `dev-dry-extract-at-second-duplication`.
+- **`scripts/bootstrap-telegram-plan-trigger-canon.mjs`** -- idempotent installer for the policy atom.
 
 ## Why a pluggable seam, not a baked-in Telegram call
 

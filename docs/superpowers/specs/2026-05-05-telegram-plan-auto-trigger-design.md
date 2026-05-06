@@ -1,8 +1,8 @@
-# Telegram Plan Auto-Trigger — Design Spec
+# Telegram Plan Auto-Trigger -- Design Spec
 
 **Date:** 2026-05-05
 **Status:** Draft
-**Closes gap:** Operator runs autonomous /loop sessions; new proposed plans accumulate in the AtomStore but no Telegram notification fires. The operator has to manually run `node scripts/plan-approve-telegram.mjs <plan-id>` or `plan-discuss-telegram.mjs <plan-id>` to be pinged. Operator flagged this 2026-05-05: "and am I supposed to ever be telegrammed or no" — yes, but only manually today.
+**Closes gap:** Operator runs autonomous /loop sessions; new proposed plans accumulate in the AtomStore but no Telegram notification fires. The operator has to manually run `node scripts/plan-approve-telegram.mjs <plan-id>` or `plan-discuss-telegram.mjs <plan-id>` to be pinged. Operator flagged this 2026-05-05: "and am I supposed to ever be telegrammed or no" -- yes, but only manually today.
 
 ## Goal
 
@@ -13,7 +13,7 @@ Auto-fire a Telegram notification on every newly-proposed `plan` atom from an al
 - **Interactive long-poll session inside the tick.** The existing `plan-approve-telegram.mjs` and `plan-discuss-telegram.mjs` scripts spawn an interactive `getUpdates` loop that blocks waiting for the operator. The auto-trigger tick does NOT spawn that loop; it sends a one-shot notification and writes an idempotence record. The operator runs the discuss script manually when they want a Q+A session.
 - **Inline-keyboard verdict capture.** Buttons on the auto-pushed message would require a long-running poller to handle taps; that poller is a separate concern from a tick. v1 ships the push only.
 - **Multi-chat fan-out.** v1 sends to the single configured `TELEGRAM_CHAT_ID`. Multi-reviewer fan-out across multiple chats is org-ceiling and lands behind a follow-up policy atom.
-- **Custom message templating.** Default message format covers the indie floor. Org-ceiling deployments register a higher-priority template via canon (deferred per `dev-future-proof-apex-tunable-trade-off-dials` — populate dials only when a second use case arrives).
+- **Custom message templating.** Default message format covers the indie floor. Org-ceiling deployments register a higher-priority template via canon (deferred per `dev-future-proof-apex-tunable-trade-off-dials` -- populate dials only when a second use case arrives).
 
 ## Architecture
 
@@ -47,20 +47,20 @@ LoopRunner.tick()
 
 A new `type: 'telegram-push-record'` atom with `provenance.derived_from: [planId]`, scope=`session`, layer=L0. Reasons:
 
-1. **Atom immutability.** Atoms are signed, append-only records (per `arch-atomstore-source-of-truth`). Mutating `plan.metadata.telegram_pushed_at` after the fact would compromise the audit chain — re-reading the plan tells you what the planner wrote, not what a downstream tick decided.
+1. **Atom immutability.** Atoms are signed, append-only records (per `arch-atomstore-source-of-truth`). Mutating `plan.metadata.telegram_pushed_at` after the fact would compromise the audit chain -- re-reading the plan tells you what the planner wrote, not what a downstream tick decided.
 2. **Symmetry with reconcile.** `plan-merge-settled` (the reconcile pass marker) is a separate atom for the same reason.
 3. **Queryability.** Operator asks "when was plan X pushed?" → `host.atoms.query({ type: ['telegram-push-record'] })` answers it.
-4. **Decay-friendly.** A push-record half-life of 7 days means stale records age out without manual purge — but during the lifetime of a `proposed` plan (reaper kills proposed plans at 72h by default), the record stays alive and idempotence holds.
+4. **Decay-friendly.** A push-record half-life of 7 days means stale records age out without manual purge -- but during the lifetime of a `proposed` plan (reaper kills proposed plans at 72h by default), the record stays alive and idempotence holds.
 
 ### Allowlist as canon, not framework constant
 
 Per `dev-framework-mechanism-only`: a hardcoded `['cto-actor', 'cpo-actor']` in `src/` would encode org-shape into framework primitives. Instead a canon policy atom `pol-telegram-plan-trigger-principals` carries the allowlist; the tick reads it on every pass (so a canon edit takes effect on the next tick without restart). Default-empty fallback: when no policy atom exists, the tick treats `cto-actor` and `cpo-actor` as the indie-floor default. (Empty-string allowlist explicitly disables the pass.)
 
-Wait — empty-string-disables vs default-allowlist. Re-reading `dev-substrate-not-prescription`: I'll go with **canon-policy-or-fallback-defaults**. When the canon atom is absent: defaults `['cto-actor', 'cpo-actor']` apply (indie zero-config). When the canon atom exists with an empty allowlist: pass is effectively disabled (org-ceiling explicit opt-out path). When the canon atom exists with a non-empty list: that list governs.
+Wait -- empty-string-disables vs default-allowlist. Re-reading `dev-substrate-not-prescription`: I'll go with **canon-policy-or-fallback-defaults**. When the canon atom is absent: defaults `['cto-actor', 'cpo-actor']` apply (indie zero-config). When the canon atom exists with an empty allowlist: pass is effectively disabled (org-ceiling explicit opt-out path). When the canon atom exists with a non-empty list: that list governs.
 
 ### Default cadence
 
-Inherits the LoopRunner's `--interval` (default 60s). No separate poll loop. The tick is in-process, scans `~5000` atoms (bounded by `maxScan`), and sends Telegram messages via the deployment adapter — typical cost ~1ms scan + 1 HTTP POST per new plan. Per-tick budget: `maxNotifies=20` to bound the burst when many plans land at once.
+Inherits the LoopRunner's `--interval` (default 60s). No separate poll loop. The tick is in-process, scans `~5000` atoms (bounded by `maxScan`), and sends Telegram messages via the deployment adapter -- typical cost ~1ms scan + 1 HTTP POST per new plan. Per-tick budget: `maxNotifies=5` to bound bursts under common per-chat rate limits (Telegram caps at ~30 msg/sec/chat overall but practical bursts are tighter); plans beyond the cap roll over to the next tick so overall throughput is bounded by tick-cadence x maxNotifies.
 
 The operator's request "Indie-default cadence ~5min, env-overridable" matches the canon-tunable `pol-approval-cycle-tick-interval-ms` precedent (PR #283), but **the LoopRunner already runs at 60s and the auto-trigger pass piggybacks on that**. A separate "telegram tick interval" would be a configuration knob without a second use-case (`dev-future-proof-apex-tunable-trade-off-dials`: don't build dial infrastructure speculatively). The 60s default ticks 5x faster than the 5min freshness windows; this is fine for a notification surface.
 
@@ -100,11 +100,11 @@ export async function runPlanProposalNotifyTick(
 ```
 
 Skip reasons (histogram):
-- `not-in-allowlist` — plan principal not in resolved allowlist
-- `already-pushed` — telegram-push-record exists for this plan
-- `tainted` / `superseded` — defensive guards
-- `notify-failed` — adapter threw; counted, tick continues
-- `rate-limited` — exceeded `maxNotifies`
+- `not-in-allowlist` -- plan principal not in resolved allowlist
+- `already-pushed` -- telegram-push-record exists for this plan
+- `tainted` / `superseded` -- defensive guards
+- `notify-failed` -- adapter threw; counted, tick continues
+- `rate-limited` -- exceeded `maxNotifies`
 
 ### `src/runtime/loop/telegram-plan-trigger-allowlist.ts` (new)
 
@@ -182,11 +182,11 @@ export function createTelegramPlanProposalNotifier(options = {}) {
 
 The factory is the place that reads env vars; the LoopRunner stays env-agnostic.
 
-### `scripts/lib/telegram-plan-trigger-format.mjs` (extracted — pure formatter)
+### `scripts/lib/telegram-plan-trigger-format.mjs` (extracted -- pure formatter)
 
-Per `dev-dry-extract-at-second-duplication`: the plan summary extraction (title from first markdown heading, rest as body) appears in `plan-approve-telegram.mjs` AND `plan-discuss-telegram.mjs` already; this is the third instance. Extract to a shared formatter that all three consumers import. Pure helper — no I/O, fully unit-testable. The formatter exports `formatPlanForTelegram(plan)` returning `{ title, body, summary, message }`.
+Per `dev-dry-extract-at-second-duplication`: the plan summary extraction (title from first markdown heading, rest as body) appears in `plan-approve-telegram.mjs` AND `plan-discuss-telegram.mjs` already; this is the third instance. Extract to a shared formatter that all three consumers import. Pure helper -- no I/O, fully unit-testable. The formatter exports `formatPlanForTelegram(plan)` returning `{ title, body, summary, message }`.
 
-Wait — actually looking at the existing code: `plan-approve-telegram.mjs` uses `formatPlanSummary` from `lib/plan-approve-telegram.mjs`, and `plan-discuss-telegram.mjs` has its own inline. Two existing instances + one new = three. Extract is mandatory. The shared module lives at `scripts/lib/plan-summary.mjs` and the existing two helpers re-export from it (zero behavior change).
+Wait -- actually looking at the existing code: `plan-approve-telegram.mjs` uses `formatPlanSummary` from `lib/plan-approve-telegram.mjs`, and `plan-discuss-telegram.mjs` has its own inline. Two existing instances + one new = three. Extract is mandatory. The shared module lives at `scripts/lib/plan-summary.mjs` and the existing two helpers re-export from it (zero behavior change).
 
 ## Idempotence Atom Schema
 
@@ -221,7 +221,7 @@ Wait — actually looking at the existing code: `plan-approve-telegram.mjs` uses
 
 The chat-id is hashed (first 16 hex of sha256) so the audit atom doesn't leak the chat-id into atoms that may be replicated/exported. The hash gives uniqueness for "did this chat receive this plan" queries without leaking the secret.
 
-Wait — that's overengineered for v1. The chat-id is in `.env`, never in tracked source, and hashing adds a dependency. Drop the field; the existence of the push-record under a deployment running with one chat-id IS the answer. Keep `metadata: { plan_id, pushed_at, channel: 'telegram' }`.
+Wait -- that's overengineered for v1. The chat-id is in `.env`, never in tracked source, and hashing adds a dependency. Drop the field; the existence of the push-record under a deployment running with one chat-id IS the answer. Keep `metadata: { plan_id, pushed_at, channel: 'telegram' }`.
 
 ## Half-life Registration
 
@@ -229,17 +229,17 @@ Wait — that's overengineered for v1. The chat-id is in `.env`, never in tracke
 
 ## Test Plan
 
-1. **Default off** — `runPlanProposalNotifyPass=false` (default) → `planProposalNotifyReport === null`, notifier never called.
-2. **Enabled, notifier missing** — flag on, seam absent → silent-skip + once-per-runner warning across N ticks (mirrors PR #318 latch pattern).
-3. **Enabled, notifier present, new proposed plan from cto-actor** — notifier called once with the plan + summary, push-record atom written.
-4. **Enabled, idempotence** — re-tick same state → notifier NOT called second time (push-record query short-circuits).
+1. **Default off** -- `runPlanProposalNotifyPass=false` (default) → `planProposalNotifyReport === null`, notifier never called.
+2. **Enabled, notifier missing** -- flag on, seam absent → silent-skip + once-per-runner warning across N ticks (mirrors PR #318 latch pattern).
+3. **Enabled, notifier present, new proposed plan from cto-actor** -- notifier called once with the plan + summary, push-record atom written.
+4. **Enabled, idempotence** -- re-tick same state → notifier NOT called second time (push-record query short-circuits).
 5. **Plan principal NOT in allowlist** (e.g. `code-author`) → skipped with `not-in-allowlist`.
 6. **Plan in non-proposed state** (e.g. `executing`) → skipped (filtered out by `plan_state=['proposed']` query filter).
-7. **Notifier throws** — counted as `skipped['notify-failed']`, tick continues, push-record NOT written (so next tick retries — this is the desired behavior since the push didn't actually land).
-8. **Allowlist read from canon policy atom** — canon override `['cto-actor']` (cpo dropped) → cpo plan skipped, cto plan notified.
-9. **Best-effort: tick failure does NOT fail the loop** — synthetic injected failure on `host.atoms.put` for telegram-push-record → error logged, tick report `planProposalNotifyReport === null`, other passes continue.
-10. **Per-tick rate limit** — N+1 plans, `maxNotifies=N` → first N notified, +1 counted as `rate-limited`.
-11. **Pure formatter unit tests** — `scripts/lib/plan-summary.mjs` exports `formatPlanForTelegram(plan)` with title-from-first-heading + body-rest contract.
+7. **Notifier throws** -- counted as `skipped['notify-failed']`, tick continues, push-record NOT written (so next tick retries -- this is the desired behavior since the push didn't actually land).
+8. **Allowlist read from canon policy atom** -- canon override `['cto-actor']` (cpo dropped) → cpo plan skipped, cto plan notified.
+9. **Best-effort: tick failure does NOT fail the loop** -- synthetic injected failure on `host.atoms.put` for telegram-push-record → error logged, tick report `planProposalNotifyReport === null`, other passes continue.
+10. **Per-tick rate limit** -- N+1 plans, `maxNotifies=N` → first N notified, +1 counted as `rate-limited`.
+11. **Pure formatter unit tests** -- `scripts/lib/plan-summary.mjs` exports `formatPlanForTelegram(plan)` with title-from-first-heading + body-rest contract.
 
 ## Observability
 
@@ -258,16 +258,16 @@ Per-tick stdout from `formatTickReport` gains a `notify(notified=N)` segment whe
 
 ## Risks & Trade-offs
 
-- **What if the operator ALREADY had a manual `plan-discuss-telegram` session running on the same plan?** Two messages land. Acceptable for v1 — the manual session is operator-initiated and the auto-push is informative; both are useful surfaces.
+- **What if the operator ALREADY had a manual `plan-discuss-telegram` session running on the same plan?** Two messages land. Acceptable for v1 -- the manual session is operator-initiated and the auto-push is informative; both are useful surfaces.
 - **What if Telegram rate-limits?** The notifier-throw path counts as `notify-failed`, push-record NOT written, retry next tick. Telegram's 30 msg/sec/chat limit comfortably exceeds the per-tick `maxNotifies=20` cap.
 - **What if the operator wants to silence the auto-trigger temporarily?** `--no-notify-proposed-plans` flag at boot disables. For a finer-grained pause, the operator can drop a STOP sentinel which the LoopRunner already honors; the auto-trigger pass inherits that behavior because it runs inside the tick.
-- **Citation-verification:** the prose of the auto-pushed message MUST be limited to fields read from the plan atom (title, body, id). No fabricated paths or atom-ids — the push is mechanical extraction.
+- **Citation-verification:** the prose of the auto-pushed message MUST be limited to fields read from the plan atom (title, body, id). No fabricated paths or atom-ids -- the push is mechanical extraction.
 
 ## Future-proofing
 
 - **Apex-tunable dials seam preserved:** the policy-atom-driven allowlist + per-tick options struct + pluggable notifier seam mean future dials (severity threshold, blast-radius gate, multi-channel fan-out) land as canon atoms or adapter additions, not framework changes.
-- **Chat-id rotation:** hashed audit metadata was considered and rejected as YAGNI. If the operator rotates `TELEGRAM_CHAT_ID` and wants to know "which chat did plan X land in", they have the deployment's audit log — out of band from the atom store.
-- **Approval-cycle interaction:** the auto-trigger fires on `proposed` state. Approval-cycle ticks transition `executing → succeeded/abandoned`. They're orthogonal — neither pass interferes with the other.
+- **Chat-id rotation:** hashed audit metadata was considered and rejected as YAGNI. If the operator rotates `TELEGRAM_CHAT_ID` and wants to know "which chat did plan X land in", they have the deployment's audit log -- out of band from the atom store.
+- **Approval-cycle interaction:** the auto-trigger fires on `proposed` state. Approval-cycle ticks transition `executing → succeeded/abandoned`. They're orthogonal -- neither pass interferes with the other.
 
 ## Substrate purity audit
 

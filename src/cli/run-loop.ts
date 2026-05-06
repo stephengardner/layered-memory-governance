@@ -150,10 +150,11 @@ function parseCliArgs(): CliArgs | null {
         'refresh-plan-observations': { type: 'boolean', default: true },
         'no-refresh-plan-observations': { type: 'boolean', default: false },
         // Plan-proposal notify pass defaults ON for the indie floor
-        // so a solo developer with .env set gets phone pings on
-        // newly-proposed plans without opt-in. A sandboxed
-        // deployment without an outbound network surface opts out
-        // via --no-notify-proposed-plans.
+        // so a solo developer with deployment env set gets phone
+        // pings on newly-proposed plans (per the canon-defined
+        // allowlist) without explicit opt-in. A sandboxed deployment
+        // without an outbound network surface opts out via
+        // --no-notify-proposed-plans.
         'notify-proposed-plans': { type: 'boolean', default: true },
         'no-notify-proposed-plans': { type: 'boolean', default: false },
         help: { type: 'boolean', default: false },
@@ -318,11 +319,13 @@ function printUsage(): void {
       '  --notify-proposed-plans        Run the plan-proposal notify pass on every tick',
       '                                 (default on). Auto-pushes newly-proposed plan',
       '                                 atoms whose principal is in the canon-defined',
-      '                                 allowlist (default cto-actor + cpo-actor) to',
-      '                                 the configured notifier exactly once per plan.',
-      '                                 Idempotence via telegram-push-record atoms.',
-      '                                 Requires the bin entrypoint to inject a notifier',
-      '                                 factory; without one the pass silent-skips.',
+      '                                 allowlist (telegram-plan-trigger-principals',
+      '                                 policy subject; the framework default lives in',
+      '                                 DEFAULT_PRINCIPAL_ALLOWLIST when no canon override',
+      '                                 resolves) to the configured notifier exactly once',
+      '                                 per plan. Idempotence via telegram-push-record',
+      '                                 atoms. Requires the bin entrypoint to inject a',
+      '                                 notifier factory; without one the pass silent-skips.',
       '  --no-notify-proposed-plans     Disable the notify pass (e.g. for sandboxed',
       '                                 deployments without outbound network access).',
       '  --help                    Print this message.',

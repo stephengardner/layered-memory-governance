@@ -61,6 +61,19 @@ describe('bootstrap-telegram-plan-trigger-canon POLICIES', () => {
     expect(atom.supersedes).toEqual([]);
     expect(atom.superseded_by).toEqual([]);
     expect(atom.provenance.kind).toBe('operator-seeded');
+    // Pin the full integrity surface (provenance.source +
+    // derived_from) so a re-attribution under unchanged policy
+    // fields is still flagged as drift. The bootstrap's
+    // diffPolicyAtom compares the same surfaces; this test pins
+    // the seed end of that comparison so the seed and the diff
+    // logic cannot drift apart silently.
+    expect(JSON.stringify(atom.provenance.source)).toBe(
+      JSON.stringify({
+        session_id: 'bootstrap-telegram-plan-trigger',
+        agent_id: 'bootstrap',
+      }),
+    );
+    expect(atom.provenance.derived_from).toEqual([]);
     const meta = atom.metadata as {
       policy: { subject: string; principal_ids: ReadonlyArray<string> };
     };

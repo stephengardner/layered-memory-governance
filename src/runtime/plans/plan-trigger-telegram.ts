@@ -30,9 +30,11 @@
  *
  * Allowlist source: a directive policy atom carrying
  * metadata.policy.subject = 'telegram-plan-trigger-principals'.
- * Indie-floor default: ['cto-actor', 'cpo-actor']. Org-ceiling
- * deployments override the array via canon edit; an explicitly
- * empty array is the opt-out path.
+ * The framework default lives in DEFAULT_PRINCIPAL_ALLOWLIST and is
+ * applied when no policy atom resolves; concrete principal names
+ * are an org-shape concern carried by canon and bootstrap docs,
+ * not by this module. An explicitly empty principal_ids array is
+ * the canon opt-out path.
  */
 
 import type { Host } from '../../interface.js';
@@ -63,7 +65,18 @@ export interface PlanProposalNotifyOptions {
   readonly now?: () => string;
   /** Upper bound on plan atoms scanned per tick; defaults to 5000. */
   readonly maxScan?: number;
-  /** Upper bound on notifier.notify calls per tick; defaults to 20. */
+  /**
+   * Upper bound on notifier.notify calls per tick. Defaults to 5,
+   * which is conservative against per-chat rate limits on common
+   * messaging APIs (Telegram caps at ~30 msg/sec/chat overall but
+   * practical posting against a single chat keeps a much tighter
+   * budget on bursts to avoid 429s). Adapters that fan out across
+   * multiple chats or implement their own backoff can raise this
+   * via options at construction time. Plans beyond the cap are
+   * counted as 'rate-limited' and picked up next tick, so the
+   * overall throughput is bounded by tick-cadence x maxNotifies
+   * regardless.
+   */
   readonly maxNotifies?: number;
   /**
    * Override the canon allowlist read. Test injection point.
@@ -93,7 +106,7 @@ export async function runPlanProposalNotifyTick(
 ): Promise<PlanProposalNotifyResult> {
   const nowFn = options.now ?? (() => host.clock.now() as string);
   const MAX_SCAN = options.maxScan ?? 5_000;
-  const MAX_NOTIFIES = options.maxNotifies ?? 20;
+  const MAX_NOTIFIES = options.maxNotifies ?? 5;
   const allowlist
     = options.principalAllowlistOverride ?? (await readPlanTriggerAllowlist(host));
   const allowSet = new Set<string>(allowlist);

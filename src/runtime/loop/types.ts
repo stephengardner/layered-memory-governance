@@ -249,12 +249,12 @@ export interface LoopOptions {
    * Run the plan-proposal notify pass on every tick. Default
    * `false`. When the flag is true and `planProposalNotifier` is
    * supplied, the pass scans proposed plan atoms whose principal
-   * is in the canon-defined allowlist (the
-   * `telegram-plan-trigger-principals` policy subject; default
-   * cto-actor + cpo-actor when no canon override is set), calls
-   * the notifier exactly once per plan, and writes a
-   * `telegram-push-record` atom to make the push idempotent
-   * across re-ticks.
+   * is in the canon-defined allowlist (carried by the
+   * `telegram-plan-trigger-principals` policy subject; the
+   * framework default lives in DEFAULT_PRINCIPAL_ALLOWLIST and
+   * applies when no policy atom resolves), calls the notifier
+   * exactly once per plan, and writes a `telegram-push-record`
+   * atom to make the push idempotent across re-ticks.
    *
    * When the flag is true but `planProposalNotifier` is absent,
    * the pass silent-skips and warns once per runner. This permits
