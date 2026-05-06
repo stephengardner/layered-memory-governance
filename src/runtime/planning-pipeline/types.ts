@@ -83,6 +83,26 @@ export interface StageOutput<T> {
   readonly duration_ms: number;
   readonly atom_type: string;
   readonly atom_id?: AtomId;
+  /**
+   * Optional supplementary metadata the stage runner produces alongside
+   * the output value. The pipeline runner shallow-merges this into the
+   * persisted stage-output atom's `metadata` object via the typed mint
+   * helpers, so downstream consumers (Console projections, audit walks)
+   * can read stage-runner-resolved facts without re-deriving them.
+   *
+   * Canonical example: `canon_directives_applied` + `tool_policy_principal_id`
+   * stamped by `runStageAgentLoop` so the canon-at-runtime projection
+   * reads the canon that ACTUALLY bound the LLM rather than re-resolving
+   * it from a static stage-mapping table after the fact. Substrate
+   * purity: the runner is canon-agnostic; the stamping logic lives in
+   * the stage runner where canon resolution already happens.
+   *
+   * The runner-supplied metadata keys (`pipeline_id`, `stage_name`,
+   * `stage_output`) win on collision because they are load-bearing for
+   * cross-stage walking; a stage adapter that smuggles a key with the
+   * same name cannot accidentally shadow them.
+   */
+  readonly extraMetadata?: Readonly<Record<string, unknown>>;
 }
 
 export interface AuditFinding {

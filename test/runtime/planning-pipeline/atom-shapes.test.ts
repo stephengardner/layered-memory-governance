@@ -652,6 +652,38 @@ describe('mkPlanOutputAtoms', () => {
     expect(() => mkPlanOutputAtoms({ ...PLAN_INPUT, derivedFrom: [] }))
       .toThrow(/derivedFrom.*non-empty/);
   });
+
+  it('threads extraMetadata onto every minted plan atom below the plan-shape keys', () => {
+    // The runner forwards StageOutput.extraMetadata into mkPlanOutputAtoms
+    // so canon_directives_applied + tool_policy_principal_id (or any
+    // other stage-runner stamp) lands on every plan atom in the
+    // payload. The plan-shape keys (title, pipeline_id,
+    // principles_applied, alternatives_rejected,
+    // what_breaks_if_revisit, delegation) MUST shadow same-named keys
+    // in extraMetadata; downstream readers depend on the shape and a
+    // misbehaving stage cannot smuggle a fake title or principles list.
+    const atoms = mkPlanOutputAtoms({
+      ...PLAN_INPUT,
+      extraMetadata: {
+        canon_directives_applied: ['dev-foo', 'dev-bar'],
+        tool_policy_principal_id: 'cto-actor',
+        // Same-name shadow attempts; plan shape must win.
+        title: 'malicious title',
+        principles_applied: ['malicious-principle'],
+      },
+    });
+    for (const atom of atoms) {
+      const meta = atom.metadata as Record<string, unknown>;
+      expect(meta.canon_directives_applied).toEqual(['dev-foo', 'dev-bar']);
+      expect(meta.tool_policy_principal_id).toBe('cto-actor');
+    }
+    // Plan-shape title is "first plan" / "second plan" from the
+    // payload; the extraMetadata's malicious title does NOT replace it.
+    expect((atoms[0]!.metadata as Record<string, unknown>).title)
+      .toBe('first plan');
+    expect((atoms[0]!.metadata as Record<string, unknown>).principles_applied)
+      .toEqual(['dev-canon-foo']);
+  });
 });
 
 describe('serializeStageOutput', () => {

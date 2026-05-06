@@ -824,6 +824,18 @@ export interface MkPlanOutputAtomsInput {
    * `plans` key and returns [] when the shape is missing or empty.
    */
   readonly value: unknown;
+  /**
+   * Optional supplementary metadata threaded from `StageOutput.extraMetadata`
+   * into every minted plan atom. Mirrors `MkStageOutputAtomBaseInput.extraMetadata`
+   * for the plan-stage shape so a stage-runner-resolved fact (e.g.
+   * canon_directives_applied) is recorded uniformly across stage shapes.
+   * Shallow-merged into each plan atom's `metadata` BELOW the plan-specific
+   * keys (title, pipeline_id, principles_applied, etc.) so the plan-shape
+   * keys win on collision; downstream readers that key on `delegation` /
+   * `principles_applied` cannot be surprised by a stage-runner stamping
+   * a same-named bag.
+   */
+  readonly extraMetadata?: Readonly<Record<string, unknown>>;
 }
 
 interface PlanEntryLike {
@@ -964,6 +976,12 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
       taint: 'clean',
       plan_state: 'proposed',
       metadata: {
+        // extraMetadata first so plan-shape keys (title, pipeline_id,
+        // delegation, etc.) authoritatively shadow any same-named bag a
+        // stage runner might have stamped. Plan readers depend on the
+        // shape keys, so a malformed extraMetadata cannot hijack the
+        // plan's load-bearing fields.
+        ...(input.extraMetadata ?? {}),
         title,
         pipeline_id: input.pipelineId,
         principles_applied: [...principlesApplied],
