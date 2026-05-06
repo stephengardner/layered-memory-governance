@@ -492,3 +492,7 @@ GitHub Actions CI runs typecheck, build, default test suite, and a quickstart sm
 ## License
 
 MIT. See `LICENSE`.
+
+## Pipeline stages and principals
+
+The deep-planning pipeline runs as five stages, each executed by a distinct principal: `brainstorm-stage` (`brainstorm-actor`), `spec-stage` (`spec-author`), `plan-stage` (`plan-author`), `review-stage` (`pipeline-auditor`), and `dispatch-stage` (`plan-dispatcher`). See canon directive dev-deep-planning-pipeline.
