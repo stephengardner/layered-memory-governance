@@ -33,6 +33,15 @@ import type { APIRequestContext, Page } from '@playwright/test';
  *     here.
  */
 
+/**
+ * Default timeout for visibility assertions on the principal-detail
+ * surface. Centralised so future tuning (CI flake, slow-machine
+ * envelope) is one edit. 10 seconds is the same envelope used by
+ * principal-mobile.spec.ts and principal-drilldown.spec.ts; staying
+ * aligned avoids drift across the principal-detail spec family.
+ */
+const VISIBLE_TIMEOUT_MS = 10_000;
+
 type Category =
   | 'authority-root'
   | 'authority-anchor'
@@ -119,7 +128,7 @@ async function findPrincipalByCategory(
  */
 async function gotoPrincipal(page: Page, id: string): Promise<void> {
   await page.goto(`/principals/${encodeURIComponent(id)}`);
-  await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('principal-card')).toBeVisible({ timeout: VISIBLE_TIMEOUT_MS });
 }
 
 test.describe('principal-skill empty-state categories', () => {
@@ -129,7 +138,7 @@ test.describe('principal-skill empty-state categories', () => {
     await gotoPrincipal(page, id!);
 
     const empty = page.locator('[data-testid="principal-skill-empty"][data-category="authority-root"]');
-    await expect(empty).toBeVisible({ timeout: 10_000 });
+    await expect(empty).toBeVisible({ timeout: VISIBLE_TIMEOUT_MS });
     /*
      * Phrase-level assertion (not whole sentence) keeps the test
      * resilient to copy edits while still catching the regression
@@ -146,7 +155,7 @@ test.describe('principal-skill empty-state categories', () => {
     await gotoPrincipal(page, id!);
 
     const empty = page.locator('[data-testid="principal-skill-empty"][data-category="authority-anchor"]');
-    await expect(empty).toBeVisible({ timeout: 10_000 });
+    await expect(empty).toBeVisible({ timeout: VISIBLE_TIMEOUT_MS });
     /*
      * "trust-relay" + "signs other" together pin the substantive
      * distinction the empty-state copy carries: an anchor is the
@@ -170,7 +179,7 @@ test.describe('principal-skill empty-state categories', () => {
     await gotoPrincipal(page, id!);
 
     const content = page.locator('[data-testid="principal-skill-content"][data-category="actor-with-skill"]');
-    await expect(content).toBeVisible({ timeout: 10_000 });
+    await expect(content).toBeVisible({ timeout: VISIBLE_TIMEOUT_MS });
   });
 
   test('renders the actor-skill-debt empty state for a leaf actor with no SKILL.md', async ({ page, request }) => {
@@ -179,7 +188,7 @@ test.describe('principal-skill empty-state categories', () => {
     await gotoPrincipal(page, id!);
 
     const empty = page.locator('[data-testid="principal-skill-empty"][data-category="actor-skill-debt"]');
-    await expect(empty).toBeVisible({ timeout: 10_000 });
+    await expect(empty).toBeVisible({ timeout: VISIBLE_TIMEOUT_MS });
     /*
      * Skill-debt copy must reference the missing SKILL.md path AND
      * frame the absence as authoring debt; both signals together

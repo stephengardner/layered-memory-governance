@@ -507,8 +507,18 @@ async function handlePrincipalSkill(params: {
      * (passed PRINCIPAL_ID_RE) yet does not resolve. A silent fallback
      * to a generic empty state would hide the misroute; the consumer
      * needs to see the real signal.
+     *
+     * Throw a coded Error so the route layer can branch on err.code
+     * instead of string-matching the message; mirrors the
+     * 'invalid-atom-id' pattern at /api/atoms.reinforce and
+     * /api/atoms.mark-stale. The message is just the id so the wire
+     * response is `{ code: 'principal-not-found', message: '<id>' }`
+     * without the redundant code prefix CR flagged on the prior
+     * version.
      */
-    throw new Error(`principal-not-found: ${id}`);
+    const err = new Error(id) as Error & { code: string };
+    err.code = 'principal-not-found';
+    throw err;
   }
 
   /*
@@ -535,7 +545,6 @@ async function handlePrincipalSkill(params: {
 
   const category = classifyPrincipal({
     role: subject.role,
-    signedBy: subject.signed_by ?? null,
     hasChildren,
     hasSkill,
   });
@@ -2304,20 +2313,23 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       const data = await handlePrincipalSkill({ principal_id: pid });
       sendOk(req, res, data);
     } catch (err) {
-      const msg = (err as Error).message;
-      if (msg.startsWith('invalid principal_id')) {
-        sendErr(req, res, 400, 'principal-skill-bad-request', msg);
-      } else if (msg.startsWith('principal-not-found')) {
+      const e = err as Error & { code?: string };
+      if (e.message.startsWith('invalid principal_id')) {
+        sendErr(req, res, 400, 'principal-skill-bad-request', e.message);
+      } else if (e.code === 'principal-not-found') {
         /*
          * 404 surfaces the misroute to the consumer rather than
          * defaulting to a generic empty state, per the default-deny
          * posture in the principal-classifier deliberation. The
          * consumer renders an error block; it does NOT pretend the
-         * principal exists with no skill.
+         * principal exists with no skill. Branching on err.code rather
+         * than message-prefix matches the existing pattern in
+         * /api/atoms.reinforce and /api/atoms.mark-stale and avoids
+         * the message-duplicates-code wire shape CR flagged.
          */
-        sendErr(req, res, 404, 'principal-not-found', msg);
+        sendErr(req, res, 404, 'principal-not-found', e.message);
       } else {
-        sendErr(req, res, 500, 'principal-skill-failed', msg);
+        sendErr(req, res, 500, 'principal-skill-failed', e.message);
       }
     }
     return;

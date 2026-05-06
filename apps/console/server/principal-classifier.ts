@@ -59,14 +59,6 @@ export interface PrincipalClassifierInput {
    */
   readonly role: string | undefined;
   /**
-   * The principal's signed_by chain entry. Currently unused by the
-   * decision tree (kept on the projection so a future broadening that
-   * wants to distinguish self-signed from chain-anchored principals
-   * does not require a signature change). Keep in the input shape so
-   * callers project all relevant fields up front.
-   */
-  readonly signedBy: string | null | undefined;
-  /**
    * True iff at least one other principal in the store has
    * signed_by === this.id. Computed at the call site by walking the
    * full principal list once; classifier itself is graph-free.

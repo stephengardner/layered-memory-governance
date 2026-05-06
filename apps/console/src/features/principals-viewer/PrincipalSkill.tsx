@@ -112,7 +112,7 @@ export function PrincipalSkill({ principalId }: Props) {
  * AND a `data-category` attribute so Playwright can assert each
  * variant independently of the visible copy.
  */
-function renderEmpty(category: PrincipalCategory, principalId: string) {
+function renderEmpty(category: PrincipalCategory, principalId: string): JSX.Element {
   switch (category) {
     case 'authority-root':
       return (
@@ -178,5 +178,18 @@ function renderEmpty(category: PrincipalCategory, principalId: string) {
           </p>
         </section>
       );
+    default: {
+      /*
+       * Compile-time exhaustiveness guard. If a fifth literal is ever
+       * added to PrincipalCategory (the "out of scope" attribution-only
+       * category called out in the spec atom is the obvious candidate),
+       * TypeScript fails this assignment and the build refuses to ship
+       * a renderer that silently returns undefined for the new branch.
+       * Throws at runtime as a defensive fallback if the type system
+       * is bypassed (e.g. an `as unknown` cast).
+       */
+      const _exhaustive: never = category;
+      throw new Error(`unhandled principal category: ${_exhaustive as string}`);
+    }
   }
 }

@@ -18,7 +18,6 @@ import { classifyPrincipal, type PrincipalClassifierInput } from './principal-cl
 
 const baseLeaf: PrincipalClassifierInput = {
   role: 'agent',
-  signedBy: 'claude-agent',
   hasChildren: false,
   hasSkill: false,
 };
@@ -28,7 +27,6 @@ describe('classifyPrincipal', () => {
     it('returns authority-root for role===apex (apex-agent)', () => {
       expect(classifyPrincipal({
         role: 'apex',
-        signedBy: null,
         hasChildren: true,
         hasSkill: false,
       })).toBe('authority-root');
@@ -44,7 +42,6 @@ describe('classifyPrincipal', () => {
        */
       expect(classifyPrincipal({
         role: 'apex',
-        signedBy: null,
         hasChildren: false,
         hasSkill: true,
       })).toBe('authority-root');
@@ -59,7 +56,6 @@ describe('classifyPrincipal', () => {
        */
       expect(classifyPrincipal({
         role: 'apex',
-        signedBy: null,
         hasChildren: false,
         hasSkill: false,
       })).toBe('authority-root');
@@ -70,7 +66,6 @@ describe('classifyPrincipal', () => {
     it('returns authority-anchor for role===agent + hasChildren (claude-agent)', () => {
       expect(classifyPrincipal({
         role: 'agent',
-        signedBy: 'apex-agent',
         hasChildren: true,
         hasSkill: false,
       })).toBe('authority-anchor');
@@ -86,7 +81,6 @@ describe('classifyPrincipal', () => {
        */
       expect(classifyPrincipal({
         role: 'agent',
-        signedBy: 'apex-agent',
         hasChildren: true,
         hasSkill: true,
       })).toBe('authority-anchor');
@@ -116,7 +110,6 @@ describe('classifyPrincipal', () => {
        */
       expect(classifyPrincipal({
         role: 'agent',
-        signedBy: 'claude-agent',
         hasChildren: false,
         hasSkill: false,
       })).toBe('actor-skill-debt');
@@ -137,7 +130,6 @@ describe('classifyPrincipal', () => {
        */
       expect(classifyPrincipal({
         role: 'human',
-        signedBy: null,
         hasChildren: false,
         hasSkill: false,
       })).toBe('actor-skill-debt');
@@ -151,7 +143,6 @@ describe('classifyPrincipal', () => {
        */
       expect(classifyPrincipal({
         role: undefined,
-        signedBy: null,
         hasChildren: false,
         hasSkill: false,
       })).toBe('actor-skill-debt');
@@ -169,7 +160,6 @@ describe('classifyPrincipal', () => {
        */
       expect(classifyPrincipal({
         role: 'apex',
-        signedBy: null,
         hasChildren: true,
         hasSkill: false,
       })).toBe('authority-root');
@@ -183,7 +173,6 @@ describe('classifyPrincipal', () => {
        */
       expect(classifyPrincipal({
         role: 'agent',
-        signedBy: 'claude-agent',
         hasChildren: false,
         hasSkill: true,
       })).toBe('actor-with-skill');
