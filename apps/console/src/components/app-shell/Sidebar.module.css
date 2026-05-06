@@ -109,32 +109,35 @@
 }
 
 /*
- * Operator-critical items (live-ops Pulse + Control). Originally
- * tinted with --status-danger because they front the kill-switch
- * and autonomy dial. In practice the red read as alarm-state
- * ("the system is on fire") rather than emphasis ("these are the
- * two surfaces operators reach for first"). Operator confirmed
- * 2026-04-26 the red was scaring rather than highlighting.
+ * Operator-critical items (live-ops Pulse + Control). The marker
+ * lives in the icon tint only; the row background stays transparent
+ * so `.itemCritical` cannot be confused with `.itemActive`. Two
+ * earlier passes failed this readability bar:
  *
- * Switched to --accent (the same emphasis token used for the
- * focus ring, the active filter chip, and the inline-link).
- * Goal: "these are the always-available operator entry points,"
- * not "danger imminent." When the kill-switch IS active, the
- * Control view itself surfaces the alarm; the navigation chrome
- * does not need to double-signal.
+ *   1. The original `--status-danger` red read as alarm-state
+ *      ("the system is on fire") rather than emphasis. Operator
+ *      confirmed 2026-04-26 the red was scaring rather than
+ *      highlighting.
+ *
+ *   2. The follow-up accent-tinted background + border (the
+ *      treatment shipped after the red revert) read as "this row
+ *      is selected" -- two non-active items wore the same row
+ *      chrome as the actual active item, so on a typical render
+ *      three items appeared selected when only one was. Operator
+ *      confirmed 2026-05-05: "menu items appear selected when
+ *      they aren't."
+ *
+ * Selection is the active route. Criticality is icon-level
+ * emphasis ("reach for these first") that does not borrow the
+ * `.itemActive` chrome. The icon picks up `--accent`; the label
+ * stays in the default color so the row weight matches every
+ * non-active row. The active vertical bar (set by
+ * `.itemActive::before`) remains the single visual signal of
+ * "you are here." Hover collapses to the shared `.item:hover`
+ * background; there is no critical-only hover treatment.
  */
-.itemCritical {
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-}
-
 .itemCritical svg {
   color: var(--accent);
-}
-
-.itemCritical:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 12%, var(--surface-hover));
-  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
 }
 
 /*
