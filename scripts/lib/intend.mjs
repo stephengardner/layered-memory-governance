@@ -16,6 +16,7 @@ export function parseIntendArgs(argv) {
     kind: 'autonomous-solve',
     dryRun: false,
     trigger: false,
+    invokersPath: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -28,6 +29,7 @@ export function parseIntendArgs(argv) {
     else if (a === '--kind' && i + 1 < argv.length) { args.kind = argv[++i]; }
     else if (a === '--dry-run') { args.dryRun = true; }
     else if (a === '--trigger') { args.trigger = true; }
+    else if (a === '--invokers' && i + 1 < argv.length) { args.invokersPath = argv[++i]; }
     else { return { ok: false, reason: `unknown or misplaced argument: ${a}` }; }
   }
   if (!args.request) return { ok: false, reason: '--request is required' };
@@ -62,6 +64,58 @@ export function computeExpiresAt(raw, now) {
     throw new Error(`--expires-in exceeds safety cap of ${MAX_EXPIRES_HOURS}h`);
   }
   return new Date(now.getTime() + totalMs).toISOString();
+}
+
+function requireNonEmptyString(name, value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`buildCtoSpawnArgs: ${name} is required`);
+  }
+}
+
+/**
+ * Build the argv array intend.mjs --trigger spawns onto run-cto-actor.mjs.
+ * Pinning this here (rather than inline in scripts/intend.mjs) lets a
+ * regression test assert that --invokers is always present for the
+ * trigger path; without it the deep planning pipeline succeeds through
+ * brainstorm/spec/plan/review and only fails-loud at dispatch-stage
+ * with "principal code-author is not registered". Operators with a
+ * deployment-specific invokers module pass --invokers <override-path>
+ * to intend.mjs (parsed there + threaded into invokersPath here); the
+ * caller seeds the indie-floor default when the operator did not pass
+ * one, so the zero-config `intend.mjs --request "..." --trigger` flow
+ * works end-to-end.
+ */
+export function buildCtoSpawnArgs(spec) {
+  const { runCtoActorPath, request, atomId, invokersPath } = spec;
+  requireNonEmptyString('runCtoActorPath', runCtoActorPath);
+  requireNonEmptyString('request', request);
+  requireNonEmptyString('atomId', atomId);
+  requireNonEmptyString('invokersPath', invokersPath);
+  return [
+    runCtoActorPath,
+    '--request', request,
+    '--intent-id', atomId,
+    '--invokers', invokersPath,
+  ];
+}
+
+/**
+ * POSIX shell-quote a single argv token for paste-safe rendering of
+ * `intend --no-trigger`'s manual fallback command. Wraps with single
+ * quotes and escapes any embedded single quote via the standard
+ * `'\''` close-reopen idiom; that handles every other special
+ * character (whitespace, `$`, backticks, backslashes, double quotes,
+ * `&`, `;`, glob metacharacters) without further escaping. A token
+ * containing only safe characters skips the wrapping for readability.
+ */
+export function shellQuote(token) {
+  if (typeof token !== 'string') {
+    throw new Error('shellQuote: token must be a string');
+  }
+  if (token.length === 0) return "''";
+  // Only chars that need no quoting in a posix shell argv position.
+  if (/^[A-Za-z0-9_\-+.,/:=@%]+$/.test(token)) return token;
+  return `'${token.replace(/'/g, `'\\''`)}'`;
 }
 
 export function buildIntentAtom(spec) {
