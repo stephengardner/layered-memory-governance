@@ -81,7 +81,7 @@ export interface PlanProposalNotifier {
 export interface PlanProposalNotifyOptions {
   readonly now?: () => Time;
   readonly maxScan?: number;       // default 5000
-  readonly maxNotifies?: number;   // default 20
+  readonly maxNotifies?: number;   // default 5
   readonly principalAllowlistOverride?: ReadonlyArray<PrincipalId>;
 }
 
@@ -267,7 +267,7 @@ Per-tick stdout from `formatTickReport` gains a `notify(notified=N)` segment whe
 ## Risks & Trade-offs
 
 - **What if the operator ALREADY had a manual `plan-discuss-telegram` session running on the same plan?** Two messages land. Acceptable for v1 -- the manual session is operator-initiated and the auto-push is informative; both are useful surfaces.
-- **What if Telegram rate-limits?** The notifier-throw path counts as `notify-failed`, push-record NOT written, retry next tick. Telegram's 30 msg/sec/chat limit comfortably exceeds the per-tick `maxNotifies=20` cap.
+- **What if Telegram rate-limits?** The notifier-throw path counts as `notify-failed`, push-record NOT written, retry next tick. Telegram's 30 msg/sec/chat limit comfortably exceeds the per-tick `maxNotifies=5` cap.
 - **What if the operator wants to silence the auto-trigger temporarily?** `--no-notify-proposed-plans` flag at boot disables. For a finer-grained pause, the operator can drop a STOP sentinel which the LoopRunner already honors; the auto-trigger pass inherits that behavior because it runs inside the tick.
 - **Citation-verification:** the prose of the auto-pushed message MUST be limited to fields read from the plan atom (title, body, id). No fabricated paths or atom-ids -- the push is mechanical extraction.
 

@@ -20,7 +20,8 @@
 | `src/runtime/loop/telegram-plan-trigger-allowlist.ts` | NEW | Canon reader for the principal allowlist. |
 | `src/runtime/loop/types.ts` | MODIFY | Add `runPlanProposalNotifyPass` + `planProposalNotifier` to LoopOptions; add `planProposalNotifyReport` to LoopTickReport; add `'plan-push-record'` to DEFAULT_HALF_LIVES. |
 | `src/runtime/loop/runner.ts` | MODIFY | Wire the new pass; add silent-skip latch + `planProposalNotifyPass` private method. |
-| `src/types.ts` | MODIFY | Add `'plan-push-record'` to `AtomType` union. |
+| `src/substrate/types.ts` | MODIFY | Add `'plan-push-record'` to `AtomType` union. (`src/types.ts` is a re-export shim; the union lives under substrate/.) |
+| `src/substrate/canon-md/generator.ts` | MODIFY | Add the new atom type to TYPE_ORDER + TYPE_HEADINGS (mandatory for the Record<AtomType, string> typing). |
 | `src/cli/run-loop.ts` | MODIFY | CLI flag plumbing + factory option. |
 | `bin/lag-run-loop.js` | MODIFY | Build the notifier factory; pass to runLoopMain. |
 | `scripts/lib/telegram-plan-trigger.mjs` | NEW | Deployment-side adapter; reads env, POSTs to Telegram. |
@@ -80,17 +81,18 @@ Expected: `.lag/apps/lag-ceo/`, `.lag/apps/lag-cto/`, `.lag/apps/lag-pr-landing/
 ## Task 1: AtomType extension + DEFAULT_HALF_LIVES entry (TDD)
 
 **Files:**
-- Modify: `src/types.ts`
+- Modify: `src/substrate/types.ts` (the AtomType union; `src/types.ts` is a re-export shim)
+- Modify: `src/substrate/canon-md/generator.ts` (TYPE_ORDER + TYPE_HEADINGS entries are required for the Record<AtomType, string> typing)
 - Modify: `src/runtime/loop/types.ts`
 - Test: `test/loop/types.test.ts` (existing or create minimal)
 
-- [ ] **Step 1.1: Locate AtomType union in src/types.ts**
+- [ ] **Step 1.1: Locate AtomType union in src/substrate/types.ts**
 
 ```bash
-grep -n "type AtomType" src/types.ts
+grep -n "type AtomType" src/substrate/types.ts
 ```
 
-Open the file. The `AtomType` union literal lists: `'directive' | 'decision' | ... | 'plan' | ... | 'pipeline-resume'`. Add `'plan-push-record'` immediately after `'plan-merge-settled'` (alphabetical-ish grouping with other operational records).
+Open the file. The `AtomType` union literal lists: `'directive' | 'decision' | ... | 'plan' | ... | 'pipeline-resume'`. Add `'plan-push-record'` immediately after `'plan-merge-settled'` (alphabetical-ish grouping with other operational records). `src/types.ts` is a re-export shim and propagates the change automatically. ALSO add the same key to TYPE_ORDER and TYPE_HEADINGS in `src/substrate/canon-md/generator.ts` (Record<AtomType, string> typing makes a missing key a typecheck failure).
 
 - [ ] **Step 1.2: Add half-life entry**
 
@@ -121,7 +123,7 @@ Expected: all 29 tests still pass (no behavior change yet -- only added a litera
 - [ ] **Step 1.5: Commit**
 
 ```bash
-git add src/types.ts src/runtime/loop/types.ts
+git add src/substrate/types.ts src/runtime/loop/types.ts src/substrate/canon-md/generator.ts
 node scripts/git-as.mjs lag-ceo git commit -m "feat(types): register plan-push-record atom type + half-life"
 ```
 
