@@ -622,10 +622,22 @@ async function handleAtomReferences(id: string): Promise<Atom[]> {
  * legacy /api/atoms.chain wire shape -- Atom[] of ancestors EXCLUDING
  * the seed -- is preserved by dropping atoms[0] from the projection,
  * keeping the 5+ existing consumers untouched.
+ *
+ * maxDepth normalization: legacy callers pass a number that may be
+ * fractional (rare client drift), <=0 (caller intent: skip the walk),
+ * or unbounded (Infinity). We floor + clamp before delegating so the
+ * pure helper sees a value in [1, MAX_AUDIT_CHAIN_DEPTH]; depth<=0
+ * short-circuits to [] rather than walking the seed at all (matches
+ * the SupersedesDiff caller's depth=0 expectation).
  */
 async function handleAtomChain(id: string, maxDepth: number): Promise<Atom[]> {
+  const floored = typeof maxDepth === 'number' && Number.isFinite(maxDepth)
+    ? Math.floor(maxDepth)
+    : 0;
+  if (floored <= 0) return [];
+  const clamped = clampAuditChainDepth(floored);
   const all = await readAllAtoms();
-  const result = buildAuditChain(id, all as ReadonlyArray<AuditChainAtom>, maxDepth);
+  const result = buildAuditChain(id, all as ReadonlyArray<AuditChainAtom>, clamped);
   if (!result) return [];
   // atoms[0] is the seed; legacy contract returns ancestors only.
   return result.atoms.slice(1) as Atom[];

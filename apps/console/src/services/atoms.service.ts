@@ -21,6 +21,23 @@ import { transport } from './transport';
 import type { CanonAtom } from './canon.service';
 
 /**
+ * Predicate: is `err` the canonical "atom-not-found" envelope error?
+ *
+ * The backend emits a 404 with envelope `{ ok: false, error: { code:
+ * 'atom-not-found' } }`. The transport surfaces it as either
+ * `Error.name = 'atom-not-found'` (current shape) OR a plain Error
+ * whose `.message` starts with `'atom-not-found'` (legacy shape).
+ *
+ * Extracted at N=2 callers (getAtomById + getAuditChain) per canon
+ * `dev-extract-at-n-equals-two` so a future shape change happens in
+ * one place rather than drifting between the two services.
+ */
+export function isAtomNotFoundError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'atom-not-found' || err.message.startsWith('atom-not-found');
+}
+
+/**
  * Generic atom shape: wider than `CanonAtom` because it carries the
  * full metadata bag for non-canon types. Every field on `CanonAtom`
  * is preserved (so renderers can reuse canon helpers like
@@ -63,10 +80,7 @@ export async function getAtomById(
       signal ? { signal } : undefined,
     );
   } catch (err) {
-    const e = err as Error;
-    if (e.name === 'atom-not-found' || e.message.startsWith('atom-not-found')) {
-      return null;
-    }
+    if (isAtomNotFoundError(err)) return null;
     throw err;
   }
 }
@@ -144,10 +158,7 @@ export async function getAuditChain(
       options?.signal ? { signal: options.signal } : undefined,
     );
   } catch (err) {
-    const e = err as Error;
-    if (e.name === 'atom-not-found' || e.message.startsWith('atom-not-found')) {
-      return null;
-    }
+    if (isAtomNotFoundError(err)) return null;
     throw err;
   }
 }

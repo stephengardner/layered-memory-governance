@@ -1,6 +1,43 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getAtomById, listReferencers, getAuditChain } from './atoms.service';
+import {
+  getAtomById,
+  listReferencers,
+  getAuditChain,
+  isAtomNotFoundError,
+} from './atoms.service';
 import { transport } from './transport';
+
+/*
+ * `isAtomNotFoundError` is the shared predicate folding the canonical
+ * 404 envelope into a single check. Both getAtomById and getAuditChain
+ * use it; the test guards both shape variants the predicate has to
+ * cover (Error.name vs Error.message-prefix) plus the negative cases.
+ */
+describe('isAtomNotFoundError', () => {
+  it('returns true when Error.name === "atom-not-found"', () => {
+    const err = new Error('something');
+    err.name = 'atom-not-found';
+    expect(isAtomNotFoundError(err)).toBe(true);
+  });
+
+  it('returns true when Error.message starts with "atom-not-found" (legacy shape)', () => {
+    expect(isAtomNotFoundError(new Error('atom-not-found: legacy shape'))).toBe(true);
+  });
+
+  it('returns false for unrelated errors', () => {
+    const err = new Error('http-500: internal');
+    err.name = 'http-500';
+    expect(isAtomNotFoundError(err)).toBe(false);
+    expect(isAtomNotFoundError(new Error('something else'))).toBe(false);
+  });
+
+  it('returns false for non-Error values', () => {
+    expect(isAtomNotFoundError(null)).toBe(false);
+    expect(isAtomNotFoundError(undefined)).toBe(false);
+    expect(isAtomNotFoundError('atom-not-found')).toBe(false);
+    expect(isAtomNotFoundError({ name: 'atom-not-found', message: 'oops' })).toBe(false);
+  });
+});
 
 /*
  * `getAtomById` wraps transport.call('atoms.get'). The contract:
