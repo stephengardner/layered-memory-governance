@@ -342,18 +342,22 @@ export function resolveCloudflaredPath(opts) {
   // wins, then fall back to the literal canonical paths so a fresh
   // install with %ProgramFiles% pointed at the standard `C:\` keeps
   // working without any env at all.
-  const candidates = [];
-  const programFilesX86 = typeof env['ProgramFiles(x86)'] === 'string' ? env['ProgramFiles(x86)'] : '';
-  const programFiles = typeof env['ProgramFiles'] === 'string' ? env['ProgramFiles'] : '';
-  if (programFilesX86.length > 0) candidates.push(`${programFilesX86}\\cloudflared\\cloudflared.exe`);
-  if (programFiles.length > 0) candidates.push(`${programFiles}\\cloudflared\\cloudflared.exe`);
-  // Literal fallbacks: the installer hard-codes these on a default
-  // `C:\` system, and the env vars above are absent in some
-  // restricted shells (a watchdog spawned from `cmd.exe /k cd` may
-  // not inherit them). Belt-and-braces: probe the canonical paths
-  // even when the env did not surface them.
-  candidates.push('C:\\Program Files (x86)\\cloudflared\\cloudflared.exe');
-  candidates.push('C:\\Program Files\\cloudflared\\cloudflared.exe');
+  //
+  // Literal fallbacks belt-and-braces: the installer hard-codes
+  // these on a default `C:\` system, and the env vars above are
+  // absent in some restricted shells (a watchdog spawned from
+  // `cmd.exe /k cd` may not inherit them). Probe the canonical
+  // paths even when the env did not surface them. The `Set`
+  // de-dupes the case where env-resolved roots equal the literal
+  // canonical roots.
+  const exeSuffix = '\\cloudflared\\cloudflared.exe';
+  const candidateRoots = [
+    typeof env['ProgramFiles(x86)'] === 'string' ? env['ProgramFiles(x86)'] : '',
+    typeof env['ProgramFiles'] === 'string' ? env['ProgramFiles'] : '',
+    'C:\\Program Files (x86)',
+    'C:\\Program Files',
+  ].filter((root) => root.length > 0);
+  const candidates = [...new Set(candidateRoots.map((root) => `${root}${exeSuffix}`))];
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
