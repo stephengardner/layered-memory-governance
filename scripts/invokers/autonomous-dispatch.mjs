@@ -384,6 +384,41 @@ export default async function register(host, registry) {
         const cause = err instanceof Error ? err.message : String(err);
         console.error(`[autonomous-dispatch] WARNING: failed to observe PR #${capturedPrNumber} after dispatch: ${cause}. Plan ${capturedPlanId} will stay at plan_state='executing' until pr-landing is run manually.`);
       }
+
+      // Write a pr-driver-claim atom so the orphan-reconciler sees
+      // an active driver for this PR and does NOT misclassify it
+      // during the CR cycle. The claim ties the dispatch principal
+      // (cto-actor / code-author / equivalent) to the specific PR
+      // number, with derived_from chained back to the plan atom for
+      // taint propagation. Lifetime defaults to 12h (configurable
+      // via DEFAULT_DRIVER_CLAIM_LIFETIME_MS); a sub-agent that
+      // runs longer will see its claim age out and the next tick
+      // dispatch a fresh driver, which is the correct behaviour
+      // (the original sub-agent is presumed dead at that point).
+      //
+      // Best-effort: a write failure here logs but does NOT block
+      // the dispatch return path. Without the claim, the reconciler
+      // sees a fresh-no-claim PR within threshold (=> not orphan
+      // for the next cycle) and only flips to orphan-by-no-claim
+      // once the PR has gone quiet. The claim is the proactive
+      // signal; the absence-of-claim path is the safety net.
+      try {
+        const { buildPrDriverClaim } = await import('../../dist/runtime/plans/pr-driver-ledger.js');
+        const claim = buildPrDriverClaim({
+          pr: { owner, repo, number: capturedPrNumber },
+          principal_id: dispatchPrincipal,
+          claimed_at: new Date().toISOString(),
+          driver_role: 'primary',
+          derived_from: [capturedPlanId],
+        });
+        await host.atoms.put(claim);
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[autonomous-dispatch] WARNING: failed to write pr-driver-claim for PR #${capturedPrNumber}: ${cause}. `
+          + 'Orphan reconciler will rely on claim-absence + activity-window detection.',
+        );
+      }
     }
 
     if (recoveredFromGatewayError && capturedPrNumber !== null) {

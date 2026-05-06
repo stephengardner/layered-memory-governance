@@ -56,6 +56,12 @@ import {
   type PlanProposalNotifier,
   type PlanProposalNotifyResult,
 } from '../plans/plan-trigger-telegram.js';
+import {
+  runPrOrphanReconcileTick,
+  type OpenPrSource,
+  type OrphanPrDispatcher,
+  type PrOrphanReconcileTickResult,
+} from '../plans/pr-orphan-reconcile.js';
 
 /**
  * A canon target after resolution: the manager is instantiated, and the
@@ -85,6 +91,7 @@ export class LoopRunner {
       | 'runPlanReconcilePass'
       | 'runPlanObservationRefreshPass'
       | 'runPlanProposalNotifyPass'
+      | 'runPrOrphanReconcilePass'
     >
   >;
   private readonly l2Engine: PromotionEngine;
@@ -157,6 +164,32 @@ export class LoopRunner {
    * running daemons.
    */
   private warnedMissingNotifier: boolean = false;
+  /**
+   * Captured PR-orphan reconcile seams. `null` for either field
+   * activates the silent-skip path: the pass logs once and otherwise
+   * does no work. Storing here at construction time keeps the per-
+   * tick path free of optional-property reads on the caller's
+   * options object.
+   */
+  private readonly prOpenPrSource: OpenPrSource | null;
+  private readonly prOrphanDispatcher: OrphanPrDispatcher | null;
+  /**
+   * Override the orphan-detection threshold (ms) for tests / tight-
+   * cadence runs. `null` means read from canon at tick time
+   * (see `runtime/plans/pr-orphan-reconcile.ts`).
+   */
+  private readonly prOrphanThresholdMs: number | null;
+  /**
+   * Override the per-tick dispatch budget. `null` means use the
+   * module default.
+   */
+  private readonly prOrphanMaxDispatchPerTick: number | null;
+  /**
+   * Latch for the once-per-runner gap-warning when the orphan-
+   * reconcile pass is enabled but a required seam was not supplied.
+   * Mirrors warnedMissingRefresher.
+   */
+  private warnedMissingPrOrphanSeams: boolean = false;
   private tickCounter: number = 0;
   private errorCounter: number = 0;
   private lastReport: LoopTickReport | null = null;
@@ -181,6 +214,7 @@ export class LoopRunner {
       runPlanReconcilePass: options.runPlanReconcilePass ?? false,
       runPlanObservationRefreshPass: options.runPlanObservationRefreshPass ?? false,
       runPlanProposalNotifyPass: options.runPlanProposalNotifyPass ?? false,
+      runPrOrphanReconcilePass: options.runPrOrphanReconcilePass ?? false,
     };
     // Capture the refresher seam at construction time. Storing here
     // (vs. reading off `options` per tick) keeps the per-tick path
@@ -210,6 +244,41 @@ export class LoopRunner {
       );
     }
     this.planProposalNotifyPrincipal = rawNotifyPrincipal as PrincipalId;
+    // Capture the orphan-reconcile seams at construction time.
+    // Mirrors the refresher pattern. Both seams must be supplied
+    // for the pass to actually run; either being absent activates
+    // the silent-skip path so a deployment opting into the flag
+    // without yet wiring concrete adapters does not crash.
+    this.prOpenPrSource = options.prOpenPrSource ?? null;
+    this.prOrphanDispatcher = options.prOrphanDispatcher ?? null;
+    // Validate orphan-detection numeric overrides at construction
+    // time so a misconfigured wiring fails the boot path instead of
+    // silently producing one bad tick. Gated on
+    // runPrOrphanReconcilePass so existing callers paying nothing
+    // for the feature observe no behavior change.
+    if (this.options.runPrOrphanReconcilePass) {
+      const t = options.prOrphanThresholdMs;
+      if (t !== undefined) {
+        if (!Number.isInteger(t) || t <= 0) {
+          throw new Error(
+            `LoopRunner: prOrphanThresholdMs must be a positive integer ms (got ${String(t)})`,
+          );
+        }
+      }
+      const m = options.prOrphanMaxDispatchPerTick;
+      if (m !== undefined) {
+        if (!Number.isInteger(m) || m <= 0) {
+          throw new Error(
+            `LoopRunner: prOrphanMaxDispatchPerTick must be a positive integer (got ${String(m)})`,
+          );
+        }
+      }
+      this.prOrphanThresholdMs = options.prOrphanThresholdMs ?? null;
+      this.prOrphanMaxDispatchPerTick = options.prOrphanMaxDispatchPerTick ?? null;
+    } else {
+      this.prOrphanThresholdMs = null;
+      this.prOrphanMaxDispatchPerTick = null;
+    }
     // Validate the reaper config at construction time (vs. first
     // tick) so a misconfigured wiring fails the boot-up path instead
     // of silently producing one bad tick. Validation is gated on
@@ -307,6 +376,7 @@ export class LoopRunner {
     let planReconcileReport: LoopTickReport['planReconcileReport'] = null;
     let planObservationRefreshReport: LoopTickReport['planObservationRefreshReport'] = null;
     let planProposalNotifyReport: LoopTickReport['planProposalNotifyReport'] = null;
+    let prOrphanReconcileReport: LoopTickReport['prOrphanReconcileReport'] = null;
 
     if (this.host.scheduler.killswitchCheck()) {
       killSwitchTriggered = true;
@@ -327,6 +397,7 @@ export class LoopRunner {
         planReconcileReport,
         planObservationRefreshReport,
         planProposalNotifyReport,
+        prOrphanReconcileReport,
       };
       this.lastReport = report;
       return report;
@@ -519,6 +590,49 @@ export class LoopRunner {
       }
     }
 
+    // --- PR-orphan reconcile pass -------------------------------------------
+    // Default-disabled. When enabled AND both seams are supplied,
+    // walks open PRs, detects orphans (no claim + stale activity,
+    // claim expired, or claimer inactive), emits pr-orphan-detected
+    // atoms, and dispatches fresh driver sub-agents. Sequenced AFTER
+    // plan-reconcile so a PR that just merged this tick has its
+    // plan_state already transitioned to terminal before the orphan
+    // detector inspects (preventing a fresh-merge from being briefly
+    // mis-classified as orphan-by-claimer-inactive). Silent-skip
+    // when either seam is null per the LoopOptions contract; the
+    // pass logs once per runner.
+    if (this.options.runPrOrphanReconcilePass) {
+      if (this.prOpenPrSource === null || this.prOrphanDispatcher === null) {
+        if (!this.warnedMissingPrOrphanSeams) {
+          this.warnedMissingPrOrphanSeams = true;
+          // eslint-disable-next-line no-console
+          console.error(
+            '[pr-orphan-reconcile] WARN: runPrOrphanReconcilePass=true but '
+              + (this.prOpenPrSource === null && this.prOrphanDispatcher === null
+                ? 'neither prOpenPrSource nor prOrphanDispatcher were'
+                : this.prOpenPrSource === null
+                  ? 'prOpenPrSource was not'
+                  : 'prOrphanDispatcher was not')
+              + ' supplied; pass is skipped this tick. Wire both through LoopOptions to '
+              + 'activate. (This warning is logged once per runner; subsequent '
+              + 'silent-skip ticks stay quiet.)',
+          );
+        }
+      } else {
+        try {
+          prOrphanReconcileReport = await this.prOrphanReconcilePass(
+            this.prOpenPrSource,
+            this.prOrphanDispatcher,
+          );
+        } catch (err) {
+          this.errorCounter += 1;
+          errors.push(
+            `pr-orphan-reconcile: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
     const finishedAt = this.host.clock.now();
     const report: LoopTickReport = {
       tickNumber,
@@ -536,6 +650,7 @@ export class LoopRunner {
       planReconcileReport,
       planObservationRefreshReport,
       planProposalNotifyReport,
+      prOrphanReconcileReport,
     };
     this.lastReport = report;
 
@@ -573,6 +688,28 @@ export class LoopRunner {
       this.host.auditor.metric(
         'loop.plan_proposal_notify_notified',
         planProposalNotifyReport.notified,
+      );
+    }
+    if (prOrphanReconcileReport !== null) {
+      this.host.auditor.metric(
+        'loop.pr_orphan_scanned',
+        prOrphanReconcileReport.scanned,
+      );
+      this.host.auditor.metric(
+        'loop.pr_orphan_detected',
+        prOrphanReconcileReport.orphansDetected,
+      );
+      this.host.auditor.metric(
+        'loop.pr_orphan_dispatched',
+        prOrphanReconcileReport.dispatched,
+      );
+      this.host.auditor.metric(
+        'loop.pr_orphan_failed_dispatches',
+        prOrphanReconcileReport.failedDispatches,
+      );
+      this.host.auditor.metric(
+        'loop.pr_orphan_rate_limited',
+        prOrphanReconcileReport.rateLimited,
       );
     }
 
@@ -614,6 +751,16 @@ export class LoopRunner {
           ? {
               plan_proposal_notify_scanned: planProposalNotifyReport.scanned,
               plan_proposal_notify_notified: planProposalNotifyReport.notified,
+            }
+          : {}),
+        ...(prOrphanReconcileReport !== null
+          ? {
+              pr_orphan_scanned: prOrphanReconcileReport.scanned,
+              pr_orphan_detected: prOrphanReconcileReport.orphansDetected,
+              pr_orphan_dispatched: prOrphanReconcileReport.dispatched,
+              pr_orphan_failed: prOrphanReconcileReport.failedDispatches,
+              pr_orphan_rate_limited: prOrphanReconcileReport.rateLimited,
+              pr_orphan_idempotent_skips: prOrphanReconcileReport.idempotentSkips,
             }
           : {}),
       },
@@ -881,6 +1028,43 @@ export class LoopRunner {
     return {
       scanned: result.scanned,
       notified: result.notified,
+      skipped: result.skipped,
+    };
+  }
+
+  /**
+   * Run one PR-orphan reconcile pass. Pure delegate to
+   * `runPrOrphanReconcileTick`; LoopRunner adds scheduling + audit
+   * only. Threshold + per-tick budget are taken from constructor
+   * overrides when supplied; otherwise the tick reads canon for the
+   * threshold (`pol-pr-orphan-reconcile-threshold-ms`) and uses the
+   * module default for the dispatch budget.
+   */
+  private async prOrphanReconcilePass(
+    source: OpenPrSource,
+    dispatcher: OrphanPrDispatcher,
+  ): Promise<NonNullable<LoopTickReport['prOrphanReconcileReport']>> {
+    const result: PrOrphanReconcileTickResult = await runPrOrphanReconcileTick(
+      this.host,
+      source,
+      dispatcher,
+      {
+        principalId: this.options.principalId,
+        ...(this.prOrphanThresholdMs !== null
+          ? { thresholdMsOverride: this.prOrphanThresholdMs }
+          : {}),
+        ...(this.prOrphanMaxDispatchPerTick !== null
+          ? { maxDispatchPerTickOverride: this.prOrphanMaxDispatchPerTick }
+          : {}),
+      },
+    );
+    return {
+      scanned: result.scanned,
+      orphansDetected: result.orphansDetected,
+      idempotentSkips: result.idempotentSkips,
+      dispatched: result.dispatched,
+      failedDispatches: result.failedDispatches,
+      rateLimited: result.rateLimited,
       skipped: result.skipped,
     };
   }
