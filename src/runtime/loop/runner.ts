@@ -51,6 +51,11 @@ import {
   type PlanObservationRefreshResult,
   type PrObservationRefresher,
 } from '../plans/pr-observation-refresh.js';
+import {
+  runPlanProposalNotifyTick,
+  type PlanProposalNotifier,
+  type PlanProposalNotifyResult,
+} from '../plans/plan-trigger-telegram.js';
 
 /**
  * A canon target after resolution: the manager is instantiated, and the
@@ -79,6 +84,7 @@ export class LoopRunner {
       | 'runReaperPass'
       | 'runPlanReconcilePass'
       | 'runPlanObservationRefreshPass'
+      | 'runPlanProposalNotifyPass'
     >
   >;
   private readonly l2Engine: PromotionEngine;
@@ -127,6 +133,30 @@ export class LoopRunner {
    * flood stderr. Reset is implicit on runner re-construction.
    */
   private warnedMissingRefresher: boolean = false;
+  /**
+   * Notifier seam for the plan-proposal notify pass. `null` when
+   * the pass is disabled OR when the caller did not wire a
+   * notifier (the silent-skip path). The framework consumes the
+   * adapter only through the `PlanProposalNotifier` interface;
+   * concrete construction happens outside framework code.
+   */
+  private readonly planProposalNotifier: PlanProposalNotifier | null;
+  /**
+   * Resolved principal id the notify pass attributes its
+   * idempotence-record atoms to. Defaults to the loop's
+   * `principalId` when no explicit override is supplied; resolved
+   * once at construction so a misconfigured override fails loud
+   * during boot rather than producing audit rows attributed to a
+   * fallback identity.
+   */
+  private readonly planProposalNotifyPrincipal: PrincipalId;
+  /**
+   * Latch for the once-per-runner gap-warning when the notify pass
+   * is enabled but no notifier seam was supplied. Mirrors
+   * `warnedMissingRefresher` to keep stderr clean across long-
+   * running daemons.
+   */
+  private warnedMissingNotifier: boolean = false;
   private tickCounter: number = 0;
   private errorCounter: number = 0;
   private lastReport: LoopTickReport | null = null;
@@ -150,6 +180,7 @@ export class LoopRunner {
       runReaperPass: options.runReaperPass ?? false,
       runPlanReconcilePass: options.runPlanReconcilePass ?? false,
       runPlanObservationRefreshPass: options.runPlanObservationRefreshPass ?? false,
+      runPlanProposalNotifyPass: options.runPlanProposalNotifyPass ?? false,
     };
     // Capture the refresher seam at construction time. Storing here
     // (vs. reading off `options` per tick) keeps the per-tick path
@@ -160,6 +191,25 @@ export class LoopRunner {
     // may be a coherent choice (see `runPlanObservationRefreshPass`
     // doc on LoopOptions).
     this.prObservationRefresher = options.prObservationRefresher ?? null;
+    // Capture the notify seam + principal at construction time so
+    // the per-tick path is free of optional-property reads on the
+    // caller's options object. The pass silent-skips when the
+    // notifier is null. The principal defaults to the loop's
+    // principalId when no override is supplied; this keeps
+    // attribution consistent with the rest of the loop's audit
+    // rows by default and lets a deployment override only when it
+    // wants a dedicated push-bot identity. Validate non-empty
+    // (mirrors the reaperPrincipal guard) so a misconfigured
+    // wiring fails the boot path rather than producing audit rows
+    // attributed to an empty principal id.
+    this.planProposalNotifier = options.planProposalNotifier ?? null;
+    const rawNotifyPrincipal = options.planProposalNotifyPrincipal ?? options.principalId;
+    if (typeof rawNotifyPrincipal !== 'string' || rawNotifyPrincipal.trim().length === 0) {
+      throw new Error(
+        'LoopRunner: planProposalNotifyPrincipal (or principalId fallback) must be a non-empty string',
+      );
+    }
+    this.planProposalNotifyPrincipal = rawNotifyPrincipal as PrincipalId;
     // Validate the reaper config at construction time (vs. first
     // tick) so a misconfigured wiring fails the boot-up path instead
     // of silently producing one bad tick. Validation is gated on
@@ -256,6 +306,7 @@ export class LoopRunner {
     let reaperReport: LoopTickReport['reaperReport'] = null;
     let planReconcileReport: LoopTickReport['planReconcileReport'] = null;
     let planObservationRefreshReport: LoopTickReport['planObservationRefreshReport'] = null;
+    let planProposalNotifyReport: LoopTickReport['planProposalNotifyReport'] = null;
 
     if (this.host.scheduler.killswitchCheck()) {
       killSwitchTriggered = true;
@@ -275,6 +326,7 @@ export class LoopRunner {
         reaperReport,
         planReconcileReport,
         planObservationRefreshReport,
+        planProposalNotifyReport,
       };
       this.lastReport = report;
       return report;
@@ -432,6 +484,41 @@ export class LoopRunner {
       }
     }
 
+    // --- Plan-proposal notify pass ------------------------------------------
+    // Default-disabled. When enabled, scans proposed plans whose
+    // principal is in the canon-defined allowlist and calls the
+    // PlanProposalNotifier seam exactly once per plan (idempotence
+    // via plan-push-record atoms). Runs AFTER reconcile so a
+    // plan that just transitioned proposed -> abandoned this tick
+    // is not pushed. Silent-skip when the notifier seam is absent
+    // (once-per-runner warning; subsequent ticks stay quiet).
+    if (this.options.runPlanProposalNotifyPass) {
+      if (this.planProposalNotifier === null) {
+        if (!this.warnedMissingNotifier) {
+          this.warnedMissingNotifier = true;
+          // eslint-disable-next-line no-console
+          console.error(
+            '[plan-proposal-notify] WARN: runPlanProposalNotifyPass=true but no '
+              + 'planProposalNotifier seam supplied; pass is skipped this tick. '
+              + 'Wire one through LoopOptions.planProposalNotifier to activate. '
+              + '(This warning is logged once per runner; subsequent silent-skip '
+              + 'ticks stay quiet.)',
+          );
+        }
+      } else {
+        try {
+          planProposalNotifyReport = await this.planProposalNotifyPass(
+            this.planProposalNotifier,
+          );
+        } catch (err) {
+          this.errorCounter += 1;
+          errors.push(
+            `plan-proposal-notify: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
     const finishedAt = this.host.clock.now();
     const report: LoopTickReport = {
       tickNumber,
@@ -448,6 +535,7 @@ export class LoopRunner {
       reaperReport,
       planReconcileReport,
       planObservationRefreshReport,
+      planProposalNotifyReport,
     };
     this.lastReport = report;
 
@@ -475,6 +563,16 @@ export class LoopRunner {
       this.host.auditor.metric(
         'loop.plan_obs_refresh_refreshed',
         planObservationRefreshReport.refreshed,
+      );
+    }
+    if (planProposalNotifyReport !== null) {
+      this.host.auditor.metric(
+        'loop.plan_proposal_notify_scanned',
+        planProposalNotifyReport.scanned,
+      );
+      this.host.auditor.metric(
+        'loop.plan_proposal_notify_notified',
+        planProposalNotifyReport.notified,
       );
     }
 
@@ -510,6 +608,12 @@ export class LoopRunner {
           ? {
               plan_obs_refresh_scanned: planObservationRefreshReport.scanned,
               plan_obs_refresh_refreshed: planObservationRefreshReport.refreshed,
+            }
+          : {}),
+        ...(planProposalNotifyReport !== null
+          ? {
+              plan_proposal_notify_scanned: planProposalNotifyReport.scanned,
+              plan_proposal_notify_notified: planProposalNotifyReport.notified,
             }
           : {}),
       },
@@ -752,6 +856,31 @@ export class LoopRunner {
     return {
       scanned: result.scanned,
       refreshed: result.refreshed,
+      skipped: result.skipped,
+    };
+  }
+
+  /**
+   * Run one plan-proposal notify pass. Pure delegate to
+   * `runPlanProposalNotifyTick`; LoopRunner adds scheduling + audit
+   * only. The pluggable `PlanProposalNotifier` seam is supplied at
+   * construction time via `LoopOptions.planProposalNotifier`. The
+   * principal allowlist is read inside the tick from the canon
+   * `telegram-plan-trigger-principals` policy subject; concrete
+   * principal names are carried by canon, bootstrap, and docs
+   * rather than embedded here.
+   */
+  private async planProposalNotifyPass(
+    notifier: PlanProposalNotifier,
+  ): Promise<NonNullable<LoopTickReport['planProposalNotifyReport']>> {
+    const result: PlanProposalNotifyResult = await runPlanProposalNotifyTick(
+      this.host,
+      notifier,
+      this.planProposalNotifyPrincipal,
+    );
+    return {
+      scanned: result.scanned,
+      notified: result.notified,
       skipped: result.skipped,
     };
   }

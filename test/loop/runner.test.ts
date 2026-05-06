@@ -900,3 +900,179 @@ describe('LoopRunner.tick plan-reconcile + refresh combined wiring (e2e)', () =>
     expect(plan?.plan_state).toBe('succeeded');
   });
 });
+
+describe('LoopRunner.tick plan-proposal notify integration', () => {
+  it('default (runPlanProposalNotifyPass: false) leaves planProposalNotifyReport null and does not call the notifier', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put({
+      ...samplePlanAtom('p1', '2026-05-05T00:00:00.000Z'),
+      principal_id: 'cto-actor' as PrincipalId,
+    });
+    let notifyCalls = 0;
+    const notifier = {
+      async notify(): Promise<void> {
+        notifyCalls += 1;
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      planProposalNotifier: notifier,
+    });
+    const report = await runner.tick();
+    expect(report.planProposalNotifyReport).toBeNull();
+    expect(notifyCalls).toBe(0);
+  });
+
+  it('enabled-but-notifier-absent silent-skips and warns ONCE across many ticks', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put({
+      ...samplePlanAtom('p1', '2026-05-05T00:00:00.000Z'),
+      principal_id: 'cto-actor' as PrincipalId,
+    });
+    const original = console.error;
+    const captured: string[] = [];
+    console.error = (...args: unknown[]) => {
+      captured.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      const runner = new LoopRunner(host, {
+        principalId: principal,
+        runPlanProposalNotifyPass: true,
+        // No planProposalNotifier supplied.
+      });
+      // Run 5 ticks. Long-running daemons would otherwise flood
+      // stderr with one warning per tick; the once-per-runner
+      // latch caps it at one.
+      for (let i = 0; i < 5; i += 1) {
+        const report = await runner.tick();
+        expect(report.planProposalNotifyReport).toBeNull();
+      }
+      const gapWarnings = captured.filter(
+        (l) =>
+          l.includes('[plan-proposal-notify]') && l.includes('no planProposalNotifier seam'),
+      );
+      expect(gapWarnings.length).toBe(1);
+    } finally {
+      console.error = original;
+    }
+  });
+
+  it('enabled-with-notifier pushes a proposed cto-actor plan and reports the count', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put({
+      ...samplePlanAtom('p1', '2026-05-05T00:00:00.000Z'),
+      principal_id: 'cto-actor' as PrincipalId,
+    });
+    const notifyCalls: Array<{ planId: string }> = [];
+    const notifier = {
+      async notify(args: { plan: { id: string } }): Promise<void> {
+        notifyCalls.push({ planId: args.plan.id });
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanProposalNotifyPass: true,
+      planProposalNotifier: notifier,
+    });
+    const report = await runner.tick();
+    expect(report.planProposalNotifyReport).not.toBeNull();
+    expect(report.planProposalNotifyReport?.notified).toBe(1);
+    expect(notifyCalls.length).toBe(1);
+    expect(notifyCalls[0]?.planId).toBe('p1');
+    // Audit row carries the count.
+    const audits = await host.auditor.query({ kind: ['loop.tick'] }, 5);
+    const last = audits[audits.length - 1];
+    expect(last?.details?.['plan_proposal_notify_notified']).toBe(1);
+  });
+
+  it('idempotent across two ticks: second tick sees already-pushed', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put({
+      ...samplePlanAtom('p1', '2026-05-05T00:00:00.000Z'),
+      principal_id: 'cto-actor' as PrincipalId,
+    });
+    let notifyCalls = 0;
+    const notifier = {
+      async notify(): Promise<void> {
+        notifyCalls += 1;
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanProposalNotifyPass: true,
+      planProposalNotifier: notifier,
+    });
+    const first = await runner.tick();
+    const second = await runner.tick();
+    expect(first.planProposalNotifyReport?.notified).toBe(1);
+    expect(second.planProposalNotifyReport?.notified).toBe(0);
+    expect(second.planProposalNotifyReport?.skipped['already-pushed']).toBe(1);
+    expect(notifyCalls).toBe(1);
+  });
+
+  it('notifier failure does not fail the tick (counted as skipped)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put({
+      ...samplePlanAtom('p1', '2026-05-05T00:00:00.000Z'),
+      principal_id: 'cto-actor' as PrincipalId,
+    });
+    const notifier = {
+      async notify(): Promise<void> {
+        throw new Error('synthetic Telegram failure');
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanProposalNotifyPass: true,
+      planProposalNotifier: notifier,
+    });
+    const report = await runner.tick();
+    expect(report.planProposalNotifyReport).not.toBeNull();
+    expect(report.planProposalNotifyReport?.notified).toBe(0);
+    expect(report.planProposalNotifyReport?.skipped['notify-failed']).toBe(1);
+    // No push-record was written; next tick will retry.
+    const records = await host.atoms.query({ type: ['plan-push-record'] }, 5);
+    expect(records.atoms.length).toBe(0);
+  });
+
+  it('best-effort: synthetic internal failure does not fail the tick', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put({
+      ...samplePlanAtom('p1', '2026-05-05T00:00:00.000Z'),
+      principal_id: 'cto-actor' as PrincipalId,
+    });
+    // Stub host.atoms.query so a query for proposed plans throws.
+    // The tick first scans push-records, then directives (canon
+    // read), then the plan set. We throw on the plan-set query
+    // specifically.
+    const realQuery = host.atoms.query.bind(host.atoms);
+    (host.atoms as { query: typeof host.atoms.query }).query = async (
+      filter,
+      limit,
+      cursor,
+    ) => {
+      if (
+        filter.type
+        && Array.isArray(filter.type)
+        && filter.type.includes('plan')
+        && Array.isArray(filter.plan_state)
+      ) {
+        throw new Error('synthetic notify-pass failure');
+      }
+      return realQuery(filter, limit, cursor);
+    };
+    const notifier = {
+      async notify(): Promise<void> {
+        // unreachable -- the throw happens before delegate
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPlanProposalNotifyPass: true,
+      planProposalNotifier: notifier,
+    });
+    const report = await runner.tick();
+    expect(report.planProposalNotifyReport).toBeNull();
+    expect(report.errors.some((e) => e.startsWith('plan-proposal-notify:'))).toBe(true);
+  });
+});

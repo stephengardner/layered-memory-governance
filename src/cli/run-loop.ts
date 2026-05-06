@@ -24,6 +24,7 @@ import type { Embedder, Host } from '../interface.js';
 import type { PrincipalId } from '../types.js';
 import type { LoopTickReport } from '../loop/types.js';
 import type { PrObservationRefresher } from '../runtime/plans/pr-observation-refresh.js';
+import type { PlanProposalNotifier } from '../runtime/plans/plan-trigger-telegram.js';
 
 /**
  * Optional injection point: a deployment-side factory that builds the
@@ -43,9 +44,22 @@ export type PrObservationRefresherFactory =
   () => Promise<PrObservationRefresher | null> | PrObservationRefresher | null;
 
 /**
- * Options for `runLoopMain`. Today the only deployment-side seam is
- * the refresher factory; future opt-in injection points live here so
- * the bin entrypoint stays the single composition root.
+ * Optional injection point: a deployment-side factory that builds
+ * the plan-proposal notifier seam used by the notify pass. Mirrors
+ * `PrObservationRefresherFactory`. Returning `null` (or omitting
+ * the field) activates the silent-skip path documented on
+ * `LoopOptions.runPlanProposalNotifyPass`. The reference
+ * implementation lives at `scripts/lib/telegram-plan-trigger.mjs`
+ * and is wired through `bin/lag-run-loop.js`.
+ */
+export type PlanProposalNotifierFactory =
+  () => Promise<PlanProposalNotifier | null> | PlanProposalNotifier | null;
+
+/**
+ * Options for `runLoopMain`. Today the deployment-side seams are
+ * the refresher factory and the notifier factory; future opt-in
+ * injection points live here so the bin entrypoint stays the
+ * single composition root.
  */
 export interface RunLoopMainOptions {
   /**
@@ -55,6 +69,13 @@ export interface RunLoopMainOptions {
    * contract.
    */
   readonly prObservationRefresherFactory?: PrObservationRefresherFactory;
+  /**
+   * Optional. Called when the notify pass is enabled to obtain the
+   * `PlanProposalNotifier` adapter. Absent (or returning null)
+   * leaves the notify pass in silent-skip per the LoopRunner
+   * contract.
+   */
+  readonly planProposalNotifierFactory?: PlanProposalNotifierFactory;
 }
 
 type EmbedderChoice = 'trigram' | 'onnx-minilm';
@@ -93,6 +114,15 @@ interface CliArgs {
    * pass silent-skips per the LoopRunner contract.
    */
   readonly refreshPlanObservations: boolean;
+  /**
+   * Run the plan-proposal notify pass on every loop tick. Default
+   * `true`. Disable via `--no-notify-proposed-plans`. Requires the
+   * bin entrypoint to inject a notifier factory; absent, the pass
+   * silent-skips per the LoopRunner contract. The pass scans
+   * proposed plan atoms whose principal is in the canon-defined
+   * allowlist and calls the notifier exactly once per plan.
+   */
+  readonly notifyProposedPlans: boolean;
 }
 
 function parseCliArgs(): CliArgs | null {
@@ -119,6 +149,14 @@ function parseCliArgs(): CliArgs | null {
         'no-reconcile-plan-state': { type: 'boolean', default: false },
         'refresh-plan-observations': { type: 'boolean', default: true },
         'no-refresh-plan-observations': { type: 'boolean', default: false },
+        // Plan-proposal notify pass defaults ON for the indie floor
+        // so a solo developer with deployment env set gets phone
+        // pings on newly-proposed plans (per the canon-defined
+        // allowlist) without explicit opt-in. A sandboxed deployment
+        // without an outbound network surface opts out via
+        // --no-notify-proposed-plans.
+        'notify-proposed-plans': { type: 'boolean', default: true },
+        'no-notify-proposed-plans': { type: 'boolean', default: false },
         help: { type: 'boolean', default: false },
       },
       allowPositionals: false,
@@ -212,6 +250,9 @@ function parseCliArgs(): CliArgs | null {
     const refreshPlanObservations = Boolean(values['no-refresh-plan-observations'])
       ? false
       : Boolean(values['refresh-plan-observations']);
+    const notifyProposedPlans = Boolean(values['no-notify-proposed-plans'])
+      ? false
+      : Boolean(values['notify-proposed-plans']);
     return {
       rootDir,
       palacePath: values['palace-path'] ?? null,
@@ -228,6 +269,7 @@ function parseCliArgs(): CliArgs | null {
       reaperAbandonMs,
       reconcilePlanState,
       refreshPlanObservations,
+      notifyProposedPlans,
     };
   } catch (err) {
     console.error('Error parsing args:', err instanceof Error ? err.message : String(err));
@@ -274,6 +316,18 @@ function printUsage(): void {
       '                                 per refresh; bounded by an in-tick refresh cap.',
       '  --no-refresh-plan-observations Disable the refresh pass (e.g. for sandboxed',
       '                                 deployments that cannot spawn child processes).',
+      '  --notify-proposed-plans        Run the plan-proposal notify pass on every tick',
+      '                                 (default on). Auto-pushes newly-proposed plan',
+      '                                 atoms whose principal is in the canon-defined',
+      '                                 allowlist (telegram-plan-trigger-principals',
+      '                                 policy subject; the framework default lives in',
+      '                                 DEFAULT_PRINCIPAL_ALLOWLIST when no canon override',
+      '                                 resolves) to the configured notifier exactly once',
+      '                                 per plan. Idempotence via plan-push-record',
+      '                                 atoms. Requires the bin entrypoint to inject a',
+      '                                 notifier factory; without one the pass silent-skips.',
+      '  --no-notify-proposed-plans     Disable the notify pass (e.g. for sandboxed',
+      '                                 deployments without outbound network access).',
       '  --help                    Print this message.',
     ].join('\n'),
   );
@@ -359,12 +413,16 @@ function formatTickReport(report: LoopTickReport): string {
     report.planObservationRefreshReport !== null
       ? ` obs-refresh(refreshed=${report.planObservationRefreshReport.refreshed})`
       : '';
+  const notify =
+    report.planProposalNotifyReport !== null
+      ? ` notify(notified=${report.planProposalNotifyReport.notified})`
+      : '';
   return (
     `tick ${report.tickNumber}: ` +
     `decayed=${report.atomsDecayed} ` +
     `l2+=${report.l2Promoted}/-=${report.l2Rejected} ` +
     `l3+=${report.l3Proposed} ` +
-    `canon=${report.canonApplied}${reaper}${reconcile}${refresh}${err}${kill}`
+    `canon=${report.canonApplied}${reaper}${reconcile}${refresh}${notify}${err}${kill}`
   );
 }
 
@@ -415,6 +473,33 @@ export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number
       args.refreshPlanObservations ? (refresher !== null ? 'ENABLED' : 'ENABLED (refresher unresolved; will silent-skip)') : 'DISABLED'
     }`,
   );
+  // Build the plan-proposal notifier only when the notify pass is
+  // enabled and a factory was injected. Without a factory the pass
+  // silent-skips per the LoopRunner contract; framework code stays
+  // mechanism-only because the concrete adapter is constructed
+  // entirely outside src/.
+  let planProposalNotifier: PlanProposalNotifier | null = null;
+  if (args.notifyProposedPlans && opts.planProposalNotifierFactory !== undefined) {
+    try {
+      planProposalNotifier = await opts.planProposalNotifierFactory();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[plan-proposal-notify] WARN: notifier factory threw: `
+          + `${err instanceof Error ? err.message : String(err)}; notify pass will silent-skip.`,
+      );
+      planProposalNotifier = null;
+    }
+  }
+  console.log(
+    `[boot] notify-proposed-plans: ${
+      args.notifyProposedPlans
+        ? planProposalNotifier !== null
+          ? 'ENABLED'
+          : 'ENABLED (notifier unresolved; will silent-skip)'
+        : 'DISABLED'
+    }`,
+  );
 
   const runner = new LoopRunner(host, {
     principalId: args.principal,
@@ -427,6 +512,8 @@ export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number
     runPlanReconcilePass: args.reconcilePlanState,
     runPlanObservationRefreshPass: args.refreshPlanObservations,
     ...(refresher !== null ? { prObservationRefresher: refresher } : {}),
+    runPlanProposalNotifyPass: args.notifyProposedPlans,
+    ...(planProposalNotifier !== null ? { planProposalNotifier } : {}),
     onTick: report => {
       console.log(formatTickReport(report));
       for (const e of report.errors) {
