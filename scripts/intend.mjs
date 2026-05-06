@@ -9,10 +9,10 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { parseIntendArgs, computeExpiresAt, buildIntentAtom } from './lib/intend.mjs';
+import { spawnNode } from './lib/spawn-node.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -61,21 +61,36 @@ async function main() {
 
   if (args.trigger) {
     console.log(`[intend] triggering CTO with intent id: ${atom.id}`);
-    const child = spawn('node', [
+    // Spawn through scripts/lib/spawn-node.mjs so the CTO child
+    // inherits this script's node version. Bare `node` resolves to
+    // whatever the shell PATH points at, which on nvm-managed hosts
+    // can be an older version that fails to parse the modern ES
+    // features the spawned scripts use.
+    const result = await spawnNode([
       resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs'),
       '--request', args.request,
       '--intent-id', atom.id,
-    ], { stdio: 'inherit' });
-    const childCode = await new Promise((resolve2, reject) => {
-      child.on('error', (err) => reject(err));
-      child.on('exit', (code) => resolve2(code ?? 0));
-    });
-    if (childCode !== 0) {
-      console.error(`[intend] run-cto-actor exited with code ${childCode}; intent ${atom.id} was written but CTO did not complete cleanly.`);
+    ], { stdio: 'inherit', reject: false });
+    // result.failed is the discriminator, NOT exitCode. In execa v9
+    // a signal-killed (SIGKILL/SIGTERM) child or a spawn-time error
+    // (e.g. ENOENT for a missing scripts/run-cto-actor.mjs) leaves
+    // exitCode === undefined; an `exitCode ?? 0` fallback would
+    // silently treat those failures as success and intend would
+    // exit clean while the intent atom sits orphaned without ever
+    // having engaged the CTO. Surface the signal too so a SIGKILL
+    // is distinguishable from a clean non-zero exit in operator
+    // logs.
+    if (result.failed) {
+      const childCode = result.exitCode ?? 1;
+      console.error(`[intend] run-cto-actor failed (code=${result.exitCode ?? 'signal'} signal=${result.signal ?? 'none'}); intent ${atom.id} was written but CTO did not complete cleanly.`);
       process.exit(childCode);
     }
   } else {
-    console.log(`[intend] no --trigger; invoke manually:\n  node scripts/run-cto-actor.mjs --request "${args.request}" --intent-id ${atom.id}`);
+    // Print process.execPath for the manual fallback so a no-trigger
+    // re-run pins to the same interpreter the runtime-hardening fix
+    // gives the --trigger path. Bare `node` here would reintroduce
+    // the same PATH/shim mismatch on nvm-managed hosts.
+    console.log(`[intend] no --trigger; invoke manually:\n  ${process.execPath} scripts/run-cto-actor.mjs --request "${args.request}" --intent-id ${atom.id}`);
   }
 }
 
