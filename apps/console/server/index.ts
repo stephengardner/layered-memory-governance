@@ -109,6 +109,12 @@ import type {
   ResumeAuditSourceAtom,
   ResumeAuditSummary,
 } from './resume-audit-types';
+import {
+  buildAuditChain,
+  clampAuditChainDepth,
+  type AuditChainAtom,
+  type AuditChainResponse,
+} from './audit-chain';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -689,25 +695,53 @@ async function handleAtomReferences(id: string): Promise<Atom[]> {
 /*
  * Provenance walk: starting at `id`, follow derived_from pointers
  * transitively and return the chain of ancestor atoms. Depth-limited
- * (default 5) and cycle-safe via a visited set.
+ * (default 5) and cycle-safe.
+ *
+ * Delegates the actual BFS to buildAuditChain (the canonical
+ * provenance walker) so cycle handling, depth-bound semantics, and
+ * the readDerivedFrom guard are defined in exactly one place. The
+ * legacy /api/atoms.chain wire shape -- Atom[] of ancestors EXCLUDING
+ * the seed -- is preserved by dropping atoms[0] from the projection,
+ * keeping the 5+ existing consumers untouched.
+ *
+ * maxDepth normalization: legacy callers pass a number that may be
+ * fractional (rare client drift), <=0 (caller intent: skip the walk),
+ * or unbounded (Infinity). We floor + clamp before delegating so the
+ * pure helper sees a value in [1, MAX_AUDIT_CHAIN_DEPTH]; depth<=0
+ * short-circuits to [] rather than walking the seed at all (matches
+ * the SupersedesDiff caller's depth=0 expectation).
  */
 async function handleAtomChain(id: string, maxDepth: number): Promise<Atom[]> {
+  const floored = typeof maxDepth === 'number' && Number.isFinite(maxDepth)
+    ? Math.floor(maxDepth)
+    : 0;
+  if (floored <= 0) return [];
+  const clamped = clampAuditChainDepth(floored);
   const all = await readAllAtoms();
-  const byId = new Map(all.map((a) => [a.id, a]));
-  const visited = new Set<string>();
-  const chain: Atom[] = [];
-  const queue: Array<{ id: string; depth: number }> = [{ id, depth: 0 }];
-  while (queue.length > 0) {
-    const { id: cur, depth } = queue.shift()!;
-    if (visited.has(cur) || depth > maxDepth) continue;
-    visited.add(cur);
-    const atom = byId.get(cur);
-    if (!atom) continue;
-    if (cur !== id) chain.push(atom);
-    const derived = (atom.provenance as { derived_from?: string[] } | undefined)?.derived_from ?? [];
-    for (const next of derived) queue.push({ id: next, depth: depth + 1 });
-  }
-  return chain;
+  const result = buildAuditChain(id, all as ReadonlyArray<AuditChainAtom>, clamped);
+  if (!result) return [];
+  // atoms[0] is the seed; legacy contract returns ancestors only.
+  return result.atoms.slice(1) as Atom[];
+}
+
+/*
+ * Audit-chain projection: { atoms, edges } shape consumed by the
+ * operator-facing visualizer. Distinct from `handleAtomChain` (which
+ * emits Atom[] only) so the existing 5+ atoms.chain consumers do not
+ * have to migrate; the audit surface needs the edge list to render
+ * the graph and a higher default depth (10) to walk substrate-deep
+ * pipelines end-to-end.
+ *
+ * The pure transform lives in audit-chain.ts; this thin wrapper just
+ * pulls the in-memory atom list and clamps the depth before
+ * delegating. Returning null when the seed is unknown lets the route
+ * handler emit a targeted 404 rather than an empty 200.
+ */
+async function handleAtomAuditChain(id: string, maxDepth: number): Promise<AuditChainResponse | null> {
+  const all = await readAllAtoms();
+  // The substrate Atom is wider than AuditChainAtom; structural
+  // subtyping makes the cast safe (the helper only reads provenance).
+  return buildAuditChain(id, all as ReadonlyArray<AuditChainAtom>, maxDepth);
 }
 
 /*
@@ -2553,6 +2587,42 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'atoms-chain-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/atoms.audit-chain' && req.method === 'POST') {
+    /*
+     * Audit-chain endpoint: { atoms, edges } projection consumed by
+     * the atom-detail viewer's audit-chain visualization. Walks
+     * provenance.derived_from upward from `atom_id`, depth-limited
+     * (default 10, max 25; clamped in the helper). Returns 404
+     * `atom-not-found` so the UI shows a targeted empty-state pill
+     * rather than a generic 5xx.
+     *
+     * The route accepts both `atom_id` (preferred, matches the
+     * existing atoms.stage-context shape) and `id` (alias for
+     * symmetry with atoms.get / atoms.references). The helper
+     * delegates to buildAuditChain.
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const idRaw = typeof body['atom_id'] === 'string'
+      ? (body['atom_id'] as string)
+      : typeof body['id'] === 'string' ? (body['id'] as string) : '';
+    if (!idRaw) {
+      sendErr(req, res, 400, 'missing-atom-id', 'atoms.audit-chain requires { atom_id: string }');
+      return;
+    }
+    const depth = clampAuditChainDepth(body['max_depth']);
+    try {
+      const data = await handleAtomAuditChain(idRaw, depth);
+      if (!data) {
+        sendErr(req, res, 404, 'atom-not-found', `no atom with id ${idRaw}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'atoms-audit-chain-failed', (err as Error).message);
     }
     return;
   }

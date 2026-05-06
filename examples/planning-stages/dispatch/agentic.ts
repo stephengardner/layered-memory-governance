@@ -358,6 +358,14 @@ export function buildAgenticDispatchStage(
         cost_usd: result.costUsd,
         duration_ms: Date.now() - t0,
         atom_type: 'dispatch-record',
+        // Forward the helper-resolved canon-at-runtime stamp onto the
+        // stage-output atom's metadata so the Console's projection
+        // shows the canon that bound this dispatch verification run.
+        // Mirrors the brainstorm/spec/plan/review extraMetadata wiring;
+        // both rejection and completion paths stamp uniformly so a
+        // gated dispatch and an executed one carry the same canon
+        // surface for the operator to inspect.
+        extraMetadata: result.stageOutputExtraMetadata,
       };
     }
 
@@ -380,6 +388,12 @@ export function buildAgenticDispatchStage(
       cost_usd: result.costUsd,
       duration_ms: Date.now() - t0,
       atom_type: 'dispatch-record',
+      // Forward the helper-resolved canon-at-runtime stamp onto the
+      // stage-output atom's metadata via the runner's shallow-merge.
+      // Without this, the Console's canon-at-runtime projection has to
+      // re-resolve via a static stage-mapping table that may not match
+      // the principal_id the runner persists onto stage atoms.
+      extraMetadata: result.stageOutputExtraMetadata,
     };
   }
 

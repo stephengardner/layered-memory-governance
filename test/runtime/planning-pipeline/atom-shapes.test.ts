@@ -652,6 +652,96 @@ describe('mkPlanOutputAtoms', () => {
     expect(() => mkPlanOutputAtoms({ ...PLAN_INPUT, derivedFrom: [] }))
       .toThrow(/derivedFrom.*non-empty/);
   });
+
+  it('threads extraMetadata onto every minted plan atom below the plan-shape keys', () => {
+    // The runner forwards StageOutput.extraMetadata into mkPlanOutputAtoms
+    // so canon_directives_applied + tool_policy_principal_id (or any
+    // other stage-runner stamp) lands on every plan atom in the
+    // payload. The plan-shape keys (title, pipeline_id,
+    // principles_applied, alternatives_rejected,
+    // what_breaks_if_revisit, delegation) MUST shadow same-named keys
+    // in extraMetadata; downstream readers depend on the shape and a
+    // misbehaving stage cannot smuggle a fake title or principles list.
+    const atoms = mkPlanOutputAtoms({
+      ...PLAN_INPUT,
+      extraMetadata: {
+        canon_directives_applied: ['dev-foo', 'dev-bar'],
+        tool_policy_principal_id: 'cto-actor',
+        // Same-name shadow attempts; plan shape must win.
+        title: 'malicious title',
+        principles_applied: ['malicious-principle'],
+      },
+    });
+    for (const atom of atoms) {
+      const meta = atom.metadata as Record<string, unknown>;
+      expect(meta.canon_directives_applied).toEqual(['dev-foo', 'dev-bar']);
+      expect(meta.tool_policy_principal_id).toBe('cto-actor');
+    }
+    // Plan-shape title is "first plan" / "second plan" from the
+    // payload; the extraMetadata's malicious title does NOT replace it.
+    expect((atoms[0]!.metadata as Record<string, unknown>).title)
+      .toBe('first plan');
+    expect((atoms[0]!.metadata as Record<string, unknown>).principles_applied)
+      .toEqual(['dev-canon-foo']);
+  });
+
+  it('strips reserved plan-shape keys from extraMetadata even when the entry omits them', () => {
+    // Regression: a plan entry without `delegation` produces
+    // delegationMetadata={} in mkPlanOutputAtoms. A naive
+    // spread-then-overwrite would NOT shadow an
+    // extraMetadata.delegation in that case, leaking a stage-runner-
+    // supplied delegation onto the plan atom that downstream dispatch
+    // would then act on. Filtering at the merge site fences every
+    // reserved key uniformly regardless of whether the plan-shape side
+    // resolves to a populated object or an empty one.
+    const NO_DELEGATION_PAYLOAD = {
+      plans: [
+        {
+          title: 'no-delegation plan',
+          body: 'body',
+          derived_from: [],
+          principles_applied: [],
+          alternatives_rejected: [],
+          what_breaks_if_revisit: 'nothing',
+          confidence: 0.8,
+          // No delegation field at all.
+        },
+      ],
+      cost_usd: 0,
+    };
+    const atoms = mkPlanOutputAtoms({
+      ...PLAN_INPUT,
+      value: NO_DELEGATION_PAYLOAD,
+      extraMetadata: {
+        // Stage runner attempts to inject a fake delegation onto a
+        // plan that has none. Filter MUST drop this so dispatch never
+        // sees a stage-supplied delegation target.
+        delegation: {
+          sub_actor_principal_id: 'malicious-actor',
+          reason: 'should never appear',
+          implied_blast_radius: 'critical',
+        },
+        // Other reserved keys also dropped.
+        title: 'fake title',
+        pipeline_id: 'fake-pipeline',
+        principles_applied: ['fake-principle'],
+        alternatives_rejected: ['fake-alt'],
+        what_breaks_if_revisit: 'fake breakage',
+        // Non-reserved keys pass through.
+        canon_directives_applied: ['dev-real'],
+      },
+    });
+    expect(atoms).toHaveLength(1);
+    const meta = atoms[0]!.metadata as Record<string, unknown>;
+    expect(meta.delegation).toBeUndefined();
+    expect(meta.title).toBe('no-delegation plan');
+    expect(meta.pipeline_id).toBe(PLAN_INPUT.pipelineId);
+    expect(meta.principles_applied).toEqual([]);
+    expect(meta.alternatives_rejected).toEqual([]);
+    expect(meta.what_breaks_if_revisit).toBe('nothing');
+    // Non-reserved key passes through unchanged.
+    expect(meta.canon_directives_applied).toEqual(['dev-real']);
+  });
 });
 
 describe('serializeStageOutput', () => {

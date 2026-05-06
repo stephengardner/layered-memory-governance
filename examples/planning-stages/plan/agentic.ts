@@ -257,6 +257,15 @@ export function buildAgenticPlanStage(
       cost_usd: result.costUsd,
       duration_ms: result.durationMs,
       atom_type: 'plan',
+      // Forward the helper-resolved canon-at-runtime stamp onto the
+      // plan atoms' metadata via the runner's shallow-merge. Without
+      // this, the Console's canon-at-runtime projection has to
+      // re-resolve via a static stage-mapping table that maps plan-stage
+      // to plan-author, but persisted plan atoms carry the
+      // pipeline-runner principal_id (e.g. cto-actor) and there is no
+      // pol-llm-tool-policy-plan-author atom in canon -- the panel
+      // would render empty.
+      extraMetadata: result.stageOutputExtraMetadata,
     };
   }
 

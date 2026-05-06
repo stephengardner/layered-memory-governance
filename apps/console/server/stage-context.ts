@@ -47,6 +47,17 @@ export interface StageContextAtom {
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly provenance?: Readonly<Record<string, unknown>>;
   readonly created_at?: string;
+  /**
+   * The principal_id the substrate persisted on the atom. Pipeline-
+   * emitted stage-output atoms carry the pipeline-runner principal id
+   * (e.g. `cto-actor`), which may differ from the stage-mapping table's
+   * declared principal (e.g. `plan-author` for plan-stage). The
+   * canon-at-runtime projection unions this with the stage-mapping
+   * principal when resolving per-principal LLM tool-policy atoms so the
+   * panel surfaces the canon that ACTUALLY bound the LLM, not the
+   * canon the table CLAIMS bound it.
+   */
+  readonly principal_id?: string;
 }
 
 export interface StageContextChainEntry {
@@ -173,32 +184,110 @@ function readDerivedFrom(atom: StageContextAtom): ReadonlyArray<string> {
 }
 
 /**
- * Build the canon-at-runtime list. Prefers
- * `metadata.canon_directives_applied` when the substrate has stamped
- * the live applied set onto the atom (org-ceiling deployments and
- * future substrate work expose this); falls back to resolving the
- * policy-atom for the stage's principal so the indie default still
- * surfaces meaningful canon to the operator.
+ * Build the canon-at-runtime list. Source-precedence:
  *
- * The atomLookup function returns the atom for a given id; canon
- * lookup uses both `pol-llm-tool-policy-<principal>` and any explicit
- * id from metadata.
+ *   1. metadata.canon_directives_applied  (strongest: write-time list)
+ *      When present, those ids are authoritative. The fallback paths
+ *      are NOT consulted, even when every id fails to resolve -- a
+ *      stamped-but-pruned id means 'the runner stamped X here at
+ *      write time', and silently falling through to inference would
+ *      lie to the operator about which directives governed the run.
+ *
+ *   2. metadata.tool_policy_principal_id  (write-time evidence)
+ *      When present, the substrate stamped exactly which principal's
+ *      pol-llm-tool-policy-<P> atom was loaded for this run (set by
+ *      runStageAgentLoop only when toolPolicySource='policy', i.e. the
+ *      canonical atom WAS loaded; never stamped on override-bound
+ *      runs, see run-stage-agent-loop.ts). This is strictly stronger
+ *      evidence than inferring from atom.principal_id or from the
+ *      stage-mapping table because it records what the runner actually
+ *      consulted. Resolve that one policy atom and surface it with
+ *      source='metadata' (the read came from stamped metadata, even
+ *      though the atom is a pol-* shape).
+ *
+ *   3. Dual-principal inference  (weakest: read-time guess)
+ *      Resolve `pol-llm-tool-policy-<P>` for every P in the union of
+ *      (a) the stage-mapping principal and (b) the atom's
+ *      principal_id when present, deduped. Operator value pin: 'a
+ *      plan atom showing the canon that ACTUALLY bound the LLM, not
+ *      the canon the table CLAIMS bound it'. The atom's principal_id
+ *      is the truer signal because the substrate persisted it; the
+ *      stage-mapping principal stays in the union as a backstop for
+ *      atoms without a principal_id (tests, fixtures, single-shot
+ *      adapters).
+ *
+ * Unknown atom ids resolve to `null` via atomLookup and are silently
+ * skipped; the policy atom for a never-bound principal does not exist
+ * on disk.
+ *
+ * `atomPrincipalId` is optional so legacy callers (tests that build
+ * the request without an atom shape) continue to work unchanged; when
+ * omitted only the stage-mapping principal seeds the inference.
  */
 export function buildCanonAtRuntime(
   stageMetadata: Readonly<Record<string, unknown>> | undefined,
   principalId: string,
   atomLookup: (id: string) => StageContextAtom | null,
+  atomPrincipalId?: string,
 ): ReadonlyArray<StageContextCanonEntry> {
   const explicitIds = readCanonDirectivesApplied(stageMetadata);
   if (explicitIds.length > 0) {
     return projectCanonEntries(explicitIds, atomLookup, 'metadata');
   }
-  // Fallback: resolve the per-principal LLM tool-policy atom. This is
-  // the canon directive that bounds the stage's tool surface at every
-  // run; it is the single canon every stage in the pipeline carries
-  // even when nothing else applies, so it is the correct minimum.
-  const policyId = `pol-llm-tool-policy-${principalId}`;
-  return projectCanonEntries([policyId], atomLookup, 'policy');
+  // Tier 2: stamped tool_policy_principal_id. The substrate writes this
+  // ONLY when the canonical pol-llm-tool-policy-<P> atom was loaded
+  // (run-stage-agent-loop.ts toolPolicySource='policy'); the Console
+  // can therefore trust it as write-time evidence and skip the
+  // dual-principal inference. Source label is 'metadata' because the
+  // selection signal came from stamped metadata even though the
+  // resolved atom is a pol-* directive.
+  const stampedPrincipal = readToolPolicyPrincipalId(stageMetadata);
+  if (stampedPrincipal !== null) {
+    return projectCanonEntries(
+      [`pol-llm-tool-policy-${stampedPrincipal}`],
+      atomLookup,
+      'metadata',
+    );
+  }
+  // Tier 3: union of stage-mapping principal + atom's own principal_id
+  // (when present), deduped by policy-atom id. Empty / whitespace-only
+  // ids are filtered before composing the policy id so a malformed
+  // upstream cannot surface `pol-llm-tool-policy-` (a real but mostly-
+  // empty atom id that would resolve to nothing). The atom's
+  // principal_id is the truer signal because the substrate persisted
+  // it; the stage-mapping principal stays in the union as a backstop
+  // for atoms that lack a principal_id.
+  const principalIds: string[] = [];
+  const seenPrincipals = new Set<string>();
+  for (const candidate of [principalId, atomPrincipalId]) {
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.trim();
+    if (trimmed.length === 0) continue;
+    if (seenPrincipals.has(trimmed)) continue;
+    seenPrincipals.add(trimmed);
+    principalIds.push(trimmed);
+  }
+  const policyIds = principalIds.map((p) => `pol-llm-tool-policy-${p}`);
+  return projectCanonEntries(policyIds, atomLookup, 'policy');
+}
+
+/**
+ * Read metadata.tool_policy_principal_id with the same defensive
+ * trimming the dual-principal inference path applies. Returns null
+ * when the field is absent, non-string, or whitespace-only so the
+ * caller falls through to the inference path rather than composing
+ * `pol-llm-tool-policy-` (the empty-suffix atom id) and surfacing a
+ * never-resolving lookup as 'metadata-bound'.
+ */
+function readToolPolicyPrincipalId(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): string | null {
+  if (!metadata) return null;
+  const raw = metadata['tool_policy_principal_id'];
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed;
 }
 
 function readCanonDirectivesApplied(
@@ -271,10 +360,19 @@ export async function buildStageContext(
     ? { maxDepth: options.maxDepth }
     : {};
   const upstreamChain = buildUpstreamChain(atom, atomLookup, upstreamOpts);
+  // Forward the atom's persisted principal_id alongside the stage-mapping
+  // principal so the canon-at-runtime fallback union surfaces both
+  // policies. The stage-mapping principal is the table's claim; the
+  // atom's principal_id is what the substrate actually persisted, and
+  // for pipeline-emitted stage-output atoms the two diverge (the runner
+  // stamps `cto-actor` while the table claims `plan-author`). Operator
+  // value pin: the panel must show the canon that ACTUALLY bound the
+  // LLM.
   const canonAtRuntime = buildCanonAtRuntime(
     atom.metadata,
     binding.principalId,
     atomLookup,
+    atom.principal_id,
   );
 
   return {

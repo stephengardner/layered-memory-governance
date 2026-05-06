@@ -102,6 +102,20 @@ describe('runStageAgentLoop', () => {
     expect(result.canonAuditVerdict).toBe('approved');
     expect(result.canonAuditFindings).toHaveLength(0);
 
+    // The stage-output extraMetadata bag MUST surface the per-principal
+    // tool-policy id and the canon-directives-applied list (even when
+    // empty -- the field carries an explicit empty array, not absent).
+    // The adapter consumes this via StageOutput.extraMetadata so the
+    // runner shallow-merges it into the persisted stage-output atom.
+    // tool_policy_source is 'policy' because no disallowedToolsOverride
+    // was supplied -> loadLlmToolPolicy was consulted under the stage
+    // principal.
+    expect(result.stageOutputExtraMetadata).toMatchObject({
+      tool_policy_source: 'policy',
+      tool_policy_principal_id: 'brainstorm-actor',
+      canon_directives_applied: expect.any(Array),
+    });
+
     // Inspect the atom store for the chain.
     const allEvents = await host.atoms.query(
       { type: ['pipeline-stage-event'] },
@@ -130,7 +144,7 @@ describe('runStageAgentLoop', () => {
     const recorder: { lastInput?: AgentLoopInput } = {};
     const adapter = makeStubAdapter({ outputs: [finalOutput], recorder });
 
-    await runStageAgentLoop({
+    const result = await runStageAgentLoop({
       stageInput,
       stageName: 'brainstorm-stage',
       stagePrincipal: PRINCIPAL,
@@ -146,6 +160,19 @@ describe('runStageAgentLoop', () => {
       baseRef: 'main',
       disallowedToolsOverride: ['Bash', 'Edit', 'Write'],
     });
+
+    // Provenance discipline on override-bound runs: the canonical
+    // pol-llm-tool-policy-<P> atom was NOT loaded (override bypassed
+    // loadLlmToolPolicy), so tool_policy_principal_id MUST NOT appear
+    // on the stamp -- stamping it would lie about which canon atom
+    // bound the LLM. tool_policy_source records 'override' so the
+    // Console can render an explicit override-bound state.
+    expect(result.stageOutputExtraMetadata).toMatchObject({
+      tool_policy_source: 'override',
+      canon_directives_applied: expect.any(Array),
+    });
+    expect(result.stageOutputExtraMetadata)
+      .not.toHaveProperty('tool_policy_principal_id');
 
     expect(recorder.lastInput?.toolPolicy.disallowedTools).toEqual([
       'Bash',
