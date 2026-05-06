@@ -31,19 +31,15 @@ interface ListAtom {
 
 async function fetchPlans(page: Page): Promise<ReadonlyArray<ListAtom>> {
   /*
-   * Use atoms.list rather than activities.list so we get plans
-   * specifically without any rate-limit semantics. plans.list does
-   * not exist server-side; we use the wider list and filter in-test.
-   * The activities.list endpoint with a generous limit is reliable
-   * across fixtures.
+   * Use the dedicated `/api/plans.list` endpoint so the suite samples
+   * from the same population the feature renders -- including
+   * plan_state-bearing atoms that the activities-list cap would have
+   * skipped at the back of the window.
    */
-  const response = await page.request.post('/api/activities.list', {
-    data: { limit: 200 },
-  });
-  if (!response.ok()) return [];
+  const response = await page.request.post('/api/plans.list');
+  expect(response.ok(), 'plans.list should return 200').toBe(true);
   const body = await response.json();
-  const all: ReadonlyArray<ListAtom> = body?.data ?? [];
-  return all.filter((a) => a.type === 'plan');
+  return body?.data ?? [];
 }
 
 async function fetchCanon(page: Page): Promise<ReadonlyArray<ListAtom>> {
@@ -54,28 +50,54 @@ async function fetchCanon(page: Page): Promise<ReadonlyArray<ListAtom>> {
 }
 
 /*
- * Pick a plan that carries enough deliberation metadata to drive a
- * meaningful assertion. We need at least ONE of the deliberation
- * fields populated; tests skip cleanly if no fixture plan qualifies.
+ * Shared deliberation predicate. Used by every selector below so all
+ * four pickers stay aligned on the same field-shape rules. Returns
+ * `hasAny` (the at-least-one-signal case the Deliberation component
+ * renders for) and `hasAll` (the all-four-fields case the spec-order
+ * test needs) so a single metadata read drives both shapes.
  *
  * Both spellings of `what_breaks_if_revisit` are accepted (the
- * canonical name and the older `..._revisited`) so a plan carrying
- * only the legacy spelling is not skipped unnecessarily; the
- * Deliberation component renders both, and this picker matches that
- * tolerance so a legacy plan still drives a populated assertion.
+ * canonical form and the older `..._revisited`) so a plan or canon
+ * atom carrying only the legacy spelling is never skipped; the
+ * Deliberation component renders both, and this predicate matches.
  */
-function pickPlanWithDeliberation(plans: ReadonlyArray<ListAtom>): ListAtom | null {
-  for (const p of plans) {
-    const meta = (p.metadata ?? {}) as Record<string, unknown>;
-    const principles = Array.isArray(meta['principles_applied']) ? meta['principles_applied'] : [];
-    const alternatives = Array.isArray(meta['alternatives_rejected']) ? meta['alternatives_rejected'] : [];
-    const whatBreaks
-      = (typeof meta['what_breaks_if_revisit'] === 'string' && (meta['what_breaks_if_revisit'] as string).trim().length > 0)
-      || (typeof meta['what_breaks_if_revisited'] === 'string' && (meta['what_breaks_if_revisited'] as string).trim().length > 0);
-    const derivedFrom = p.provenance?.derived_from ?? [];
-    if (principles.length > 0 || alternatives.length > 0 || whatBreaks || derivedFrom.length > 0) {
-      return p;
-    }
+function readDeliberationSignals(atom: ListAtom): {
+  readonly hasAny: boolean;
+  readonly hasAll: boolean;
+} {
+  const meta = (atom.metadata ?? {}) as Record<string, unknown>;
+  const principles = Array.isArray(meta['principles_applied']) ? meta['principles_applied'] : [];
+  const alternatives = Array.isArray(meta['alternatives_rejected']) ? meta['alternatives_rejected'] : [];
+  const whatBreaks
+    = (typeof meta['what_breaks_if_revisit'] === 'string' && (meta['what_breaks_if_revisit'] as string).trim().length > 0)
+    || (typeof meta['what_breaks_if_revisited'] === 'string' && (meta['what_breaks_if_revisited'] as string).trim().length > 0);
+  const derivedFrom = atom.provenance?.derived_from ?? [];
+  const principlesPresent = principles.length > 0;
+  const alternativesPresent = alternatives.length > 0;
+  const derivedPresent = derivedFrom.length > 0;
+  return {
+    hasAny: principlesPresent || alternativesPresent || whatBreaks || derivedPresent,
+    hasAll: principlesPresent && alternativesPresent && whatBreaks && derivedPresent,
+  };
+}
+
+function pickAtomWithDeliberation(atoms: ReadonlyArray<ListAtom>): ListAtom | null {
+  for (const a of atoms) {
+    if (readDeliberationSignals(a).hasAny) return a;
+  }
+  return null;
+}
+
+function pickAtomWithAllFourSignals(atoms: ReadonlyArray<ListAtom>): ListAtom | null {
+  for (const a of atoms) {
+    if (readDeliberationSignals(a).hasAll) return a;
+  }
+  return null;
+}
+
+function pickAtomWithoutDeliberation(atoms: ReadonlyArray<ListAtom>): ListAtom | null {
+  for (const a of atoms) {
+    if (!readDeliberationSignals(a).hasAny) return a;
   }
   return null;
 }
@@ -83,7 +105,7 @@ function pickPlanWithDeliberation(plans: ReadonlyArray<ListAtom>): ListAtom | nu
 test.describe('deliberation surface (inline on plan + canon detail)', () => {
   test('atom-detail viewer renders the deliberation block on a plan with deliberation metadata', async ({ page }) => {
     const plans = await fetchPlans(page);
-    const target = pickPlanWithDeliberation(plans);
+    const target = pickAtomWithDeliberation(plans);
     test.skip(target === null, 'no plan with deliberation metadata in fixture');
 
     await page.goto(`/atom/${encodeURIComponent(target!.id)}`);
@@ -111,22 +133,11 @@ test.describe('deliberation surface (inline on plan + canon detail)', () => {
     const plans = await fetchPlans(page);
     /*
      * Need a plan carrying ALL four signals to exercise the order
-     * assertion. Find the first one that satisfies all four; skip
-     * if none in fixture (a real-world acceptable outcome that
-     * teaches the test reader something instead of fabricating).
+     * assertion. Skip if none in fixture (a real-world acceptable
+     * outcome that teaches the test reader something instead of
+     * fabricating).
      */
-    let target: ListAtom | null = null;
-    for (const p of plans) {
-      const meta = (p.metadata ?? {}) as Record<string, unknown>;
-      const principles = Array.isArray(meta['principles_applied']) ? meta['principles_applied'] : [];
-      const alternatives = Array.isArray(meta['alternatives_rejected']) ? meta['alternatives_rejected'] : [];
-      const whatBreaks = typeof meta['what_breaks_if_revisit'] === 'string' && (meta['what_breaks_if_revisit'] as string).trim().length > 0;
-      const derivedFrom = p.provenance?.derived_from ?? [];
-      if (principles.length > 0 && alternatives.length > 0 && whatBreaks && derivedFrom.length > 0) {
-        target = p;
-        break;
-      }
-    }
+    const target = pickAtomWithAllFourSignals(plans);
     test.skip(target === null, 'no plan with all four deliberation fields populated in fixture');
 
     await page.goto(`/atom/${encodeURIComponent(target!.id)}`);
@@ -165,32 +176,33 @@ test.describe('deliberation surface (inline on plan + canon detail)', () => {
     ]);
   });
 
-  test('atom-detail viewer omits the deliberation block when plan has no deliberation fields', async ({ page }) => {
+  test('plan renderer omits the deliberation block when the plan has no deliberation fields', async ({ page }) => {
     /*
-     * Pick a NON-plan atom that legitimately carries no deliberation
-     * fields. canon-list always includes the apex-agent self-bootstrap
-     * atoms; some of them have no metadata.alternatives_rejected, no
-     * principles_applied, no derived_from (very early bootstrap).
+     * Pick a PLAN-typed atom (not a canon atom) with no deliberation
+     * fields so we exercise the same renderer the feature uses
+     * (PlanRenderer in the atom-detail viewer). Picking a non-plan
+     * canon atom previously routed through a different renderer and
+     * could have hidden a regression where the plan renderer mounts
+     * an empty Deliberation shell. plans.list is the right population
+     * because it shares the fixture with the populated-plan test, so
+     * a regression that flips ALL plans into "no deliberation" still
+     * fails on the populated-plan test rather than passing here.
      */
-    const canon = await fetchCanon(page);
-    let target: ListAtom | null = null;
-    for (const c of canon) {
-      const meta = (c.metadata ?? {}) as Record<string, unknown>;
-      const principles = Array.isArray(meta['principles_applied']) ? meta['principles_applied'] : [];
-      const alternatives = Array.isArray(meta['alternatives_rejected']) ? meta['alternatives_rejected'] : [];
-      const whatBreaks = typeof meta['what_breaks_if_revisit'] === 'string' && (meta['what_breaks_if_revisit'] as string).trim().length > 0;
-      const whatBreaks2 = typeof meta['what_breaks_if_revisited'] === 'string' && (meta['what_breaks_if_revisited'] as string).trim().length > 0;
-      const derivedFrom = c.provenance?.derived_from ?? [];
-      if (principles.length === 0 && alternatives.length === 0 && !whatBreaks && !whatBreaks2 && derivedFrom.length === 0) {
-        target = c;
-        break;
-      }
-    }
-    test.skip(target === null, 'no canon atom without any deliberation fields in fixture');
+    const plans = await fetchPlans(page);
+    const target = pickAtomWithoutDeliberation(plans);
+    test.skip(target === null, 'no plan without deliberation fields in fixture');
 
     await page.goto(`/atom/${encodeURIComponent(target!.id)}`);
     const view = page.getByTestId('atom-detail-view');
     await expect(view).toBeVisible({ timeout: 10_000 });
+    /*
+     * Confirm we landed on the PLAN renderer specifically -- the
+     * universal type-chip carries data-atom-type="plan" so a future
+     * router change that mis-dispatches a plan id to a different
+     * renderer would fail this assertion before the section-absent
+     * one.
+     */
+    await expect(view).toHaveAttribute('data-atom-type', 'plan');
     /*
      * The atom renders, but the deliberation block does NOT. This
      * is the legacy-atom case from the spec; an atom carrying no
@@ -207,19 +219,7 @@ test.describe('deliberation surface (inline on plan + canon detail)', () => {
      * deliberation field to drive the surface.
      */
     const canon = await fetchCanon(page);
-    let target: ListAtom | null = null;
-    for (const c of canon) {
-      const meta = (c.metadata ?? {}) as Record<string, unknown>;
-      const principles = Array.isArray(meta['principles_applied']) ? meta['principles_applied'] : [];
-      const alternatives = Array.isArray(meta['alternatives_rejected']) ? meta['alternatives_rejected'] : [];
-      const whatBreaks = typeof meta['what_breaks_if_revisit'] === 'string' && (meta['what_breaks_if_revisit'] as string).trim().length > 0;
-      const whatBreaks2 = typeof meta['what_breaks_if_revisited'] === 'string' && (meta['what_breaks_if_revisited'] as string).trim().length > 0;
-      const derivedFrom = c.provenance?.derived_from ?? [];
-      if (principles.length > 0 || alternatives.length > 0 || whatBreaks || whatBreaks2 || derivedFrom.length > 0) {
-        target = c;
-        break;
-      }
-    }
+    const target = pickAtomWithDeliberation(canon);
     test.skip(target === null, 'no canon atom with any deliberation fields in fixture');
 
     await page.goto(`/canon/${encodeURIComponent(target!.id)}`);
@@ -321,7 +321,7 @@ test.describe('deliberation surface (inline on plan + canon detail)', () => {
 
   test('mobile viewport: no horizontal scroll on the deliberation block', async ({ page }) => {
     const plans = await fetchPlans(page);
-    const target = pickPlanWithDeliberation(plans);
+    const target = pickAtomWithDeliberation(plans);
     test.skip(target === null, 'no plan with deliberation metadata in fixture');
     /*
      * The mobile Playwright project runs this spec at iPhone 13

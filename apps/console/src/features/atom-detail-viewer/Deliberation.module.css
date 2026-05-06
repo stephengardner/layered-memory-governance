@@ -102,6 +102,19 @@
     background var(--duration-fast) var(--easing-standard);
 }
 
+/*
+ * Honor prefers-reduced-motion per dev-app-grade-interactions canon.
+ * Hover and focus end-state styles still apply; only the easing
+ * transition is suppressed so motion-sensitive operators don't get
+ * a fade animation on every chip hover.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .principleChip,
+  .principleChipMissing {
+    transition: none;
+  }
+}
+
 .principleChip:hover {
   border-color: var(--accent);
   color: var(--accent);
