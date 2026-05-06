@@ -684,6 +684,64 @@ describe('mkPlanOutputAtoms', () => {
     expect((atoms[0]!.metadata as Record<string, unknown>).principles_applied)
       .toEqual(['dev-canon-foo']);
   });
+
+  it('strips reserved plan-shape keys from extraMetadata even when the entry omits them', () => {
+    // Regression: a plan entry without `delegation` produces
+    // delegationMetadata={} in mkPlanOutputAtoms. A naive
+    // spread-then-overwrite would NOT shadow an
+    // extraMetadata.delegation in that case, leaking a stage-runner-
+    // supplied delegation onto the plan atom that downstream dispatch
+    // would then act on. Filtering at the merge site fences every
+    // reserved key uniformly regardless of whether the plan-shape side
+    // resolves to a populated object or an empty one.
+    const NO_DELEGATION_PAYLOAD = {
+      plans: [
+        {
+          title: 'no-delegation plan',
+          body: 'body',
+          derived_from: [],
+          principles_applied: [],
+          alternatives_rejected: [],
+          what_breaks_if_revisit: 'nothing',
+          confidence: 0.8,
+          // No delegation field at all.
+        },
+      ],
+      cost_usd: 0,
+    };
+    const atoms = mkPlanOutputAtoms({
+      ...PLAN_INPUT,
+      value: NO_DELEGATION_PAYLOAD,
+      extraMetadata: {
+        // Stage runner attempts to inject a fake delegation onto a
+        // plan that has none. Filter MUST drop this so dispatch never
+        // sees a stage-supplied delegation target.
+        delegation: {
+          sub_actor_principal_id: 'malicious-actor',
+          reason: 'should never appear',
+          implied_blast_radius: 'critical',
+        },
+        // Other reserved keys also dropped.
+        title: 'fake title',
+        pipeline_id: 'fake-pipeline',
+        principles_applied: ['fake-principle'],
+        alternatives_rejected: ['fake-alt'],
+        what_breaks_if_revisit: 'fake breakage',
+        // Non-reserved keys pass through.
+        canon_directives_applied: ['dev-real'],
+      },
+    });
+    expect(atoms).toHaveLength(1);
+    const meta = atoms[0]!.metadata as Record<string, unknown>;
+    expect(meta.delegation).toBeUndefined();
+    expect(meta.title).toBe('no-delegation plan');
+    expect(meta.pipeline_id).toBe(PLAN_INPUT.pipelineId);
+    expect(meta.principles_applied).toEqual([]);
+    expect(meta.alternatives_rejected).toEqual([]);
+    expect(meta.what_breaks_if_revisit).toBe('nothing');
+    // Non-reserved key passes through unchanged.
+    expect(meta.canon_directives_applied).toEqual(['dev-real']);
+  });
 });
 
 describe('serializeStageOutput', () => {
