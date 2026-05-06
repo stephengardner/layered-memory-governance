@@ -254,6 +254,36 @@ export interface RunStageAgentLoopResult<TOut> {
   readonly canonAuditEventAtomId: AtomId;
   readonly canonAuditFindings: ReadonlyArray<CanonAuditFindingShape>;
   readonly canonAuditVerdict: 'approved' | 'issues-found';
+  /**
+   * Stage-runner-resolved facts the agentic adapter forwards onto the
+   * persisted stage-output atom via `StageOutput.extraMetadata`. These
+   * are NOT a duplicate of `canonBoundAtomIds`; they are a snapshot of
+   * what the substrate ALREADY resolved (the per-principal tool policy
+   * + the applicable canon directive ids) reshaped into the canonical
+   * stage-output metadata keys consumed by the Console's
+   * canon-at-runtime projection.
+   *
+   * Concrete shape (top-level keys, both stamped under `metadata.*`):
+   *   - `canon_directives_applied: string[]` -- the resolved canon
+   *      atom-id list from `canonBoundAtomIds` above. Id-only (no
+   *      embedded content) so the canon graph remains the single
+   *      source of truth and a deep snapshot cannot drift from it.
+   *   - `tool_policy_principal_id: string` -- the principal id whose
+   *      `pol-llm-tool-policy-*` atom was loaded for this run. Kept as
+   *      a separate key (orthogonal to `canon_directives_applied`) so
+   *      the projection answers the distinct question 'which
+   *      principal's tool policy bound this run' without overloading
+   *      the directives list.
+   *
+   * The bag is exposed as a structured `Record<string, unknown>` rather
+   * than typed top-level fields because callers thread it verbatim into
+   * `StageOutput.extraMetadata`, which is itself an open record. Adding
+   * a typed field here without a corresponding typed field on
+   * `StageOutput.extraMetadata` would forklift the contract from
+   * "stage-runner-opaque bag" to "substrate-known shape", which is
+   * exactly the substrate-purity coupling the design avoids.
+   */
+  readonly stageOutputExtraMetadata: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -523,9 +553,25 @@ export async function runStageAgentLoop<TOut>(
   // floor: when no policy resolves the helper falls through to whatever
   // the AgentLoopAdapter's safety default is. Errors during load throw;
   // a malformed policy is fail-loud per the loader's contract.
+  //
+  // toolPolicySource records the provenance of the disallowedTools list:
+  //   - 'policy' : the bag came from loadLlmToolPolicy under the stage
+  //     principal's pol-llm-tool-policy-<P> atom. The stamping bag below
+  //     surfaces tool_policy_principal_id so the Console projection can
+  //     resolve the same atom on the read path.
+  //   - 'override': the caller supplied disallowedToolsOverride so the
+  //     stage principal's pol-llm-tool-policy-* was NOT loaded. Stamping
+  //     tool_policy_principal_id in this case would misattribute
+  //     provenance: the canon atom whose ID we'd stamp never bound this
+  //     run. Per the operator's value pin ('canon that ACTUALLY bound
+  //     the LLM'), the stamp is omitted and tool_policy_source records
+  //     why so the Console can render an explicit 'override-bound'
+  //     state instead of a stale principal.
   let disallowedTools: ReadonlyArray<string>;
+  let toolPolicySource: 'policy' | 'override';
   if (input.disallowedToolsOverride !== undefined) {
     disallowedTools = input.disallowedToolsOverride;
+    toolPolicySource = 'override';
   } else {
     try {
       const policy = await loadLlmToolPolicy(
@@ -533,6 +579,7 @@ export async function runStageAgentLoop<TOut>(
         input.stagePrincipal,
       );
       disallowedTools = policy?.disallowedTools ?? [];
+      toolPolicySource = 'policy';
     } catch (err) {
       if (err instanceof LlmToolPolicyError) {
         throw err;
@@ -815,6 +862,37 @@ export async function runStageAgentLoop<TOut>(
     }
   }
 
+  // Stage-output extraMetadata bag the caller forwards verbatim into
+  // StageOutput.extraMetadata. The runner shallow-merges this into the
+  // persisted stage-output atom's metadata via the typed mint helpers,
+  // so the Console's canon-at-runtime projection reads the canon that
+  // ACTUALLY bound the LLM (atom ids resolved by resolveApplicableCanon
+  // above + the principal whose pol-llm-tool-policy-* was loaded by
+  // loadLlmToolPolicy above) instead of re-resolving from a static
+  // stage-mapping table after the fact.
+  //
+  // Provenance discipline on tool_policy_principal_id: the field is
+  // stamped ONLY when toolPolicySource === 'policy' (the canonical
+  // pol-llm-tool-policy-<P> atom was loaded). When the caller supplied
+  // disallowedToolsOverride the stage principal's tool-policy atom was
+  // NOT consulted; stamping tool_policy_principal_id here would lie
+  // about which canon atom bound the run. tool_policy_source is always
+  // present so a downstream projection can render either 'this canon
+  // atom bound the run' (policy) or 'a per-call override bound the
+  // run' (override) without ambiguity.
+  //
+  // Frozen so a downstream consumer cannot mutate the stamp post-hoc;
+  // strings are immutable so the inner principal id needs no separate
+  // freeze. Defensive copy on the canon id list mirrors the freeze
+  // pattern in runner.ts for the verified-citation set.
+  const stageOutputExtraMetadata = Object.freeze({
+    canon_directives_applied: Object.freeze(canonAtomIds.map(String)),
+    tool_policy_source: toolPolicySource,
+    ...(toolPolicySource === 'policy'
+      ? { tool_policy_principal_id: String(input.stagePrincipal) }
+      : {}),
+  }) as Readonly<Record<string, unknown>>;
+
   return {
     value,
     costUsd,
@@ -826,5 +904,6 @@ export async function runStageAgentLoop<TOut>(
     canonAuditEventAtomId: canonAuditEventAtom.id,
     canonAuditFindings: auditFindings,
     canonAuditVerdict: auditVerdict,
+    stageOutputExtraMetadata,
   };
 }

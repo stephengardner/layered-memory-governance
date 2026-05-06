@@ -824,6 +824,18 @@ export interface MkPlanOutputAtomsInput {
    * `plans` key and returns [] when the shape is missing or empty.
    */
   readonly value: unknown;
+  /**
+   * Optional supplementary metadata threaded from `StageOutput.extraMetadata`
+   * into every minted plan atom. Mirrors `MkStageOutputAtomBaseInput.extraMetadata`
+   * for the plan-stage shape so a stage-runner-resolved fact (e.g.
+   * canon_directives_applied) is recorded uniformly across stage shapes.
+   * Shallow-merged into each plan atom's `metadata` BELOW the plan-specific
+   * keys (title, pipeline_id, principles_applied, etc.) so the plan-shape
+   * keys win on collision; downstream readers that key on `delegation` /
+   * `principles_applied` cannot be surprised by a stage-runner stamping
+   * a same-named bag.
+   */
+  readonly extraMetadata?: Readonly<Record<string, unknown>>;
 }
 
 interface PlanEntryLike {
@@ -839,6 +851,46 @@ interface PlanEntryLike {
     readonly reason?: unknown;
     readonly implied_blast_radius?: unknown;
   };
+}
+
+/**
+ * Plan-shape metadata keys that are load-bearing for downstream
+ * consumers (dispatch reads `delegation`, projections read `title` /
+ * `pipeline_id`, audit walks read `principles_applied` /
+ * `alternatives_rejected` / `what_breaks_if_revisit`). A stage-runner-
+ * supplied `extraMetadata` must NEVER write any of these keys onto a
+ * plan atom -- the canonical values come from the plan entry shape, not
+ * from the open-ended stamp bag. Filtering at the merge site fences
+ * every key uniformly, even when the plan-shape side resolves to an
+ * empty object (e.g. an entry without `delegation` produces
+ * `delegationMetadata = {}` and a naive spread-then-overwrite would NOT
+ * shadow an `extraMetadata.delegation`).
+ */
+const RESERVED_PLAN_METADATA_KEYS: ReadonlySet<string> = new Set([
+  'title',
+  'pipeline_id',
+  'principles_applied',
+  'alternatives_rejected',
+  'what_breaks_if_revisit',
+  'delegation',
+]);
+
+/**
+ * Strip reserved plan-shape keys from a stage-runner-supplied
+ * extraMetadata bag before merging into a plan atom's metadata.
+ * Returns an empty object when the input is undefined so the caller
+ * can spread the result unconditionally.
+ */
+function omitReservedPlanMetadata(
+  extra: Readonly<Record<string, unknown>> | undefined,
+): Record<string, unknown> {
+  if (extra === undefined) return {};
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(extra)) {
+    if (RESERVED_PLAN_METADATA_KEYS.has(key)) continue;
+    out[key] = value;
+  }
+  return out;
 }
 
 function asString(value: unknown, fallback = ''): string {
@@ -964,6 +1016,16 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
       taint: 'clean',
       plan_state: 'proposed',
       metadata: {
+        // Filter reserved plan-shape keys out of extraMetadata BEFORE
+        // merging so a misbehaving stage runner cannot hijack a
+        // load-bearing plan field. Spread-then-overwrite is unsafe for
+        // a plan-entry that has NO delegation: delegationMetadata
+        // resolves to {} and the spread does not overwrite an
+        // extraMetadata.delegation, which would let the stamp inject
+        // an authoritative delegation that downstream dispatch reads.
+        // Filtering at write time fences every shape key uniformly,
+        // including the conditional delegation key.
+        ...omitReservedPlanMetadata(input.extraMetadata),
         title,
         pipeline_id: input.pipelineId,
         principles_applied: [...principlesApplied],

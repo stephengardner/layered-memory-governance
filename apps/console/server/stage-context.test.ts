@@ -266,6 +266,234 @@ describe('buildCanonAtRuntime', () => {
     );
     expect(out).toEqual([]);
   });
+
+  /*
+   * Dual-principal lookup: stage-mapping principal + atom's
+   * principal_id. The atom's principal_id is the truer signal because
+   * the substrate persisted it; the stage-mapping principal stays in
+   * the union as a backstop for atoms that lack a principal_id (e.g.
+   * tests, fixtures, single-shot adapters). Operator value pin: 'a
+   * plan atom showing the canon that ACTUALLY bound the LLM, not the
+   * canon the table CLAIMS bound it'.
+   */
+  it('unions atom.principal_id with the stage-mapping principal so plan atoms surface the runner principal policy', () => {
+    // Pipeline-emitted plan atom carries principal_id=cto-actor (the
+    // pipeline-runner principal in src/runtime/planning-pipeline/runner.ts
+    // persistStageOutput). The stage-mapping table claims plan-author.
+    // pol-llm-tool-policy-plan-author DOES NOT EXIST in canon (only the
+    // six stage principals carry tool policies). pol-llm-tool-policy-cto-actor
+    // exists. The dual-principal lookup must surface the cto-actor policy.
+    const ctoPolicy = atom({
+      id: 'pol-llm-tool-policy-cto-actor',
+      type: 'directive',
+      content: 'cto-actor tool deny-list',
+    });
+    const out = buildCanonAtRuntime(
+      undefined,
+      'plan-author',
+      makeLookup([ctoPolicy]),
+      'cto-actor',
+    );
+    expect(out).toEqual([
+      {
+        id: 'pol-llm-tool-policy-cto-actor',
+        type: 'directive',
+        content_preview: 'cto-actor tool deny-list',
+        source: 'policy',
+      },
+    ]);
+  });
+
+  it('returns BOTH policies when both stage-mapping and atom principals resolve', () => {
+    // When both pol-llm-tool-policy-<stage-mapping> AND
+    // pol-llm-tool-policy-<atom-principal> are present, surface both.
+    // Operator wants the FULL canon picture, not a single policy.
+    const planAuthorPolicy = atom({
+      id: 'pol-llm-tool-policy-plan-author',
+      type: 'directive',
+      content: 'plan-author policy',
+    });
+    const ctoPolicy = atom({
+      id: 'pol-llm-tool-policy-cto-actor',
+      type: 'directive',
+      content: 'cto-actor policy',
+    });
+    const out = buildCanonAtRuntime(
+      undefined,
+      'plan-author',
+      makeLookup([planAuthorPolicy, ctoPolicy]),
+      'cto-actor',
+    );
+    expect(out.map((e) => e.id).sort()).toEqual([
+      'pol-llm-tool-policy-cto-actor',
+      'pol-llm-tool-policy-plan-author',
+    ]);
+    for (const entry of out) {
+      expect(entry.source).toBe('policy');
+    }
+  });
+
+  it('dedupes when stage-mapping and atom principals are identical', () => {
+    // brainstorm-output atoms typically have principal_id=brainstorm-actor
+    // (single-shot path) -- the stage-mapping principal and the atom
+    // principal coincide. The result must not contain a duplicate.
+    const policy = atom({
+      id: 'pol-llm-tool-policy-brainstorm-actor',
+      type: 'directive',
+      content: 'brainstorm-actor policy',
+    });
+    const out = buildCanonAtRuntime(
+      undefined,
+      'brainstorm-actor',
+      makeLookup([policy]),
+      'brainstorm-actor',
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]?.id).toBe('pol-llm-tool-policy-brainstorm-actor');
+  });
+
+  it('falls back to stage-mapping principal only when atomPrincipalId is omitted', () => {
+    // Legacy-caller compatibility: tests that build the request without
+    // an atom principal continue to work unchanged. The new fourth arg
+    // is optional.
+    const policy = atom({
+      id: 'pol-llm-tool-policy-spec-author',
+      type: 'directive',
+      content: 'spec policy',
+    });
+    const out = buildCanonAtRuntime(undefined, 'spec-author', makeLookup([policy]));
+    expect(out.map((e) => e.id)).toEqual(['pol-llm-tool-policy-spec-author']);
+  });
+
+  it('skips empty / whitespace-only principal candidates so pol-llm-tool-policy- never appears in the lookup', () => {
+    // Defensive: a malformed upstream that surfaces an empty principal
+    // string must NOT compose `pol-llm-tool-policy-` (which is a real
+    // but mostly-empty atom-id prefix). Stage-mapping is the only
+    // populated principal here; the empty atom principal is filtered.
+    const policy = atom({
+      id: 'pol-llm-tool-policy-cto-actor',
+      type: 'directive',
+      content: 'cto policy',
+    });
+    const out = buildCanonAtRuntime(
+      undefined,
+      'cto-actor',
+      makeLookup([policy]),
+      '   ',
+    );
+    expect(out.map((e) => e.id)).toEqual(['pol-llm-tool-policy-cto-actor']);
+  });
+
+  it('metadata.canon_directives_applied takes precedence over the dual-principal fallback', () => {
+    // When the substrate has stamped canon_directives_applied (Phase 2),
+    // the dual-principal fallback is NOT consulted. Stamped metadata
+    // is write-time evidence; the union path is inference. Mixing them
+    // would lie about which directives actually governed the run.
+    const stamped = atom({
+      id: 'dev-foo',
+      type: 'directive',
+      content: 'stamped directive',
+    });
+    const stagePolicy = atom({
+      id: 'pol-llm-tool-policy-plan-author',
+      type: 'directive',
+      content: 'should not appear',
+    });
+    const atomPolicy = atom({
+      id: 'pol-llm-tool-policy-cto-actor',
+      type: 'directive',
+      content: 'should not appear',
+    });
+    const out = buildCanonAtRuntime(
+      { canon_directives_applied: ['dev-foo'] },
+      'plan-author',
+      makeLookup([stamped, stagePolicy, atomPolicy]),
+      'cto-actor',
+    );
+    expect(out.map((e) => e.id)).toEqual(['dev-foo']);
+    expect(out[0]?.source).toBe('metadata');
+  });
+
+  /*
+   * Tier-2 source-precedence: metadata.tool_policy_principal_id.
+   * The substrate stamps this ONLY when the canonical
+   * pol-llm-tool-policy-<P> atom was loaded for the run (override-bound
+   * runs are stamped with tool_policy_source='override' instead). When
+   * present, this resolves to the stamped-principal's policy atom with
+   * source='metadata' and the dual-principal inference is skipped --
+   * the substrate already told us exactly which atom bound the LLM.
+   */
+  it('uses metadata.tool_policy_principal_id when present (skips inference)', () => {
+    const stampedPolicy = atom({
+      id: 'pol-llm-tool-policy-cto-actor',
+      type: 'directive',
+      content: 'cto policy body',
+    });
+    const stagePolicy = atom({
+      id: 'pol-llm-tool-policy-plan-author',
+      type: 'directive',
+      content: 'should not appear (stamped wins)',
+    });
+    const out = buildCanonAtRuntime(
+      { tool_policy_principal_id: 'cto-actor' },
+      'plan-author',
+      makeLookup([stampedPolicy, stagePolicy]),
+      'plan-author',
+    );
+    expect(out).toEqual([
+      {
+        id: 'pol-llm-tool-policy-cto-actor',
+        type: 'directive',
+        content_preview: 'cto policy body',
+        source: 'metadata',
+      },
+    ]);
+  });
+
+  it('falls through to inference when metadata.tool_policy_principal_id is whitespace-only', () => {
+    // Defensive trim mirrors the dual-principal candidate filter so a
+    // malformed stamp cannot compose `pol-llm-tool-policy-` (an
+    // empty-suffix lookup that resolves to nothing) and surface a
+    // never-resolving entry as 'metadata-bound'.
+    const policy = atom({
+      id: 'pol-llm-tool-policy-cto-actor',
+      type: 'directive',
+      content: 'cto policy',
+    });
+    const out = buildCanonAtRuntime(
+      { tool_policy_principal_id: '   ' },
+      'plan-author',
+      makeLookup([policy]),
+      'cto-actor',
+    );
+    // Falls through to dual-principal inference and resolves cto-actor
+    // via the atom-principal path. Source is 'policy' because we used
+    // inference, not the stamp.
+    expect(out.map((e) => e.id)).toEqual(['pol-llm-tool-policy-cto-actor']);
+    expect(out[0]?.source).toBe('policy');
+  });
+
+  it('canon_directives_applied still wins over tool_policy_principal_id when both are stamped', () => {
+    // Both metadata stamps may co-exist; the explicit applied-list is
+    // strictly stronger evidence than the policy principal alone (the
+    // applied list IS the resolved canon, not just the bag's source).
+    const stamped = atom({ id: 'dev-foo', type: 'directive', content: 'foo' });
+    const policy = atom({
+      id: 'pol-llm-tool-policy-cto-actor',
+      type: 'directive',
+      content: 'cto policy',
+    });
+    const out = buildCanonAtRuntime(
+      {
+        canon_directives_applied: ['dev-foo'],
+        tool_policy_principal_id: 'cto-actor',
+      },
+      'plan-author',
+      makeLookup([stamped, policy]),
+    );
+    expect(out.map((e) => e.id)).toEqual(['dev-foo']);
+    expect(out[0]?.source).toBe('metadata');
+  });
 });
 
 describe('buildStageContext', () => {
@@ -392,5 +620,86 @@ describe('buildStageContext', () => {
     });
     // depth 1 includes c; depth 2 would include b; depth 3 would include a.
     expect(out.upstream_chain.map((e) => e.id)).toEqual(['c']);
+  });
+
+  /*
+   * End-to-end coverage of the dual-principal lookup at the top-level
+   * buildStageContext entrypoint. Documents the full data path the
+   * /api/atoms.stage-context route exercises: a pipeline-emitted plan
+   * atom carries principal_id=cto-actor (substrate-persisted), the
+   * stage-mapping table claims plan-author, and the panel must surface
+   * pol-llm-tool-policy-cto-actor (the policy that ACTUALLY bound the
+   * LLM) rather than rendering empty because pol-llm-tool-policy-plan-author
+   * does not exist.
+   */
+  it('forwards atom.principal_id to the canon-at-runtime fallback so plan atoms surface the runner-principal policy', async () => {
+    const ctoPolicy = atom({
+      id: 'pol-llm-tool-policy-cto-actor',
+      type: 'directive',
+      content: 'cto-actor tool deny-list',
+    });
+    const seed = atom({
+      id: 'plan-1',
+      type: 'plan',
+      metadata: { stage_name: 'plan-stage', pipeline_id: 'pipeline-x' },
+      principal_id: 'cto-actor',
+    });
+    const out = await buildStageContext(seed, makeLookup([seed, ctoPolicy]), {
+      resolveBundle: async () => null,
+    });
+    expect(out.stage).toBe('plan-stage');
+    // The header still surfaces the stage-mapping principal so the
+    // panel labels the stage role consistently.
+    expect(out.principal_id).toBe('plan-author');
+    expect(out.canon_at_runtime).toEqual([
+      {
+        id: 'pol-llm-tool-policy-cto-actor',
+        type: 'directive',
+        content_preview: 'cto-actor tool deny-list',
+        source: 'policy',
+      },
+    ]);
+  });
+
+  /*
+   * Phase 2 contract: the substrate's run-stage-agent-loop helper stamps
+   * canon_directives_applied + tool_policy_principal_id onto the
+   * stage-output atom's metadata. When the stamped metadata is present,
+   * buildStageContext returns those entries with source=metadata and
+   * skips the dual-principal fallback.
+   */
+  it('returns metadata-sourced canon entries when the substrate has stamped canon_directives_applied', async () => {
+    const directive = atom({
+      id: 'dev-extreme-rigor-and-research',
+      type: 'directive',
+      content: 'rigor directive body',
+    });
+    const stagePolicy = atom({
+      id: 'pol-llm-tool-policy-plan-author',
+      type: 'directive',
+      content: 'should not appear (metadata wins)',
+    });
+    const seed = atom({
+      id: 'plan-2',
+      type: 'plan',
+      metadata: {
+        stage_name: 'plan-stage',
+        pipeline_id: 'pipeline-x',
+        canon_directives_applied: ['dev-extreme-rigor-and-research'],
+        tool_policy_principal_id: 'cto-actor',
+      },
+      principal_id: 'cto-actor',
+    });
+    const out = await buildStageContext(seed, makeLookup([seed, directive, stagePolicy]), {
+      resolveBundle: async () => null,
+    });
+    expect(out.canon_at_runtime).toEqual([
+      {
+        id: 'dev-extreme-rigor-and-research',
+        type: 'directive',
+        content_preview: 'rigor directive body',
+        source: 'metadata',
+      },
+    ]);
   });
 });

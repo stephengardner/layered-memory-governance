@@ -479,6 +479,16 @@ export async function runPipeline(
     let stageOutputAtomId: AtomId | undefined;
     let persistedPlanAtomIds: ReadonlyArray<AtomId> = [];
     try {
+      // Forward stage-runner-supplied extraMetadata (e.g.
+      // canon_directives_applied + tool_policy_principal_id from
+      // runStageAgentLoop) into the typed mint helpers. The runner
+      // stays canon-agnostic: it propagates the bag without inspecting
+      // contents, so the substrate does not need to know what stage
+      // runners chose to stamp. The runner-supplied keys (pipeline_id,
+      // stage_name, stage_output) still win on shallow-merge collision
+      // inside the mint helpers, so a misbehaving stage cannot shadow
+      // load-bearing routing keys.
+      const extraMetadata = output.extraMetadata;
       const persisted = await persistStageOutput(
         host,
         stage.name,
@@ -490,6 +500,7 @@ export async function runPipeline(
           correlationId: options.correlationId,
           now: now(),
           derivedFrom: [pipelineId, ...priorOutputAtomIds],
+          ...(extraMetadata !== undefined ? { extraMetadata } : {}),
         },
       );
       stageOutputAtomId = persisted.anchorId;
@@ -730,8 +741,16 @@ async function persistStageOutput(
     correlationId: string;
     now: Time;
     derivedFrom: ReadonlyArray<AtomId>;
+    extraMetadata?: Readonly<Record<string, unknown>>;
   },
 ): Promise<PersistStageOutputResult> {
+  // Build baseInput with extraMetadata only when present so the typed
+  // mint helpers (which accept extraMetadata as an optional field) do
+  // not see an explicit `undefined` under exactOptionalPropertyTypes.
+  // The extraMetadata bag is forwarded verbatim into
+  // buildStageOutputMetadata's shallow merge; the runner-supplied
+  // routing keys (pipeline_id, stage_name, stage_output) remain
+  // load-bearing and win on collision.
   const baseInput = {
     pipelineId: ctx.pipelineId,
     stageName,
@@ -740,6 +759,7 @@ async function persistStageOutput(
     now: ctx.now,
     derivedFrom: ctx.derivedFrom,
     value,
+    ...(ctx.extraMetadata !== undefined ? { extraMetadata: ctx.extraMetadata } : {}),
   };
   switch (atomType) {
     case 'brainstorm-output': {
@@ -767,6 +787,7 @@ async function persistStageOutput(
         now: ctx.now,
         derivedFrom: ctx.derivedFrom,
         value,
+        ...(ctx.extraMetadata !== undefined ? { extraMetadata: ctx.extraMetadata } : {}),
       });
       if (planAtoms.length === 0) {
         // Plan-stage schema rejects empty plans arrays, so reaching
@@ -842,6 +863,7 @@ function mkGenericStageOutputAtom(input: {
   readonly now: Time;
   readonly derivedFrom: ReadonlyArray<AtomId>;
   readonly value: unknown;
+  readonly extraMetadata?: Readonly<Record<string, unknown>>;
 }): Atom {
   // Build a minimal Atom inline to avoid threading a fifth mint
   // helper through atom-shapes.ts for the generic case. Mirrors the
@@ -882,6 +904,12 @@ function mkGenericStageOutputAtom(input: {
     principal_id: input.principalId,
     taint: 'clean',
     metadata: {
+      // extraMetadata first so the runner-supplied routing keys
+      // (pipeline_id, stage_name, stage_output, generic_stage_output)
+      // win on shallow-merge collision. Mirrors the precedence order
+      // in buildStageOutputMetadata so the typed and generic paths
+      // behave identically for downstream readers.
+      ...(input.extraMetadata ?? {}),
       pipeline_id: input.pipelineId,
       stage_name: input.stageName,
       // Project the value through the same JSON-safety + size-cap

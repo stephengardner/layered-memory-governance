@@ -281,6 +281,12 @@ export function buildAgenticReviewStage(
       cost_usd: result.costUsd,
       duration_ms: result.durationMs,
       atom_type: 'review-report',
+      // Forward the helper-resolved canon-at-runtime stamp onto the
+      // stage-output atom's metadata via the runner's shallow-merge.
+      // Without this, the Console's canon-at-runtime projection has to
+      // re-resolve via a static stage-mapping table that may not match
+      // the principal_id the runner persists onto stage atoms.
+      extraMetadata: result.stageOutputExtraMetadata,
     };
   }
 

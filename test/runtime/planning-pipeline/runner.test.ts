@@ -450,6 +450,113 @@ describe('runPipeline', () => {
     if (result.kind === 'failed') expect(result.cause).toMatch(/budget/);
   });
 
+  it('forwards StageOutput.extraMetadata onto the persisted stage-output atom metadata', async () => {
+    // Substrate fix coverage: a stage that returns extraMetadata on its
+    // StageOutput must see those keys appear on the persisted typed
+    // stage-output atom's metadata, shallow-merged below the runner-
+    // supplied routing keys (pipeline_id, stage_name, stage_output) so
+    // a misbehaving stage cannot shadow them. This wires the seam used
+    // by examples/planning-stages/lib/run-stage-agent-loop.ts to stamp
+    // canon_directives_applied + tool_policy_principal_id.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['brainstorm-stage']);
+    const stages: ReadonlyArray<PlanningStage<unknown, { goal: string }>> = [
+      {
+        name: 'brainstorm-stage',
+        async run() {
+          return {
+            value: { goal: 'pick A' },
+            cost_usd: 0,
+            duration_ms: 0,
+            atom_type: 'brainstorm-output',
+            extraMetadata: {
+              canon_directives_applied: ['dev-foo', 'dev-bar'],
+              tool_policy_principal_id: 'brainstorm-actor',
+            },
+          };
+        },
+      },
+    ];
+    await runPipeline(stages, host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-extra-meta',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    const page = await host.atoms.query({ type: ['brainstorm-output'] }, 100);
+    expect(page.atoms).toHaveLength(1);
+    const meta = page.atoms[0]!.metadata as Record<string, unknown>;
+    // Stamped fields surface verbatim.
+    expect(meta.canon_directives_applied).toEqual(['dev-foo', 'dev-bar']);
+    expect(meta.tool_policy_principal_id).toBe('brainstorm-actor');
+    // Runner-supplied routing keys still win on shallow merge.
+    expect(meta.pipeline_id).toBe('pipeline-corr-extra-meta');
+    expect(meta.stage_name).toBe('brainstorm-stage');
+  });
+
+  it('plan-stage forwards extraMetadata onto every minted plan atom (below plan-shape keys)', async () => {
+    // The plan-stage mints one plan atom per entry in `plans[]`; each
+    // must carry the stamped canon-at-runtime bag. Plan-shape metadata
+    // keys (title, pipeline_id, principles_applied, delegation,
+    // alternatives_rejected, what_breaks_if_revisit) MUST win on
+    // collision so a malformed extraMetadata cannot hijack a load-bearing
+    // plan field a downstream consumer (dispatch, projections) reads.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['plan-stage']);
+    const stages: ReadonlyArray<PlanningStage<unknown, unknown>> = [
+      {
+        name: 'plan-stage',
+        async run() {
+          return {
+            value: {
+              plans: [
+                {
+                  title: 'Real plan title',
+                  body: 'plan body',
+                  derived_from: [],
+                  principles_applied: [],
+                  alternatives_rejected: [],
+                  what_breaks_if_revisit: 'something',
+                  confidence: 0.9,
+                },
+              ],
+              cost_usd: 0,
+            },
+            cost_usd: 0,
+            duration_ms: 0,
+            atom_type: 'plan',
+            extraMetadata: {
+              canon_directives_applied: ['dev-extreme-rigor-and-research'],
+              tool_policy_principal_id: 'cto-actor',
+              // Attempt to shadow a plan-shape key; runner must NOT
+              // honour this because plan readers depend on the shape.
+              title: 'malicious title',
+            },
+          };
+        },
+      },
+    ];
+    await runPipeline(stages, host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-plan-extra-meta',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    const page = await host.atoms.query({ type: ['plan'] }, 100);
+    expect(page.atoms).toHaveLength(1);
+    const planAtom = page.atoms[0]!;
+    const meta = planAtom.metadata as Record<string, unknown>;
+    expect(meta.canon_directives_applied).toEqual(['dev-extreme-rigor-and-research']);
+    expect(meta.tool_policy_principal_id).toBe('cto-actor');
+    // Plan-shape title wins over the extraMetadata's malicious title.
+    expect(meta.title).toBe('Real plan title');
+    expect(meta.pipeline_id).toBe('pipeline-corr-plan-extra-meta');
+  });
+
   it('emits a pipeline-stage-event atom per state transition', async () => {
     const host = createMemoryHost();
     await seedPauseNeverPolicies(host, ['a', 'b']);
