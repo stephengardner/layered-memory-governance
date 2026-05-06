@@ -73,6 +73,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -84,6 +85,7 @@ import {
   nextBackoffMs,
   parseIntegerFlag,
   parseTrycloudflareHostname,
+  resolveCloudflaredPath,
 } from './lib/tunnel-watchdog.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -231,11 +233,24 @@ function spawnWeb() {
 }
 
 function spawnTunnel() {
-  // cloudflared on Windows is typically installed at
-  // %ProgramFiles%\cloudflared\cloudflared.exe; on POSIX it's on PATH.
-  // We invoke by name and let the OS resolve, surfacing a clear error
-  // if the binary is missing (handled in the spawn 'error' event).
-  const child = spawn('cloudflared', [
+  // cloudflared on Windows is installed under
+  // `%ProgramFiles(x86)%\cloudflared\cloudflared.exe` (current
+  // installer) or `%ProgramFiles%\cloudflared\cloudflared.exe`
+  // (older installer). Neither directory is added to PATH by the
+  // cloudflared MSI, so a fresh-install operator hits ENOENT when
+  // we spawn the bare name. resolveCloudflaredPath probes both
+  // locations + an env override (`LAG_CLOUDFLARED_PATH`) before
+  // falling back to the bare name, which keeps POSIX behaviour
+  // unchanged and lets Windows pick up the binary without a PATH
+  // edit. If nothing matches, spawn() emits the same ENOENT it did
+  // before the helper, so the `tunnelDisabled` branch below still
+  // catches the missing-binary case.
+  const cloudflaredCmd = resolveCloudflaredPath({
+    env: process.env,
+    platform: process.platform,
+    existsSync,
+  });
+  const child = spawn(cloudflaredCmd, [
     'tunnel',
     '--url',
     `http://localhost:${args.webPort}`,
@@ -519,7 +534,7 @@ if (args.spawnTunnel) {
     let tunnelDisabled = false;
     tunnelChild.once('error', (err) => {
       if (err?.code === 'ENOENT') {
-        errLog('tunnel: cloudflared not found on PATH; pass --no-tunnel to silence this');
+        errLog('tunnel: cloudflared not found. Install it (https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/), set LAG_CLOUDFLARED_PATH to its absolute path, or pass --no-tunnel to silence this');
         tunnelDisabled = true;
         components.tunnel.child = null;
       } else {
