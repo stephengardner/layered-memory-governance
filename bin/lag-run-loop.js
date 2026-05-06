@@ -14,6 +14,7 @@ import { runLoopMain } from '../dist/cli/run-loop.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REFRESHER_HELPER = resolve(HERE, '..', 'scripts', 'lib', 'pr-observation-refresher.mjs');
+const NOTIFIER_HELPER = resolve(HERE, '..', 'scripts', 'lib', 'telegram-plan-trigger.mjs');
 
 /**
  * Build the PR-observation refresher by dynamic-importing the
@@ -48,8 +49,38 @@ async function prObservationRefresherFactory() {
   }
 }
 
+/**
+ * Build the plan-proposal notifier by dynamic-importing the
+ * companion helper at scripts/lib/telegram-plan-trigger.mjs. The
+ * helper reads TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID from env;
+ * returns null when either is missing so the framework silent-skips
+ * per the LoopRunner contract. An out-of-tree build that did not
+ * ship `scripts/` (or a deployment without env config) lands on the
+ * silent-skip path naturally.
+ */
+async function planProposalNotifierFactory() {
+  try {
+    const mod = await import(pathToFileURL(NOTIFIER_HELPER).href);
+    if (typeof mod.createTelegramPlanProposalNotifier !== 'function') {
+      console.error(
+        `[plan-proposal-notify] WARN: notifier helper at ${NOTIFIER_HELPER} did not `
+          + 'export createTelegramPlanProposalNotifier; notify pass will silent-skip.',
+      );
+      return null;
+    }
+    return mod.createTelegramPlanProposalNotifier();
+  } catch (err) {
+    console.error(
+      `[plan-proposal-notify] WARN: could not load notifier helper at ${NOTIFIER_HELPER}: `
+        + `${err instanceof Error ? err.message : String(err)}; notify pass will silent-skip.`,
+    );
+    return null;
+  }
+}
+
 const exitCode = await runLoopMain({
   prObservationRefresherFactory,
+  planProposalNotifierFactory,
 }).catch((err) => {
   console.error('fatal:', err instanceof Error ? (err.stack ?? err.message) : String(err));
   return 2;

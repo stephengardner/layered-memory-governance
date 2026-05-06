@@ -62,6 +62,7 @@ import {
   formatCtoPrompt,
   buildDiscussionAtom,
 } from './lib/plan-discuss-telegram.mjs';
+import { extractPlanTitleAndBody } from './lib/plan-summary.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -434,26 +435,12 @@ async function main() {
   }
 
   /*
-   * Build the initial message from the plan body. We use the plan's
-   * first markdown heading as the title (if any) and the rest as the
-   * body, mirroring the formatPlanSummary contract from the
-   * approve-telegram script.
+   * Build the initial message from the plan body via the shared
+   * formatter. Discuss uses the FULL body (no truncation) because
+   * the operator may scroll through a long plan and ask informed
+   * questions; approve / auto-trigger truncate at their own caps.
    */
-  const summary = (() => {
-    const content = String(plan.content ?? '');
-    const lines = content.split('\n');
-    let title = '';
-    let bodyStart = 0;
-    for (let i = 0; i < lines.length; i++) {
-      const m = lines[i].match(/^#{1,3}\s+(.+)$/);
-      if (m) {
-        title = m[1].trim();
-        bodyStart = i + 1;
-        break;
-      }
-    }
-    return { title: title || `(no title - id ${plan.id})`, body: lines.slice(bodyStart).join('\n').trim() };
-  })();
+  const summary = extractPlanTitleAndBody(plan);
 
   /*
    * encodeTag folds plan-ids longer than ~40 chars into a stable

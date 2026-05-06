@@ -88,6 +88,19 @@ export type AtomType =
   // conflict and skips. Functions as both the mutual-exclusion lock
   // and the historical record of the reconciliation event.
   | 'plan-merge-settled'
+  // Per-plan idempotence record for the plan-proposal notify pass.
+  // Written exactly once per plan when the LoopRunner notify pass
+  // successfully delegates to a deployment-side notifier. Carries
+  // provenance.derived_from: [planId] so the audit chain links the
+  // push back to its plan, and metadata.plan_id mirrors that
+  // pointer for projection-scoped queries. The notify pass refuses
+  // to re-notify any plan whose id already appears in this set,
+  // which keeps a long-running daemon from spamming the same plan
+  // across thousands of ticks. The transport name (telegram, slack,
+  // email, ...) lives in metadata.channel so a single atom type
+  // covers every notifier; renaming or adding a channel does not
+  // require a substrate migration.
+  | 'plan-push-record'
   // Operator-authored trust envelope authorizing autonomous plan
   // dispatch. metadata.trust_envelope gates plan auto-approval and
   // sub-actor selection; metadata.expires_at is the real lifetime

@@ -7,6 +7,8 @@
  * scripts/lib/cr-precheck.mjs.
  */
 
+import { extractPlanTitleAndBody } from './plan-summary.mjs';
+
 export const DEFAULT_TIMEOUT_MS = 600_000;
 export const PLAN_SUMMARY_BODY_MAX = 600;
 
@@ -78,25 +80,19 @@ export function validateArgs(args) {
  * atom's content. The full body can run thousands of chars; phones
  * are not great at scrolling. We keep the first heading + ~600 chars
  * of body and signpost truncation.
+ *
+ * Title extraction is delegated to the shared formatter at
+ * scripts/lib/plan-summary.mjs so every plan-Telegram surface
+ * (approve, discuss, auto-trigger) shares one heading-detection
+ * implementation. This wrapper preserves the existing
+ * approve-script signature and adds the 600-char truncation that is
+ * specific to the approve-script's display budget.
  */
 export function formatPlanSummary(plan) {
-  const content = String(plan?.content ?? '');
-  const lines = content.split('\n');
-  let titleLine = '';
-  let bodyStart = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/^#{1,3}\s+(.+)$/);
-    if (m) {
-      titleLine = m[1].trim();
-      bodyStart = i + 1;
-      break;
-    }
-  }
-  const body = lines.slice(bodyStart).join('\n').trim();
+  const { title, body } = extractPlanTitleAndBody(plan);
   const truncated =
     body.length > PLAN_SUMMARY_BODY_MAX
       ? body.slice(0, PLAN_SUMMARY_BODY_MAX) + '...(truncated)'
       : body;
-  const fallbackTitle = plan?.id ? `(no title - id ${plan.id})` : '(no title)';
-  return { title: titleLine || fallbackTitle, body: truncated };
+  return { title, body: truncated };
 }
