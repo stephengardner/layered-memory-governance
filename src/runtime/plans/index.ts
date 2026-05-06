@@ -62,3 +62,38 @@ export type {
   LoadAllProposedPlansResult,
   RunReaperSweepResult,
 } from './reaper.js';
+export {
+  buildPrDriverClaim,
+  buildReleasePrDriverClaim,
+  findActiveDriverClaim,
+  makeClaimId,
+  makeReleaseClaimId,
+  DEFAULT_DRIVER_CLAIM_LIFETIME_MS,
+} from './pr-driver-ledger.js';
+export type {
+  PrRef,
+  PrDriverClaimStatus,
+  ActiveDriverClaim,
+  BuildPrDriverClaimArgs,
+  BuildReleasePrDriverClaimArgs,
+  FindActiveDriverClaimResult,
+  FindActiveDriverClaimOptions,
+} from './pr-driver-ledger.js';
+export {
+  runPrOrphanReconcileTick,
+  readPrOrphanThresholdMs,
+  AtomStoreClaimantActivityScanner,
+  makeOrphanDetectedId,
+  DEFAULT_ORPHAN_THRESHOLD_MS,
+  DEFAULT_CADENCE_BUCKET_MS,
+  DEFAULT_MAX_DISPATCH_PER_TICK,
+} from './pr-orphan-reconcile.js';
+export type {
+  OpenPrSnapshot,
+  OpenPrSource,
+  OrphanPrDispatcher,
+  OrphanReason,
+  PrOrphanReconcileTickOptions,
+  PrOrphanReconcileTickResult,
+  ClaimantActivityScanner,
+} from './pr-orphan-reconcile.js';

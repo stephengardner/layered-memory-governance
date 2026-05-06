@@ -25,6 +25,10 @@ import type { PrincipalId } from '../types.js';
 import type { LoopTickReport } from '../loop/types.js';
 import type { PrObservationRefresher } from '../runtime/plans/pr-observation-refresh.js';
 import type { PlanProposalNotifier } from '../runtime/plans/plan-trigger-telegram.js';
+import type {
+  OpenPrSource,
+  OrphanPrDispatcher,
+} from '../runtime/plans/pr-orphan-reconcile.js';
 
 /**
  * Optional injection point: a deployment-side factory that builds the
@@ -56,9 +60,31 @@ export type PlanProposalNotifierFactory =
   () => Promise<PlanProposalNotifier | null> | PlanProposalNotifier | null;
 
 /**
- * Options for `runLoopMain`. Today the deployment-side seams are
- * the refresher factory and the notifier factory; future opt-in
- * injection points live here so the bin entrypoint stays the
+ * Optional injection point: a deployment-side factory that builds
+ * the open-PR source seam used by the orphan-reconcile pass. The
+ * bin entrypoint at `bin/lag-run-loop.js` is the deployment-side
+ * wrapper that supplies the factory.
+ *
+ * Returning `null` from the factory (or omitting it entirely)
+ * activates the silent-skip path documented on
+ * `LoopOptions.runPrOrphanReconcilePass`.
+ */
+export type OpenPrSourceFactory =
+  () => Promise<OpenPrSource | null> | OpenPrSource | null;
+
+/**
+ * Optional injection point: a deployment-side factory that builds
+ * the orphan-PR dispatcher seam used by the orphan-reconcile pass.
+ * Mirrors `OpenPrSourceFactory`.
+ */
+export type OrphanPrDispatcherFactory =
+  () => Promise<OrphanPrDispatcher | null> | OrphanPrDispatcher | null;
+
+/**
+ * Options for `runLoopMain`. The deployment-side seams are the
+ * refresher factory, the plan-proposal notifier factory, and the
+ * orphan-reconcile pair (open-PR source + dispatcher); future opt-
+ * in injection points live here so the bin entrypoint stays the
  * single composition root.
  */
 export interface RunLoopMainOptions {
@@ -76,6 +102,18 @@ export interface RunLoopMainOptions {
    * contract.
    */
   readonly planProposalNotifierFactory?: PlanProposalNotifierFactory;
+  /**
+   * Optional. Called when the orphan-reconcile pass is enabled to
+   * obtain the `OpenPrSource` adapter. Absent (or returning null)
+   * leaves the pass in silent-skip per the LoopRunner contract.
+   */
+  readonly prOpenPrSourceFactory?: OpenPrSourceFactory;
+  /**
+   * Optional. Called when the orphan-reconcile pass is enabled to
+   * obtain the `OrphanPrDispatcher` adapter. Absent (or returning
+   * null) leaves the pass in silent-skip.
+   */
+  readonly prOrphanDispatcherFactory?: OrphanPrDispatcherFactory;
 }
 
 type EmbedderChoice = 'trigram' | 'onnx-minilm';
@@ -123,6 +161,25 @@ interface CliArgs {
    * allowlist and calls the notifier exactly once per plan.
    */
   readonly notifyProposedPlans: boolean;
+  /**
+   * Run the PR-orphan reconcile pass on every loop tick. Default
+   * `false` (opt-in). Enable via `--reconcile-pr-orphans`. Requires
+   * BOTH a `prOpenPrSourceFactory` AND a `prOrphanDispatcherFactory`
+   * to be wired by the bin entrypoint; absent either, the pass
+   * silent-skips per the LoopRunner contract.
+   */
+  readonly reconcilePrOrphans: boolean;
+  /**
+   * Override the orphan-detection threshold (ms). When null, the
+   * tick reads canon `pol-pr-orphan-reconcile-threshold-ms`
+   * (default 5 minutes).
+   */
+  readonly prOrphanThresholdMs: number | null;
+  /**
+   * Override the per-tick dispatch budget. When null, the tick uses
+   * the module default (5).
+   */
+  readonly prOrphanMaxDispatchPerTick: number | null;
 }
 
 function parseCliArgs(): CliArgs | null {
@@ -149,14 +206,19 @@ function parseCliArgs(): CliArgs | null {
         'no-reconcile-plan-state': { type: 'boolean', default: false },
         'refresh-plan-observations': { type: 'boolean', default: true },
         'no-refresh-plan-observations': { type: 'boolean', default: false },
-        // Plan-proposal notify pass defaults ON for the indie floor
-        // so a solo developer with deployment env set gets phone
-        // pings on newly-proposed plans (per the canon-defined
-        // allowlist) without explicit opt-in. A sandboxed deployment
-        // without an outbound network surface opts out via
+        // Plan-proposal notify pass defaults ON; a deployment without
+        // env config (TELEGRAM_BOT_TOKEN/CHAT_ID) silent-skips per the
+        // notifier helper contract. Opt out explicitly via
         // --no-notify-proposed-plans.
         'notify-proposed-plans': { type: 'boolean', default: true },
         'no-notify-proposed-plans': { type: 'boolean', default: false },
+        // PR-orphan reconcile pass: opt-in. Detects open PRs whose
+        // sub-agent driver terminated (or never registered) and
+        // dispatches a fresh driver. Requires both source +
+        // dispatcher factories injected by the bin entrypoint.
+        'reconcile-pr-orphans': { type: 'boolean', default: false },
+        'pr-orphan-threshold-ms': { type: 'string' },
+        'pr-orphan-max-dispatch-per-tick': { type: 'string' },
         help: { type: 'boolean', default: false },
       },
       allowPositionals: false,
@@ -253,6 +315,29 @@ function parseCliArgs(): CliArgs | null {
     const notifyProposedPlans = Boolean(values['no-notify-proposed-plans'])
       ? false
       : Boolean(values['notify-proposed-plans']);
+    const reconcilePrOrphans = Boolean(values['reconcile-pr-orphans']);
+    let prOrphanThresholdMs: number | null = null;
+    if (typeof values['pr-orphan-threshold-ms'] === 'string') {
+      const n = parseInt(String(values['pr-orphan-threshold-ms']), 10);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+        console.error(
+          `Error: --pr-orphan-threshold-ms must be a positive integer ms. Got ${String(values['pr-orphan-threshold-ms'])}.`,
+        );
+        return null;
+      }
+      prOrphanThresholdMs = n;
+    }
+    let prOrphanMaxDispatchPerTick: number | null = null;
+    if (typeof values['pr-orphan-max-dispatch-per-tick'] === 'string') {
+      const n = parseInt(String(values['pr-orphan-max-dispatch-per-tick']), 10);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+        console.error(
+          `Error: --pr-orphan-max-dispatch-per-tick must be a positive integer. Got ${String(values['pr-orphan-max-dispatch-per-tick'])}.`,
+        );
+        return null;
+      }
+      prOrphanMaxDispatchPerTick = n;
+    }
     return {
       rootDir,
       palacePath: values['palace-path'] ?? null,
@@ -270,6 +355,9 @@ function parseCliArgs(): CliArgs | null {
       reconcilePlanState,
       refreshPlanObservations,
       notifyProposedPlans,
+      reconcilePrOrphans,
+      prOrphanThresholdMs,
+      prOrphanMaxDispatchPerTick,
     };
   } catch (err) {
     console.error('Error parsing args:', err instanceof Error ? err.message : String(err));
@@ -328,6 +416,18 @@ function printUsage(): void {
       '                                 notifier factory; without one the pass silent-skips.',
       '  --no-notify-proposed-plans     Disable the notify pass (e.g. for sandboxed',
       '                                 deployments without outbound network access).',
+      '  --reconcile-pr-orphans         Run the PR-orphan reconcile pass on every tick',
+      '                                 (default off). Detects open PRs whose driver',
+      '                                 sub-agent terminated (or never registered) and',
+      '                                 dispatches a fresh driver. Requires the bin',
+      '                                 entrypoint to inject both prOpenPrSourceFactory',
+      '                                 and prOrphanDispatcherFactory; absent either,',
+      '                                 the pass silent-skips per the LoopRunner contract.',
+      '  --pr-orphan-threshold-ms <ms>  Override the orphan-detection threshold (default',
+      '                                 5min). When omitted, the tick reads canon',
+      '                                 pol-pr-orphan-reconcile-threshold-ms.',
+      '  --pr-orphan-max-dispatch-per-tick <n>',
+      '                                 Override the per-tick dispatch budget (default 5).',
       '  --help                    Print this message.',
     ].join('\n'),
   );
@@ -417,12 +517,20 @@ function formatTickReport(report: LoopTickReport): string {
     report.planProposalNotifyReport !== null
       ? ` notify(notified=${report.planProposalNotifyReport.notified})`
       : '';
+  const orphan =
+    report.prOrphanReconcileReport !== null
+      ? ` pr-orphan(detected=${report.prOrphanReconcileReport.orphansDetected}/dispatched=${report.prOrphanReconcileReport.dispatched}${
+          report.prOrphanReconcileReport.failedDispatches > 0
+            ? `/failed=${report.prOrphanReconcileReport.failedDispatches}`
+            : ''
+        })`
+      : '';
   return (
     `tick ${report.tickNumber}: ` +
     `decayed=${report.atomsDecayed} ` +
     `l2+=${report.l2Promoted}/-=${report.l2Rejected} ` +
     `l3+=${report.l3Proposed} ` +
-    `canon=${report.canonApplied}${reaper}${reconcile}${refresh}${notify}${err}${kill}`
+    `canon=${report.canonApplied}${reaper}${reconcile}${refresh}${notify}${orphan}${err}${kill}`
   );
 }
 
@@ -465,6 +573,39 @@ export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number
       refresher = null;
     }
   }
+  // Build the orphan-reconcile seams only when the pass is enabled
+  // AND both factories are wired. Either factory throwing or
+  // returning null degrades to the silent-skip path documented on
+  // LoopOptions.runPrOrphanReconcilePass; the LoopRunner logs the
+  // gap once per runner.
+  let prOpenPrSource: OpenPrSource | null = null;
+  let prOrphanDispatcher: OrphanPrDispatcher | null = null;
+  if (args.reconcilePrOrphans) {
+    if (opts.prOpenPrSourceFactory !== undefined) {
+      try {
+        prOpenPrSource = await opts.prOpenPrSourceFactory();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[pr-orphan-reconcile] WARN: open-PR source factory threw: `
+            + `${err instanceof Error ? err.message : String(err)}; pass will silent-skip.`,
+        );
+        prOpenPrSource = null;
+      }
+    }
+    if (opts.prOrphanDispatcherFactory !== undefined) {
+      try {
+        prOrphanDispatcher = await opts.prOrphanDispatcherFactory();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[pr-orphan-reconcile] WARN: dispatcher factory threw: `
+            + `${err instanceof Error ? err.message : String(err)}; pass will silent-skip.`,
+        );
+        prOrphanDispatcher = null;
+      }
+    }
+  }
   console.log(
     `[boot] reconcile-plan-state: ${args.reconcilePlanState ? 'ENABLED' : 'DISABLED'}`,
   );
@@ -500,6 +641,19 @@ export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number
         : 'DISABLED'
     }`,
   );
+  if (args.reconcilePrOrphans) {
+    const status =
+      prOpenPrSource !== null && prOrphanDispatcher !== null
+        ? 'ENABLED'
+        : prOpenPrSource === null && prOrphanDispatcher === null
+          ? 'ENABLED (source + dispatcher unresolved; will silent-skip)'
+          : prOpenPrSource === null
+            ? 'ENABLED (source unresolved; will silent-skip)'
+            : 'ENABLED (dispatcher unresolved; will silent-skip)';
+    console.log(`[boot] reconcile-pr-orphans: ${status}`);
+  } else {
+    console.log('[boot] reconcile-pr-orphans: DISABLED');
+  }
 
   const runner = new LoopRunner(host, {
     principalId: args.principal,
@@ -514,6 +668,15 @@ export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number
     ...(refresher !== null ? { prObservationRefresher: refresher } : {}),
     runPlanProposalNotifyPass: args.notifyProposedPlans,
     ...(planProposalNotifier !== null ? { planProposalNotifier } : {}),
+    runPrOrphanReconcilePass: args.reconcilePrOrphans,
+    ...(prOpenPrSource !== null ? { prOpenPrSource } : {}),
+    ...(prOrphanDispatcher !== null ? { prOrphanDispatcher } : {}),
+    ...(args.prOrphanThresholdMs !== null
+      ? { prOrphanThresholdMs: args.prOrphanThresholdMs }
+      : {}),
+    ...(args.prOrphanMaxDispatchPerTick !== null
+      ? { prOrphanMaxDispatchPerTick: args.prOrphanMaxDispatchPerTick }
+      : {}),
     onTick: report => {
       console.log(formatTickReport(report));
       for (const e of report.errors) {
