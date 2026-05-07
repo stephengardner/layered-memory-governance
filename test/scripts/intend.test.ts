@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { parseIntendArgs, buildIntentAtom, computeExpiresAt } from '../../scripts/lib/intend.mjs';
+import {
+  parseIntendArgs,
+  buildIntentAtom,
+  computeExpiresAt,
+  buildCtoSpawnArgs,
+  shellQuote,
+} from '../../scripts/lib/intend.mjs';
 
 describe('parseIntendArgs', () => {
   it('parses required --request + --scope + --blast-radius', () => {
@@ -45,6 +51,58 @@ describe('parseIntendArgs', () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.args.dryRun).toBe(true);
   });
+
+  it('accepts --invokers <path> for deployment-specific override', () => {
+    const r = parseIntendArgs([
+      '--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling',
+      '--sub-actors', 'code-author',
+      '--invokers', '/custom/registrar.mjs',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.invokersPath).toBe('/custom/registrar.mjs');
+  });
+
+  it('defaults invokersPath to null when --invokers omitted', () => {
+    const r = parseIntendArgs([
+      '--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling',
+      '--sub-actors', 'code-author',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.args.invokersPath).toBe(null);
+  });
+});
+
+describe('shellQuote', () => {
+  it('leaves shell-safe tokens unwrapped', () => {
+    expect(shellQuote('hello')).toBe('hello');
+    expect(shellQuote('intent-abc-123')).toBe('intent-abc-123');
+    expect(shellQuote('/abs/path/to/file.mjs')).toBe('/abs/path/to/file.mjs');
+  });
+
+  it('wraps tokens containing whitespace', () => {
+    expect(shellQuote('hello world')).toBe(`'hello world'`);
+  });
+
+  it('escapes embedded single quotes via close-reopen idiom', () => {
+    expect(shellQuote(`it's a quote`)).toBe(`'it'\\''s a quote'`);
+  });
+
+  it('quotes tokens with shell metacharacters', () => {
+    expect(shellQuote('echo $HOME')).toBe(`'echo $HOME'`);
+    expect(shellQuote('foo;bar')).toBe(`'foo;bar'`);
+    expect(shellQuote('back`tick`')).toBe(`'back\`tick\`'`);
+    expect(shellQuote('with"quote')).toBe(`'with"quote'`);
+    expect(shellQuote('back\\slash')).toBe(`'back\\slash'`);
+  });
+
+  it('returns empty quoted-string for empty input', () => {
+    expect(shellQuote('')).toBe(`''`);
+  });
+
+  it('rejects non-string input', () => {
+    // @ts-expect-error verifying runtime guard
+    expect(() => shellQuote(123)).toThrow(/string/);
+  });
 });
 
 describe('computeExpiresAt', () => {
@@ -63,6 +121,48 @@ describe('computeExpiresAt', () => {
   });
   it('rejects invalid format', () => {
     expect(() => computeExpiresAt('tomorrow', now)).toThrow();
+  });
+});
+
+describe('buildCtoSpawnArgs', () => {
+  const baseSpec = {
+    runCtoActorPath: '/repo/scripts/run-cto-actor.mjs',
+    request: 'add a hover tooltip',
+    atomId: 'intent-abc-2026-05-06T03-18-38-365Z',
+    invokersPath: '/repo/scripts/invokers/autonomous-dispatch.mjs',
+  };
+
+  it('always includes --invokers in the spawn argv', () => {
+    const argv = buildCtoSpawnArgs(baseSpec);
+    const idx = argv.indexOf('--invokers');
+    expect(idx).toBeGreaterThan(-1);
+    expect(argv[idx + 1]).toBe(baseSpec.invokersPath);
+  });
+
+  it('preserves canonical positional + flag order', () => {
+    const argv = buildCtoSpawnArgs(baseSpec);
+    expect(argv).toEqual([
+      baseSpec.runCtoActorPath,
+      '--request', baseSpec.request,
+      '--intent-id', baseSpec.atomId,
+      '--invokers', baseSpec.invokersPath,
+    ]);
+  });
+
+  it('rejects empty runCtoActorPath', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, runCtoActorPath: '' })).toThrow(/runCtoActorPath/);
+  });
+
+  it('rejects empty invokersPath', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, invokersPath: '' })).toThrow(/invokersPath/);
+  });
+
+  it('rejects empty request', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, request: '' })).toThrow(/request/);
+  });
+
+  it('rejects empty atomId', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, atomId: '' })).toThrow(/atomId/);
   });
 });
 

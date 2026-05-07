@@ -25,6 +25,7 @@
 
 import type { Host } from '../../interface.js';
 import type { Atom, AtomId, Time } from '../../types.js';
+import { readNumericCanonPolicy } from '../loop/canon-policy-cadence.js';
 
 /** Default freshness threshold: 5 minutes. */
 export const DEFAULT_FRESHNESS_MS = 5 * 60 * 1_000;
@@ -85,38 +86,20 @@ export interface PlanObservationRefreshResult {
  * DEFAULT_FRESHNESS_MS when no policy atom exists or the value is
  * malformed (non-numeric, non-finite, zero, negative). Substrate stays
  * mechanism-only; the threshold is data, not code.
+ *
+ * Supports the `'Infinity'` string sentinel for deployments that
+ * observe via a webhook (or never want polling): the freshness-window
+ * check `(now - observed_at < freshness)` becomes ALWAYS true, so
+ * every observation is counted as 'fresh' and the tick effectively
+ * becomes a no-op without a code path change.
  */
 export async function readPrObservationFreshnessMs(host: Host): Promise<number> {
-  const PAGE_SIZE = 200;
-  let cursor: string | undefined;
-  do {
-    const page = await host.atoms.query({ type: ['directive'] }, PAGE_SIZE, cursor);
-    for (const atom of page.atoms) {
-      if (atom.taint !== 'clean') continue;
-      if (atom.superseded_by.length > 0) continue;
-      const meta = atom.metadata as Record<string, unknown>;
-      const policy = meta['policy'] as Record<string, unknown> | undefined;
-      if (!policy || policy['subject'] !== 'pr-observation-freshness-threshold-ms') continue;
-      // Named field follows the convention of pol-actor-message-rate +
-      // pol-inbox-poll-cadence. Back-compat read on `value` keeps an
-      // older bootstrap shape readable while the named-field shape is
-      // canonical going forward.
-      const fresh = policy['freshness_ms'] ?? policy['value'];
-      // Explicit disable sentinel: a deployment that observes via a
-      // webhook (or never wants polling) sets the policy value to
-      // 'Infinity' (string, since JSON cannot encode the literal).
-      // Returning POSITIVE_INFINITY makes the freshness-window check
-      // (now - observed_at < freshness) ALWAYS true, so every
-      // observation is counted as 'fresh' and the tick effectively
-      // becomes a no-op for that deployment without a code path
-      // change.
-      if (fresh === 'Infinity') return Number.POSITIVE_INFINITY;
-      if (typeof fresh !== 'number' || !Number.isFinite(fresh) || fresh <= 0) continue;
-      return fresh;
-    }
-    cursor = page.nextCursor === null ? undefined : page.nextCursor;
-  } while (cursor !== undefined);
-  return DEFAULT_FRESHNESS_MS;
+  return readNumericCanonPolicy(host, {
+    subject: 'pr-observation-freshness-threshold-ms',
+    fieldName: 'freshness_ms',
+    fallback: DEFAULT_FRESHNESS_MS,
+    acceptInfinitySentinel: true,
+  });
 }
 
 function isPrRef(value: unknown): value is PrRef {

@@ -153,7 +153,28 @@ export type AtomType =
   | 'pipeline-stage-event'
   | 'pipeline-audit-finding'
   | 'pipeline-failed'
-  | 'pipeline-resume';
+  | 'pipeline-resume'
+  // PR-orphan reconciler substrate.
+  // `pr-driver-claim`: one principal claiming responsibility for
+  // driving a specific PR to merged (or operator-explicit closed)
+  // state. metadata.pr.{owner,repo,number} identifies the PR;
+  // metadata.principal_id is the claimant; metadata.status is
+  // 'claimed' | 'released'; metadata.expires_at provides an upper
+  // bound on the claim's lifetime so a sub-agent that terminates
+  // without an explicit release does not pin the PR forever. Released
+  // by writing a successor claim atom with status='released' and
+  // supersedes=[priorClaimId]. Pure-data atom; the orphan reconciler
+  // tick reads claims to decide whether a PR has an active driver.
+  // `pr-orphan-detected`: written by the orphan reconciler when a PR
+  // has no active driver-claim AND the latest activity threshold has
+  // expired. metadata.pr.{owner,repo,number} identifies the PR;
+  // metadata.cadence_bucket is a deterministic-id seed so a single
+  // detection per PR per cadence window is enforced via
+  // host.atoms.put's duplicate-id guard. Functions as both the
+  // mutual-exclusion lock against repeated dispatch and the
+  // historical record of the orphan event.
+  | 'pr-driver-claim'
+  | 'pr-orphan-detected';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite

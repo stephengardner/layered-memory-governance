@@ -60,6 +60,7 @@ import { execa } from 'execa';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnNode } from '../lib/spawn-node.mjs';
 import {
   buildAuthedGitInvocation,
   isTransientPrCreationGatewayError,
@@ -324,13 +325,28 @@ export default async function register(host, registry) {
           // discoverable via the PR body's machine-parseable
           // provenance footer.
           const planIdLabel = truncatePlanIdLabel(capturedPlanId);
-          await execa('node', [
+          // Spawn through scripts/lib/spawn-node.mjs which pins the
+          // child to the current `process.execPath` rather than bare
+          // `node` from PATH. On systems where `node` resolves to an
+          // older shim (e.g. an nvm-managed v12 fallback in PATH),
+          // bare-`node` invocations fail to parse ES2020 features
+          // like optional-chaining (`?.`) and nullish-coalescing
+          // (`??`) used in the spawned scripts -- the warning
+          // catch-block then masks the failure as "labels could not
+          // be applied" and the LAG-auditor gate stays unfired.
+          // Surfaced by dogfeed-21 (2026-05-05) on PR #320.
+          // 30s ceiling: a stalled gh CLI or auth probe must not
+          // hold the dispatch tick open forever. The labels API is
+          // a single small POST; sub-second is normal, anything
+          // past 30s is a genuine wedge worth surfacing as a
+          // timeout error rather than an indefinite hang.
+          await spawnNode([
             GH_AS_PATH, role,
             'api', `repos/${owner}/${repo}/issues/${capturedPrNumber}/labels`,
             '-X', 'POST',
             '-f', 'labels[]=autonomous-intent',
             '-f', `labels[]=${planIdLabel}`,
-          ], { stdio: 'inherit', cwd: repoDir });
+          ], { stdio: 'inherit', cwd: repoDir, timeout: 30_000 });
         } catch (err) {
           const cause = err instanceof Error ? err.message : String(err);
           console.error(`[autonomous-dispatch] WARNING: failed to label PR #${capturedPrNumber}: ${cause}. LAG-auditor gate will not fire until labels are added manually.`);
@@ -347,7 +363,15 @@ export default async function register(host, registry) {
       // transitions the plan to 'succeeded' (merged) or
       // 'abandoned' (closed) the next time it fires.
       try {
-        await execa('node', [
+        // Spawn through scripts/lib/spawn-node.mjs so the spawned
+        // child inherits the dispatch invoker's node version. See
+        // the label-PR call above for the failure mode this avoids.
+        // 90s ceiling matches the createPrLandingObserveRefresher
+        // default in scripts/lib/pr-observation-refresher.mjs --
+        // both call sites run the same run-pr-landing.mjs
+        // --observe-only --live pass and a stalled gh / network
+        // hiccup must not hold the dispatch tick open forever.
+        await spawnNode([
           PR_LANDING_PATH,
           '--pr', String(capturedPrNumber),
           '--owner', owner,
@@ -355,10 +379,45 @@ export default async function register(host, registry) {
           '--observe-only',
           '--live',
           '--plan-id', capturedPlanId,
-        ], { stdio: 'inherit', cwd: repoDir });
+        ], { stdio: 'inherit', cwd: repoDir, timeout: 90_000 });
       } catch (err) {
         const cause = err instanceof Error ? err.message : String(err);
         console.error(`[autonomous-dispatch] WARNING: failed to observe PR #${capturedPrNumber} after dispatch: ${cause}. Plan ${capturedPlanId} will stay at plan_state='executing' until pr-landing is run manually.`);
+      }
+
+      // Write a pr-driver-claim atom so the orphan-reconciler sees
+      // an active driver for this PR and does NOT misclassify it
+      // during the CR cycle. The claim ties the dispatch principal
+      // (cto-actor / code-author / equivalent) to the specific PR
+      // number, with derived_from chained back to the plan atom for
+      // taint propagation. Lifetime defaults to 12h (configurable
+      // via DEFAULT_DRIVER_CLAIM_LIFETIME_MS); a sub-agent that
+      // runs longer will see its claim age out and the next tick
+      // dispatch a fresh driver, which is the correct behaviour
+      // (the original sub-agent is presumed dead at that point).
+      //
+      // Best-effort: a write failure here logs but does NOT block
+      // the dispatch return path. Without the claim, the reconciler
+      // sees a fresh-no-claim PR within threshold (=> not orphan
+      // for the next cycle) and only flips to orphan-by-no-claim
+      // once the PR has gone quiet. The claim is the proactive
+      // signal; the absence-of-claim path is the safety net.
+      try {
+        const { buildPrDriverClaim } = await import('../../dist/runtime/plans/pr-driver-ledger.js');
+        const claim = buildPrDriverClaim({
+          pr: { owner, repo, number: capturedPrNumber },
+          principal_id: dispatchPrincipal,
+          claimed_at: new Date().toISOString(),
+          driver_role: 'primary',
+          derived_from: [capturedPlanId],
+        });
+        await host.atoms.put(claim);
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[autonomous-dispatch] WARNING: failed to write pr-driver-claim for PR #${capturedPrNumber}: ${cause}. `
+          + 'Orphan reconciler will rely on claim-absence + activity-window detection.',
+        );
       }
     }
 

@@ -42,14 +42,18 @@ const SOURCE_INTENT = 'operator-intent-deep-planning-pipeline-1777408799112';
  *
  * brainstorm-stage runs as brainstorm-actor (read-only research),
  * spec-stage as spec-author (cited-paths verification), plan-stage as
- * cto-actor (existing planner principal), review-stage as
+ * plan-author (cited target_paths + delegation verification), review-stage as
  * pipeline-auditor (read-only auditor), dispatch-stage as
- * plan-dispatcher (hands off to runDispatchTick).
+ * plan-dispatcher (hands off to runDispatchTick). All five share one
+ * read-only-author shape so the canon-at-runtime panel resolves uniformly
+ * for every stage; plan-author was added 2026-05-06 to close the gap
+ * where plan-stage previously inherited cto-actor's broader strategic
+ * planner canon and the panel rendered empty for resolved policy atoms.
  */
 export const DEFAULT_PIPELINE_STAGES = Object.freeze([
   Object.freeze({ name: 'brainstorm-stage', principal_id: 'brainstorm-actor' }),
   Object.freeze({ name: 'spec-stage', principal_id: 'spec-author' }),
-  Object.freeze({ name: 'plan-stage', principal_id: 'cto-actor' }),
+  Object.freeze({ name: 'plan-stage', principal_id: 'plan-author' }),
   Object.freeze({ name: 'review-stage', principal_id: 'pipeline-auditor' }),
   Object.freeze({ name: 'dispatch-stage', principal_id: 'plan-dispatcher' }),
 ]);

@@ -69,6 +69,12 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'pipeline-audit-finding',
   'pipeline-failed',
   'pipeline-resume',
+  // PR-orphan reconciler atoms (operational records, never L3 canon).
+  // Listed here for deterministic ordering when a debug tool dumps
+  // non-L3 atoms; the canon applier filters to L3 and these never
+  // appear in a rendered target.
+  'pr-driver-claim',
+  'pr-orphan-detected',
 ];
 
 const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
@@ -121,6 +127,12 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   'pipeline-audit-finding': 'Pipeline Audit Findings',
   'pipeline-failed': 'Pipeline Failures',
   'pipeline-resume': 'Pipeline Resumes',
+  // PR-orphan reconciler atoms. Operational records (one principal
+  // claiming a PR, one orphan event detected by the reconciler);
+  // never L3 canon. Headings exist for deterministic ordering when
+  // a debug tool dumps non-L3 atoms.
+  'pr-driver-claim': 'PR Driver Claims',
+  'pr-orphan-detected': 'PR Orphans Detected',
 };
 
 export interface RenderOptions {

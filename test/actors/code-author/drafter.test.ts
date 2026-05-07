@@ -877,6 +877,21 @@ describe('draftCodeChange', () => {
   });
 });
 
+describe('DRAFT_SYSTEM_PROMPT', () => {
+  it('instructs Glob/Grep navigation when target_paths is empty', () => {
+    // PR #330's dogfeed surfaced a failure mode: when plan-stage emits
+    // a plan with no target_paths and no file_contents, the drafter
+    // LLM short-circuits to empty-diff and confabulates a project name
+    // ("palace-viz") instead of running Glob/Grep on the plan's
+    // prose-referenced concepts. Rule 4a forbids that short-circuit.
+    // Lock the prompt against silent regression of that directive.
+    expect(DRAFT_SYSTEM_PROMPT).toMatch(/4a\./);
+    expect(DRAFT_SYSTEM_PROMPT).toMatch(/`target_paths` is empty/);
+    expect(DRAFT_SYSTEM_PROMPT).toMatch(/Glob and\s+Grep/);
+    expect(DRAFT_SYSTEM_PROMPT).toMatch(/Do not hallucinate a project/);
+  });
+});
+
 describe('looksLikeUnifiedDiff', () => {
   it('recognizes a well-formed diff', () => {
     expect(looksLikeUnifiedDiff(SAMPLE_DIFF)).toBe(true);

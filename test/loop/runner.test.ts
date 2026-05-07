@@ -1076,3 +1076,131 @@ describe('LoopRunner.tick plan-proposal notify integration', () => {
     expect(report.errors.some((e) => e.startsWith('plan-proposal-notify:'))).toBe(true);
   });
 });
+
+describe('LoopRunner.tick pr-orphan reconcile integration', () => {
+  it('default (runPrOrphanReconcilePass: false) leaves prOrphanReconcileReport null and never asks the source', async () => {
+    const host = createMemoryHost();
+    let listCalls = 0;
+    const source = {
+      async list(): Promise<readonly never[]> {
+        listCalls += 1;
+        return [];
+      },
+    };
+    let dispatchCalls = 0;
+    const dispatcher = {
+      async dispatch(): Promise<void> {
+        dispatchCalls += 1;
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      prOpenPrSource: source,
+      prOrphanDispatcher: dispatcher,
+    });
+    const report = await runner.tick();
+    expect(report.prOrphanReconcileReport).toBeNull();
+    expect(listCalls).toBe(0);
+    expect(dispatchCalls).toBe(0);
+  });
+
+  it('enabled-but-source-absent silent-skips and warns ONCE across many ticks', async () => {
+    const host = createMemoryHost();
+    const cap = captureStderr();
+    try {
+      const runner = new LoopRunner(host, {
+        principalId: principal,
+        runPrOrphanReconcilePass: true,
+        // No source / dispatcher.
+      });
+      for (let i = 0; i < 5; i += 1) {
+        const report = await runner.tick();
+        expect(report.prOrphanReconcileReport).toBeNull();
+      }
+      const gapWarnings = cap.calls
+        .map((args) => args.map((a) => String(a)).join(' '))
+        .filter(
+          (l) => l.includes('[pr-orphan-reconcile]') && l.includes('skipped this tick'),
+        );
+      expect(gapWarnings.length).toBe(1);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('end-to-end: orphan PR detected, atom emitted, dispatcher fired, audit recorded', async () => {
+    const host = createMemoryHost();
+    // Stale activity at NOW - 10min so the default 5min threshold trips.
+    host.clock.setTime('2026-05-06T01:00:00.000Z');
+    const stalePr = {
+      pr: { owner: 'lag-org', repo: 'memory-governance', number: 323 },
+      last_activity_at: '2026-05-06T00:50:00.000Z' as Time,
+    };
+    const source = {
+      async list(): Promise<readonly typeof stalePr[]> {
+        return [stalePr];
+      },
+    };
+    const dispatchCalls: Array<{ pr_number: number; reason: string }> = [];
+    const dispatcher = {
+      async dispatch(args: {
+        readonly pr: { readonly owner: string; readonly repo: string; readonly number: number };
+        readonly orphan_atom_id: AtomId;
+        readonly orphan_reason: string;
+        readonly prior_claim: unknown;
+      }): Promise<void> {
+        dispatchCalls.push({ pr_number: args.pr.number, reason: args.orphan_reason });
+      },
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runPrOrphanReconcilePass: true,
+      prOpenPrSource: source,
+      prOrphanDispatcher: dispatcher,
+    });
+    const report = await runner.tick();
+    expect(report.prOrphanReconcileReport).not.toBeNull();
+    expect(report.prOrphanReconcileReport?.scanned).toBe(1);
+    expect(report.prOrphanReconcileReport?.orphansDetected).toBe(1);
+    expect(report.prOrphanReconcileReport?.dispatched).toBe(1);
+    expect(dispatchCalls.length).toBe(1);
+    expect(dispatchCalls[0]?.reason).toBe('no-claim');
+    // Audit row carries the orphan-reconcile counts.
+    const audits = await host.auditor.query({ kind: ['loop.tick'] }, 5);
+    const last = audits[audits.length - 1];
+    expect(last?.details?.['pr_orphan_detected']).toBe(1);
+    expect(last?.details?.['pr_orphan_dispatched']).toBe(1);
+  });
+
+  it('numeric-override validation rejects non-positive thresholdMs at construction', () => {
+    const host = createMemoryHost();
+    const source = { async list() { return []; } };
+    const dispatcher = { async dispatch() {} };
+    expect(
+      () =>
+        new LoopRunner(host, {
+          principalId: principal,
+          runPrOrphanReconcilePass: true,
+          prOpenPrSource: source,
+          prOrphanDispatcher: dispatcher,
+          prOrphanThresholdMs: 0,
+        }),
+    ).toThrow(/prOrphanThresholdMs/);
+  });
+
+  it('numeric-override validation rejects non-positive maxDispatchPerTick at construction', () => {
+    const host = createMemoryHost();
+    const source = { async list() { return []; } };
+    const dispatcher = { async dispatch() {} };
+    expect(
+      () =>
+        new LoopRunner(host, {
+          principalId: principal,
+          runPrOrphanReconcilePass: true,
+          prOpenPrSource: source,
+          prOrphanDispatcher: dispatcher,
+          prOrphanMaxDispatchPerTick: -1,
+        }),
+    ).toThrow(/prOrphanMaxDispatchPerTick/);
+  });
+});

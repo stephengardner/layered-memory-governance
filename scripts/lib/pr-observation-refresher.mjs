@@ -15,9 +15,9 @@
  * The validateRefreshArgs guard is exported so tests can pin the input
  * contract without spawning a child process.
  */
-import { execa } from 'execa';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnNode } from './spawn-node.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUN_PR_LANDING = resolve(HERE, '..', 'run-pr-landing.mjs');
@@ -78,7 +78,12 @@ export function createPrLandingObserveRefresher(options = {}) {
     async refresh(args) {
       validateRefreshArgs(args);
       const { pr, plan_id } = args;
-      await execa('node', [
+      // Spawn through scripts/lib/spawn-node.mjs so the spawned
+      // child inherits this process's node version. Bare-`node`
+      // resolves through PATH and on nvm-managed hosts can land on
+      // an older shim that fails to parse the modern ES features
+      // the spawned scripts use.
+      await spawnNode([
         RUN_PR_LANDING,
         '--pr', String(pr.number),
         '--owner', pr.owner,
