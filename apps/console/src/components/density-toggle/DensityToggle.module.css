@@ -27,11 +27,12 @@
 @media (pointer: coarse), (max-width: 48rem) {
   .button {
     /*
-     * Tap floor on the height axis only; min-width: 44 made the icon
-     * button into a chunky 44x44 square. Natural width keeps the
-     * header chrome compact (5 controls competing with the title);
-     * 44px height satisfies WCAG 2.5.5 for the tap-target.
+     * Icon-only button: no label widens the tap target, so both
+     * axes need the 44px floor to satisfy WCAG 2.5.5. Visual
+     * "square" shape is intrinsic to a single-icon control on
+     * a coarse pointer; CR flagged the height-only attempt.
      */
+    min-width: var(--size-touch-target-min);
     min-height: var(--size-touch-target-min);
   }
 }

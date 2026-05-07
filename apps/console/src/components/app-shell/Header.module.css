@@ -100,14 +100,16 @@
   .themeToggle,
   .proposeBtn {
     /*
-     * 44px tap floor on the HEIGHT axis only. Forcing min-width: 44px
-     * earlier turned the icon-only buttons into chunky 44x44 squares
-     * that visually overweighted the header on narrow viewports.
-     * WCAG 2.5.5 (target size) is satisfied via min-height: 44px plus
-     * the natural padding-driven width; widths stay icon-natural so
-     * the header tray reads as five compact controls instead of five
-     * over-large squares.
+     * Icon-only buttons keep BOTH axes at 44px because they have
+     * no label to widen the tap target naturally. .proposeBtn loses
+     * its label on mobile via `.proposeLabel { display: none; }`,
+     * so on coarse-pointer viewports it IS icon-only and needs the
+     * inline-axis floor. The visual "44x44 square" is intrinsic to
+     * icon-only mobile chrome; CR review correctly flagged that
+     * dropping min-width regressed the hit-test rectangle below
+     * WCAG 2.5.5.
      */
+    min-width: var(--size-touch-target-min);
     min-height: var(--size-touch-target-min);
   }
 }
