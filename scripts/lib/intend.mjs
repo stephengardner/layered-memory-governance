@@ -1,10 +1,16 @@
 // scripts/lib/intend.mjs - pure helpers for scripts/intend.mjs.
 // Zero imports from src/, dist/, .lag/.
+//
+// VALID_MODES is imported from run-cto-actor.mjs (same scripts/lib/
+// directory, no src/dist/.lag boundary crossed) so the trigger-spawn
+// argv builder validates against the same list run-cto-actor.mjs's
+// own --mode parser uses. Hardcoding the literals here would silently
+// diverge the next time a third mode lands.
+import { VALID_MODES as PIPELINE_MODE_VALUES } from './run-cto-actor.mjs';
 
 const SCOPE_VALUES = ['tooling', 'docs', 'framework', 'canon'];
 const BLAST_RADIUS_VALUES = ['none', 'docs', 'tooling', 'framework', 'l3-canon-proposal'];
 const SUB_ACTORS = ['code-author', 'auditor-actor'];
-const PIPELINE_MODE_VALUES = ['single-pass', 'substrate-deep'];
 
 export function parseIntendArgs(argv) {
   const args = {
