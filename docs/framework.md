@@ -57,6 +57,8 @@ EXPIRE        TTL reached
 PROPOSE       agent proposes CLAUDE.md diff  ->  review queue
 ```
 
+Post-dispatch lifecycle projection in apps/console/server/pipeline-lifecycle.ts surfaces three executor kinds (dispatched, error, noop); reason + notes flow through for both error and noop (PR #343).
+
 ## Staleness (not just TTL)
 
 Four signals combined:
