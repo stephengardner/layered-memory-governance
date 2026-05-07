@@ -84,6 +84,28 @@ export interface PrFixOptions {
    * as `readWorkspaceHeadSha`.
    */
   readonly readTouchedPaths?: (workspacePath: string, baseRef: string) => Promise<ReadonlySet<string>>;
+  /**
+   * Optional dispatch-origin context. When the actor was spawned by an
+   * upstream orchestrator (e.g. the orphan-PR reconciler) the caller
+   * supplies the upstream atom id and reason here; the actor chains
+   * the first observation's `derived_from` to that atom and writes the
+   * reason onto `metadata.extra.dispatch_origin` so the audit trail
+   * reads end-to-end (orphan-detected -> pr-fix observation -> session
+   * -> fix-push) without a side-channel scan.
+   *
+   * When undefined, the actor's first observation chains only to its
+   * predecessor observation (the existing behavior).
+   */
+  readonly originContext?: {
+    readonly origin_atom_id: AtomId;
+    readonly origin_reason: string;
+    /**
+     * Free-string label for the origin source (e.g. 'pr-orphan-
+     * reconciler', 'operator-manual'). Stored on `extra` for human
+     * audit; the reconciler does not branch on it.
+     */
+    readonly origin_kind: string;
+  };
 }
 
 /**
@@ -213,6 +235,22 @@ export class PrFixActor implements Actor<
     }
 
     const obsId = mkPrFixObservationAtomId();
+    // Origin context is chained ONLY on the first observation. Once
+    // `lastObservationId` is set, the audit trail walks
+    // origin -> first observation -> nth observation transitively, so
+    // re-chaining the origin id every iteration would inflate the
+    // derived_from set without adding information.
+    const isFirstObservation = this.lastObservationId === undefined;
+    const origin = this.options.originContext;
+    const extra = origin !== undefined && isFirstObservation
+      ? {
+          dispatch_origin: {
+            origin_atom_id: String(origin.origin_atom_id),
+            origin_kind: origin.origin_kind,
+            origin_reason: origin.origin_reason,
+          },
+        }
+      : undefined;
     const meta: PrFixObservationMeta = {
       pr_owner: this.options.pr.owner,
       pr_repo: this.options.pr.repo,
@@ -237,6 +275,7 @@ export class PrFixActor implements Actor<
       partial: status.partial,
       // Placeholder; classify() patches this in metadata after observe runs.
       classification: 'has-findings',
+      ...(extra !== undefined ? { extra } : {}),
     };
 
     const now = (this.options.now ?? defaultNow)();
@@ -246,6 +285,9 @@ export class PrFixActor implements Actor<
       meta,
       priorObservationAtomId: this.lastObservationId,
       dispatchedSessionAtomId: undefined,
+      ...(origin !== undefined && isFirstObservation
+        ? { originAtomId: origin.origin_atom_id }
+        : {}),
       now,
     });
     await ctx.host.atoms.put(atom);

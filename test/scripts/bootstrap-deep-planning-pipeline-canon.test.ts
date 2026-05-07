@@ -152,7 +152,7 @@ describe('bootstrap-deep-planning-pipeline-canon atom shapes', () => {
     expect(result.stages.map((s) => s.principal_id)).toEqual([
       'brainstorm-actor',
       'spec-author',
-      'cto-actor',
+      'plan-author',
       'pipeline-auditor',
       'plan-dispatcher',
     ]);

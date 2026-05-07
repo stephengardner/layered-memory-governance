@@ -394,6 +394,35 @@ async function main() {
     redactor: withAdapterIdentity(redactor, 'regex-default-redactor', '0.1.0'),
   };
 
+  // Optional dispatch-origin context. When the actor was spawned by an
+  // upstream orchestrator (e.g. the orphan-PR reconciler in
+  // src/runtime/plans/pr-orphan-reconcile.ts) the orchestrator sets
+  // both env vars; the actor chains the first observation's
+  // derived_from to the upstream atom and writes the reason onto
+  // metadata.extra.dispatch_origin so the audit trail reads end-to-end
+  // (origin -> pr-fix observation -> session -> fix-push) without a
+  // side-channel scan. Absent both vars, the actor runs in stand-alone
+  // mode and the chain begins at its own first observation atom.
+  const orphanAtomIdEnv = process.env.LAG_PR_ORPHAN_ATOM_ID;
+  const orphanReasonEnv = process.env.LAG_PR_ORPHAN_REASON;
+  const originContext
+    = typeof orphanAtomIdEnv === 'string'
+      && orphanAtomIdEnv.length > 0
+      && typeof orphanReasonEnv === 'string'
+      && orphanReasonEnv.length > 0
+      ? {
+          origin_atom_id: orphanAtomIdEnv,
+          origin_reason: orphanReasonEnv,
+          origin_kind: 'pr-orphan-reconciler',
+        }
+      : undefined;
+  if (originContext !== undefined) {
+    console.log(
+      `[pr-fix] dispatch origin: kind=${originContext.origin_kind} `
+      + `atom=${originContext.origin_atom_id} reason=${originContext.origin_reason}`,
+    );
+  }
+
   // In dry-run mode, gate Bash so the spawned sub-agent cannot shell out
   // to `git push`, `gh pr edit`, or any other write. The actor's
   // SUB_AGENT_DISALLOWED_FLOOR (WebFetch / WebSearch / NotebookEdit) is
@@ -411,6 +440,7 @@ async function main() {
       max_wall_clock_ms: args.maxWallClockMs,
       max_usd: args.maxBudgetUsd,
     },
+    ...(originContext !== undefined ? { originContext } : {}),
   });
 
   const deadline = new Date(Date.now() + args.deadlineMs).toISOString();

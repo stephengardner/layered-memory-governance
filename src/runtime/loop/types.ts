@@ -12,6 +12,10 @@ import type { RenderOptions } from '../../canon-md/index.js';
 import type { PromotionThresholds } from '../../promotion/index.js';
 import type { PrObservationRefresher } from '../plans/pr-observation-refresh.js';
 import type { PlanProposalNotifier } from '../plans/plan-trigger-telegram.js';
+import type {
+  OpenPrSource,
+  OrphanPrDispatcher,
+} from '../plans/pr-orphan-reconcile.js';
 
 export interface HalfLifeConfig {
   /** Per-atom-type half-life in milliseconds. `directive` long, `ephemeral` short. */
@@ -107,6 +111,23 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   'pipeline-audit-finding': 365 * 24 * 60 * 60 * 1000,   // ~1 year
   'pipeline-failed': 365 * 24 * 60 * 60 * 1000,          // ~1 year
   'pipeline-resume': 365 * 24 * 60 * 60 * 1000,          // ~1 year
+  // PR-orphan reconciler atoms.
+  //
+  // Driver-claim atoms carry a 12-hour DEFAULT half-life that matches the
+  // dispatcher's `DEFAULT_DRIVER_CLAIM_LIFETIME_MS`. The reconciler treats
+  // expired claims as orphaned; if confidence-decay outlives the lifetime
+  // contract the claim still nominally exists in arbitration after the
+  // dispatcher has given up on it, drifting the two views apart. Keeping
+  // them aligned removes the foot-gun.
+  //
+  // Orphan-detected atoms are append-only audit records tied to a specific
+  // in-flight PR; their value comes from later forensic re-reading rather
+  // than arbitration. A long half-life keeps the stated confidence stable
+  // during the useful window without polluting the substrate decay axis.
+  // Operational purge after N months belongs in a follow-up policy atom;
+  // mirrors the agent-session / agent-turn / plan-merge-settled posture.
+  'pr-driver-claim': 12 * 60 * 60 * 1000,                 // 12 hours
+  'pr-orphan-detected': 365 * 24 * 60 * 60 * 1000,        // ~1 year
 });
 
 export interface LoopOptions {
@@ -283,6 +304,58 @@ export interface LoopOptions {
    * dedicated push-bot identity.
    */
   readonly planProposalNotifyPrincipal?: string;
+  /**
+   * Run the PR-orphan reconcile pass on every tick. Default `false`
+   * so existing callers observe no behavior change. When the flag
+   * is true and BOTH `prOpenPrSource` and `prOrphanDispatcher` are
+   * supplied, the pass walks open PRs, joins each with the active
+   * `pr-driver-claim` atom, and detects orphans (no claim + stale
+   * activity, claim expired, or claimant inactive). On detection
+   * the pass emits a `pr-orphan-detected` atom and asks the
+   * dispatcher to spawn a fresh driver sub-agent.
+   *
+   * When the flag is true but either seam is absent, the pass
+   * silently skips and logs once per runner. This matches the
+   * `runPlanObservationRefreshPass` posture: an enabling caller
+   * may opt into the flag from canon while wiring the seams in
+   * a follow-up.
+   *
+   * Cost: one `OpenPrSource.list()` call per tick plus
+   * O(open-PR-count) atom queries. Bounded by `maxDispatchPerTick`
+   * inside the tick (default 5) so a sudden orphan surge does not
+   * stampede the dispatcher.
+   */
+  readonly runPrOrphanReconcilePass?: boolean;
+  /**
+   * Pluggable seam supplying the set of open PRs to reconcile.
+   * Required when `runPrOrphanReconcilePass: true`; absent, the
+   * silent-skip path activates. The framework consumes the seam
+   * through the `OpenPrSource` interface; concrete construction
+   * happens entirely outside framework code.
+   */
+  readonly prOpenPrSource?: OpenPrSource;
+  /**
+   * Pluggable seam dispatching a fresh driver sub-agent on orphan
+   * detection. Required when `runPrOrphanReconcilePass: true`;
+   * absent, the silent-skip path activates. The framework consumes
+   * the seam through the `OrphanPrDispatcher` interface; concrete
+   * construction happens entirely outside framework code.
+   */
+  readonly prOrphanDispatcher?: OrphanPrDispatcher;
+  /**
+   * Override the orphan-detection threshold (ms) for tests / tight-
+   * cadence runs. When omitted, the threshold is read from canon
+   * `pol-pr-orphan-reconcile-threshold-ms` (default 5 minutes).
+   * Must be a positive integer; validated at construction time when
+   * the pass is enabled.
+   */
+  readonly prOrphanThresholdMs?: number;
+  /**
+   * Override the per-tick dispatch budget for orphan detection.
+   * Default 5; deployments may raise via canon. Must be a positive
+   * integer when supplied.
+   */
+  readonly prOrphanMaxDispatchPerTick?: number;
 }
 
 /**
@@ -396,6 +469,28 @@ export interface LoopTickReport {
     | {
         readonly scanned: number;
         readonly notified: number;
+        readonly skipped: Readonly<Record<string, number>>;
+      }
+    | null;
+  /**
+   * Per-tick pr-orphan reconcile summary. `null` when the pass is
+   * disabled OR when the pass is enabled but a required seam
+   * (`prOpenPrSource`, `prOrphanDispatcher`) is absent (the silent-
+   * skip path). When the pass actually runs, populated with
+   * `scanned` (open PRs inspected), `orphansDetected` (orphan-
+   * detected atoms emitted this tick), `dispatched` (fresh driver
+   * dispatches that succeeded), and `skipped` (a histogram of skip
+   * reasons including 'no-claim-but-fresh', 'claim-active',
+   * 'idempotent-skip', 'rate-limited', etc.).
+   */
+  readonly prOrphanReconcileReport:
+    | {
+        readonly scanned: number;
+        readonly orphansDetected: number;
+        readonly idempotentSkips: number;
+        readonly dispatched: number;
+        readonly failedDispatches: number;
+        readonly rateLimited: number;
         readonly skipped: Readonly<Record<string, number>>;
       }
     | null;

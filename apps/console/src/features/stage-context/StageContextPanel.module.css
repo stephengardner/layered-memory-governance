@@ -133,7 +133,16 @@
 
 .metaGrid {
   display: grid;
-  grid-template-columns: minmax(6rem, auto) 1fr;
+  /*
+   * `minmax(0, 1fr)` (not `1fr`) on the value column so a long mono
+   * value (atom-id, principal-id, path) does not expand the column
+   * past viewport width on mobile and produce page-level horizontal
+   * scroll. The `.metaValue` rule already wraps with word-break, but
+   * a `1fr` track sizes against intrinsic min-content first and then
+   * applies the cell's wrapping rules; switching to `minmax(0, ...)`
+   * lets the column actually shrink below its content's min-content.
+   */
+  grid-template-columns: minmax(6rem, auto) minmax(0, 1fr);
   column-gap: var(--space-5);
   row-gap: var(--space-2);
   margin: 0;
