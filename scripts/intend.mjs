@@ -78,11 +78,23 @@ async function main() {
     ? resolve(args.invokersPath)
     : defaultInvokersPath;
   const runCtoActorPath = resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs');
+  // Pipeline-mode override: indie-floor default is single-pass per
+  // dec-default-pipeline-mode-single-pass, so a zero-env `intend
+  // --trigger` runs single-pass through CTO. Deployments that want
+  // every trigger to flow through the 5-stage substrate-deep pipeline
+  // export `LAG_PIPELINE_MODE=substrate-deep` in their environment;
+  // operators reading this can flip the dial back to single-pass for a
+  // one-shot by `LAG_PIPELINE_MODE= node scripts/intend.mjs --trigger`.
+  // The flag passes through to run-cto-actor verbatim; an unsupported
+  // value fails-loud at buildCtoSpawnArgs rather than silently falling
+  // back, so a typo (`subastrate-deep`) surfaces at the boundary.
+  const pipelineMode = process.env.LAG_PIPELINE_MODE;
   const ctoSpawnArgs = buildCtoSpawnArgs({
     runCtoActorPath,
     request: args.request,
     atomId: atom.id,
     invokersPath,
+    ...(pipelineMode ? { mode: pipelineMode } : {}),
   });
 
   if (args.trigger) {

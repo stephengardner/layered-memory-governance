@@ -16,7 +16,12 @@
  * flag matrix without spawning a subprocess.
  */
 
-const VALID_MODES = Object.freeze(['single-pass', 'substrate-deep']);
+// Single source of truth for legal --mode values. Exported so any
+// caller that builds an argv targeting run-cto-actor.mjs (intend.mjs
+// today; future drivers next) validates against the same list this
+// script's own --mode parser does, instead of duplicating the
+// literals and risking silent drift when a third mode lands.
+export const VALID_MODES = Object.freeze(['single-pass', 'substrate-deep']);
 
 /**
  * Default mode is single-pass. Indie-floor posture: a solo developer
