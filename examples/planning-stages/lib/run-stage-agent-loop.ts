@@ -67,7 +67,6 @@ import type {
   WorkspaceProvider,
 } from '../../../src/substrate/workspace-provider.js';
 import type {
-  Atom,
   AtomId,
   PrincipalId,
   ReplayTier,
@@ -82,6 +81,11 @@ import {
   LlmToolPolicyError,
   loadLlmToolPolicy,
 } from '../../../src/substrate/policy/llm-tool-policy.js';
+import {
+  buildCanonAtRuntimeStampFromResolved,
+  MAX_CANON_BOUND_LIST as STAMP_MAX_CANON_BOUND_LIST,
+  resolveApplicableCanon,
+} from './build-canon-at-runtime-stamp.js';
 
 /**
  * Maximum canon-bound atom-id list size the helper will surface to the
@@ -89,8 +93,11 @@ import {
  * runaway applicable-canon query is trimmed at the helper boundary
  * rather than throwing at the mint site. The mint helper still enforces
  * the cap; this trim is a friendly hint that prevents the throw.
+ *
+ * Re-exported via the build-canon-at-runtime-stamp module so single-shot
+ * adapters and the agent-loop helper share one constant definition.
  */
-export const MAX_CANON_BOUND_LIST = 256;
+export const MAX_CANON_BOUND_LIST = STAMP_MAX_CANON_BOUND_LIST;
 
 /**
  * Default budget cap for an agentic stage run. Operators flip this per
@@ -284,67 +291,6 @@ export interface RunStageAgentLoopResult<TOut> {
    * exactly the substrate-purity coupling the design avoids.
    */
   readonly stageOutputExtraMetadata: Readonly<Record<string, unknown>>;
-}
-
-/**
- * Resolve the canon directives applicable to the supplied principal at
- * project scope. Reads L3 directive atoms; filters to clean,
- * non-superseded atoms. Mirrors the iteratePolicyAtoms pattern in
- * src/runtime/planning-pipeline/policy.ts so the substrate's canon-
- * applicable read shape stays uniform; the host.canon.applicable seam
- * is reserved for a substrate-wide upgrade and lands in a follow-up.
- *
- * Trims the result at MAX_CANON_BOUND_LIST so the canon-bound event
- * mint helper does not throw on an oversized list. Trim order is
- * scope-rank-then-most-recently-reinforced (a deterministic ordering
- * so a re-run produces the same trimmed set); the helper returns the
- * full ordered list to the caller for prompt composition AND the
- * trimmed slice for the event atom.
- */
-async function resolveApplicableCanon(
-  host: Host,
-): Promise<{
-  readonly atomIds: ReadonlyArray<AtomId>;
-  readonly atoms: ReadonlyArray<Atom>;
-}> {
-  // Per-principal canon filtering is reserved for a follow-up: a future
-  // host.canon.applicable seam will accept a PrincipalId and narrow the
-  // result to scope-applicable directives. Until that seam lands, this
-  // helper returns all clean, non-superseded L3 directives so the
-  // call shape can stay stable when the seam adds the principal arg.
-  const PAGE_SIZE = 200;
-  const MAX_SCAN = 5_000;
-  const atoms: Atom[] = [];
-  let totalSeen = 0;
-  let cursor: string | undefined;
-  do {
-    const remaining = MAX_SCAN - totalSeen;
-    if (remaining <= 0) break;
-    const page = await host.atoms.query(
-      { type: ['directive'], layer: ['L3'] },
-      Math.min(PAGE_SIZE, remaining),
-      cursor,
-    );
-    for (const atom of page.atoms) {
-      if (atom.taint !== 'clean') continue;
-      if (atom.superseded_by.length > 0) continue;
-      atoms.push(atom);
-    }
-    totalSeen += page.atoms.length;
-    cursor = page.nextCursor === null ? undefined : page.nextCursor;
-  } while (cursor !== undefined);
-
-  // Sort by reinforced-time descending so the trim slice keeps the
-  // most-recently-reinforced directives. Deterministic on a tie via
-  // atom-id string compare.
-  atoms.sort((a, b) => {
-    if (a.last_reinforced_at !== b.last_reinforced_at) {
-      return a.last_reinforced_at < b.last_reinforced_at ? 1 : -1;
-    }
-    return String(a.id).localeCompare(String(b.id));
-  });
-  const atomIds = atoms.map((a) => a.id);
-  return { atomIds, atoms };
 }
 
 /**
@@ -871,27 +817,18 @@ export async function runStageAgentLoop<TOut>(
   // loadLlmToolPolicy above) instead of re-resolving from a static
   // stage-mapping table after the fact.
   //
-  // Provenance discipline on tool_policy_principal_id: the field is
-  // stamped ONLY when toolPolicySource === 'policy' (the canonical
-  // pol-llm-tool-policy-<P> atom was loaded). When the caller supplied
-  // disallowedToolsOverride the stage principal's tool-policy atom was
-  // NOT consulted; stamping tool_policy_principal_id here would lie
-  // about which canon atom bound the run. tool_policy_source is always
-  // present so a downstream projection can render either 'this canon
-  // atom bound the run' (policy) or 'a per-call override bound the
-  // run' (override) without ambiguity.
-  //
-  // Frozen so a downstream consumer cannot mutate the stamp post-hoc;
-  // strings are immutable so the inner principal id needs no separate
-  // freeze. Defensive copy on the canon id list mirrors the freeze
-  // pattern in runner.ts for the verified-citation set.
-  const stageOutputExtraMetadata = Object.freeze({
-    canon_directives_applied: Object.freeze(canonAtomIds.map(String)),
-    tool_policy_source: toolPolicySource,
-    ...(toolPolicySource === 'policy'
-      ? { tool_policy_principal_id: String(input.stagePrincipal) }
-      : {}),
-  }) as Readonly<Record<string, unknown>>;
+  // Construction is delegated to buildCanonAtRuntimeStampFromResolved
+  // so single-shot adapters and the agent-loop helper share one freeze
+  // + key shape (per dev-duplication-floor canon: 5 single-shot + 1
+  // agent-loop = 6 sites doing the same thing -> extract at N=2). The
+  // canonAtomIds list is the same one resolved above for the canon-
+  // bound event + the LLM prompt, so the helper is the pure
+  // construction step over already-resolved inputs.
+  const stageOutputExtraMetadata = buildCanonAtRuntimeStampFromResolved(
+    input.stagePrincipal,
+    canonAtomIds,
+    toolPolicySource,
+  );
 
   return {
     value,
