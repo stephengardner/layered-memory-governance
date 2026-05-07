@@ -339,6 +339,44 @@ function CodeAuthorRow({ data }: { data: PipelineLifecycleData }) {
       />
     );
   }
+  if (invoked.kind === 'noop') {
+    /*
+     * Intentional no-op: the drafter ran and the correct semantic
+     * outcome was to produce no diff (existence-gate fired, plan
+     * body forecloses creation, etc). This is NOT an error; render
+     * with a neutral tone and the reason + notes inline so the
+     * operator sees WHY no-op was chosen without drilling into the
+     * source atom. Earlier the projection dropped reason/notes to
+     * null and this row rendered as "unknown executor result", which
+     * looked like a substrate failure when in fact the autonomous
+     * flow had completed correctly with no change required.
+     */
+    return (
+      <Row
+        testId="pipeline-lifecycle-code-author"
+        icon={<MinusCircle size={14} strokeWidth={2} aria-hidden="true" />}
+        label="Code-author invocation"
+        value={`no-op${invoked.reason ? ` -- ${invoked.reason}` : ''}`}
+        tone="muted"
+        detail={
+          <>
+            {invoked.notes && (
+              <div
+                className={styles.noopNotes}
+                data-testid="pipeline-lifecycle-code-author-notes"
+              >
+                <p>{invoked.notes}</p>
+              </div>
+            )}
+            <div className={styles.atomRefRow}>
+              <span className={styles.metaLabel}>Atom</span>
+              <AtomRef id={invoked.atom_id} variant="chip" />
+            </div>
+          </>
+        }
+      />
+    );
+  }
   // Unknown kind fallback: a malformed atom (kind === null OR an
   // executor that wrote a kind we don't recognize). Render neutral
   // rather than misleading success. The substrate's own validators

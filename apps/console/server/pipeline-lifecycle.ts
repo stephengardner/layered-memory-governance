@@ -388,11 +388,20 @@ export function buildPipelineLifecycle(
   const mergeAtom = pickMergeSettled(atoms, planId);
 
   /*
-   * Code-author invocation block. The executor_result kind is either
-   * 'dispatched' (PR opened) or 'error' (silent-skip with reason +
-   * stage). When 'error' we pull the reason + stage so the UI can
-   * distinguish "drafter ran but couldn't apply" from "PR opened
-   * cleanly" without re-fetching the atom.
+   * Code-author invocation block. The executor_result kind is one of:
+   *   - 'dispatched' -- PR opened cleanly
+   *   - 'error'      -- silent-skip; drafter ran but couldn't apply
+   *                     (carries reason + halt-stage)
+   *   - 'noop'       -- intentional no-op; drafter ran and the correct
+   *                     outcome was to produce no diff (carries reason
+   *                     + notes explaining WHY no-op was chosen)
+   *
+   * Earlier versions of this projection narrowed the kind union to
+   * 'dispatched' | 'error' only and dropped 'noop' to null, which made
+   * the lifecycle surface render as "no data" for an autonomous flow
+   * that semantically succeeded with no PR. Both 'error' and 'noop'
+   * outcomes now flow through with reason + notes; 'stage' stays
+   * error-only because noop has no halt-stage to report.
    */
   let codeAuthorBlock: PipelineLifecycleCodeAuthorInvocation | null = null;
   if (codeAuthorAtom) {
@@ -400,17 +409,19 @@ export function buildPipelineLifecycle(
     const executorResult = readObject(meta, 'executor_result');
     const correlationId = readString(meta, 'correlation_id');
     const kind = executorResult ? readString(executorResult, 'kind') : null;
+    const projectedKind: 'dispatched' | 'error' | 'noop' | null = kind === 'dispatched' || kind === 'error' || kind === 'noop' ? kind : null;
     codeAuthorBlock = {
       atom_id: codeAuthorAtom.id,
       plan_id: planId,
       correlation_id: correlationId,
-      kind: kind === 'dispatched' || kind === 'error' ? kind : null,
+      kind: projectedKind,
       pr_number: executorResult ? readNumber(executorResult, 'pr_number') : null,
       pr_html_url: executorResult ? readString(executorResult, 'pr_html_url') : null,
       branch_name: executorResult ? readString(executorResult, 'branch_name') : null,
       commit_sha: executorResult ? readString(executorResult, 'commit_sha') : null,
-      reason: executorResult && kind === 'error' ? readString(executorResult, 'reason') : null,
-      stage: executorResult && kind === 'error' ? readString(executorResult, 'stage') : null,
+      reason: executorResult && (projectedKind === 'error' || projectedKind === 'noop') ? readString(executorResult, 'reason') : null,
+      stage: executorResult && projectedKind === 'error' ? readString(executorResult, 'stage') : null,
+      notes: executorResult && (projectedKind === 'error' || projectedKind === 'noop') ? readString(executorResult, 'notes') : null,
       at: codeAuthorAtom.created_at,
     };
   }
