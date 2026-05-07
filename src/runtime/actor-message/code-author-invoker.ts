@@ -70,6 +70,7 @@ import {
   CodeAuthorFenceError,
   type CodeAuthorFence,
 } from '../actors/code-author/fence.js';
+import { parsePrHtmlUrl } from '../../external/github/parse-pr-url.js';
 import { mkPrObservationSeedAtom } from './pr-observation-seed.js';
 
 /**
@@ -413,10 +414,14 @@ export async function runCodeAuthor(
   //    first pass after the freshness window expires.
   if (executorResult?.kind === 'dispatched') {
     try {
+      // URL parsing happens here (the runtime/github boundary), not
+      // inside pr-observation-seed.ts (which stays forge-agnostic).
+      const prRef = parsePrHtmlUrl(executorResult.prHtmlUrl);
       const seed = mkPrObservationSeedAtom({
         principal,
         planId: String(plan.id),
-        executorResult,
+        pr: prRef,
+        headSha: executorResult.commitSha,
         observedAt: nowIso,
         correlationId,
       });

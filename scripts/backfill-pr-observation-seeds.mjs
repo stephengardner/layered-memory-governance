@@ -44,6 +44,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { mkPrObservationSeedAtom } from '../dist/runtime/actor-message/pr-observation-seed.js';
+import { parsePrHtmlUrl } from '../dist/external/github/parse-pr-url.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -133,14 +134,15 @@ async function main() {
 
   // Write a seed for each dispatched code-author-invoked that does
   // not already have a pr-observation atom for its (owner, repo,
-  // number). The seed parser will throw on malformed URLs; we catch
-  // and count as skipped_malformed rather than abort the whole
-  // backfill (one corrupt history record should not block the rest).
+  // number). parsePrHtmlUrl + the seed builder both throw on
+  // malformed inputs; we catch and count as skipped_malformed
+  // rather than abort the whole backfill (one corrupt history
+  // record should not block the rest).
   for (const d of dispatched) {
     const url = d.executorResult.prHtmlUrl;
     let parsed;
     try {
-      parsed = parseUrlForBackfill(url);
+      parsed = parsePrHtmlUrl(url);
     } catch (err) {
       summary.skipped_malformed += 1;
       continue;
@@ -156,7 +158,8 @@ async function main() {
       seed = mkPrObservationSeedAtom({
         principal: d.principalId,
         planId: d.planId,
-        executorResult: d.executorResult,
+        pr: parsed,
+        headSha: d.executorResult.commitSha,
         observedAt: d.observedAt,
       });
     } catch (err) {
@@ -187,35 +190,6 @@ async function main() {
   }
 
   console.log(JSON.stringify(summary, null, 2));
-}
-
-/**
- * Inline URL parse for the backfill. We avoid importing parsePrHtmlUrl
- * because the script processes historical records that may have been
- * written with looser validation; we accept the same canonical shape
- * but classify rejections rather than throw at the script level.
- */
-function parseUrlForBackfill(prHtmlUrl) {
-  if (typeof prHtmlUrl !== 'string' || prHtmlUrl.length === 0) {
-    throw new Error('non-string-url');
-  }
-  const url = new URL(prHtmlUrl);
-  if (url.hostname !== 'github.com') {
-    throw new Error(`non-github-host: ${url.hostname}`);
-  }
-  const segments = url.pathname.split('/').filter((s) => s.length > 0);
-  if (segments.length < 4) {
-    throw new Error('too-few-segments');
-  }
-  const [owner, repo, segment, numberRaw] = segments;
-  if (segment !== 'pull') {
-    throw new Error(`segment-not-pull: ${segment}`);
-  }
-  const number = Number(numberRaw);
-  if (!Number.isInteger(number) || number <= 0) {
-    throw new Error(`bad-number: ${numberRaw}`);
-  }
-  return { owner, repo, number };
 }
 
 main().catch((err) => {

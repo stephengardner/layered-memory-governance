@@ -9,12 +9,11 @@
  * window expires.
  *
  * Coverage:
- *   - happy path: well-formed inputs produce the expected atom shape
+ *   - happy path: structured pr ref + headSha produce expected atom
  *   - id determinism: reuses mkPrObservationAtomId so two seeds for
  *     the same (owner, repo, number, head_sha[:12], minute) collapse
- *   - URL parsing edge cases: malformed prHtmlUrl is rejected with a
- *     descriptive Error (no silent malformed atom write)
- *   - empty / non-string commitSha is rejected
+ *   - argument-validation guards: empty owner/repo, non-integer
+ *     number, empty headSha, empty planId
  *   - the seed passes the pr-observation-refresh filter contract
  *     (metadata.kind === 'pr-observation', plan_id present,
  *     pr_state non-terminal, pr ref well-formed)
@@ -22,101 +21,31 @@
 
 import { describe, expect, it } from 'vitest';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
-import {
-  mkPrObservationSeedAtom,
-  parsePrHtmlUrl,
-} from '../../../src/runtime/actor-message/pr-observation-seed.js';
-import type { CodeAuthorExecutorSuccess } from '../../../src/runtime/actor-message/code-author-invoker.js';
+import { mkPrObservationSeedAtom } from '../../../src/runtime/actor-message/pr-observation-seed.js';
 import { runPlanObservationRefreshTick } from '../../../src/runtime/plans/pr-observation-refresh.js';
 import type { Atom, AtomId, PlanState, PrincipalId, Time } from '../../../src/types.js';
 
 const PRINCIPAL = 'code-author' as PrincipalId;
 const PLAN_ID = 'plan-x';
 const OBSERVED_AT = '2026-05-07T18:00:00.000Z' as Time;
+const HEAD_SHA = 'abc1234567890def0011223344556677889900aa';
 
-function mkExecutorSuccess(overrides: Partial<CodeAuthorExecutorSuccess> = {}): CodeAuthorExecutorSuccess {
+function mkPrRef(overrides: Partial<{ owner: string; repo: string; number: number }> = {}) {
   return {
-    kind: 'dispatched',
-    prNumber: 42,
-    prHtmlUrl: 'https://github.com/foo/bar/pull/42',
-    commitSha: 'abc1234567890def0011223344556677889900aa',
-    branchName: 'code-author/plan-x-deadbeef',
-    totalCostUsd: 0.42,
-    modelUsed: 'claude-opus-4-7',
-    confidence: 0.86,
-    touchedPaths: ['docs/framework.md'],
+    owner: 'foo',
+    repo: 'bar',
+    number: 42,
     ...overrides,
   };
 }
-
-describe('parsePrHtmlUrl', () => {
-  it('parses a canonical github.com PR URL', () => {
-    const r = parsePrHtmlUrl('https://github.com/foo/bar/pull/42');
-    expect(r).toEqual({ owner: 'foo', repo: 'bar', number: 42 });
-  });
-
-  it('parses a real-world repo with hyphens and dots', () => {
-    const r = parsePrHtmlUrl('https://github.com/stephengardner/layered-autonomous-governance/pull/344');
-    expect(r).toEqual({
-      owner: 'stephengardner',
-      repo: 'layered-autonomous-governance',
-      number: 344,
-    });
-  });
-
-  it('handles trailing slash', () => {
-    const r = parsePrHtmlUrl('https://github.com/foo/bar/pull/42/');
-    expect(r).toEqual({ owner: 'foo', repo: 'bar', number: 42 });
-  });
-
-  it('throws on non-string input', () => {
-    // @ts-expect-error -- testing runtime guard
-    expect(() => parsePrHtmlUrl(undefined)).toThrow(/non-empty string/);
-    // @ts-expect-error -- testing runtime guard
-    expect(() => parsePrHtmlUrl(123)).toThrow(/non-empty string/);
-    expect(() => parsePrHtmlUrl('')).toThrow(/non-empty string/);
-  });
-
-  it('throws on missing scheme', () => {
-    expect(() => parsePrHtmlUrl('github.com/foo/bar/pull/42')).toThrow(/not a valid URL/);
-  });
-
-  it('throws on non-github host', () => {
-    expect(() => parsePrHtmlUrl('https://gitlab.com/foo/bar/pull/42')).toThrow(/host must be github\.com/);
-    expect(() => parsePrHtmlUrl('https://api.github.com/foo/bar/pull/42')).toThrow(/host must be github\.com/);
-  });
-
-  it('throws when the pull segment is missing', () => {
-    expect(() => parsePrHtmlUrl('https://github.com/foo/bar/issues/42')).toThrow(/segment 3 must be 'pull'/);
-  });
-
-  it('throws when the path is too short', () => {
-    expect(() => parsePrHtmlUrl('https://github.com/foo/bar')).toThrow(/too few segments/);
-  });
-
-  it('throws when the number segment is not a positive integer', () => {
-    expect(() => parsePrHtmlUrl('https://github.com/foo/bar/pull/abc')).toThrow(/not a positive integer/);
-    expect(() => parsePrHtmlUrl('https://github.com/foo/bar/pull/1.5')).toThrow(/not a positive integer/);
-    expect(() => parsePrHtmlUrl('https://github.com/foo/bar/pull/0')).toThrow(/not a positive integer/);
-    expect(() => parsePrHtmlUrl('https://github.com/foo/bar/pull/-3')).toThrow(/not a positive integer/);
-  });
-
-  it('throws when owner or repo is empty', () => {
-    // Slashes that produce empty segments are filtered, so multiple
-    // slashes generate "too few segments". Single empty segments need
-    // a different shape, which URL parsing actually normalizes away.
-    // The defensive checks remain in case an upstream caller passes
-    // a URL constructor that does not normalize.
-    expect(() => parsePrHtmlUrl('https://github.com//bar/pull/42')).toThrow(/too few segments|owner segment is empty/);
-  });
-});
 
 describe('mkPrObservationSeedAtom', () => {
   it('produces an atom with metadata.kind=pr-observation (the discriminator pr-observation-refresh filters on)', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.type).toBe('observation');
@@ -124,23 +53,23 @@ describe('mkPrObservationSeedAtom', () => {
     expect(atom.metadata['kind']).toBe('pr-observation');
   });
 
-  it('parses pr ref out of the prHtmlUrl into metadata.pr', () => {
+  it('writes the pr ref into metadata.pr', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess({
-        prHtmlUrl: 'https://github.com/foo/bar/pull/42',
-      }),
+      pr: { owner: 'foo', repo: 'bar', number: 42 },
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.metadata['pr']).toEqual({ owner: 'foo', repo: 'bar', number: 42 });
   });
 
-  it('stamps confidence=0.7 for a synthesized seed (we did not query GitHub)', () => {
+  it('stamps confidence=0.7 for a synthesized seed (we did not query the forge)', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.confidence).toBe(0.7);
@@ -150,7 +79,8 @@ describe('mkPrObservationSeedAtom', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.metadata['partial']).toBe(true);
@@ -161,7 +91,8 @@ describe('mkPrObservationSeedAtom', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.provenance.derived_from).toEqual([PLAN_ID]);
@@ -171,7 +102,8 @@ describe('mkPrObservationSeedAtom', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess({ commitSha: 'feedfacecafe1234567890abcdef0011223344556677889900' }),
+      pr: mkPrRef(),
+      headSha: 'feedfacecafe1234567890abcdef0011223344556677889900',
       observedAt: OBSERVED_AT,
     });
     expect(atom.metadata['pr_state']).toBe('OPEN');
@@ -183,7 +115,8 @@ describe('mkPrObservationSeedAtom', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.metadata['counts']).toEqual({
@@ -199,7 +132,8 @@ describe('mkPrObservationSeedAtom', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.metadata['mergeable']).toBeNull();
@@ -210,7 +144,8 @@ describe('mkPrObservationSeedAtom', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.metadata).not.toHaveProperty('pr_title');
@@ -221,56 +156,89 @@ describe('mkPrObservationSeedAtom', () => {
     // minute) collapse to the same id. This means a pr-landing
     // observe-only run minutes later that produces a hydrated
     // observation under the same id supersedes this seed naturally.
-    const atomA = mkPrObservationSeedAtom({
+    const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
-    expect(atomA.id).toMatch(/^pr-observation-foo-bar-42-abc123456789-/);
+    expect(atom.id).toMatch(/^pr-observation-foo-bar-42-abc123456789-/);
   });
 
-  it('throws on missing /pull/ in URL (no silent malformed atom)', () => {
+  it('throws on empty owner', () => {
     expect(() => mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess({ prHtmlUrl: 'https://github.com/foo/bar/issues/42' }),
+      pr: { owner: '', repo: 'bar', number: 42 },
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
-    })).toThrow(/segment 3 must be 'pull'/);
+    })).toThrow(/pr\.owner must be a non-empty string/);
   });
 
-  it('throws on non-integer pr number', () => {
+  it('throws on empty repo', () => {
     expect(() => mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess({ prHtmlUrl: 'https://github.com/foo/bar/pull/abc' }),
+      pr: { owner: 'foo', repo: '', number: 42 },
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
-    })).toThrow(/not a positive integer/);
+    })).toThrow(/pr\.repo must be a non-empty string/);
   });
 
-  it('throws on missing scheme', () => {
+  it('throws on non-integer number', () => {
     expect(() => mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess({ prHtmlUrl: 'github.com/foo/bar/pull/42' }),
+      pr: { owner: 'foo', repo: 'bar', number: 1.5 },
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
-    })).toThrow(/not a valid URL/);
+    })).toThrow(/pr\.number must be a positive integer/);
   });
 
-  it('throws on empty commitSha', () => {
+  it('throws on zero or negative number', () => {
     expect(() => mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess({ commitSha: '' }),
+      pr: { owner: 'foo', repo: 'bar', number: 0 },
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
-    })).toThrow(/commitSha must be a non-empty string/);
+    })).toThrow(/pr\.number must be a positive integer/);
+    expect(() => mkPrObservationSeedAtom({
+      principal: PRINCIPAL,
+      planId: PLAN_ID,
+      pr: { owner: 'foo', repo: 'bar', number: -3 },
+      headSha: HEAD_SHA,
+      observedAt: OBSERVED_AT,
+    })).toThrow(/pr\.number must be a positive integer/);
+  });
+
+  it('throws on empty headSha', () => {
+    expect(() => mkPrObservationSeedAtom({
+      principal: PRINCIPAL,
+      planId: PLAN_ID,
+      pr: mkPrRef(),
+      headSha: '',
+      observedAt: OBSERVED_AT,
+    })).toThrow(/headSha must be a non-empty string/);
+  });
+
+  it('throws on empty planId', () => {
+    expect(() => mkPrObservationSeedAtom({
+      principal: PRINCIPAL,
+      planId: '',
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
+      observedAt: OBSERVED_AT,
+    })).toThrow(/planId must be a non-empty string/);
   });
 
   it('forwards the correlation id into provenance.source.session_id when provided', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
       correlationId: 'corr-abc',
     });
@@ -281,7 +249,8 @@ describe('mkPrObservationSeedAtom', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.provenance.source).not.toHaveProperty('session_id');
@@ -291,7 +260,8 @@ describe('mkPrObservationSeedAtom', () => {
     const atom = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: PLAN_ID,
-      executorResult: mkExecutorSuccess(),
+      pr: mkPrRef(),
+      headSha: HEAD_SHA,
       observedAt: OBSERVED_AT,
     });
     expect(atom.content).toMatch(/synthesized at code-author dispatch/);
@@ -351,9 +321,8 @@ describe('mkPrObservationSeedAtom -> runPlanObservationRefreshTick (contract int
     const seed = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: 'plan-test-seed',
-      executorResult: mkExecutorSuccess({
-        prHtmlUrl: 'https://github.com/foo/bar/pull/77',
-      }),
+      pr: { owner: 'foo', repo: 'bar', number: 77 },
+      headSha: HEAD_SHA,
       observedAt,
     });
     await host.atoms.put(seed);
@@ -383,7 +352,8 @@ describe('mkPrObservationSeedAtom -> runPlanObservationRefreshTick (contract int
     const seed = mkPrObservationSeedAtom({
       principal: PRINCIPAL,
       planId: 'plan-fresh',
-      executorResult: mkExecutorSuccess(),
+      pr: { owner: 'foo', repo: 'bar', number: 1 },
+      headSha: HEAD_SHA,
       observedAt,
     });
     await host.atoms.put(seed);
