@@ -81,6 +81,19 @@
   outline-offset: var(--stroke-rail);
 }
 
+/*
+ * Touch-target floor on coarse pointers per canon
+ * dev-web-mobile-first-required. The dashboard window-toggle
+ * (24h / 7d / 30d) is one of the primary controls on the dashboard;
+ * on touch devices its ~30px height was below the 44px tap floor.
+ */
+@media (pointer: coarse), (max-width: 48rem) {
+  .windowBtn {
+    min-height: var(--size-touch-target-min);
+    min-width: var(--size-touch-target-min);
+  }
+}
+
 /* ---- hero number row ---- */
 
 .heroGrid {

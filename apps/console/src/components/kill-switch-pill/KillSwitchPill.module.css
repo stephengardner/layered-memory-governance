@@ -53,6 +53,19 @@
   .label { display: none; }
 }
 
+/*
+ * Touch-target floor on coarse pointers per canon
+ * dev-web-mobile-first-required. The kill-switch pill is a button;
+ * with the label hidden on mobile it shrinks to ~22px which falls
+ * below the 44px tap floor. Padding pushes the body up to the
+ * touch floor without inflating the visual weight on desktop.
+ */
+@media (pointer: coarse), (max-width: 48rem) {
+  .pill {
+    min-height: var(--size-touch-target-min);
+  }
+}
+
 .menu {
   position: absolute;
   top: calc(100% + var(--space-2));
