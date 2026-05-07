@@ -4,6 +4,7 @@
 const SCOPE_VALUES = ['tooling', 'docs', 'framework', 'canon'];
 const BLAST_RADIUS_VALUES = ['none', 'docs', 'tooling', 'framework', 'l3-canon-proposal'];
 const SUB_ACTORS = ['code-author', 'auditor-actor'];
+const PIPELINE_MODE_VALUES = ['single-pass', 'substrate-deep'];
 
 export function parseIntendArgs(argv) {
   const args = {
@@ -108,8 +109,8 @@ export function buildCtoSpawnArgs(spec) {
     '--invokers', invokersPath,
   ];
   if (mode !== undefined && mode !== null) {
-    if (typeof mode !== 'string' || (mode !== 'single-pass' && mode !== 'substrate-deep')) {
-      throw new Error(`buildCtoSpawnArgs: mode must be 'single-pass' or 'substrate-deep', got ${JSON.stringify(mode)}`);
+    if (typeof mode !== 'string' || !PIPELINE_MODE_VALUES.includes(mode)) {
+      throw new Error(`buildCtoSpawnArgs: mode must be one of ${PIPELINE_MODE_VALUES.join('|')}, got ${JSON.stringify(mode)}`);
     }
     argv.push('--mode', mode);
   }
