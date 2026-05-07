@@ -59,7 +59,9 @@ import type {
   StageInput,
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
-import type { AtomId } from '../../../src/types.js';
+import type { AtomId, PrincipalId } from '../../../src/types.js';
+import { buildCanonAtRuntimeStamp } from '../lib/build-canon-at-runtime-stamp.js';
+import { bindingForStage } from '../lib/stage-mapping.js';
 import { buildJudgeSchema } from '../lib/zod-to-judge-schema.js';
 
 /** Maximum entries per cited-id list; mirrors MAX_CITED_LIST in atom-shapes. */
@@ -317,11 +319,21 @@ async function runPlan(
   );
   const value = result.output;
   const cost_usd = typeof value.cost_usd === 'number' ? value.cost_usd : 0;
+  // Stamp the canon-at-runtime metadata so the persisted plan atoms
+  // carry the canon_directives_applied + tool_policy_* shape the
+  // agentic adapter produces. The plan-stage emits multiple plan
+  // atoms via mkPlanOutputAtoms; non-reserved keys propagate through
+  // omitReservedPlanMetadata so each plan atom's metadata carries
+  // the stamp. Reserved plan-shape keys (delegation, title, etc) are
+  // never present in the stamp so the propagation is loss-free.
+  const stagePrincipal = bindingForStage('plan-stage')!.principalId as PrincipalId;
+  const extraMetadata = await buildCanonAtRuntimeStamp(input.host, stagePrincipal);
   return {
     value,
     cost_usd,
     duration_ms: result.metadata.latency_ms,
     atom_type: 'plan',
+    extraMetadata,
   };
 }
 

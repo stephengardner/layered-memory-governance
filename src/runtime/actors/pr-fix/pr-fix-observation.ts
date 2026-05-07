@@ -36,6 +36,15 @@ export function mkPrFixObservationAtom(input: {
   readonly meta: PrFixObservationMeta;
   readonly priorObservationAtomId: AtomId | undefined;
   readonly dispatchedSessionAtomId: AtomId | undefined;
+  /**
+   * Optional upstream origin atom id (e.g. an orphan-detected atom).
+   * When set, the observation chains via `provenance.derived_from` to
+   * the origin so the audit trail reads end-to-end (origin -> pr-fix
+   * observation -> session -> fix-push) without a side-channel scan.
+   * Caller is responsible for setting `meta.extra.dispatch_origin`
+   * with the human-readable label + reason.
+   */
+  readonly originAtomId?: AtomId;
   readonly now: string;
 }): Atom {
   const derived: AtomId[] = [];
@@ -44,6 +53,9 @@ export function mkPrFixObservationAtom(input: {
   }
   if (input.dispatchedSessionAtomId !== undefined) {
     derived.push(input.dispatchedSessionAtomId);
+  }
+  if (input.originAtomId !== undefined) {
+    derived.push(input.originAtomId);
   }
   const m: PrFixObservationMeta =
     input.dispatchedSessionAtomId !== undefined

@@ -115,6 +115,8 @@ import {
   type AuditChainAtom,
   type AuditChainResponse,
 } from './audit-chain';
+import { resolveSkillBundle } from '../../../examples/planning-stages/lib/skill-bundle-resolver.js';
+import { pipelineStagePrincipalSkillBundle } from './pipeline-stage-skill-resolver';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -528,16 +530,45 @@ async function handlePrincipalSkill(params: {
   }
 
   /*
-   * Load the SKILL.md content. ENOENT is "no skill yet"; any other
-   * read error is a real problem and rethrows so the route handler
-   * returns 500 rather than masking as a clean empty state.
+   * Pipeline-stage principals (brainstorm-actor, spec-author,
+   * plan-author, pipeline-auditor, plan-dispatcher) carry their soul
+   * as a vendored superpowers skill bundle under
+   * examples/planning-stages/skills/<bundle>.md, NOT a per-principal
+   * .claude/skills/<id>/SKILL.md file. The stage-mapping helper is the
+   * single source of truth for the principal -> bundle binding (its
+   * STAGE_TABLE matches the agentic adapters' principal + skill choices).
+   * Consult it FIRST so a pipeline-stage principal renders its true
+   * skill content instead of mis-classifying as actor-skill-debt. The
+   * mapping is keyed by stage NAME but the principal-id is unique
+   * across the table, so we walk by principal-id to avoid an extra
+   * lookup table; PIPELINE_STAGE_PRINCIPAL_TO_BUNDLE captures the
+   * inverted view at module init.
    */
   let content: string | null = null;
-  try {
-    const raw = await readFile(join(SKILLS_DIR, id, 'SKILL.md'), 'utf8');
-    content = raw;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  const bundle = pipelineStagePrincipalSkillBundle(id);
+  if (bundle !== null) {
+    /*
+     * Vendored skill bundles are checked-in repository files, so a
+     * resolution failure here is a substrate bug (deleted vendored
+     * file or rename drift), not a "no skill" condition. Surface the
+     * error so the consumer sees the misroute rather than masking as
+     * a clean empty state. This matches the principal-not-found
+     * default-deny posture above.
+     */
+    content = await resolveSkillBundle(bundle);
+  } else {
+    /*
+     * Fallback: read .claude/skills/<id>/SKILL.md. ENOENT is "no skill
+     * yet"; any other read error is a real problem and rethrows so the
+     * route handler returns 500 rather than masking as a clean empty
+     * state.
+     */
+    try {
+      const raw = await readFile(join(SKILLS_DIR, id, 'SKILL.md'), 'utf8');
+      content = raw;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
   }
 
   /*

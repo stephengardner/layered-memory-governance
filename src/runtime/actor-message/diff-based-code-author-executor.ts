@@ -383,6 +383,35 @@ export function buildDiffBasedCodeAuthorExecutor(
         // would either repeat the same correct judgment or
         // hallucinate a change to satisfy the prompt.
         if (draftResult.diff.trim().length === 0) {
+          // Confabulation gate. When the plan supplied no target_paths
+          // (an empty file scope), an empty diff is only a legitimate
+          // no-op if the drafter actually navigated via Glob/Grep
+          // before concluding no work is needed. Without that, a
+          // silent-success is a permissive bucket the LLM can confabulate
+          // into: "no scope was declared, I have nothing to ground in,
+          // I will silent-skip and invent an excuse". Reclassify those
+          // as a hard error so the operator sees the failure instead of
+          // a fake terminal-success.
+          //
+          // The check is purely structural -- the structural
+          // preconditions for confabulation are (a) no concrete files
+          // in scope and (b) no documented navigation. Both are visible
+          // on the drafter's structured output. Detection stays in the
+          // executor (mechanism layer) for the same reason the existing
+          // empty-diff branch does.
+          if (targetPaths.length === 0 && !hasNavigationEvidence(draftResult.notes)) {
+            return {
+              kind: 'error',
+              stage: 'drafter/no-navigation-attempted',
+              reason:
+                'drafter returned empty diff for a plan with no target_paths and no '
+                + 'documented Glob/Grep navigation in its notes. Either populate '
+                + 'plan.metadata.target_paths so the drafter has a concrete file '
+                + 'scope, or instruct the drafter to navigate the working tree '
+                + 'before escalating an empty diff. Drafter notes: '
+                + JSON.stringify(draftResult.notes),
+            };
+          }
           return {
             kind: 'noop',
             notes: draftResult.notes,
@@ -684,6 +713,20 @@ export async function verifyCitedPaths(
     }
   }
   return { kind: 'ok' };
+}
+
+/**
+ * Returns true when the drafter's notes mention having used Glob or Grep
+ * to navigate the working tree. Used by the empty-diff confabulation gate
+ * to distinguish a navigated-and-found-nothing escalation (legitimate
+ * silent-success) from a confabulated empty-diff (LLM punted without
+ * actually searching). The check is case-sensitive on the tool names
+ * because Glob and Grep are conventionally capitalized in Claude tool
+ * prose; lowercase mentions are weak evidence the LLM merely referred
+ * to the concepts rather than invoking them.
+ */
+function hasNavigationEvidence(notes: string): boolean {
+  return /\b(Glob|Grep)\b/.test(notes);
 }
 
 function extractStringArray(

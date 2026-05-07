@@ -25,6 +25,7 @@ import {
   nextBackoffMs,
   parseIntegerFlag,
   parseTrycloudflareHostname,
+  resolveCloudflaredPath,
 } from '../../scripts/lib/tunnel-watchdog.mjs';
 
 describe('parseTrycloudflareHostname', () => {
@@ -592,5 +593,150 @@ describe('parseIntegerFlag (Finding 1: helper extraction + Finding 6: real exerc
     const argv = ['--max-failures', '5', '--cooldown-ms', '0'];
     const r = parseIntegerFlag('--max-failures', argv, 0, 1, '[err]');
     expect(r.newIndex).toBe(1);
+  });
+});
+
+describe('resolveCloudflaredPath', () => {
+  /*
+   * The watchdog spawns cloudflared by name; on Windows the MSI
+   * installer drops the binary in Program Files but does NOT add
+   * the directory to PATH. The bare-name spawn therefore hits
+   * ENOENT and the tunnel never comes up. This helper closes that
+   * gap by probing well-known install paths on Windows while
+   * leaving POSIX behaviour untouched.
+   *
+   * Tests pin every branch of the resolution table so a regression
+   * (e.g. someone reordering the priorities or dropping the
+   * literal-path fallback) flips a unit test, not a production
+   * tunnel boot.
+   */
+
+  it('honours LAG_CLOUDFLARED_PATH ahead of every other rule', () => {
+    const out = resolveCloudflaredPath({
+      env: {
+        LAG_CLOUDFLARED_PATH: 'D:\\custom\\cloudflared.exe',
+        'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      },
+      platform: 'win32',
+      // existsSync would otherwise match the Program Files
+      // candidate; pin that the env override wins anyway.
+      existsSync: () => true,
+    });
+    expect(out).toBe('D:\\custom\\cloudflared.exe');
+  });
+
+  it('trims whitespace in LAG_CLOUDFLARED_PATH so a stray newline does not break resolution', () => {
+    // Operators copy/paste this into shell rc files; a trailing
+    // \n or surrounding spaces are common and were silently
+    // breaking the path before the trim.
+    const out = resolveCloudflaredPath({
+      env: { LAG_CLOUDFLARED_PATH: '  /usr/local/bin/cloudflared\n' },
+      platform: 'linux',
+      existsSync: () => false,
+    });
+    expect(out).toBe('/usr/local/bin/cloudflared');
+  });
+
+  it('returns the bare name on POSIX when no env override is set', () => {
+    // Linux + macOS installers drop a /usr/local/bin/cloudflared
+    // symlink that is on the default PATH; bare-name spawn works
+    // and we should not invent a Windows-style fallback list.
+    const out = resolveCloudflaredPath({
+      env: {},
+      platform: 'linux',
+      existsSync: () => false,
+    });
+    expect(out).toBe('cloudflared');
+  });
+
+  it('on Windows probes %ProgramFiles(x86)% before %ProgramFiles%', () => {
+    // The current cloudflared MSI installs into the (x86) tree,
+    // even on 64-bit Windows. Only Program Files (x86) exists in
+    // this fixture, so it must win.
+    const seen: string[] = [];
+    const out = resolveCloudflaredPath({
+      env: {
+        'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+        'ProgramFiles': 'C:\\Program Files',
+      },
+      platform: 'win32',
+      existsSync: (p: string) => {
+        seen.push(p);
+        return p === 'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe';
+      },
+    });
+    expect(out).toBe('C:\\Program Files (x86)\\cloudflared\\cloudflared.exe');
+    // The order of probes matters: x86 first, then plain.
+    expect(seen[0]).toBe('C:\\Program Files (x86)\\cloudflared\\cloudflared.exe');
+  });
+
+  it('falls back to %ProgramFiles% when %ProgramFiles(x86)% is missing the binary', () => {
+    // Old-installer machines have the binary in the 64-bit tree.
+    const out = resolveCloudflaredPath({
+      env: {
+        'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+        'ProgramFiles': 'C:\\Program Files',
+      },
+      platform: 'win32',
+      existsSync: (p: string) => p === 'C:\\Program Files\\cloudflared\\cloudflared.exe',
+    });
+    expect(out).toBe('C:\\Program Files\\cloudflared\\cloudflared.exe');
+  });
+
+  it('on Windows probes the literal canonical paths even when Program Files env vars are unset', () => {
+    // A watchdog spawned from a restricted shell may not inherit
+    // %ProgramFiles%; the literal-path fallback ensures resolution
+    // still works on a default `C:\` install.
+    const out = resolveCloudflaredPath({
+      env: {},
+      platform: 'win32',
+      existsSync: (p: string) => p === 'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
+    });
+    expect(out).toBe('C:\\Program Files (x86)\\cloudflared\\cloudflared.exe');
+  });
+
+  it('returns the bare name on Windows when no candidate exists, mirroring the pre-fix path', () => {
+    // No env override, no install. The watchdog's CLI wrapper
+    // already handles the resulting ENOENT by setting
+    // tunnelDisabled; this helper must not invent a different
+    // failure shape.
+    const out = resolveCloudflaredPath({
+      env: {},
+      platform: 'win32',
+      existsSync: () => false,
+    });
+    expect(out).toBe('cloudflared');
+  });
+
+  it('treats an empty LAG_CLOUDFLARED_PATH as not set so the candidate probe still runs', () => {
+    // dotenv + docker-compose can produce empty-string env values
+    // unintentionally; an empty override should be ignored, not
+    // honoured (which would spawn `''` -> EFAULT).
+    const out = resolveCloudflaredPath({
+      env: { LAG_CLOUDFLARED_PATH: '' },
+      platform: 'win32',
+      existsSync: (p: string) => p === 'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
+    });
+    expect(out).toBe('C:\\Program Files (x86)\\cloudflared\\cloudflared.exe');
+  });
+
+  it('handles missing existsSync callback by falling back to the bare name on Windows', () => {
+    // Defensive against future caller drift (`opts.existsSync`
+    // becomes optional or stubbed). A missing callback must not
+    // throw; resolution simply finds no candidate and returns
+    // the bare name.
+    const out = resolveCloudflaredPath({
+      env: {},
+      platform: 'win32',
+      existsSync: undefined as unknown as (p: string) => boolean,
+    });
+    expect(out).toBe('cloudflared');
+  });
+
+  it('returns the bare name when opts is null/undefined (defensive)', () => {
+    // The CLI wrapper always passes an opts object today; this is
+    // a contract guard for direct callers (e.g. an ad-hoc REPL).
+    expect(resolveCloudflaredPath(undefined)).toBe('cloudflared');
+    expect(resolveCloudflaredPath(null as unknown as Parameters<typeof resolveCloudflaredPath>[0])).toBe('cloudflared');
   });
 });

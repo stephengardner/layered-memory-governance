@@ -1,8 +1,9 @@
 /**
  * Per-principal LLM tool-policy precursor for the deep-planning pipeline.
  *
- * Tasks 7-11 of the deep-planning-pipeline plan introduce four LLM-backed
- * principals (brainstorm-actor, spec-author, pipeline-auditor, plan-dispatcher).
+ * Tasks 7-11 of the deep-planning-pipeline plan introduce five LLM-backed
+ * principals (brainstorm-actor, spec-author, plan-author, pipeline-auditor,
+ * plan-dispatcher).
  * Each must resolve a non-fallback policy via loadLlmToolPolicy() so the
  * stage adapters' host.llm.judge calls inherit the correct read-only
  * deny-list. Without the precursor, calls fall through to the deny-all
@@ -30,6 +31,7 @@ import type { Atom, PrincipalId } from '../../../src/types.js';
 const NEW_PRINCIPALS = [
   'brainstorm-actor',
   'spec-author',
+  'plan-author',
   'pipeline-auditor',
   'plan-dispatcher',
 ] as const;

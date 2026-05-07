@@ -42,7 +42,9 @@ import type {
   StageInput,
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
-import type { AtomId } from '../../../src/types.js';
+import type { AtomId, PrincipalId } from '../../../src/types.js';
+import { buildCanonAtRuntimeStamp } from '../lib/build-canon-at-runtime-stamp.js';
+import { bindingForStage } from '../lib/stage-mapping.js';
 import { buildJudgeSchema } from '../lib/zod-to-judge-schema.js';
 
 /** Maximum entries per list field; mirrors MAX_CITED_LIST in atom-shapes. */
@@ -229,6 +231,16 @@ async function runBrainstorm(
   );
   const value = result.output;
   const cost_usd = typeof value.cost_usd === 'number' ? value.cost_usd : 0;
+  // Stamp the canon-at-runtime metadata so the persisted stage-output
+  // atom carries the same canon_directives_applied + tool_policy_*
+  // shape the agentic adapter produces. Without this, single-shot
+  // (the indie-floor default per pol-planning-pipeline-stage-implementations-default)
+  // emits atoms whose canon-at-runtime panel renders empty in the
+  // Console. Resolve the stage principal from the canonical mapping
+  // table so an org-ceiling deployment that overrides the principal
+  // via stage-mapping picks up the right atom.
+  const stagePrincipal = bindingForStage('brainstorm-stage')!.principalId as PrincipalId;
+  const extraMetadata = await buildCanonAtRuntimeStamp(input.host, stagePrincipal);
   return {
     value,
     cost_usd,
@@ -238,6 +250,7 @@ async function runBrainstorm(
     // so the runner mints via mkBrainstormOutputAtom and the
     // resulting atom is queryable as type='brainstorm-output'.
     atom_type: 'brainstorm-output',
+    extraMetadata,
   };
 }
 
