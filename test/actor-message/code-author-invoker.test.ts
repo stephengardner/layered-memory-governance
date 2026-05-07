@@ -434,6 +434,173 @@ describe('runCodeAuthor', () => {
     expect(written!.metadata['executor_result']).toBeUndefined();
   });
 
+  it('with executor injected (dispatched): also writes a pr-observation seed atom that the refresh tick can find', async () => {
+    // Substrate gap #8 part 2: the refresh tick filters strictly on
+    // metadata.kind === 'pr-observation' and the code-author-invoked
+    // atom carries metadata.kind === 'code-author-invoked', so without
+    // the seed write the refresh tick is blind to dispatched PRs and
+    // the plan-merge-reconcile loop never closes the plan on merge.
+    // Verify TWO atoms get written and the seed passes the refresh
+    // tick's filter contract.
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async () => ({
+      kind: 'dispatched',
+      prNumber: 344,
+      prHtmlUrl: 'https://github.com/stephengardner/layered-autonomous-governance/pull/344',
+      branchName: 'code-author/plan-test-1-abc',
+      commitSha: 'd5e0de7a700ca7975bfcd950681c2ac3638babb3',
+      totalCostUsd: 0.5347,
+      modelUsed: 'claude-opus-4-7',
+      confidence: 0.86,
+      touchedPaths: ['docs/framework.md'],
+    }));
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-seed',
+      { executor, idNonce: 'seed01' },
+    );
+    expect(result.kind).toBe('dispatched');
+
+    const { atoms } = await host.atoms.query({ type: ['observation'] }, 100);
+    const invokedAtoms = atoms.filter((a) => a.metadata['kind'] === 'code-author-invoked');
+    const seedAtoms = atoms.filter((a) => a.metadata['kind'] === 'pr-observation');
+
+    expect(invokedAtoms).toHaveLength(1);
+    expect(seedAtoms).toHaveLength(1);
+
+    // The seed must satisfy every refresh-tick filter:
+    //   - type === 'observation' AND metadata.kind === 'pr-observation'
+    //   - taint === 'clean' AND superseded_by empty
+    //   - pr_state non-terminal (NOT in {MERGED, CLOSED})
+    //   - plan_id present and non-empty string
+    //   - observed_at parseable
+    //   - pr is a well-formed {owner, repo, number} ref with integer number
+    const seed = seedAtoms[0]!;
+    expect(seed.type).toBe('observation');
+    expect(seed.taint).toBe('clean');
+    expect(seed.superseded_by).toEqual([]);
+    expect(seed.metadata['pr_state']).toBe('OPEN');
+    expect(seed.metadata['plan_id']).toBe('plan-test-1');
+    const observedAt = seed.metadata['observed_at'];
+    expect(typeof observedAt).toBe('string');
+    expect(Number.isFinite(Date.parse(observedAt as string))).toBe(true);
+    const seedPr = seed.metadata['pr'] as Record<string, unknown>;
+    expect(seedPr).toEqual({
+      owner: 'stephengardner',
+      repo: 'layered-autonomous-governance',
+      number: 344,
+    });
+    expect(Number.isInteger(seedPr['number'])).toBe(true);
+    expect(seed.confidence).toBe(0.7);
+    expect(seed.metadata['partial']).toBe(true);
+    expect(seed.metadata['head_sha']).toBe('d5e0de7a700ca7975bfcd950681c2ac3638babb3');
+
+    // Provenance.derived_from chains the seed back to the plan.
+    expect(seed.provenance.derived_from).toEqual(['plan-test-1']);
+  });
+
+  it('with executor injected (error): does NOT write a pr-observation seed (no PR exists)', async () => {
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async () => ({
+      kind: 'error',
+      stage: 'apply-branch',
+      reason: 'dirty worktree',
+    }));
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-no-seed',
+      { executor, idNonce: 'noseed' },
+    );
+    expect(result.kind).toBe('error');
+
+    const { atoms } = await host.atoms.query({ type: ['observation'] }, 100);
+    const seedAtoms = atoms.filter((a) => a.metadata['kind'] === 'pr-observation');
+    expect(seedAtoms).toHaveLength(0);
+  });
+
+  it('with executor injected (noop): does NOT write a pr-observation seed (no PR exists)', async () => {
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async () => ({
+      kind: 'noop',
+      notes: 'README already contains the requested line.',
+      confidence: 0.95,
+      modelUsed: 'claude-opus-4-7',
+      totalCostUsd: 0.013,
+      reason: 'drafter-emitted-empty-diff',
+    }));
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-noop-no-seed',
+      { executor, idNonce: 'noopns' },
+    );
+    expect(result.kind).toBe('completed');
+
+    const { atoms } = await host.atoms.query({ type: ['observation'] }, 100);
+    const seedAtoms = atoms.filter((a) => a.metadata['kind'] === 'pr-observation');
+    expect(seedAtoms).toHaveLength(0);
+  });
+
+  it('without executor (observation-only): does NOT write a pr-observation seed', async () => {
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const result = await runCodeAuthor(host, { plan_id: 'plan-test-1' }, 'corr-obs-only');
+    expect(result.kind).toBe('completed');
+
+    const { atoms } = await host.atoms.query({ type: ['observation'] }, 100);
+    const seedAtoms = atoms.filter((a) => a.metadata['kind'] === 'pr-observation');
+    expect(seedAtoms).toHaveLength(0);
+  });
+
+  it('with executor injected (dispatched, malformed prHtmlUrl): primary observation persists and dispatched result still returned', async () => {
+    // The executor returned `dispatched` so the PR is real even if the
+    // URL string is corrupt. The invoker MUST NOT flip the dispatch
+    // to error -- that would mark the plan failed when in fact the
+    // PR exists. The seed-write failure is logged via console.error;
+    // the primary code-author-invoked atom remains durable.
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-test-1', 'executing'));
+
+    const executor = stubExecutor(async () => ({
+      kind: 'dispatched',
+      prNumber: 99,
+      prHtmlUrl: 'not-a-real-url',
+      branchName: 'code-author/plan-test-1-bad',
+      commitSha: 'baadbeef0011223344556677889900aabbccddeeff',
+      totalCostUsd: 0.01,
+      modelUsed: 'claude-opus-4-7',
+      confidence: 0.5,
+      touchedPaths: [],
+    }));
+
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-test-1' },
+      'corr-bad-url',
+      { executor, idNonce: 'badurl' },
+    );
+    expect(result.kind).toBe('dispatched');
+
+    const { atoms } = await host.atoms.query({ type: ['observation'] }, 100);
+    const invokedAtoms = atoms.filter((a) => a.metadata['kind'] === 'code-author-invoked');
+    const seedAtoms = atoms.filter((a) => a.metadata['kind'] === 'pr-observation');
+    // Primary observation persists; the seed was skipped.
+    expect(invokedAtoms).toHaveLength(1);
+    expect(seedAtoms).toHaveLength(0);
+  });
+
   it('with executor injected (noop): returns completed and stores dispatch_outcome=no-op on observation', async () => {
     // Silent-success terminal: the drafter executed correctly and
     // concluded the requested change is already in the desired
