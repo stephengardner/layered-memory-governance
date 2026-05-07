@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
 import { skipUnlessMobile } from './_lib/mobile';
 
 /**
@@ -36,7 +36,8 @@ const STANDALONE_CONTROLS: ReadonlyArray<ControlCheck> = [
   { route: '/dashboard', classPrefix: '_themeToggle_', description: 'header theme toggle' },
   { route: '/dashboard', testid: 'density-toggle', description: 'header density toggle' },
   { route: '/dashboard', testid: 'kill-switch-pill', description: 'header kill-switch pill' },
-  { route: '/dashboard', testid: 'copy-link', description: 'header copy-link button' },
+  // copy-link only renders inside expanded CanonCards / AtomDetailView, not the dashboard chrome.
+  // The copy-link case is exercised in the focus-mode test below where a real atom id is fetched.
   { route: '/dashboard', classPrefix: '_windowBtn_', description: 'dashboard window picker (24h/7d/30d)' },
   { route: '/canon', classPrefix: '_chip_', description: 'canon type-filter chip (All/Directives/...)' },
   { route: '/canon', classPrefix: '_expand_', description: 'canon-card show-details toggle' },
@@ -64,6 +65,37 @@ async function findFirstControl(page: Page, control: ControlCheck) {
   }, { testid: control.testid, classPrefix: control.classPrefix });
 }
 
+/*
+ * Subpixel tolerance for floor enforcement. Browsers under high
+ * device-pixel-ratios (iPhone 13 = 3x) round CSS-px through layout
+ * and can return 43.999... for a `min-height: 44px` declaration. The
+ * tolerance absorbs that fp noise without weakening the floor: a real
+ * 43.5px control still fails (43.5 < 43.99), only the dpr-noise margin
+ * passes. Per WCAG 2.5.5 wording ('at least 44 CSS pixels'), 43.99 is
+ * functionally 44.
+ */
+const FLOOR_PX = 44;
+const SUBPIXEL_TOLERANCE = 0.01;
+const MIN_FLOOR = FLOOR_PX - SUBPIXEL_TOLERANCE;
+
+function extractIdArray(body: unknown): ReadonlyArray<{ id: string }> | null {
+  if (Array.isArray(body)) return body as ReadonlyArray<{ id: string }>;
+  if (body && typeof body === 'object' && 'data' in body) {
+    const data = (body as { data: unknown }).data;
+    if (Array.isArray(data)) return data as ReadonlyArray<{ id: string }>;
+  }
+  return null;
+}
+
+async function fetchFirstId(request: APIRequestContext, endpoint: string): Promise<string | null> {
+  const res = await request.post(endpoint, { data: {} });
+  if (!res.ok()) return null;
+  const body = (await res.json()) as unknown;
+  const items = extractIdArray(body);
+  if (!items || items.length === 0) return null;
+  return items[0]!.id;
+}
+
 test.describe('touch-target floor on mobile viewport', () => {
   for (const control of STANDALONE_CONTROLS) {
     test(`${control.description} on ${control.route} >= 44x44`, async ({ page, viewport }) => {
@@ -82,11 +114,31 @@ test.describe('touch-target floor on mobile viewport', () => {
       expect(
         box!.width,
         `${control.description}: width=${box!.width} below 44px floor (${control.route})`,
-      ).toBeGreaterThanOrEqual(44);
+      ).toBeGreaterThanOrEqual(MIN_FLOOR);
       expect(
         box!.height,
         `${control.description}: height=${box!.height} below 44px floor (${control.route})`,
-      ).toBeGreaterThanOrEqual(44);
+      ).toBeGreaterThanOrEqual(MIN_FLOOR);
     });
   }
+
+  /*
+   * copy-link only renders inside an expanded CanonCard / focused
+   * AtomDetailView — it lives in the actions row at the bottom of
+   * the rich card body, not in the header chrome. We exercise it via
+   * a runtime-discovered atom id and the atom-detail viewer (which
+   * always shows the actions row) so the test is anchored to a route
+   * where the control is guaranteed to be in the DOM.
+   */
+  test('copy-link button on /atom/<id> >= 44x44', async ({ page, request, viewport }) => {
+    skipUnlessMobile(viewport);
+    const id = await fetchFirstId(request, '/api/canon.list');
+    test.skip(id === null, 'no atoms available to focus');
+    await page.goto(`/atom/${encodeURIComponent(id!)}`);
+    await page.waitForTimeout(800);
+    const box = await findFirstControl(page, { route: '', testid: 'copy-link', description: 'copy-link button' });
+    expect(box, 'copy-link: no element matching data-testid="copy-link"').not.toBeNull();
+    expect(box!.width, `copy-link: width=${box!.width} below 44px floor`).toBeGreaterThanOrEqual(MIN_FLOOR);
+    expect(box!.height, `copy-link: height=${box!.height} below 44px floor`).toBeGreaterThanOrEqual(MIN_FLOOR);
+  });
 });
