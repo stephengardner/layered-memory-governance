@@ -236,11 +236,28 @@ export async function buildCanonAtRuntimeStamp(
   // Load the per-principal policy atom only when the stamp records a
   // policy-source provenance; an override-bound run did not consult
   // the atom and the stamp must not lie about the provenance chain.
-  // The loader returns null for missing/tainted/superseded atoms and
-  // throws on a malformed payload; both shapes are fail-loud per the
-  // loader's contract. The single-shot adapter catches no errors here
-  // because a malformed canon edit is a substrate-integrity failure
-  // and must surface to the runner's catastrophic-failure handler.
+  //
+  // The return value is intentionally discarded. The stamp answers the
+  // Console projection's question "which canon atom would have bound
+  // the LLM under policy-source"; the answer is the canonical
+  // pol-llm-tool-policy-<principal> atom keyed by principal id. The
+  // Console reads tool_policy_principal_id and re-resolves that atom
+  // on the read path, so a null return here (missing/tainted/superseded
+  // atom) is correctly rendered downstream as "policy atom not present"
+  // rather than misattributed as an override-bound run.
+  //
+  // The load is still issued for two side-effects:
+  //   1. A malformed payload throws LlmToolPolicyError, which bubbles
+  //      out and surfaces to the runner's catastrophic-failure handler
+  //      (per inv-governance-before-autonomy: a malformed canon edit
+  //      must fail loud, not silently widen tool access).
+  //   2. The atom-store hit warms the cache for any concurrent reader
+  //      (e.g. the Console) that polls the same atom id after the
+  //      stage atom lands.
+  //
+  // Mirrors the runStageAgentLoop pattern at run-stage-agent-loop.ts
+  // where policy?.disallowedTools is consumed and the load is also
+  // unconditional under policy-source.
   if (toolPolicySource === 'policy') {
     await loadLlmToolPolicy(host.atoms, stagePrincipal);
   }
