@@ -89,8 +89,13 @@
  */
 @media (pointer: coarse), (max-width: 48rem) {
   .windowBtn {
+    /*
+     * Tap floor on the height axis only; min-width: 44 made "24h"
+     * wider than its label demands and inflated the toggle row. The
+     * existing horizontal padding gives the buttons their proper
+     * width; 44px height satisfies the tap floor.
+     */
     min-height: var(--size-touch-target-min);
-    min-width: var(--size-touch-target-min);
   }
 }
 

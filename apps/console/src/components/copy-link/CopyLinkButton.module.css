@@ -27,7 +27,12 @@
  */
 @media (pointer: coarse), (max-width: 48rem) {
   .button {
-    min-width: var(--size-touch-target-min);
+    /*
+     * Tap floor on the height axis only. Forcing min-width: 44 made
+     * the icon button into a chunky square; natural width keeps the
+     * "Copy link" affordance compact in card-action rows where it
+     * sits next to other inline controls.
+     */
     min-height: var(--size-touch-target-min);
   }
 }

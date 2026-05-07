@@ -99,7 +99,15 @@
 @media (pointer: coarse), (max-width: 48rem) {
   .themeToggle,
   .proposeBtn {
-    min-width: var(--size-touch-target-min);
+    /*
+     * 44px tap floor on the HEIGHT axis only. Forcing min-width: 44px
+     * earlier turned the icon-only buttons into chunky 44x44 squares
+     * that visually overweighted the header on narrow viewports.
+     * WCAG 2.5.5 (target size) is satisfied via min-height: 44px plus
+     * the natural padding-driven width; widths stay icon-natural so
+     * the header tray reads as five compact controls instead of five
+     * over-large squares.
+     */
     min-height: var(--size-touch-target-min);
   }
 }

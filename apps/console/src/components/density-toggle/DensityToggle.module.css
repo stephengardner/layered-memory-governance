@@ -26,7 +26,12 @@
  */
 @media (pointer: coarse), (max-width: 48rem) {
   .button {
-    min-width: var(--size-touch-target-min);
+    /*
+     * Tap floor on the height axis only; min-width: 44 made the icon
+     * button into a chunky 44x44 square. Natural width keeps the
+     * header chrome compact (5 controls competing with the title);
+     * 44px height satisfies WCAG 2.5.5 for the tap-target.
+     */
     min-height: var(--size-touch-target-min);
   }
 }
