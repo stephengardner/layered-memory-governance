@@ -277,6 +277,97 @@ export function parseIntegerFlag(name, argv, i, minBound, errorMsg) {
   return { ok: true, value: n, newIndex: i + 1 };
 }
 
+/**
+ * Resolve the cloudflared executable path the watchdog should pass to
+ * `child_process.spawn`. The bare name `cloudflared` works fine on
+ * POSIX where the installer drops a symlink onto `/usr/local/bin`,
+ * but on Windows the `cloudflared.msi` installer drops the binary
+ * under `%ProgramFiles(x86)%\cloudflared\cloudflared.exe` and DOES
+ * NOT add that directory to the user's PATH unless the operator
+ * opted into a separate post-install step. Without resolution the
+ * watchdog spawns `cloudflared` -> ENOENT -> the `tunnelDisabled`
+ * branch fires -> the operator's tunnel never comes up. Witnessed
+ * 2026-05-05 with cloudflared 2025.8.1 freshly installed and PATH
+ * unchanged from the OS default.
+ *
+ * Resolution order (first match wins):
+ *
+ *   1. `LAG_CLOUDFLARED_PATH` env var. Always wins; lets an operator
+ *      pin a specific build (e.g. an out-of-tree static binary or a
+ *      Cloudflare Zero Trust managed connector) without touching the
+ *      script.
+ *   2. On POSIX: the bare name `cloudflared`. PATH resolution stays
+ *      with the OS as before -- no change in steady-state behaviour.
+ *   3. On Windows: probe a small set of well-known install paths via
+ *      the `existsSync` callback the caller injects. If a real binary
+ *      sits at any of them, return its absolute path so spawn() does
+ *      not need PATH to be set up.
+ *   4. Fall back to the bare name `cloudflared` and let spawn()
+ *      surface the ENOENT for the operator's logs (matches the
+ *      pre-fix behaviour exactly when no candidate matches; the
+ *      `tunnelDisabled` branch in the CLI wrapper still triggers).
+ *
+ * Pure: takes the platform identifier, env object, and an `existsSync`
+ * callback so unit tests can synthesize a Windows + missing-path
+ * scenario without touching the real filesystem. Returns a string;
+ * the caller passes it straight to `child_process.spawn`.
+ *
+ * Why a list, not "the first install dir Cloudflare ever shipped":
+ * the cloudflared installer history is `C:\Program Files\cloudflared`
+ * on early builds and `C:\Program Files (x86)\cloudflared` on
+ * current ones. Both are still in the wild on long-running operator
+ * machines that upgraded in place. Probing both keeps the substrate
+ * tolerant of either install path.
+ *
+ * Why the env override wins absolutely: if an operator has set
+ * `LAG_CLOUDFLARED_PATH` they've made an explicit choice, even if
+ * the well-known install path also happens to exist. Honoring the
+ * env unconditionally is the indie-floor escape hatch matching the
+ * canon `dev-substrate-not-prescription` shape.
+ */
+export function resolveCloudflaredPath(opts) {
+  const env = (opts && typeof opts.env === 'object' && opts.env !== null) ? opts.env : {};
+  const platform = typeof opts?.platform === 'string' ? opts.platform : '';
+  const existsSync = typeof opts?.existsSync === 'function' ? opts.existsSync : () => false;
+
+  const override = typeof env.LAG_CLOUDFLARED_PATH === 'string' ? env.LAG_CLOUDFLARED_PATH.trim() : '';
+  if (override.length > 0) return override;
+
+  if (platform !== 'win32') return 'cloudflared';
+
+  // Windows install paths in priority order. Both 64-bit and 32-bit
+  // Program Files locations are checked; the installer's choice has
+  // varied across cloudflared releases. We probe the env-resolved
+  // value first so a non-default Program Files location (e.g. `D:\`)
+  // wins, then fall back to the literal canonical paths so a fresh
+  // install with %ProgramFiles% pointed at the standard `C:\` keeps
+  // working without any env at all.
+  //
+  // Literal fallbacks belt-and-braces: the installer hard-codes
+  // these on a default `C:\` system, and the env vars above are
+  // absent in some restricted shells (a watchdog spawned from
+  // `cmd.exe /k cd` may not inherit them). Probe the canonical
+  // paths even when the env did not surface them. The `Set`
+  // de-dupes the case where env-resolved roots equal the literal
+  // canonical roots.
+  const exeSuffix = '\\cloudflared\\cloudflared.exe';
+  const candidateRoots = [
+    typeof env['ProgramFiles(x86)'] === 'string' ? env['ProgramFiles(x86)'] : '',
+    typeof env['ProgramFiles'] === 'string' ? env['ProgramFiles'] : '',
+    'C:\\Program Files (x86)',
+    'C:\\Program Files',
+  ].filter((root) => root.length > 0);
+  const candidates = [...new Set(candidateRoots.map((root) => `${root}${exeSuffix}`))];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  // Nothing found; return the bare name so spawn() emits the same
+  // ENOENT it would have without this helper. The tunnelDisabled
+  // path in the CLI wrapper handles that signal cleanly.
+  return 'cloudflared';
+}
+
 export function mergeAllowedOrigins(existing, newHost) {
   if (typeof newHost !== 'string' || newHost.length === 0) {
     return { value: existing ?? '', changed: false };

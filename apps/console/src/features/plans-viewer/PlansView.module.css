@@ -41,14 +41,21 @@
  */
 .grid {
   display: grid;
-  grid-template-columns: 1fr;
+  /*
+   * `minmax(0, 1fr)` so the track shrinks to its container instead of
+   * defaulting to its `min-content` floor. Without this the long
+   * unbreakable plan-id text inside .id (`word-break: break-all`)
+   * still inflates the `.card` flex item past the grid track's
+   * intrinsic minimum, leaking the layout 60+ px past a 390px viewport.
+   */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
   align-items: start;
 }
 
 @media (min-width: 60rem) {
   .grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 
@@ -60,7 +67,7 @@
 }
 
 .gridFocused {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .clearButton {
@@ -88,6 +95,14 @@
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-6);
+  /*
+   * `min-width: 0` so the card respects its grid track. Without this
+   * the flex column's default min is `auto` (= content min-width),
+   * and a long plan id with `word-break: break-all` still leaves the
+   * card sized to its widest atomic-segment when the parent track is
+   * narrower than that. Pair with the parent grid's `minmax(0, 1fr)`.
+   */
+  min-width: 0;
   background-color: var(--surface-base);
   background-image: linear-gradient(
     180deg,

@@ -419,6 +419,104 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     expect(gitCalls).toHaveLength(0);
   });
 
+  it('empty diff + empty target_paths + no Glob/Grep notes -> kind=error (confabulation gate)', async () => {
+    // The drafter LLM can ignore DRAFT_SYSTEM_PROMPT rule 4a's
+    // instruction to navigate via Glob/Grep when `target_paths` is
+    // empty, and instead confabulate excuses to silent-skip (e.g.
+    // claiming a non-existent system rule forbids tool calls, or
+    // citing a fabricated `git status` output for the wrong repo).
+    // Bash is typically denied for the code-author principal, so any
+    // claim grounded in a Bash result is fabricated; the notes carry
+    // no Glob/Grep evidence either. Reclassify as a hard error so the
+    // operator sees the failure instead of a fake terminal-success
+    // that hides the punted plan.
+    const plan = mkPlan('plan-empty-no-nav', '# plan\n\ncontent', {
+      title: 'Plan with no concrete file scope',
+    });
+    registerDrafterResponse(host, plan, [], {
+      diff: '',
+      notes: 'Cannot produce a diff. The plan declares no target_paths and the DATA block ships no file_contents, so the file scope is undeclared.',
+      confidence: 0.1,
+    });
+
+    const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const prCalls: Array<Record<string, unknown>> = [];
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async (args: Record<string, unknown>) => {
+        prCalls.push(args);
+        return { number: 1, html_url: '', url: '', node_id: '', state: 'open' };
+      }) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+    });
+
+    const result = await executor.execute({
+      plan,
+      fence: mkFence(),
+      correlationId: 'corr-confab',
+      observationAtomId: 'obs-confab' as AtomId,
+    });
+
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.stage).toBe('drafter/no-navigation-attempted');
+    expect(result.reason).toContain('no target_paths');
+    expect(result.reason).toContain('Glob/Grep');
+    // The drafter's notes are echoed back so the operator can see
+    // exactly what the LLM said when it punted.
+    expect(result.reason).toContain('file scope is undeclared');
+
+    // No git operations, no PR creation: the gate fires before
+    // applyDraftBranch the same way the silent-success branch does.
+    expect(gitCalls).toHaveLength(0);
+    expect(prCalls).toHaveLength(0);
+  });
+
+  it('empty diff + empty target_paths + Glob/Grep evidence in notes -> kind=noop (legitimate navigated-and-found-nothing)', async () => {
+    // The valid silent-success path when target_paths is empty: the
+    // drafter actually navigated via Glob/Grep, found no work to do,
+    // and documented its searches in `notes`. The gate accepts the
+    // result because the navigation evidence is present. The check
+    // is structural -- mention of "Glob" or "Grep" by name -- so a
+    // drafter that searches and reports zero matches passes cleanly.
+    const plan = mkPlan('plan-empty-with-nav', '# plan\n\ncontent', {
+      title: 'Audit-style plan that finds nothing',
+    });
+    registerDrafterResponse(host, plan, [], {
+      diff: '',
+      notes: 'I ran Glob("**/*.todo") and Grep for "@TODO": 0 matches in either query. No work to do.',
+      confidence: 0.85,
+    });
+
+    const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 1, html_url: '', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+    });
+
+    const result = await executor.execute({
+      plan,
+      fence: mkFence(),
+      correlationId: 'corr-nav',
+      observationAtomId: 'obs-nav' as AtomId,
+    });
+
+    expect(result.kind).toBe('noop');
+    if (result.kind !== 'noop') throw new Error('unreachable');
+    expect(result.reason).toBe('drafter-emitted-empty-diff');
+    expect(result.notes).toContain('Glob');
+    expect(gitCalls).toHaveLength(0);
+  });
+
   it('plan id with unsafe git-ref chars is sanitized in branch name', async () => {
     // Git ref-name rules reject `:`, whitespace, `..`, `~`, `^`,
     // and a handful of others. A plan id is not required to obey

@@ -57,9 +57,15 @@
 /* Focus mode: single full-width card. Same column-template as the
  * grid but locked to one column so the detail surface gets the full
  * content width regardless of viewport.
+ *
+ * `minmax(0, 1fr)` (not `1fr`) so the column shrinks below its
+ * intrinsic min-content width on narrow viewports. Without this, a
+ * descendant with a wide unbreakable token (a long mono permitted-
+ * scope value, a comma-joined goals list) expands the column past
+ * the viewport and produces page-level horizontal scroll on mobile.
  */
 .gridFocused {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .clearButton {

@@ -66,7 +66,9 @@ import type {
   StageInput,
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
-import type { AtomId } from '../../../src/types.js';
+import type { AtomId, PrincipalId } from '../../../src/types.js';
+import { buildCanonAtRuntimeStamp } from '../lib/build-canon-at-runtime-stamp.js';
+import { bindingForStage } from '../lib/stage-mapping.js';
 import { AuditByteBudget } from './byte-cap.js';
 
 /** Maximum entries per list field; mirrors MAX_CITED_LIST in atom-shapes. */
@@ -281,6 +283,15 @@ async function runReview(
     cited_atom_ids: [...f.cited_atom_ids],
     cited_paths: [...f.cited_paths],
   }));
+  // Stamp the canon-at-runtime metadata so the persisted review-report
+  // atom carries the canon_directives_applied + tool_policy_* shape
+  // the agentic adapter produces. Review-stage runs in-process verify
+  // (no host.llm.judge call), but applicable canon at the
+  // pipeline-auditor principal still bounds the stage's behavior; the
+  // stamp records that grounding so the Console projection renders
+  // the same shape as the other four stages.
+  const stagePrincipal = bindingForStage('review-stage')!.principalId as PrincipalId;
+  const extraMetadata = await buildCanonAtRuntimeStamp(input.host, stagePrincipal);
   return {
     value: {
       audit_status,
@@ -291,6 +302,7 @@ async function runReview(
     cost_usd: 0,
     duration_ms: Date.now() - t0,
     atom_type: 'review-report',
+    extraMetadata,
   };
 }
 

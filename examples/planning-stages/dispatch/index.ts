@@ -64,7 +64,9 @@ import type {
   StageInput,
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
-import type { Atom, AtomId } from '../../../src/types.js';
+import type { Atom, AtomId, PrincipalId } from '../../../src/types.js';
+import { buildCanonAtRuntimeStamp } from '../lib/build-canon-at-runtime-stamp.js';
+import { bindingForStage } from '../lib/stage-mapping.js';
 // Value import via the package's `imports` map (Node subpath import,
 // `#`-prefixed). The relative source-path
 // '../../../src/runtime/actor-message/index.js' compiles correctly via
@@ -215,6 +217,19 @@ export function createDispatchStage(
       ? false
       : await findReviewStageResume(input);
 
+    // Stamp the canon-at-runtime metadata once for both return paths
+    // (gated + completed). Dispatch-stage is mechanism-only (no
+    // host.llm.judge call), but applicable canon at the
+    // plan-dispatcher principal still bounds the dispatch behavior;
+    // the stamp records that grounding so the Console projection
+    // renders the same shape on dispatch-record atoms as the other
+    // four stages.
+    const stagePrincipal = bindingForStage('dispatch-stage')!.principalId as PrincipalId;
+    const extraMetadata = await buildCanonAtRuntimeStamp(
+      input.host,
+      stagePrincipal,
+    );
+
     if (!reviewClean && !resumePresent) {
       // Default-deny per the substrate-level governance posture: a
       // non-clean review-report without an operator-acked resume
@@ -238,6 +253,7 @@ export function createDispatchStage(
         cost_usd: 0,
         duration_ms: Date.now() - t0,
         atom_type: 'dispatch-record',
+        extraMetadata,
       };
     }
 
@@ -260,6 +276,7 @@ export function createDispatchStage(
       cost_usd: 0,
       duration_ms: Date.now() - t0,
       atom_type: 'dispatch-record',
+      extraMetadata,
     };
   }
 
