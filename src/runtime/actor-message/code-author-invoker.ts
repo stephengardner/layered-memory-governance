@@ -70,6 +70,7 @@ import {
   CodeAuthorFenceError,
   type CodeAuthorFence,
 } from '../actors/code-author/fence.js';
+import { mkPrObservationSeedAtom } from './pr-observation-seed.js';
 
 /**
  * Payload shape the code-author invoker consumes. Written on the
@@ -385,6 +386,61 @@ export async function runCodeAuthor(
   };
 
   await host.atoms.put(atom);
+
+  // 6. On a successful dispatch (executor opened a real PR), write a
+  //    SECOND atom: a synthesized pr-observation seed. The refresh
+  //    tick (runPlanObservationRefreshTick) filters strictly on
+  //    `metadata.kind === 'pr-observation'`; the code-author-invoked
+  //    atom carries `metadata.kind === 'code-author-invoked'` and is
+  //    invisible to it. Without this seed, the PR-merge-reconcile
+  //    loop never fires for code-author-dispatched PRs, leaving the
+  //    plan stuck at plan_state='executing' forever.
+  //
+  //    Why a separate atom (not metadata-overload on
+  //    code-author-invoked): pr-observation-refresh's discriminator
+  //    is mechanism that other consumers (pr-merge-reconcile,
+  //    console projections) also key on. Dual-purposing
+  //    code-author-invoked would couple both paths and force every
+  //    downstream reader to branch on whichever discriminator
+  //    appeared first. The two atoms have distinct semantics; both
+  //    chain to the same plan via provenance.derived_from so the
+  //    audit trace stays clean.
+  //
+  //    The seed is synthesized (no live GitHub query) and carries
+  //    `partial: true` + `partial_surfaces: ['all']` so a renderer
+  //    that conditions on hydrated state skips it cleanly. The
+  //    refresh tick replaces it with a hydrated observation on its
+  //    first pass after the freshness window expires.
+  if (executorResult?.kind === 'dispatched') {
+    try {
+      const seed = mkPrObservationSeedAtom({
+        principal,
+        planId: String(plan.id),
+        executorResult,
+        observedAt: nowIso,
+        correlationId,
+      });
+      await host.atoms.put(seed);
+    } catch (err) {
+      // The PR is real (executor returned `dispatched`) and the
+      // primary code-author-invoked observation is durable. A
+      // malformed prHtmlUrl, commitSha, or duplicate-id collision
+      // means upstream produced inconsistent state, but the
+      // dispatch itself succeeded; we do NOT flip the result to
+      // `error` because that would mark the plan failed even though
+      // the PR exists. The failure surfaces on stderr (audit log)
+      // for operator visibility; the existing pr-landing
+      // observe-only path eventually writes a hydrated
+      // pr-observation atom that takes over.
+      const reason = err instanceof Error ? err.message : String(err);
+      // Audit-visible side effect: the primary observation is
+      // already durable, so we do not throw. console.error is the
+      // same surface poller.ts uses for non-fatal background errors.
+      console.error(
+        `[code-author-invoker] pr-observation seed write failed for plan ${plan.id}: ${reason}`,
+      );
+    }
+  }
 
   if (executorResult?.kind === 'error') {
     return {
