@@ -164,6 +164,30 @@ describe('buildCtoSpawnArgs', () => {
   it('rejects empty atomId', () => {
     expect(() => buildCtoSpawnArgs({ ...baseSpec, atomId: '' })).toThrow(/atomId/);
   });
+
+  it('omits --mode when mode is undefined (indie-floor default)', () => {
+    const argv = buildCtoSpawnArgs(baseSpec);
+    expect(argv).not.toContain('--mode');
+  });
+
+  it('appends --mode substrate-deep when mode is set', () => {
+    const argv = buildCtoSpawnArgs({ ...baseSpec, mode: 'substrate-deep' });
+    const idx = argv.indexOf('--mode');
+    expect(idx).toBeGreaterThan(-1);
+    expect(argv[idx + 1]).toBe('substrate-deep');
+  });
+
+  it('appends --mode single-pass when explicitly set', () => {
+    const argv = buildCtoSpawnArgs({ ...baseSpec, mode: 'single-pass' });
+    const idx = argv.indexOf('--mode');
+    expect(idx).toBeGreaterThan(-1);
+    expect(argv[idx + 1]).toBe('single-pass');
+  });
+
+  it('rejects unknown mode values to surface typos at the boundary', () => {
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, mode: 'subastrate-deep' })).toThrow(/mode/);
+    expect(() => buildCtoSpawnArgs({ ...baseSpec, mode: '' })).toThrow(/mode/);
+  });
 });
 
 describe('buildIntentAtom', () => {
