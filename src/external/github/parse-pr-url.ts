@@ -1,19 +1,18 @@
 /**
  * GitHub PR HTML URL parser.
  *
- * Lives in the github external-system adapter (per D17 + the
- * substrate-purity discipline that keeps GitHub-specific URL shapes
- * out of `src/runtime/`). Callers in `src/runtime/` that need
- * (owner, repo, number) from a `prHtmlUrl` string import this module
- * and pass the resulting structured tuple to mechanism-only helpers.
+ * Lives in the github external-system adapter so forge-specific URL
+ * shapes stay out of mechanism-focused runtime code. Callers in
+ * `src/runtime/` that need (owner, repo, number) from a `prHtmlUrl`
+ * string import this module and pass the resulting structured tuple
+ * to forge-agnostic helpers.
  *
- * Hard-pins the canonical shape `https://github.com/<owner>/<repo>/pull/<number>`.
- * GitHub Enterprise Server (GHES) hosts and api.github.com subdomains
- * are rejected; a future GHES adapter writes a parallel parser rather
- * than overloading this one. The rest of the LAG repo's bot identities,
- * status checks, and review tooling all assume the canonical
- * github.com host, so the rejection makes drift loud rather than
- * silent.
+ * Hard-pins the canonical shape
+ * `https://github.com/<owner>/<repo>/pull/<number>`. GitHub Enterprise
+ * Server (GHES) hosts and api.github.com subdomains are rejected; a
+ * future GHES adapter writes a parallel parser rather than overloading
+ * this one. The rejection makes host drift loud at parse time rather
+ * than silent at downstream API call time.
  */
 
 export interface ParsedPrUrl {
@@ -33,10 +32,9 @@ export interface ParsedPrUrl {
  *   - missing `/pull/` segment
  *   - non-integer or non-positive PR number
  *
- * Fail-loud is the correct posture per inv-governance-before-autonomy:
- * a malformed URL means the upstream caller produced inconsistent
- * state, and silently writing a malformed atom would propagate the
- * corruption.
+ * Fail-loud is the correct posture: a malformed URL means the
+ * upstream caller produced inconsistent state, and silently passing
+ * forward a malformed reference would propagate the corruption.
  */
 export function parsePrHtmlUrl(prHtmlUrl: string): ParsedPrUrl {
   if (typeof prHtmlUrl !== 'string' || prHtmlUrl.length === 0) {

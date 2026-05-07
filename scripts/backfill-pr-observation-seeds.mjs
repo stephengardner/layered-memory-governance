@@ -28,15 +28,24 @@
  *   # Apply: write the missing seeds.
  *   node scripts/backfill-pr-observation-seeds.mjs --apply
  *
- *   # Custom root (test fixtures, alternate workspace):
- *   LAG_ROOT=/path/to/repo node scripts/backfill-pr-observation-seeds.mjs --apply
+ *   # Explicit root via --root flag (overrides LAG_ROOT env var):
+ *   node scripts/backfill-pr-observation-seeds.mjs --root /path/to/.lag --apply
+ *
+ *   # Custom root via env var (test fixtures, alternate workspace):
+ *   LAG_ROOT=/path/to/.lag node scripts/backfill-pr-observation-seeds.mjs --apply
+ *
+ * Root resolution order:
+ *   1. --root <path> argv flag
+ *   2. LAG_ROOT environment variable
+ *   3. Default: <repo-root>/.lag
  *
  * Exit codes:
  *   0 - scan completed (zero or more seeds written)
  *   1 - fatal error
  *
  * Output: a JSON summary on stdout for parseability:
- *   { scanned, seeded, skipped_already_exists, skipped_malformed }
+ *   { scanned, seeded, skipped_already_exists, skipped_malformed,
+ *     skipped_non_dispatched, plans }
  */
 
 import { resolve, dirname } from 'node:path';
@@ -167,21 +176,22 @@ async function main() {
       continue;
     }
     if (args.apply) {
-      try {
-        await host.atoms.put(seed);
-        summary.seeded += 1;
+      // Idempotency pre-check: if an atom under this id already
+      // exists (race with another path, or a previous run partially
+      // applied), skip it. Mirrors the get-then-put pattern used by
+      // bootstrap-decisions-canon.mjs and avoids relying on
+      // duplicate-id error string matching.
+      const existing = await host.atoms.get(seed.id);
+      if (existing !== null) {
+        summary.skipped_already_exists += 1;
         existingSeeds.set(key, true);
-        summary.plans.push({ plan_id: d.planId, pr: key, action: 'seeded' });
-      } catch (err) {
-        // Duplicate-id (id-collision) is benign: another path wrote
-        // the same id in the meantime. Count as already-exists.
-        if (err && /AlreadyExistsError|already exists/i.test(String(err.message || err))) {
-          summary.skipped_already_exists += 1;
-          summary.plans.push({ plan_id: d.planId, pr: key, action: 'skipped-collision' });
-          continue;
-        }
-        throw err;
+        summary.plans.push({ plan_id: d.planId, pr: key, action: 'skipped-id-exists' });
+        continue;
       }
+      await host.atoms.put(seed);
+      summary.seeded += 1;
+      existingSeeds.set(key, true);
+      summary.plans.push({ plan_id: d.planId, pr: key, action: 'seeded' });
     } else {
       // Dry-run: count as would-seed.
       summary.seeded += 1;

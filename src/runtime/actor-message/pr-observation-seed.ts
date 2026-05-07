@@ -1,42 +1,39 @@
 /**
- * pr-observation seed builder for the code-author dispatch path.
+ * pr-observation seed builder.
  *
- * Closes the substrate gap (gap #8 part 2) where a code-author dispatch
- * that opens a PR produces ONE observation atom of kind
- * `code-author-invoked` and zero atoms of kind `pr-observation`. The
- * runPlanObservationRefreshTick pass filters strictly on
+ * A code-author dispatch that opens a PR writes one observation atom
+ * of kind `code-author-invoked`. The pr-observation refresh tick
+ * (runPlanObservationRefreshTick) filters strictly on
  * `metadata.kind === 'pr-observation'`, so a code-author-invoked atom
- * is invisible to it; the PR-merge-reconcile pass (which closes the
- * Plan -> succeeded loop on terminal pr_state) then never fires for
- * the PR.
+ * is invisible to it; without a separate seed, a merge-reconciliation
+ * pass that closes the plan on terminal pr_state never fires.
  *
- * The fix is to write a SECOND atom on dispatch: a synthesized
- * pr-observation seed that carries the canonical metadata shape the
- * refresh tick expects. The seed is a `partial: true` placeholder
- * (we have no fresh GitHub query at dispatch time, so we cannot fill
- * in submitted reviews, check-runs, etc.); on its first refresh-tick
- * pass after the freshness window expires, the deployment-side
- * refresher will replace it with a hydrated observation.
+ * The seed builder produces a synthesized `pr-observation` atom at
+ * dispatch time. The seed carries `partial: true` because we have no
+ * live forge query at dispatch -- the runtime cannot fill in
+ * submitted reviews, check-runs, mergeability, etc. On the first
+ * refresh-tick pass after the freshness window expires, the
+ * deployment-side refresher replaces this seed with a hydrated
+ * observation.
  *
  * Why a SEPARATE atom (not metadata-overload on code-author-invoked)
  * -----------------------------------------------------------------
- * pr-observation-refresh's filter `meta.kind === 'pr-observation'` is
- * mechanism that other consumers (pr-merge-reconcile, console
- * projections, future plan-observation viewers) also key on. Making
- * code-author-invoked dual-purpose would couple both paths and force
- * every downstream reader to branch on whichever discriminator was
- * observed first. The two atoms have distinct semantic meanings
- * (`code-author-invoked` = "dispatch fired, fence loaded, executor
- * returned X"; `pr-observation` = "PR currently in state Y at
- * observed_at Z") and provenance chains both back to the same plan,
- * so the audit trace stays clean.
+ * The refresh tick's `meta.kind === 'pr-observation'` filter is
+ * mechanism that other consumers (the merge-reconcile pass, projection
+ * surfaces) also key on. Making `code-author-invoked` dual-purpose
+ * would couple both paths and force every downstream reader to branch
+ * on whichever discriminator was observed first. The two atoms have
+ * distinct semantic meanings (`code-author-invoked` = "dispatch fired,
+ * fence loaded, executor returned X"; `pr-observation` = "PR currently
+ * in state Y at observed_at Z") and provenance chains both back to
+ * the same plan, so the audit trace stays clean.
  *
  * Substrate purity: this module is mechanism-only. It accepts a
- * structured `(owner, repo, number, headSha)` reference -- the
- * GitHub-specific URL parsing lives in the github external-system
+ * structured `(owner, repo, number, headSha)` reference; forge-
+ * specific URL parsing lives in the appropriate external-system
  * adapter and is the caller's responsibility. A future forge
- * adapter (GitLab, Forgejo) would supply the same structured tuple
- * from its own URL conventions without modifying this module.
+ * adapter would supply the same structured tuple from its own URL
+ * conventions without modifying this module.
  */
 
 import type {
@@ -45,7 +42,7 @@ import type {
   PrincipalId,
   Time,
 } from '../../types.js';
-import { mkPrObservationAtomId } from '../actors/pr-landing/pr-observation.js';
+import { mkPrObservationAtomId } from '../atoms/pr-observation-id.js';
 
 export interface PrObservationSeedInputs {
   readonly principal: PrincipalId;
@@ -78,11 +75,10 @@ export interface PrObservationSeedInputs {
  * on `partial !== true` (a renderer that only wants hydrated
  * observations) skips the seed cleanly.
  *
- * The atom id reuses `mkPrObservationAtomId` from the pr-landing
- * builder so two paths writing for the same PR + head SHA + minute
- * collapse to the same id (idempotent). A pr-landing observe-only run
- * minutes later that produces a hydrated observation under the same
- * id supersedes this seed via the standard atom-store put semantics.
+ * The atom id reuses `mkPrObservationAtomId` so two paths writing
+ * for the same PR + head SHA + minute collapse to the same id
+ * (idempotent). A hydrating observation written later under the same
+ * id supersedes this seed via standard atom-store put semantics.
  */
 export function mkPrObservationSeedAtom(inputs: PrObservationSeedInputs): Atom {
   const { principal, planId, pr, headSha, observedAt, correlationId } = inputs;
