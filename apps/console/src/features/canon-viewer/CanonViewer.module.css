@@ -64,7 +64,13 @@
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(24rem, 1fr));
+  /*
+   * `minmax(min(24rem, 100%), 1fr)` so the column shrinks below 24rem
+   * (384px) on narrow viewports. The bare `minmax(24rem, 1fr)` floor
+   * forced columns to 24rem even when the parent was smaller, which
+   * pushed the grid 12px past viewport on 390px iPhone widths.
+   */
+  grid-template-columns: repeat(auto-fill, minmax(min(24rem, 100%), 1fr));
   gap: var(--space-5);
 }
 
