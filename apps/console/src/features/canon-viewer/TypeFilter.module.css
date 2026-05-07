@@ -33,3 +33,16 @@
   color: var(--text-on-accent);
   border-color: var(--accent-hover);
 }
+
+/*
+ * Touch-target floor on coarse pointers per canon
+ * dev-web-mobile-first-required. The canon-type filter chips are
+ * primary navigation; on touch devices their 32px height was below
+ * the 44px tap floor.
+ */
+@media (pointer: coarse), (max-width: 48rem) {
+  .chip {
+    min-height: var(--size-touch-target-min);
+    min-width: var(--size-touch-target-min);
+  }
+}

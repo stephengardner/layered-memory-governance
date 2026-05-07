@@ -87,6 +87,23 @@
 
 .proposeBtn:hover { background: var(--accent-hover); }
 
+/*
+ * Touch-target floor on coarse pointers (mobile + tablet) per canon
+ * dev-web-mobile-first-required. Header buttons are 22-26 CSS px on
+ * desktop precision pointers, which is fine for mouse / trackpad,
+ * but fall below the 44px tap floor on touch devices. We expand
+ * the hit area without inflating the desktop layout via a
+ * `pointer: coarse` media query; this avoids the always-on min-height
+ * pattern that would force 44px on desktop too.
+ */
+@media (pointer: coarse), (max-width: 48rem) {
+  .themeToggle,
+  .proposeBtn {
+    min-width: var(--size-touch-target-min);
+    min-height: var(--size-touch-target-min);
+  }
+}
+
 @media (max-width: 48rem) {
   .proposeLabel { display: none; }
 }

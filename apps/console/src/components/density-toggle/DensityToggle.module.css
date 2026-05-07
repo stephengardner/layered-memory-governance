@@ -18,3 +18,15 @@
 .button[aria-pressed="true"] {
   color: var(--accent);
 }
+
+/*
+ * Touch-target floor on coarse pointers (mobile + tablet) per canon
+ * dev-web-mobile-first-required. The 22px icon button is fine for
+ * desktop precision pointers but below the 44px tap floor on touch.
+ */
+@media (pointer: coarse), (max-width: 48rem) {
+  .button {
+    min-width: var(--size-touch-target-min);
+    min-height: var(--size-touch-target-min);
+  }
+}

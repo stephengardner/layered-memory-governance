@@ -129,6 +129,18 @@
   color: var(--text-primary);
 }
 
+/*
+ * Touch-target floor on coarse pointers per canon
+ * dev-web-mobile-first-required. The expand toggle on a canon card
+ * is the primary interactive control on the card; on touch devices
+ * its 25px height was below the 44px floor.
+ */
+@media (pointer: coarse), (max-width: 48rem) {
+  .expand {
+    min-height: var(--size-touch-target-min);
+  }
+}
+
 .expand svg {
   transition: transform var(--duration-normal) var(--easing-standard);
 }
