@@ -485,7 +485,9 @@ describe('runCodeAuthor', () => {
     expect(seed.superseded_by).toEqual([]);
     expect(seed.metadata['pr_state']).toBe('OPEN');
     expect(seed.metadata['plan_id']).toBe('plan-test-1');
-    expect(seed.metadata['observed_at']).toBeTruthy();
+    const observedAt = seed.metadata['observed_at'];
+    expect(typeof observedAt).toBe('string');
+    expect(Number.isFinite(Date.parse(observedAt as string))).toBe(true);
     const seedPr = seed.metadata['pr'] as Record<string, unknown>;
     expect(seedPr).toEqual({
       owner: 'stephengardner',
