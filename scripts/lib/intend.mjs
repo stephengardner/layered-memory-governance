@@ -1,5 +1,12 @@
 // scripts/lib/intend.mjs - pure helpers for scripts/intend.mjs.
 // Zero imports from src/, dist/, .lag/.
+//
+// VALID_MODES is imported from run-cto-actor.mjs (same scripts/lib/
+// directory, no src/dist/.lag boundary crossed) so the trigger-spawn
+// argv builder validates against the same list run-cto-actor.mjs's
+// own --mode parser uses. Hardcoding the literals here would silently
+// diverge the next time a third mode lands.
+import { VALID_MODES as PIPELINE_MODE_VALUES } from './run-cto-actor.mjs';
 
 const SCOPE_VALUES = ['tooling', 'docs', 'framework', 'canon'];
 const BLAST_RADIUS_VALUES = ['none', 'docs', 'tooling', 'framework', 'l3-canon-proposal'];
@@ -84,19 +91,36 @@ function requireNonEmptyString(name, value) {
  * caller seeds the indie-floor default when the operator did not pass
  * one, so the zero-config `intend.mjs --request "..." --trigger` flow
  * works end-to-end.
+ *
+ * Optional `mode` ('single-pass' | 'substrate-deep'): the pipeline mode
+ * the spawned run-cto-actor should run under. Indie-floor default per
+ * `dec-default-pipeline-mode-single-pass` is single-pass, so the caller
+ * omits this and run-cto-actor's own default applies. Deployments that
+ * want every trigger to flow through the 5-stage substrate-deep pipeline
+ * set `LAG_PIPELINE_MODE=substrate-deep` in their environment; the
+ * caller threads that into `mode` here. The flag is ALWAYS appended
+ * when supplied so a downstream LAG_PIPELINE_MODE override is visible
+ * in operator-action atom argv.
  */
 export function buildCtoSpawnArgs(spec) {
-  const { runCtoActorPath, request, atomId, invokersPath } = spec;
+  const { runCtoActorPath, request, atomId, invokersPath, mode } = spec;
   requireNonEmptyString('runCtoActorPath', runCtoActorPath);
   requireNonEmptyString('request', request);
   requireNonEmptyString('atomId', atomId);
   requireNonEmptyString('invokersPath', invokersPath);
-  return [
+  const argv = [
     runCtoActorPath,
     '--request', request,
     '--intent-id', atomId,
     '--invokers', invokersPath,
   ];
+  if (mode !== undefined && mode !== null) {
+    if (typeof mode !== 'string' || !PIPELINE_MODE_VALUES.includes(mode)) {
+      throw new Error(`buildCtoSpawnArgs: mode must be one of ${PIPELINE_MODE_VALUES.join('|')}, got ${JSON.stringify(mode)}`);
+    }
+    argv.push('--mode', mode);
+  }
+  return argv;
 }
 
 /**
