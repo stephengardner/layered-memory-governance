@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { motion, useReducedMotion } from 'framer-motion';
 import { AlertTriangle, CheckCircle2, ExternalLink, FileCheck, GitBranch, GitMerge, GitPullRequest, MinusCircle, Send, ShieldAlert, XCircle } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { ErrorState } from '@/components/state-display/StateDisplay';
 import {
   getPipelineLifecycle,
   type PipelineLifecycle as PipelineLifecycleData,
@@ -107,9 +108,18 @@ export function PipelineLifecycle({ pipelineId }: { pipelineId: string }) {
     return (
       <section className={styles.section} data-testid="pipeline-lifecycle">
         <SectionHead />
-        <p className={styles.error} data-testid="pipeline-lifecycle-error">
-          Could not load lifecycle: {msg}
-        </p>
+        {/*
+         * ErrorState is the canonical primitive for query failures
+         * (apps/console/src/components/state-display/StateDisplay.tsx).
+         * Replaces the bespoke <p className={styles.error}> that drifted
+         * from the title + monospace-detail card pattern every other
+         * view uses.
+         */}
+        <ErrorState
+          title="Could not load post-dispatch lifecycle"
+          message={msg}
+          testId="pipeline-lifecycle-error"
+        />
       </section>
     );
   }

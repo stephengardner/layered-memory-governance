@@ -44,18 +44,18 @@
   color: var(--text-secondary);
 }
 
+/*
+ * .loading + .empty are sectional placeholders inside the lifecycle
+ * section's <SectionHead> + body layout; using a full-page LoadingState
+ * / EmptyState here would over-style the in-section placeholder. The
+ * load-error path delegates to the shared ErrorState primitive.
+ */
 .loading,
-.empty,
-.error {
+.empty {
   margin: 0;
   font-size: var(--font-size-sm);
   color: var(--text-muted);
   font-style: italic;
-}
-
-.error {
-  color: var(--status-danger);
-  font-style: normal;
 }
 
 .rows {
