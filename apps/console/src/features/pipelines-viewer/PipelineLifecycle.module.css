@@ -233,6 +233,27 @@
   flex: 1;
 }
 
+/*
+ * Notes block for an intentional `kind: noop` outcome. Neutral
+ * surface (vs the danger-tinted .errorBlock) because the no-op is
+ * a legitimate semantic success, not a failure.
+ */
+.noopNotes {
+  padding: var(--space-3);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+}
+
+.noopNotes p {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-primary);
+  line-height: var(--line-height-relaxed);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .prTitle {
   margin: 0;
   font-size: var(--font-size-sm);

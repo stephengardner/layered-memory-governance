@@ -377,6 +377,50 @@ describe('buildPipelineLifecycle: code-author-invoked', () => {
     expect(result.code_author_invoked?.stage).toBe('apply-branch/diff-apply-failed');
   });
 
+  it('surfaces noop kind with reason + notes (regression: pipeline-cto-1778137422980-q7cbt8)', () => {
+    /*
+     * Regression for the "pipeline succeeded but the post-dispatch
+     * surface shows no data" report. The drafter writes
+     * executor_result.kind='noop' when the correct semantic outcome
+     * is to make no edit (existence-gate fired, plan body forecloses
+     * creation, etc); the projection MUST surface that kind plus the
+     * reason and the long-form notes so the operator sees WHY the
+     * pipeline produced no PR without drilling into the source atom.
+     * Earlier the projection narrowed kind to dispatched|error and
+     * dropped reason unless kind==='error', which made noop runs
+     * render as null/null/null in the UI.
+     */
+    const plan = atom({
+      id: 'plan-noop-cto-actor-pipeline-test-7-0',
+      type: 'plan',
+      content: 'plan with existence gate',
+      created_at: NOW,
+      metadata: { pipeline_id: 'pipeline-test-7' },
+    });
+    const invoked = atom({
+      id: 'code-author-invoked-plan-noop-pipeline-test-7-0',
+      type: 'observation',
+      created_at: NOW,
+      metadata: {
+        kind: 'code-author-invoked',
+        plan_id: 'plan-noop-cto-actor-pipeline-test-7-0',
+        correlation_id: 'dispatch-plan-noop-cto-actor-pipeline-test-7-0',
+        executor_result: {
+          kind: 'noop',
+          dispatch_outcome: 'no-op',
+          reason: 'drafter-emitted-empty-diff',
+          notes: 'Existence gate fired. Plan forecloses creating docs/observability.md.',
+        },
+      },
+    });
+    const result = buildPipelineLifecycle([plan, invoked], 'pipeline-test-7');
+    expect(result.code_author_invoked?.kind).toBe('noop');
+    expect(result.code_author_invoked?.pr_number).toBeNull();
+    expect(result.code_author_invoked?.reason).toBe('drafter-emitted-empty-diff');
+    expect(result.code_author_invoked?.notes).toBe('Existence gate fired. Plan forecloses creating docs/observability.md.');
+    expect(result.code_author_invoked?.stage).toBeNull();
+  });
+
   it('rejects observation atoms whose kind is a non-code-author *-invoked variant', () => {
     /*
      * The pickCodeAuthorInvoked filter MUST be strict on kind. A

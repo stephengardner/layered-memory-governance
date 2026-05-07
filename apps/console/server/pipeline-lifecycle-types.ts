@@ -74,23 +74,44 @@ export interface PipelineLifecycleDispatchRecord {
 
 /**
  * Code-author-invoked observation. The executor writes one per
- * dispatch with `kind: 'dispatched'` (PR opened) or `kind: 'error'`
- * (silent-skip with reason + stage). The UI distinguishes the two
- * states without re-fetching the atom.
+ * dispatch with one of three kinds:
+ *   - `dispatched` -- PR opened on a real branch
+ *   - `error`      -- silent-skip with a reason + the stage at which
+ *                     the executor halted upstream of opening a PR
+ *   - `noop`       -- intentional no-op: the drafter ran but the
+ *                     correct semantic outcome was to make no change
+ *                     (existence-gate fired, plan body forecloses
+ *                     creation, etc). Carries `reason` + `notes` so
+ *                     the operator sees WHY the no-op was chosen
+ *                     without drilling into the source atom
+ *
+ * Reason is surfaced for both `error` and `noop` because both are
+ * legitimate "produced no PR" outcomes the operator needs to inspect;
+ * earlier projections only passed reason on `error`, which made the
+ * `noop` branch render as "no data" in the UI even though the
+ * substrate had captured the full diagnostic.
  */
 export interface PipelineLifecycleCodeAuthorInvocation {
   readonly atom_id: string;
   readonly plan_id: string;
   readonly correlation_id: string | null;
-  readonly kind: 'dispatched' | 'error' | null;
+  readonly kind: 'dispatched' | 'error' | 'noop' | null;
   readonly pr_number: number | null;
   readonly pr_html_url: string | null;
   readonly branch_name: string | null;
   readonly commit_sha: string | null;
-  /** Set only on `kind === 'error'`. */
+  /** Set on `kind === 'error'` AND `kind === 'noop'`. */
   readonly reason: string | null;
-  /** Set only on `kind === 'error'`. */
+  /** Set only on `kind === 'error'`; the noop kind has no halt-stage. */
   readonly stage: string | null;
+  /**
+   * Long-form explanation the executor wrote alongside the reason.
+   * Surfaced for `noop` so the operator sees the reasoning chain
+   * (e.g., "existence gate fired; plan forecloses creation"); the
+   * `error` kind also carries notes when the executor wants to be
+   * verbose, but the short reason is the load-bearing signal.
+   */
+  readonly notes: string | null;
   readonly at: string;
 }
 
