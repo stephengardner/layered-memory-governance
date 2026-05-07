@@ -42,7 +42,12 @@
  */
 @media (pointer: coarse), (max-width: 48rem) {
   .chip {
+    /*
+     * Tap floor on the height axis only. min-width: 44 forced short
+     * chips ("All", "Pref") into 44px-wide pills with awkward extra
+     * horizontal slack; the chip's own padding gives them comfortable
+     * width naturally, and 44px height alone satisfies the tap floor.
+     */
     min-height: var(--size-touch-target-min);
-    min-width: var(--size-touch-target-min);
   }
 }
