@@ -116,6 +116,26 @@
 
 @media (max-width: 48rem) {
   .proposeLabel { display: none; }
+  /*
+   * Drop the solid accent fill on mobile when the propose button
+   * collapses to icon-only. A 44x44 filled-blue square next to
+   * 44x44 transparent icon-only theme/density toggles reads as
+   * visually disproportionate even though the hit-target sizes
+   * match. Match the chrome treatment so the cluster reads as one
+   * row of icon controls.
+   */
+  .proposeBtn {
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0;
+    justify-content: center;
+    transition: background var(--duration-fast) var(--easing-standard),
+                color var(--duration-fast) var(--easing-standard);
+  }
+  .proposeBtn:hover {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+  }
 }
 
 .mobileLogo {
