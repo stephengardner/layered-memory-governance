@@ -59,6 +59,10 @@ import type {
   StageInput,
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
+import {
+  extractBodyPaths,
+  stripDiffPrefix,
+} from '../../../src/runtime/planning-pipeline/extract-body-paths.js';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
 import { buildCanonAtRuntimeStamp } from '../lib/build-canon-at-runtime-stamp.js';
 import { bindingForStage } from '../lib/stage-mapping.js';
@@ -96,87 +100,17 @@ const MAX_TARGET_PATH = 500;
 const INJECTION_TOKEN = '<system-reminder>';
 
 /**
- * Extension allowlist for the body-path completeness check. Mirrors
- * the drafter-side `extractTargetPathsFromProse` shape in
- * src/runtime/actor-message/diff-based-code-author-executor.ts so the
- * schema-level validation matches the runtime extraction the drafter
- * uses to scope its target-path fence. Deliberately excludes
- * extensions that show up in prose for non-path reasons (e.g.,
- * `.com`, `.org`, `.net`, version strings); the drafter's allowlist
- * is the source of truth.
+ * Re-export the shared `extractBodyPaths` helper from the framework's
+ * planning-pipeline module so existing test imports
+ * (`import { extractBodyPaths } from '.../plan/index.js'`) continue to
+ * work without churn. The single source of truth is
+ * `src/runtime/planning-pipeline/extract-body-paths.ts`; both the
+ * schema's completeness fence here and the drafter executors under
+ * `src/runtime/actor-message/` import from that one module so a
+ * regex/extension/diff-prefix tweak lands in one place per substrate
+ * fix #288 (CR finding 2026-05-08 on PR #351).
  */
-const PATH_EXT_ALLOWLIST =
-  'md|ts|tsx|js|jsx|mjs|cjs|json|yml|yaml|toml|css|scss|html|sh|py|go|rs|java|kt|rb|ex|exs';
-
-/**
- * Regex shape mirroring the drafter's `extractTargetPathsFromProse`
- * extractor: a filesystem-shaped token bounded by a true prose
- * boundary, with a known text/code extension. The leading
- * lookbehind `(?<![A-Za-z0-9_\\/.])` blocks matches that begin
- * adjacent to a word char, `/`, or `.` so traversal-shaped fragments
- * never match. Path segments are zero-or-more so a top-level
- * filename in prose (`update README.md`) is recognised; any filesystem
- * shape with `/` separators is also recognised. Used to walk the plan
- * body for paths the LLM mentioned but forgot to include in
- * `target_paths`. The validation is intentionally identical-in-shape
- * to the drafter's extractor: a body-path that the schema accepts
- * here is exactly the set the drafter would have to scope to at draft
- * time.
- */
-const BODY_PATH_RE = new RegExp(
-  `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\\/[A-Za-z0-9_.-]+)*\\.(?:${PATH_EXT_ALLOWLIST}))\\b`,
-  'g',
-);
-
-/**
- * Strip a unified-diff `a/` or `b/` prefix when the remaining string
- * still contains a `/` (mirrors `stripDiffPathPrefix` in the drafter
- * extractor). Keeps a legitimate top-level directory named `a` or `b`
- * (e.g. `a/index.md`) from being collapsed to a leaf-only path.
- */
-function stripDiffPrefix(path: string): string {
-  const isDiffPrefix = path.startsWith('a/') || path.startsWith('b/');
-  if (!isDiffPrefix) return path;
-  const stripped = path.slice(2);
-  return stripped.includes('/') ? stripped : path;
-}
-
-/**
- * Walk a plan body and return the set of filesystem-shaped tokens the
- * body mentions, deduplicated and order-stable to first occurrence.
- * Paths containing a traversal segment (`..` or `.`) are dropped, and
- * unified-diff prefixes (`a/`, `b/`) are folded to the bare path.
- * Exported for the unit tests that walk the same shape independently;
- * the planEntrySchema refinement uses this helper.
- */
-export function extractBodyPaths(body: string): ReadonlyArray<string> {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
-  // RegExp objects with the global flag carry a lastIndex stateful
-  // cursor; a fresh exec() loop must reset it so re-entry on a new
-  // body starts from offset 0. The literal regex above is shared
-  // across calls so resetting is required for correctness.
-  BODY_PATH_RE.lastIndex = 0;
-  while ((m = BODY_PATH_RE.exec(body)) !== null) {
-    const captured = m[1];
-    if (captured === undefined) continue;
-    const folded = stripDiffPrefix(captured);
-    let traversal = false;
-    for (const seg of folded.split('/')) {
-      if (seg === '..' || seg === '.') {
-        traversal = true;
-        break;
-      }
-    }
-    if (traversal) continue;
-    if (!seen.has(folded)) {
-      seen.add(folded);
-      out.push(folded);
-    }
-  }
-  return out;
-}
+export { extractBodyPaths };
 
 const alternativeSchema = z.object({
   option: z.string().min(1).max(MAX_TITLE),
@@ -230,14 +164,18 @@ const planEntrySchema = z
       .max(MAX_LIST),
   })
   // Form-A completeness check: when target_paths is non-empty, every
-  // filesystem-shaped token mentioned in the body MUST appear in
-  // target_paths. Surfacing partial lists at schema-time means the
-  // plan stage halts loudly (the runner treats schema failures as
-  // stage halts per existing dev-pipeline-stage-halts-on-schema-fail
-  // posture) rather than silently producing a no-op PR. The drafter's
-  // extractTargetPathsFromProse heuristic uses the same regex shape;
-  // the schema check is the upstream fence so the failure surfaces at
-  // plan-stage rather than at executor-time as a silent empty diff.
+  // filesystem-shaped token declared as a step-target in the body
+  // MUST appear in target_paths. The walker is NARROW: it scans only
+  // step-target marker lines (the bolded numbered step pattern from
+  // examples/planning-stages/skills/writing-plans.md) so prose-only
+  // mentions in Why-this / context paragraphs are NOT flagged. That
+  // alignment matters: the skill doc explicitly says "read-only
+  // context paths belong in prose", and a broader walker would
+  // generate false-positive friction the doc contradicts. The
+  // drafter's extractTargetPathsFromProse fallback shares the same
+  // low-level regex/extension/diff-prefix primitive but walks
+  // freeform prose (no step-bolded constraint) so a non-pipeline
+  // plan with raw prose still yields a usable scope.
   .superRefine((entry, ctx) => {
     if (entry.target_paths.length === 0) return;
     // Reject bare filenames (no `/` separator) entries to prevent
@@ -461,8 +399,13 @@ because it cannot tell which paths are intentionally out-of-scope
 vs forgotten -- the result is dispatched=1 / failed=0 with zero PR
 shipped (substrate fix #288 reproducer:
 pipeline-cto-1778218364025-j09vxv). The schema's
-post-validation walks the body for filesystem-shaped tokens and
-fails the stage when target_paths is partial.
+post-validation walks the body's STEP-TARGET MARKER LINES (the
+"1. **<action>** - <path>" pattern under "Concrete steps") for
+filesystem-shaped tokens and fails the stage when target_paths is
+partial. Prose-only path references (Why-this paragraphs, context
+mentions like "mirrors how pkg/foo/bar.ts does X") are NOT
+deliverables and do NOT enter the completeness check; only
+step-target paths do.
 
 For repo-relative paths only: NEVER emit bare filenames like
 'header-version-chip.spec.ts'. The drafter resolves entries

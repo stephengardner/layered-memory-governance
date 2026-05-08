@@ -126,10 +126,21 @@ needs to be revisited. The output captures:
   because it cannot tell which paths are intentionally out-of-scope
   vs forgotten -- the result is `dispatched=1 / failed=0` with zero
   PR shipped (reproducer:
-  `pipeline-cto-1778218364025-j09vxv`). The plan-stage schema's
-  post-validation walks the body for filesystem-shaped tokens and
-  fails the stage when `target_paths` is non-empty but missing any
-  of them.
+  `pipeline-cto-1778218364025-j09vxv`).
+
+  Precise contract for the schema's completeness check: paths
+  appearing in **numbered/bolded step targets** (the
+  `1. **<action>** - <path>` shape under "Concrete steps") MUST be
+  in `target_paths` under Form A. Paths appearing **only in prose**
+  (Why-this paragraphs, alternatives_rejected reasons, context
+  references like "mirrors how `pkg/foo/bar.ts` does X") are NOT
+  deliverables and don't enter the `target_paths` check. The schema
+  walker is narrow on purpose: it scans only step-target marker
+  lines so the read-only context paths the doc explicitly designates
+  as prose-only do not generate false-positive friction. If you
+  intend a file to be edited or created, name it as the bolded path
+  target on a numbered step line; if you only consult it for
+  context, leave it in prose and DO NOT add it to `target_paths`.
 
   For repo-relative paths only: NEVER emit bare filenames like
   `header-version-chip.spec.ts`. The drafter resolves entries
@@ -340,12 +351,14 @@ Self-check:
   line as a bolded path target. Read-only context paths in prose
   are fine; deliverable paths must be enumerable.
 - Does `target_paths` satisfy Form A or Form B (NOT the partial
-  form between them)? If non-empty, every filesystem-shaped path
-  your body mentions MUST appear in `target_paths`, every entry
-  must include a directory separator (no bare filenames), and
-  every step deliverable must be present. If you cannot enumerate
-  every path with confidence, set `target_paths: []` instead and
-  let the drafter navigate (Form B).
+  form between them)? If non-empty, every step-target deliverable
+  (the path on a `1. **<action>** - <path>` numbered step line)
+  MUST appear in `target_paths`; every entry must include a
+  directory separator (no bare filenames). Prose-only path
+  references (Why-this, context paragraphs, alternatives_rejected
+  reasons) are NOT in this check -- they are not deliverables. If
+  you cannot enumerate every step-target with confidence, set
+  `target_paths: []` instead and let the drafter navigate (Form B).
 - Are the alternatives_rejected substantively distinct, with clear
   one-line trade-off reasons?
 - Is the JSON valid and matches the schema?

@@ -66,6 +66,7 @@ import type { Redactor } from '../../substrate/redactor.js';
 import { defaultBudgetCap, type BudgetCap } from '../../substrate/agent-budget.js';
 import { loadReplayTier } from '../../substrate/policy/replay-tier.js';
 import { loadBlobThreshold } from '../../substrate/policy/blob-threshold.js';
+import { extractFsShapedTokens } from '../planning-pipeline/extract-body-paths.js';
 import {
   buildEmbeddedAtomSnapshots,
   createDraftPr,
@@ -496,49 +497,24 @@ function extractStringArray(
 /**
  * Heuristic path extractor over prose plan content. Mirrors the
  * diff-based path's resolver so an agentic-path consumer interprets
- * the same plan identically.
+ * the same plan identically; both delegate to the shared
+ * `extractFsShapedTokens` primitive in
+ * `src/runtime/planning-pipeline/extract-body-paths.ts` so the
+ * regex / extension allowlist / traversal guard / diff-prefix-strip
+ * lives in one place. Pre-refactor each call site carried an inline
+ * copy and CR flagged the drift risk on PR #351; substrate fix #288
+ * hinges on schema + drafter agreeing on which filesystem shapes
+ * count.
  *
- * The extension allowlist is deliberately narrow so prose like
- * `example.com` or version strings (`1.2.3`) does not get misread as
- * a file path. Per-segment `..` / `.` guards block traversal
- * fragments; a defense-in-depth path-scope check belongs at the
- * workspace boundary, not here.
+ * NARROW vs BROAD scoping: this fallback is BROAD (walks any prose,
+ * no step-bolded constraint) because freeform Decision prose,
+ * Question prompts, and manually-authored plans without the
+ * "Concrete steps" markdown discipline must still produce a usable
+ * scope. The schema's narrow walker (step-targets only) applies the
+ * bolded-numbered-step constraint because pipeline plans always
+ * carry that shape and prose-only mentions there are read-only
+ * context references, not deliverables.
  */
-function extractTargetPathsFromProse(prose: string): string[] {
-  const extAllowlist = 'md|ts|tsx|js|jsx|mjs|cjs|json|yml|yaml|toml|css|scss|html|sh|py|go|rs|java|kt|rb|ex|exs';
-  // First segment may contain `.` so dotted top-level filenames
-  // (`README.md`, `tsconfig.json`) match. Path segments are
-  // zero-or-more so prose like "update README.md" extracts the
-  // top-level path; the prior `+` form silently dropped it. Mirrors
-  // the diff-based variant byte-for-byte.
-  const pathRe = new RegExp(
-    `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\\/[A-Za-z0-9_.-]+)*\\.(?:${extAllowlist}))\\b`,
-    'g',
-  );
-  const seen = new Set<string>();
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = pathRe.exec(prose)) !== null) {
-    const p = stripDiffPathPrefix(m[1]!);
-    if (hasTraversalSegment(p)) continue;
-    if (!seen.has(p)) {
-      seen.add(p);
-      out.push(p);
-    }
-  }
-  return out;
-}
-
-function stripDiffPathPrefix(p: string): string {
-  const isDiffPrefix = p.startsWith('a/') || p.startsWith('b/');
-  if (!isDiffPrefix) return p;
-  const stripped = p.slice(2);
-  return stripped.includes('/') ? stripped : p;
-}
-
-function hasTraversalSegment(p: string): boolean {
-  for (const seg of p.split('/')) {
-    if (seg === '..' || seg === '.') return true;
-  }
-  return false;
+function extractTargetPathsFromProse(prose: string): ReadonlyArray<string> {
+  return extractFsShapedTokens(prose);
 }
