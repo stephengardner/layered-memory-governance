@@ -81,6 +81,14 @@ export interface PipelineStageSummary {
   readonly last_event_at: string | null;
   /** Output atom id reported on the exit-success event, if any. */
   readonly output_atom_id: string | null;
+  /**
+   * Atom ids the stage cited as inputs (provenance.derived_from chain
+   * minus the seed). Optional on the wire today: the server projection
+   * does not yet populate this field; the UI renders an Inputs accordion
+   * defensively when present so a future projection that wires it up
+   * lights up the surface without a coordinated client release.
+   */
+  readonly input_atom_ids?: ReadonlyArray<string>;
 }
 
 /**

@@ -1,0 +1,35 @@
+.wrapper {
+  display: inline-flex;
+  /*
+   * The wrapper is a transparent listener that catches mouse + focus
+   * events on behalf of a (potentially disabled) child trigger. It
+   * carries no visual chrome of its own.
+   */
+}
+
+.tooltip {
+  position: fixed;
+  /*
+   * Center-aligned via translate; the inline style sets `left` to the
+   * trigger's x-center so the translate(-50%) lines the tooltip's
+   * horizontal center under the trigger.
+   */
+  transform: translateX(-50%);
+  z-index: 400;
+  max-width: 18rem;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+  border: var(--stroke-hairline) solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+  /*
+   * Soft wrap on long copy. Avoids word-break: break-all so URLs/atom
+   * ids stay readable; relies on max-width + the natural sans stack.
+   */
+  white-space: normal;
+}

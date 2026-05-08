@@ -1,0 +1,98 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin-left: calc(var(--space-3) * -1);
+  background: transparent;
+  border: var(--stroke-hairline) solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--easing-standard),
+    background var(--duration-fast) var(--easing-standard),
+    border-color var(--duration-fast) var(--easing-standard);
+  /*
+   * Tap target floor per `dev-web-mobile-first-required`. Coarse
+   * pointers get the 44 CSS-pixel minimum; fine pointers (mouse) keep
+   * the visual chip-sized button so the section header doesn't grow
+   * on desktop where it doesn't need to.
+   */
+  min-height: var(--space-7);
+}
+
+.trigger:hover {
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border-color: var(--border-subtle);
+}
+
+.trigger:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+@media (pointer: coarse) {
+  .trigger {
+    min-height: var(--size-touch-target-min);
+  }
+}
+
+.triggerChevron {
+  display: inline-flex;
+  color: var(--text-tertiary);
+  transition: transform var(--duration-normal) var(--easing-standard);
+}
+
+.triggerChevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+.triggerLabel {
+  white-space: nowrap;
+}
+
+.triggerCount {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  padding: 0 var(--space-2);
+  background: var(--surface-raised);
+  border-radius: var(--radius-pill);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.panel {
+  /*
+   * AnimatePresence + framer-motion drive the open/close transition.
+   * Keep CSS lean: visual chrome lives on the inner wrapper so the
+   * height-animated parent stays a clean overflow:hidden box.
+   */
+}
+
+.panelInner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 var(--space-3) var(--space-5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .triggerChevron {
+    transition: none;
+  }
+}

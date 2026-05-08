@@ -3,6 +3,8 @@ import { motion } from 'framer-motion';
 import { AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronRight, Clock, Coins, Cpu, ListChecks, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Workflow, XCircle } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
+import { FreshnessPill } from '@/components/freshness-pill/FreshnessPill';
+import { Tooltip } from '@/components/tooltip/Tooltip';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import {
   getPipelineDetail,
@@ -19,6 +21,7 @@ import {
 } from './tones';
 import { formatDurationMs, formatRelative, formatUsd } from './PipelinesView';
 import { PipelineLifecycle } from './PipelineLifecycle';
+import { StageInputs } from './StageInputs';
 import styles from './PipelineDetailView.module.css';
 
 /**
@@ -67,10 +70,33 @@ export function PipelineDetailView({ pipelineId }: { pipelineId: string }) {
     refetchOnWindowFocus: true,
   });
 
+  /*
+   * Track the last *successful* poll timestamp for the freshness pill.
+   * `query.dataUpdatedAt` is the canonical TanStack Query signal: it
+   * advances on every settled fetchSuccess, sticks across error
+   * retries (so the pill keeps ticking against the last good time on
+   * a hard poll failure), and is `0` until the first success. Derive
+   * directly rather than mirroring into state -- canon
+   * `dev-web-no-useeffect-for-data` reserves useEffect for real DOM
+   * side effects, and v5's `dataUpdatedAt` already preserves the last
+   * successful update across error retries.
+   */
+  const lastSuccessAt = query.dataUpdatedAt > 0 ? query.dataUpdatedAt : null;
+
   if (query.isPending) {
     return <LoadingState label="Loading pipeline..." testId="pipeline-detail-loading" />;
   }
-  if (query.isError) {
+  /*
+   * Top-level error short-circuit only applies when we have NEVER
+   * received a successful response (`query.data` is undefined). Once
+   * data has landed, refetch errors are non-fatal: the freshness
+   * pill ages into the 'stale' state on its own and the operator
+   * sees the last-good payload instead of a blanking error wall.
+   * This satisfies the spec's "on hard poll failure, keep ticking
+   * against last good timestamp - never silently retry with no
+   * signal" - the pill IS the signal.
+   */
+  if (query.isError && query.data === undefined) {
     const err = query.error instanceof Error ? query.error : null;
     const msg = err?.message ?? String(query.error);
     if (msg.includes('pipeline-not-found')) {
@@ -104,10 +130,16 @@ export function PipelineDetailView({ pipelineId }: { pipelineId: string }) {
     );
   }
 
-  return <PipelineDetailBody data={query.data} />;
+  return <PipelineDetailBody data={query.data!} lastSuccessAt={lastSuccessAt} />;
 }
 
-function PipelineDetailBody({ data }: { data: PipelineDetail }) {
+function PipelineDetailBody({
+  data,
+  lastSuccessAt,
+}: {
+  data: PipelineDetail;
+  lastSuccessAt: number | null;
+}) {
   const { pipeline, stages, events, findings, audit_counts: audit, failure, resumes } = data;
   const stateTone = pipelineStateTone(pipeline.pipeline_state);
 
@@ -136,6 +168,10 @@ function PipelineDetailBody({ data }: { data: PipelineDetail }) {
               <span>failed at {failure.failed_stage_name}</span>
             </span>
           )}
+          <FreshnessPill
+            lastSuccessAt={lastSuccessAt}
+            testId="pipeline-detail-freshness"
+          />
         </div>
         <h2 className={styles.detailTitle}>{pipeline.title}</h2>
         <div className={styles.detailMeta}>
@@ -346,19 +382,26 @@ function StageCard({
             {stage.state}
           </span>
           {stage.state === 'paused' && (
-            <button
-              type="button"
-              className={styles.resumeButton}
-              data-testid="pipeline-stage-resume"
-              data-stage-name={stage.stage_name}
-              disabled
-              title="Resume action wires through the operator CLI; UI affordance pending substrate gate"
+            <Tooltip
+              content="Resume not yet supported - wires through the operator CLI; UI affordance pending substrate gate"
+              testId="pipeline-stage-resume-tooltip"
             >
-              <PlayCircle size={12} strokeWidth={2} aria-hidden="true" />
-              Resume
-            </button>
+              <button
+                type="button"
+                className={styles.resumeButton}
+                data-testid="pipeline-stage-resume"
+                data-stage-name={stage.stage_name}
+                disabled
+              >
+                <PlayCircle size={12} strokeWidth={2} aria-hidden="true" />
+                Resume
+              </button>
+            </Tooltip>
           )}
         </header>
+        {stage.input_atom_ids && stage.input_atom_ids.length > 0 && (
+          <StageInputs stageName={stage.stage_name} inputAtomIds={stage.input_atom_ids} />
+        )}
         <ul className={styles.stageMeta}>
           <li>
             <Clock size={11} strokeWidth={2} aria-hidden="true" />
