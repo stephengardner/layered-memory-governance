@@ -850,6 +850,105 @@ describe('planStage', () => {
       }
     });
 
+    it('accepts a plan with a well-known repo-root bare filename (package.json) per allowlist', () => {
+      // The 2026-05-08 dogfeed surfaced this gap: a plan that
+      // legitimately needed to update package.json's bin entry was
+      // rejected as bare-filename even though package.json IS a
+      // legitimate repo-root file. The allowlist closes that gap
+      // while still rejecting random leaf-only emissions.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body:
+              '## Concrete steps\n\n'
+              + '1. **Update bin entry** - `package.json`\n'
+              + '   <code block>',
+            target_paths: ['package.json'],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(true);
+    });
+
+    it('accepts plans with tsconfig.<flavor>.json + .eslintrc.cjs + vitest.config.ts at repo root', () => {
+      // Pattern-allowlisted shapes: the config-file family. Confirms
+      // that the regex set covers the realistic surface, not just
+      // package.json + README.md.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body:
+              '## Concrete steps\n\n'
+              + '1. **Tweak typecheck config** - `tsconfig.examples.json`\n'
+              + '   <code block>\n'
+              + '2. **Tighten lint** - `.eslintrc.cjs`\n'
+              + '   <code block>\n'
+              + '3. **Add a vitest matcher** - `vitest.config.ts`\n'
+              + '   <code block>',
+            target_paths: [
+              'tsconfig.examples.json',
+              '.eslintrc.cjs',
+              'vitest.config.ts',
+            ],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(true);
+    });
+
+    it('rejects a plan with a gitignored target_paths entry (dist/foo.js)', () => {
+      // The 2026-05-08 dogfeed also surfaced a plan-author claiming
+      // `dist/adapters/file/index.js` as a deliverable. dist/ is a
+      // build output, not a deliverable -- the schema rejection
+      // surfaces the misclassification to the LLM at draft time.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body:
+              '## Concrete steps\n\n'
+              + '1. **Edit the build output** - `dist/adapters/file/index.js`\n'
+              + '   <code block>',
+            target_paths: ['dist/adapters/file/index.js'],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(false);
+      if (!result?.success) {
+        const messages = result?.error?.issues.map((i) => i.message).join('\n') ?? '';
+        expect(messages).toMatch(/gitignored \/ build-output \/ tool-cache shaped/);
+      }
+    });
+
+    it('does NOT flag a body-mentioned dist/ path against Form-A completeness', () => {
+      // The body walker filters gitignored first-segment paths so the
+      // schema does not require the LLM to declare runtime import
+      // targets as deliverables. With the filter, a plan that imports
+      // from `dist/adapters/file/index.js` in its step body but
+      // declares `scripts/foo.mjs` as the deliverable passes the Form-A
+      // completeness fence even though the body mentions a path absent
+      // from target_paths.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body:
+              '## Concrete steps\n\n'
+              + '1. **Add the script** - `scripts/audit-pipeline.mjs`\n'
+              + '   imports from `dist/adapters/file/index.js` at runtime',
+            target_paths: ['scripts/audit-pipeline.mjs'],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(true);
+    });
+
     it('extractBodyPaths returns step-target paths in first-occurrence order, deduplicated, with diff prefixes folded', () => {
       // The narrow walker scans only step-target marker lines.
       // Two step-targets to `apps/console/package.json` collapse to
@@ -896,6 +995,8 @@ describe('planStage', () => {
       expect(PLAN_SYSTEM_PROMPT).toMatch(/Form B \(NAVIGATIONAL\)/);
       expect(PLAN_SYSTEM_PROMPT).toMatch(/NEVER emit a partial target_paths/);
       expect(PLAN_SYSTEM_PROMPT).toMatch(/NEVER emit bare filenames/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/NEVER emit gitignored/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/EXCEPTION: well-known/);
     });
   });
 
