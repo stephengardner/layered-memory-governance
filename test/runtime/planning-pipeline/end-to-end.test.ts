@@ -195,6 +195,12 @@ function stubLlm(
                   reason: 'implements the plan',
                   implied_blast_radius: 'framework',
                 },
+                // Form B (NAVIGATIONAL) per substrate fix #288:
+                // empty target_paths defers path discovery to the
+                // drafter's body-prose extractor + Glob/Grep
+                // navigation. Tests that assert the partial-list
+                // failure mode override this with a non-empty value.
+                target_paths: [],
               },
             ],
             cost_usd: 0,

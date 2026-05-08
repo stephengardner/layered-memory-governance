@@ -100,6 +100,15 @@ const STUB_PLAN_PAYLOAD = {
         reason: 'docs-only edit fits the code-author sub-actor',
         implied_blast_radius: 'docs',
       },
+      // Form B (NAVIGATIONAL) per substrate fix #288: leave
+      // target_paths empty so the drafter's body-prose extractor
+      // discovers README.md at draft time. Form A would require a
+      // qualified path with a directory separator (the schema
+      // rejects bare filenames like 'README.md' to prevent the
+      // dogfeed-288 failure mode where a sub-path filename gets
+      // emitted as a bare path), so Form B is the right shape for a
+      // top-level README edit.
+      target_paths: [],
     },
   ],
   cost_usd: 0.42,

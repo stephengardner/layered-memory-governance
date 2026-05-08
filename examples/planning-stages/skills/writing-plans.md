@@ -100,6 +100,42 @@ needs to be revisited. The output captures:
   context (not modifies) belong in prose (e.g., "see how
   `examples/.../foo.ts` does X"); deliverable paths belong as the
   bolded path target on the relevant step line.
+
+- **target_paths satisfies Form A or Form B -- NEVER the partial
+  form between them (substrate fix #288).** The schema accepts a
+  `target_paths` array on each plan entry. It must be ONE of:
+
+  - **Form A (CONCRETE):** every file your steps edit, create, or
+    read for guidance is listed in `target_paths` as an exact
+    repo-relative path. If your plan body says "render in the
+    header component" then `target_paths` MUST contain the resolved
+    header path (e.g., `apps/console/src/components/Header.tsx`),
+    not a glob like `components/Header.*`. If your plan body says
+    "find the X file (likely Y or Z)" -- STOP. Resolve it via
+    Glob/Grep BEFORE emitting; a plan that defers file-location to
+    a later step is a plan that hasn't been written yet.
+
+  - **Form B (NAVIGATIONAL):** `target_paths` is the empty array
+    `[]`. The drafter's body-prose extractor + Glob/Grep fallback
+    discovers paths at draft time per
+    `dev-drafter-citation-verification-required`. Empty
+    `target_paths` is honest; partial `target_paths` is a bug.
+
+  NEVER emit a partial `target_paths` (some files listed, others
+  deferred). The drafter's empty-diff fence rejects partial lists
+  because it cannot tell which paths are intentionally out-of-scope
+  vs forgotten -- the result is `dispatched=1 / failed=0` with zero
+  PR shipped (reproducer:
+  `pipeline-cto-1778218364025-j09vxv`). The plan-stage schema's
+  post-validation walks the body for filesystem-shaped tokens and
+  fails the stage when `target_paths` is non-empty but missing any
+  of them.
+
+  For repo-relative paths only: NEVER emit bare filenames like
+  `header-version-chip.spec.ts`. The drafter resolves entries
+  relative to the repo root, so a bare filename creates a file at
+  repo root which is almost never intended. If you cannot resolve
+  the directory, use Form B.
 - **No placeholders.** "TBD", "TODO", "fill in later", "handle edge
   cases", "add appropriate error handling" are plan failures. Every
   step contains the actual content an engineer needs.
@@ -254,7 +290,8 @@ matching this schema:
         "sub_actor_principal_id": "<from verified_sub_actor_principal_ids>",
         "reason": "<why this sub-actor>",
         "implied_blast_radius": "none" | "docs" | "tooling" | "framework" | "l3-canon-proposal"
-      }
+      },
+      "target_paths": ["<repo-relative path>", ...] | []
     }
   ],
   "cost_usd": <number>
@@ -302,6 +339,13 @@ Self-check:
   walk every step and confirm the file it touches is on a step
   line as a bolded path target. Read-only context paths in prose
   are fine; deliverable paths must be enumerable.
+- Does `target_paths` satisfy Form A or Form B (NOT the partial
+  form between them)? If non-empty, every filesystem-shaped path
+  your body mentions MUST appear in `target_paths`, every entry
+  must include a directory separator (no bare filenames), and
+  every step deliverable must be present. If you cannot enumerate
+  every path with confidence, set `target_paths: []` instead and
+  let the drafter navigate (Form B).
 - Are the alternatives_rejected substantively distinct, with clear
   one-line trade-off reasons?
 - Is the JSON valid and matches the schema?

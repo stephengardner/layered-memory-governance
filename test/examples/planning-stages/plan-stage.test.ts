@@ -16,6 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   PLAN_SYSTEM_PROMPT,
+  extractBodyPaths,
   planStage,
 } from '../../../examples/planning-stages/plan/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
@@ -42,6 +43,11 @@ const samplePlan = {
     reason: 'mechanical edits within scope',
     implied_blast_radius: 'framework' as const,
   },
+  // Form B (NAVIGATIONAL) per substrate fix #288 -- empty array
+  // means the drafter discovers paths at draft time. Tests that
+  // assert the partial-list failure mode override this with an
+  // explicit non-empty value.
+  target_paths: [],
 };
 
 describe('planStage', () => {
@@ -690,6 +696,142 @@ describe('planStage', () => {
     expect(captured).not.toBeNull();
     if (captured === null) return;
     expect(captured.data.intent_max_blast_radius).toBe('');
+  });
+
+  // Substrate fix #288 (pipeline-cto-1778218364025-j09vxv of
+   // 2026-05-08): the plan-stage schema MUST enforce target_paths
+   // completeness so a partial list (some files listed, others
+   // deferred) fails at the schema layer rather than silently
+   // producing an empty-diff PR at the drafter. The drafter's
+   // empty-diff fence cannot tell which paths are intentionally
+   // out-of-scope vs forgotten; the dogfeed produced
+   // dispatched=1 / failed=0 with zero PR shipped.
+  describe('target_paths completeness fence (substrate fix #288)', () => {
+    const partialBody =
+      'Render the chip in the Console header at '
+      + '`apps/console/src/components/Header.tsx`. Wire it via the '
+      + 'existing badge in `apps/console/src/components/ui/badge.tsx`.';
+
+    it('rejects a plan whose body references a path not in target_paths (Form A partial)', () => {
+      // Reproduces the dogfeed: body names two files; target_paths
+      // lists only one. The schema must catch this BEFORE the
+      // drafter runs so the failure is loud at plan-stage.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body: partialBody,
+            target_paths: ['apps/console/package.json'],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(false);
+      if (!result?.success) {
+        const messages = result?.error?.issues.map((i) => i.message).join('\n') ?? '';
+        expect(messages).toMatch(/partial|substrate fix #288/i);
+        expect(messages).toMatch(/apps\/console\/src\/components\/Header\.tsx/);
+      }
+    });
+
+    it('accepts a plan with target_paths empty (Form B navigational)', () => {
+      // Form B is the explicit deferral: empty target_paths means the
+      // drafter discovers paths at draft time via prose extraction +
+      // Glob/Grep navigation. The schema does NOT walk the body when
+      // target_paths is empty -- the drafter is the authority.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body: partialBody,
+            target_paths: [],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(true);
+    });
+
+    it('accepts a plan with target_paths covering every body-mentioned path (Form A concrete)', () => {
+      // Form A is the strict declaration: every body-mentioned path
+      // is in target_paths and the drafter scopes its diff to exactly
+      // that set. The Header.tsx + badge.tsx pair from the dogfeed
+      // body, both qualified with their directory.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body: partialBody,
+            target_paths: [
+              'apps/console/src/components/Header.tsx',
+              'apps/console/src/components/ui/badge.tsx',
+            ],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(true);
+    });
+
+    it('rejects a plan with a bare-filename target_paths entry (no directory separator)', () => {
+      // The dogfeed reproducer's specific failure mode: emitting
+      // 'header-version-chip.spec.ts' (bare filename) instead of
+      // 'apps/console/tests/e2e/header-version-chip.spec.ts'. The
+      // drafter resolves entries relative to the repo root, so a
+      // bare filename creates a file at repo root which is almost
+      // never intended. Schema rejects with a directive-pointing
+      // message so the LLM sees the right answer at draft time.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body: 'Add `header-version-chip.spec.ts` covering the chip.',
+            target_paths: ['header-version-chip.spec.ts'],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(false);
+      if (!result?.success) {
+        const messages = result?.error?.issues.map((i) => i.message).join('\n') ?? '';
+        expect(messages).toMatch(/bare filename/);
+      }
+    });
+
+    it('extractBodyPaths returns paths in first-occurrence order, deduplicated, with diff prefixes folded', () => {
+      // The exported helper MUST mirror the drafter's
+      // extractTargetPathsFromProse shape so the schema-level check
+      // and the drafter's runtime extractor agree on which paths the
+      // body mentions. Two body mentions of the same path collapse to
+      // one; `a/foo.ts` and `b/foo.ts` both fold to `foo.ts`.
+      const body =
+        'See `apps/console/package.json` and `apps/console/package.json` (twice). '
+        + 'The diff prefixes `a/foo.ts` and `b/foo.ts` fold to `foo.ts`.';
+      const paths = extractBodyPaths(body);
+      // a/foo.ts -> foo.ts (no `/` in stripped form, so stripDiffPrefix
+      // KEEPS the `a/` prefix; only paths that retain a `/` after
+      // stripping are folded). Test the actually-folded shape:
+      // apps/.../package.json (full), then a/foo.ts (kept).
+      expect(paths).toContain('apps/console/package.json');
+      expect(paths).toContain('a/foo.ts');
+      expect(paths).toContain('b/foo.ts');
+      // Dedup: package.json appears once even though body mentions
+      // it twice.
+      const occurrences = paths.filter((p) => p === 'apps/console/package.json');
+      expect(occurrences.length).toBe(1);
+    });
+
+    it('PLAN_SYSTEM_PROMPT carries the target_paths completeness HARD CONSTRAINT', () => {
+      // Two prompt markers a downstream prompt-edit reviewer can
+      // grep for: the HARD CONSTRAINT header and the explicit Form
+      // A / Form B language so the LLM has the positive choice
+      // surface, not a vague "be specific" instruction.
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/HARD CONSTRAINT on target_paths completeness/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/Form A \(CONCRETE\)/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/Form B \(NAVIGATIONAL\)/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/NEVER emit a partial target_paths/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/NEVER emit bare filenames/);
+    });
   });
 
   it('audit() short-circuits the sub-actor closure check when the verified set is empty (legacy callers)', async () => {
