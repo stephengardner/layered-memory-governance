@@ -319,16 +319,23 @@ export function evaluatePipelinePlanAutoApproval(
 
 /**
  * Convert a SkipReason snake_case value (e.g.
- * 'delegation_radius_exceeds_envelope') to a kebab-cased category
- * suitable for a pipeline-audit-finding atom (e.g.
- * 'delegation-radius-exceeds-envelope'). The audit-finding shape's
- * `category` field is freeform string but reads cleaner in console
- * projections when it matches the kebab convention used by every
- * other category seeded by stage adapters (e.g. 'fabricated-cited-
- * atom', 'non-verified-cited-atom').
+ * 'delegation_radius_exceeds_envelope') to a stable kebab-cased
+ * category for a pipeline-audit-finding atom under the
+ * `envelope-mismatch-*` namespace (e.g.
+ * 'envelope-mismatch-delegation-radius-exceeds-envelope').
+ * Namespacing makes downstream filtering and grouping reliable; the
+ * audit-finding shape's `category` field is freeform string but
+ * every category emitted by this branch represents an
+ * envelope-mismatch verdict, so the prefix is the stable taxonomy.
+ * Handles SkipReason values that already start with
+ * 'envelope_mismatch' / 'envelope-mismatch' without double-prefixing.
  */
 function skipReasonToCategory(reason: SkipReason): string {
-  return String(reason).replace(/_/g, '-');
+  const kebab = String(reason).replace(/_/g, '-');
+  if (kebab.startsWith('envelope-mismatch')) {
+    return kebab;
+  }
+  return `envelope-mismatch-${kebab}`;
 }
 
 /**

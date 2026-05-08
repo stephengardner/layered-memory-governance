@@ -1011,7 +1011,7 @@ describe('runPipelinePlanAutoApproval', () => {
       expect(fmeta['pipeline_id']).toBe(PIPELINE_ANCESTOR_ID);
       expect(fmeta['stage_name']).toBe('plan-stage');
       expect(fmeta['severity']).toBe('major');
-      expect(fmeta['category']).toBe('delegation-radius-exceeds-envelope');
+      expect(fmeta['category']).toBe('envelope-mismatch-delegation-radius-exceeds-envelope');
       expect(fmeta['cited_atom_ids']).toEqual(['plan-1', 'intent-1']);
       expect(fmeta['cited_paths']).toEqual([]);
       expect(String(fmeta['message'])).toContain('framework');
@@ -1076,7 +1076,7 @@ describe('runPipelinePlanAutoApproval', () => {
       );
       expect(findings.atoms.length).toBe(1);
       const fmeta = findings.atoms[0]!.metadata as Record<string, unknown>;
-      expect(fmeta['category']).toBe('below-min-confidence');
+      expect(fmeta['category']).toBe('envelope-mismatch-below-min-confidence');
       expect(String(fmeta['message'])).toContain('0.5');
       expect(String(fmeta['message'])).toContain('0.95');
     });
