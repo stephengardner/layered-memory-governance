@@ -75,8 +75,24 @@ async function main() {
   // not produce an orphan intent.
   if (args.trigger && process.env.LAG_INTEND_SKIP_BUILD !== '1') {
     console.log('[intend] rebuilding dist before trigger (set LAG_INTEND_SKIP_BUILD=1 to skip)');
+    // Pass BOTH tsconfigs explicitly so a stale `dist/` from a src/
+    // change AND a stale `dist/examples/` from an adapter change both
+    // refresh in one tsc invocation. tsc handles incremental builds
+    // (.tsbuildinfo files) so an up-to-date project is a no-op.
+    //
+    // Why both: tsconfig.json compiles `src/` -> `dist/` (framework);
+    // tsconfig.examples.json compiles `examples/` -> `dist/examples/`
+    // (planning-stage adapters + skill bundles). The pipeline loads
+    // from BOTH at runtime (per package exports + the `#runtime/...`
+    // subpath imports map). A single tsconfig leaves the other half
+    // stale.
     const buildResult = await spawnNode(
-      [resolve(REPO_ROOT, 'node_modules/typescript/bin/tsc'), '-b', resolve(REPO_ROOT, 'tsconfig.examples.json')],
+      [
+        resolve(REPO_ROOT, 'node_modules/typescript/bin/tsc'),
+        '-b',
+        resolve(REPO_ROOT, 'tsconfig.json'),
+        resolve(REPO_ROOT, 'tsconfig.examples.json'),
+      ],
       { stdio: 'inherit', reject: false },
     );
     if (buildResult.failed) {
