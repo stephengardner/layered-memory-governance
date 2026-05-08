@@ -129,6 +129,8 @@
     color: var(--text-secondary);
     padding: 0;
     justify-content: center;
+    transition: background var(--duration-fast) var(--easing-standard),
+                color var(--duration-fast) var(--easing-standard);
   }
   .proposeBtn:hover {
     background: var(--surface-hover);
