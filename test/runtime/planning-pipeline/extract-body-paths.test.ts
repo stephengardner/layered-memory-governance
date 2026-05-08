@@ -47,6 +47,8 @@ import { describe, expect, it } from 'vitest';
 import {
   extractBodyPaths,
   extractFsShapedTokens,
+  isGitignoredFirstSegment,
+  isRepoRootAllowedBare,
 } from '../../../src/runtime/planning-pipeline/extract-body-paths.js';
 // The plan-stage adapter re-exports the same `extractBodyPaths` so
 // existing test imports keep working; assert the re-export resolves
@@ -186,6 +188,102 @@ describe('shared filesystem-token extractor', () => {
       const broadSet = new Set(extractFsShapedTokens(entry.body));
       for (const p of narrow) {
         expect(broadSet.has(p)).toBe(true);
+      }
+    });
+
+    it('extractFsShapedTokens skips gitignored first-segment paths', () => {
+      // The 2026-05-08 dogfeed surfaced a plan-author emitting
+      // `dist/adapters/file/index.js` as a step-target. The path is a
+      // runtime import target (a build output), never a deliverable.
+      // The walker MUST skip gitignored first-segment shapes so the
+      // schema's Form-A completeness fence does not flag it as
+      // missing-from-target_paths.
+      const probe =
+        'Imports `dist/adapters/file/index.js` and writes to `node_modules/foo.ts`. '
+        + 'Logs land in `.lag/atoms/x.json` and tests in `coverage/y.html`. '
+        + 'Build outputs go to `build/z.js`. The real source is `src/runtime/foo.ts`.';
+      const tokens = extractFsShapedTokens(probe);
+      // Only the src/ path survives: dist/, node_modules/, .lag/,
+      // coverage/, build/ are all filtered.
+      expect([...tokens]).toEqual(['src/runtime/foo.ts']);
+    });
+
+    it('isGitignoredFirstSegment returns true for the canonical set', () => {
+      const positives = [
+        'dist/foo.ts',
+        'build/foo.js',
+        'out/foo.js',
+        '.next/foo.js',
+        'node_modules/foo',
+        'coverage/foo.html',
+        '.vitest-cache/foo',
+        '.cache/foo',
+        '.lag/atoms/foo.json',
+        '.git/HEAD',
+      ];
+      for (const p of positives) {
+        expect(isGitignoredFirstSegment(p)).toBe(true);
+      }
+    });
+
+    it('isGitignoredFirstSegment returns false for normal repo paths', () => {
+      const negatives = [
+        'src/runtime/foo.ts',
+        'examples/planning-stages/plan/index.ts',
+        'apps/console/src/Header.tsx',
+        'scripts/intend.mjs',
+        'test/runtime/foo.test.ts',
+        'package.json',
+        'README.md',
+        '.github/workflows/ci.yml',
+        '.eslintrc.cjs',
+        '.changeset/foo.md',
+      ];
+      for (const p of negatives) {
+        expect(isGitignoredFirstSegment(p)).toBe(false);
+      }
+    });
+
+    it('isRepoRootAllowedBare returns true for canonical repo-root files', () => {
+      const positives = [
+        'package.json',
+        'package-lock.json',
+        'README.md',
+        'LICENSE',
+        'CHANGELOG.md',
+        'CLAUDE.md',
+        '.gitignore',
+        '.env.example',
+        'tsconfig.json',
+        'tsconfig.examples.json',
+        'tsconfig.typecheck.json',
+        'vite.config.ts',
+        'vitest.config.mts',
+        'playwright.config.ts',
+        '.eslintrc.cjs',
+        '.eslintrc.json',
+        '.eslintrc',
+        'biome.json',
+        'Dockerfile',
+        'Makefile',
+      ];
+      for (const name of positives) {
+        expect(isRepoRootAllowedBare(name)).toBe(true);
+      }
+    });
+
+    it('isRepoRootAllowedBare returns false for arbitrary leaf-only filenames', () => {
+      const negatives = [
+        'header-version-chip.spec.ts',
+        'foo.test.ts',
+        'random.json',
+        'audit-pipeline.mjs',
+        'arbitrary.config.ts',
+        'something.md',
+        'page.tsx',
+      ];
+      for (const name of negatives) {
+        expect(isRepoRootAllowedBare(name)).toBe(false);
       }
     });
 

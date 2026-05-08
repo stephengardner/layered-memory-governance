@@ -65,7 +65,12 @@ import type {
 // (no `dist/src/`), so the resolved URL would be `dist/src/runtime/...`
 // which doesn't exist. The subpath import maps to `./dist/runtime/...`
 // in installed shape and to the `./src/...` source for type resolution.
-import { extractBodyPaths, stripDiffPrefix } from '#runtime/planning-pipeline/extract-body-paths';
+import {
+  extractBodyPaths,
+  isGitignoredFirstSegment,
+  isRepoRootAllowedBare,
+  stripDiffPrefix,
+} from '#runtime/planning-pipeline/extract-body-paths';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
 import { buildCanonAtRuntimeStamp } from '../lib/build-canon-at-runtime-stamp.js';
 import { bindingForStage } from '../lib/stage-mapping.js';
@@ -187,8 +192,40 @@ const planEntrySchema = z
     // `header-version-chip.spec.ts` becomes `<repoDir>/header-version-chip.spec.ts`
     // which is almost never intended. Form B is the right answer
     // when the plan cannot resolve the directory.
+    //
+    // The allowlist exception covers well-known top-level files that
+    // legitimately live at the repo root: `package.json`, `README.md`,
+    // `tsconfig.json` and the config-file family, etc. Without the
+    // exception a tooling-envelope plan that needs to update e.g.
+    // package.json's bin entry would hit a false-positive bare-filename
+    // rejection. The 2026-05-08 dogfeed surfaced the gap when a plan
+    // emitting target_paths=['package.json'] failed schema validation
+    // even though package.json IS a legitimate repo-root file.
+    //
+    // Gitignored entries (`dist/foo.js`, `node_modules/foo`,
+    // `.lag/atoms/foo.json`) are also rejected: those are runtime
+    // import targets / build outputs / transient state, never plan
+    // deliverables. A plan that declares dist/ as a target is confused
+    // about deliverable vs build-output and the schema rejection
+    // surfaces that to the LLM at draft time.
     for (const entry_ of entry.target_paths) {
-      if (!entry_.includes('/')) {
+      const stripped = stripDiffPrefix(entry_);
+      if (isGitignoredFirstSegment(stripped)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['target_paths'],
+          message:
+            `target_paths entry "${entry_}" is gitignored / build-output / `
+            + 'tool-cache shaped (first segment matches dist | build | out '
+            + '| .next | node_modules | coverage | .vitest-cache | .cache '
+            + '| .lag | .git). Such paths are runtime import targets, '
+            + 'never plan deliverables. Reference the source file the '
+            + 'build produces (e.g., src/runtime/foo.ts instead of '
+            + 'dist/runtime/foo.js).',
+        });
+        continue;
+      }
+      if (!stripped.includes('/') && !isRepoRootAllowedBare(stripped)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['target_paths'],
@@ -200,7 +237,9 @@ const planEntrySchema = z
             + 'path (e.g., "apps/console/tests/e2e/'
             + entry_
             + '") or empty target_paths to use navigational mode '
-            + '(Form B).',
+            + '(Form B). Well-known repo-root files (package.json, '
+            + 'README.md, tsconfig*.json, config files, etc.) are '
+            + 'allowlisted; this entry is not on that list.',
         });
       }
     }
@@ -413,8 +452,20 @@ step-target paths do.
 For repo-relative paths only: NEVER emit bare filenames like
 'header-version-chip.spec.ts'. The drafter resolves entries
 relative to the repo root, so a bare filename creates a file at
-repo root which is almost never intended. If you cannot resolve the
-directory, use Form B.
+repo root which is almost never intended. EXCEPTION: well-known
+repo-root files (package.json, README.md, LICENSE, tsconfig.json,
+tsconfig.<flavor>.json, vite.config.ts, vitest.config.ts,
+playwright.config.ts, .eslintrc.cjs, .gitignore, .env.example, etc.)
+ARE allowed bare. If you cannot resolve the directory, use Form B.
+
+NEVER emit gitignored / build-output / tool-cache paths like
+'dist/foo.js', 'node_modules/x', 'build/y', '.next/z', '.lag/w',
+'.git/v', 'coverage/u', '.vitest-cache/t'. Those are runtime import
+targets or build outputs, NEVER plan deliverables. If your plan
+imports something at runtime from dist/, reference the SOURCE file
+in src/ that the build produces. The schema rejects gitignored
+target_paths and the completeness fence skips gitignored body
+mentions for the same reason.
 
 Emit ONLY a payload that matches the provided schema; no prose
 outside the schema fields.`;

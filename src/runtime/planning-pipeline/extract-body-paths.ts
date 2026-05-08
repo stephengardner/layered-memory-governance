@@ -98,6 +98,128 @@ function hasTraversalSegment(path: string): boolean {
 }
 
 /**
+ * First-segment names whose paths are gitignored / build-output / tool-
+ * cache-shaped. Such paths are NEVER plan deliverables: they are runtime
+ * import targets (`dist/...`), tool-cache (`.vitest-cache/...`), or
+ * untracked workspace state (`.lag/atoms/...`). A plan that mentions
+ * `dist/adapters/file/index.js` in a step-body is referencing the
+ * RUNTIME target of a build output, not declaring a deliverable. Both
+ * the schema-narrow walker (Form-A completeness check) and the drafter-
+ * broad walker (target_paths fallback) MUST skip these so the LLM does
+ * not get fenced for an "unlisted" body path that was always read-only.
+ *
+ * Conservative + concrete: extend only when a real dogfeed surfaces a
+ * legitimate gitignored-shape that should be scoped out. The list is
+ * the union of build outputs (dist, build, out, .next), dependency
+ * caches (node_modules, .vitest-cache, coverage, .cache), and LAG-
+ * specific transient state (.lag, .git). A first-segment match is
+ * sufficient because nesting under any of these implies the same
+ * read-only-import-target semantics.
+ */
+const GITIGNORED_FIRST_SEGMENTS: ReadonlySet<string> = new Set([
+  'dist',
+  'build',
+  'out',
+  '.next',
+  'node_modules',
+  'coverage',
+  '.vitest-cache',
+  '.cache',
+  '.lag',
+  '.git',
+]);
+
+/**
+ * Return true when the path's first segment is gitignored / build-shape
+ * / tool-cache-shape, and therefore not a plan deliverable. Exported
+ * so the schema's bare-filename and Form-A guards can apply the same
+ * filter the body walker uses.
+ */
+export function isGitignoredFirstSegment(path: string): boolean {
+  const firstSeg = path.split('/')[0];
+  return firstSeg !== undefined && GITIGNORED_FIRST_SEGMENTS.has(firstSeg);
+}
+
+/**
+ * Repo-root bare-filename allowlist. Files in this set are well-known
+ * top-level configuration / metadata files that legitimately live at
+ * the repo root with no directory prefix. The plan-stage schema's
+ * bare-filename guard rejects entries WITHOUT a `/` separator to stop
+ * the LLM from creating files at repo root accidentally (e.g. a leaf-
+ * only `header.spec.ts` would resolve to `<repoDir>/header.spec.ts`,
+ * almost never the intent). But `package.json`, `README.md`, and the
+ * config-file family genuinely live at repo root, so the guard would
+ * false-positive on the legitimate case. Allowlisting closes the gap
+ * the 2026-05-08 dogfeed surfaced when a tooling-envelope plan needed
+ * to update `package.json` and the schema rejected it as bare.
+ */
+const REPO_ROOT_BARE_ALLOWLIST: ReadonlySet<string> = new Set([
+  'package.json',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'README.md',
+  'LICENSE',
+  'CHANGELOG.md',
+  'CONTRIBUTING.md',
+  'CODE_OF_CONDUCT.md',
+  'CLAUDE.md',
+  '.gitignore',
+  '.gitattributes',
+  '.npmrc',
+  '.nvmrc',
+  '.node-version',
+  '.env.example',
+  '.editorconfig',
+  '.prettierrc',
+  '.prettierrc.json',
+  '.prettierignore',
+  '.dockerignore',
+  'Dockerfile',
+  'Makefile',
+  'biome.json',
+]);
+
+/**
+ * Pattern allowlist for repo-root config files whose name varies (the
+ * `tsconfig.<flavor>.json` / `vite.config.<ext>` / `.eslintrc.<ext>`
+ * shapes). Each pattern matches a single canonical config name; this
+ * is deliberately narrow so a confused LLM emitting `random.config.ts`
+ * still trips the bare-filename guard, but the legitimate
+ * `tsconfig.examples.json` / `vitest.config.ts` / `.eslintrc.cjs` shapes
+ * pass.
+ */
+const REPO_ROOT_BARE_PATTERNS: ReadonlyArray<RegExp> = [
+  /^tsconfig(\.[a-zA-Z0-9_-]+)?\.json$/,
+  /^vite\.config\.(?:[mc]?[jt]s)$/,
+  /^vitest\.config\.(?:[mc]?[jt]s)$/,
+  /^webpack\.config\.(?:[mc]?[jt]s)$/,
+  /^playwright\.config\.(?:[mc]?[jt]s)$/,
+  /^rollup\.config\.(?:[mc]?[jt]s)$/,
+  /^esbuild\.config\.(?:[mc]?[jt]s)$/,
+  /^next\.config\.(?:[mc]?[jt]s)$/,
+  /^postcss\.config\.(?:[mc]?[jt]s|json)$/,
+  /^tailwind\.config\.(?:[mc]?[jt]s)$/,
+  /^\.eslintrc\.(?:[mc]?[jt]s|json|yml|yaml)$/,
+  /^\.eslintrc$/,
+];
+
+/**
+ * Return true when the bare filename is a well-known repo-root file
+ * whose lack of a directory separator is legitimate. The schema's
+ * bare-filename guard calls this to allow `package.json` and the
+ * config-file family while still rejecting the random leaf-only
+ * shape that almost always indicates a confused LLM emission.
+ */
+export function isRepoRootAllowedBare(name: string): boolean {
+  if (REPO_ROOT_BARE_ALLOWLIST.has(name)) return true;
+  for (const re of REPO_ROOT_BARE_PATTERNS) {
+    if (re.test(name)) return true;
+  }
+  return false;
+}
+
+/**
  * Walk a string and return the deduplicated, order-stable set of
  * filesystem-shaped tokens it mentions. The shared low-level primitive
  * used by both the schema-narrow walker (extractBodyPaths) and the
@@ -122,6 +244,12 @@ export function extractFsShapedTokens(text: string): ReadonlyArray<string> {
     if (captured === undefined) continue;
     const folded = stripDiffPrefix(captured);
     if (hasTraversalSegment(folded)) continue;
+    // A path like `dist/adapters/file/index.js` is a runtime import
+    // target, not a deliverable. Filtering at this primitive layer
+    // keeps both the narrow schema walker and the broad drafter
+    // walker from treating gitignored shapes as targets the LLM
+    // declared.
+    if (isGitignoredFirstSegment(folded)) continue;
     if (!seen.has(folded)) {
       seen.add(folded);
       out.push(folded);
