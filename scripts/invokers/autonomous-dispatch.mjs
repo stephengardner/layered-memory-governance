@@ -13,11 +13,15 @@
  *   - gitIdentity: derived from <stateDir>/apps/<role>.json (the same
  *                  noreply identity GitHub minted for the App)
  *   - model:       LAG_DRAFTER_MODEL env, defaults to claude-opus-4-7
- *   - role:        LAG_DISPATCH_BOT_ROLE env, defaults to 'lag-ceo'
- *                  (the role that already lands code-author PRs in this
- *                  instance; consumers can swap to a dedicated
- *                  'lag-code-author' role by provisioning it + setting
- *                  the env var).
+ *   - role:        LAG_DISPATCH_BOT_ROLE env. Required (no default).
+ *                  Defaulting to a specific role like 'lag-ceo' inside
+ *                  framework-adjacent code would bake this org's
+ *                  principal taxonomy into the canonical invoker;
+ *                  downstream consumers would silently inherit our
+ *                  default unless they remembered to override on every
+ *                  run. Mirrors the bootstrap-script discipline for
+ *                  LAG_OPERATOR_ID. Operators wire their own role at
+ *                  deployment time; .env.example documents the var.
  *   - dispatchPrincipal: LAG_DISPATCH_PRINCIPAL_ID env, defaults to
  *                  `role` for backward-compat. Distinct from the role:
  *                  `role` drives cred provisioning in
@@ -92,9 +96,12 @@ export default async function register(host, registry) {
   const role = process.env.LAG_DISPATCH_BOT_ROLE;
   if (typeof role !== 'string' || role.trim().length === 0) {
     throw new Error(
-      '[autonomous-dispatch] LAG_DISPATCH_BOT_ROLE is required. '
+      '[autonomous-dispatch] LAG_DISPATCH_BOT_ROLE is required (no default '
+      + 'is supplied so the canonical invoker stays substrate-pure). '
       + 'Set it to the bot role whose App credentials live at '
-      + '<stateDir>/apps/<role>.json (provisioned via bin/lag-actors.js).',
+      + '<stateDir>/apps/<role>.json (provisioned via bin/lag-actors.js). '
+      + 'In this repo the operator-proxy role is "lag-ceo"; see .env.example '
+      + 'for the canonical env block and the substrate-purity rationale.',
     );
   }
   const repoDir = resolve(process.env.LAG_REPO_DIR ?? process.cwd());
