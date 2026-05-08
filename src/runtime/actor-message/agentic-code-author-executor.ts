@@ -67,6 +67,7 @@ import { defaultBudgetCap, type BudgetCap } from '../../substrate/agent-budget.j
 import { loadReplayTier } from '../../substrate/policy/replay-tier.js';
 import { loadBlobThreshold } from '../../substrate/policy/blob-threshold.js';
 import { extractFsShapedTokens } from '../planning-pipeline/extract-body-paths.js';
+import { buildConventionalCommitsPrTitle } from './code-author-pr-title.js';
 import {
   buildEmbeddedAtomSnapshots,
   createDraftPr,
@@ -404,7 +405,7 @@ async function createPrViaGhClient(
   const planTitle = typeof meta['title'] === 'string' && (meta['title'] as string).length > 0
     ? (meta['title'] as string)
     : `plan ${planId}`;
-  const title = `code-author: ${planTitle}`;
+  const title = buildConventionalCommitsPrTitle(planTitle);
   // Embed plan + provenance ancestor atom snapshots in the body
   // so a downstream consumer that cannot reach this host's atom
   // store can still resolve the atoms via the carrier the
