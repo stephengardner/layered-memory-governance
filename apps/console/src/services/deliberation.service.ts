@@ -24,6 +24,10 @@
 
 import { listPlans } from './plans.service';
 import { asAlternative, type Alternative, type CanonAtom } from './canon.service';
+import {
+  readPlanDispatchSummary,
+  type DispatchSummaryShape,
+} from '@/features/plan-state/trueOutcome';
 
 /**
  * Hard cap on the number of cards rendered in the list. The atom
@@ -54,6 +58,12 @@ export interface DeliberationSummary {
   readonly alternatives_count: number;
   readonly citations_count: number;
   readonly principles_count: number;
+  /*
+   * Surfaced from the plan atom's metadata.dispatch_result so the
+   * deliberation card can paint the TRUE-outcome pill (succeeded vs
+   * noop) without round-tripping for the underlying plan atom.
+   */
+  readonly dispatch_summary: DispatchSummaryShape | null;
 }
 
 export interface DeliberationDetail {
@@ -66,6 +76,11 @@ export interface DeliberationDetail {
     readonly created_at: string;
     readonly plan_state: string | null;
     readonly confidence: number;
+    /*
+     * Same TRUE-outcome carrier the summary surfaces; lets the detail
+     * header paint the noop pill when dispatch produced no PR.
+     */
+    readonly dispatch_summary: DispatchSummaryShape | null;
   };
   readonly alternatives: ReadonlyArray<DeliberationAlternative>;
   readonly principles_applied: ReadonlyArray<string>;
@@ -215,6 +230,7 @@ export async function listDeliberations(
       alternatives_count: alternatives.length,
       citations_count: citations.length,
       principles_count: principles.length,
+      dispatch_summary: readPlanDispatchSummary(plan.metadata),
     });
   }
   summaries.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
@@ -242,6 +258,7 @@ export async function getDeliberation(
       created_at: plan.created_at,
       plan_state: plan.plan_state ?? null,
       confidence: plan.confidence,
+      dispatch_summary: readPlanDispatchSummary(plan.metadata),
     },
     alternatives: alternativesOf(plan),
     principles_applied: principlesOf(plan),
