@@ -55,6 +55,54 @@ async function main() {
     process.exit(0);
   }
 
+  // Auto-build dist BEFORE writing the intent atom so a stale-dist
+  // failure mode cannot produce an orphan intent. CTO + every pipeline
+  // stage adapter loads framework + adapter code via dist/ at runtime
+  // (per the package exports + subpath imports map). A trigger that
+  // spawns CTO against stale dist runs by-N-commits-old code; the
+  // 2026-05-08 dogfeed surfaced this when a schema fix landed in src/
+  // but dist/ still held the old shape, and the live system failed
+  // validation against rules that were already fixed in source.
+  //
+  // Gated on args.trigger because a no-trigger invocation only writes
+  // the intent atom (a write-and-walk-away path that does not load
+  // dist/) and rebuilding would be wasted work.
+  //
+  // Escape hatch: `LAG_INTEND_SKIP_BUILD=1` disables this for fast
+  // operator-side iteration when dist is known current. The default is
+  // fail-loud-on-build-failure: a typecheck or build error halts the
+  // trigger before any atom is written, so a syntax error in src/ does
+  // not produce an orphan intent.
+  if (args.trigger && process.env.LAG_INTEND_SKIP_BUILD !== '1') {
+    console.log('[intend] rebuilding dist before trigger (set LAG_INTEND_SKIP_BUILD=1 to skip)');
+    // Pass BOTH tsconfigs explicitly so a stale `dist/` from a src/
+    // change AND a stale `dist/examples/` from an adapter change both
+    // refresh in one tsc invocation. tsc handles incremental builds
+    // (.tsbuildinfo files) so an up-to-date project is a no-op.
+    //
+    // Why both: tsconfig.json compiles `src/` -> `dist/` (framework);
+    // tsconfig.examples.json compiles `examples/` -> `dist/examples/`
+    // (planning-stage adapters + skill bundles). The pipeline loads
+    // from BOTH at runtime (per package exports + the `#runtime/...`
+    // subpath imports map). A single tsconfig leaves the other half
+    // stale.
+    const buildResult = await spawnNode(
+      [
+        resolve(REPO_ROOT, 'node_modules/typescript/bin/tsc'),
+        '-b',
+        resolve(REPO_ROOT, 'tsconfig.json'),
+        resolve(REPO_ROOT, 'tsconfig.examples.json'),
+      ],
+      { stdio: 'inherit', reject: false },
+    );
+    if (buildResult.failed) {
+      const buildCode = buildResult.exitCode ?? 1;
+      console.error(`[intend] dist rebuild failed (code=${buildResult.exitCode ?? 'signal'} signal=${buildResult.signal ?? 'none'}); intent NOT written, trigger aborted.`);
+      process.exit(buildCode);
+    }
+    console.log('[intend] dist rebuild succeeded');
+  }
+
   const host = await createFileHost({ rootDir: STATE_DIR });
   await host.atoms.put(atom);
   console.log(`[intend] wrote ${atom.id} (expires ${expiresAt})`);
