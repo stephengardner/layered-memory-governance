@@ -146,7 +146,7 @@ async function getCommitsAheadOfMain(remoteSha) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function getPrForBranch(branch) {
+async function getPrsForBranch(branch) {
   const ghAs = resolve(REPO_ROOT, 'scripts/gh-as.mjs');
   let result;
   try {
@@ -157,17 +157,17 @@ async function getPrForBranch(branch) {
     );
   } catch (err) {
     failTooling('gh-as pr list', err);
-    return null;
+    return [];
   }
   let list;
   try {
     list = JSON.parse(result.stdout.trim() || '[]');
   } catch (err) {
     failTooling('gh-as pr list (JSON parse)', err);
-    return null;
+    return [];
   }
-  if (!Array.isArray(list) || list.length === 0) return null;
-  return list[0];
+  if (!Array.isArray(list)) return [];
+  return list;
 }
 
 async function main() {
@@ -208,9 +208,9 @@ async function main() {
     process.exit(2);
   }
 
-  const pr = await getPrForBranch(branch);
+  const prs = await getPrsForBranch(branch);
   if (expectPr !== null) {
-    if (pr === null) {
+    if (prs.length === 0) {
       emit({
         ok: false,
         code: 'pr-missing',
@@ -222,7 +222,13 @@ async function main() {
       });
       process.exit(3);
     }
-    if (pr.number !== expectPr) {
+    // Search the full list for a matching PR. A branch can have more
+    // than one PR over its lifetime (closed-then-reopened, or a stale
+    // duplicate), so list[0] is not authoritative for "did the claimed
+    // number land on this branch."
+    const match = prs.find((p) => p.number === expectPr);
+    if (match === undefined) {
+      const candidates = prs.map((p) => ({ number: p.number, state: p.state, title: p.title }));
       emit({
         ok: false,
         code: 'pr-mismatch',
@@ -230,19 +236,29 @@ async function main() {
         remote_sha: remoteSha,
         commits_ahead_of_main: ahead,
         expected_pr: expectPr,
-        actual_pr: { number: pr.number, state: pr.state, title: pr.title },
-        message: `sub-agent claimed PR #${expectPr} but the branch has PR #${pr.number}`,
+        actual_prs: candidates,
+        message: `sub-agent claimed PR #${expectPr} but no PR with that number exists for this branch (found: ${candidates.map((c) => `#${c.number}`).join(', ')})`,
       });
       process.exit(4);
     }
+    emit({
+      ok: true,
+      branch,
+      remote_sha: remoteSha,
+      commits_ahead_of_main: ahead,
+      pr: { number: match.number, state: match.state, title: match.title },
+    });
+    process.exit(0);
   }
 
+  // No --expect-pr: surface the most recent PR (list[0] is gh's default
+  // ordering, newest first) as informational context.
   emit({
     ok: true,
     branch,
     remote_sha: remoteSha,
     commits_ahead_of_main: ahead,
-    pr: pr === null ? null : { number: pr.number, state: pr.state, title: pr.title },
+    pr: prs.length === 0 ? null : { number: prs[0].number, state: prs[0].state, title: prs[0].title },
   });
   process.exit(0);
 }

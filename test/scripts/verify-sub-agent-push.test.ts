@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { execa } from 'execa';
+import { randomUUID } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,10 +58,11 @@ describe('verify-sub-agent-push.mjs (parser + early-exit paths)', () => {
 
 describe('verify-sub-agent-push.mjs (missing-branch path)', () => {
   it('exits 1 with missing-branch JSON for a branch that does not exist on origin', async () => {
-    // Use a UUID-shaped branch name that is guaranteed not to exist on
-    // origin. The script fetches origin, then ls-remote returns empty
-    // for an unknown branch, exit 1.
-    const fakeBranch = 'no-such-branch-2026-05-08-test-fixture-xyz123';
+    // Generate a fresh UUID-suffixed branch per run so two parallel
+    // runs (CI matrix, local run during a CI run) cannot collide on
+    // the same fixture name. ls-remote returns empty for the unknown
+    // branch and the script exits 1.
+    const fakeBranch = `no-such-branch-test-fixture-${randomUUID()}`;
     const r = await execa('node', [SCRIPT, '--branch', fakeBranch], { reject: false });
     expect(r.exitCode).toBe(1);
     const parsed = JSON.parse(r.stdout);
