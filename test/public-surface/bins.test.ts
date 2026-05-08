@@ -33,6 +33,7 @@ const pkg = JSON.parse(
 
 const EXPECTED_BINS = [
   'lag-actors',
+  'lag-audit-pipeline',
   'lag-compromise',
   'lag-respond',
   'lag-run-loop',
