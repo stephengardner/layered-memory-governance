@@ -59,10 +59,13 @@ import type {
   StageInput,
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
-import {
-  extractBodyPaths,
-  stripDiffPrefix,
-} from '../../../src/runtime/planning-pipeline/extract-body-paths.js';
+// Value import via the package's `imports` map (Node subpath import,
+// resolved at runtime). The literal `../../../src/...` path would
+// compile fine but break at module load: tsc flattens src/ into dist/
+// (no `dist/src/`), so the resolved URL would be `dist/src/runtime/...`
+// which doesn't exist. The subpath import maps to `./dist/runtime/...`
+// in installed shape and to the `./src/...` source for type resolution.
+import { extractBodyPaths, stripDiffPrefix } from '#runtime/planning-pipeline/extract-body-paths';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
 import { buildCanonAtRuntimeStamp } from '../lib/build-canon-at-runtime-stamp.js';
 import { bindingForStage } from '../lib/stage-mapping.js';
