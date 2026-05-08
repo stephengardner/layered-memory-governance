@@ -1,0 +1,76 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  transition:
+    border-color var(--duration-normal) var(--easing-standard),
+    color var(--duration-normal) var(--easing-standard),
+    background var(--duration-normal) var(--easing-standard);
+  white-space: nowrap;
+}
+
+.pill[data-state="stale"] {
+  border-color: color-mix(in srgb, var(--status-warning) 40%, transparent);
+  background: color-mix(in srgb, var(--status-warning) 10%, var(--surface-raised));
+  color: var(--status-warning);
+}
+
+.pill[data-state="waiting"] {
+  border-color: var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+}
+
+.dot {
+  display: inline-block;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--status-success);
+  box-shadow: 0 0 0 var(--ring-width-sm)
+    color-mix(in srgb, var(--status-success) 22%, transparent);
+}
+
+.dot[data-state="stale"] {
+  background: var(--status-warning);
+  box-shadow: 0 0 0 var(--ring-width-sm)
+    color-mix(in srgb, var(--status-warning) 28%, transparent);
+}
+
+.label {
+  /*
+   * The label is short ("Updated 5s ago") so we keep it on a single
+   * line and let the pill flex-shrink against the parent header.
+   */
+  font-weight: var(--font-weight-medium);
+}
+
+/*
+ * Tap-target floor on coarse pointers per `dev-web-mobile-first-required`.
+ * Fine pointers keep the visual chip-sized footprint.
+ */
+@media (pointer: coarse) {
+  .pill {
+    min-height: var(--size-touch-target-min);
+    padding: var(--space-2) var(--space-4);
+  }
+}
+
+/*
+ * Honor reduced-motion preference per `dev-web-interaction-quality-no-jank`.
+ * The dot's pulse loop disables; everything else is a one-shot fade.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .pill {
+    transition: none;
+  }
+}
