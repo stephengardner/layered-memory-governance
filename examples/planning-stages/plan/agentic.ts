@@ -50,6 +50,7 @@ import { runStageAgentLoop } from '../lib/run-stage-agent-loop.js';
 import { resolveSkillBundle } from '../lib/skill-bundle-resolver.js';
 import {
   planPayloadSchema,
+  resolveIntentMaxBlastRadius,
   type PlanPayload,
   auditPlan,
 } from './index.js';
@@ -86,8 +87,15 @@ function buildPlanPrompt(opts: {
   readonly stageInput: StageInput<unknown>;
   readonly canonAtomIds: ReadonlyArray<string>;
   readonly stagePrincipal: PrincipalId;
+  readonly intentMaxBlastRadius: string;
 }): string {
-  const { skillBundle, stageInput, canonAtomIds, stagePrincipal } = opts;
+  const {
+    skillBundle,
+    stageInput,
+    canonAtomIds,
+    stagePrincipal,
+    intentMaxBlastRadius,
+  } = opts;
   const seedAtomIds = stageInput.seedAtomIds.map(String).join(', ') || '(none)';
   const verifiedCited = stageInput.verifiedCitedAtomIds.map(String).join(', ') || '(none)';
   const verifiedSubActors =
@@ -96,6 +104,13 @@ function buildPlanPrompt(opts: {
     stageInput.priorOutput === null || stageInput.priorOutput === undefined
       ? '(no upstream spec output; ground in seed atom set + operator-intent only)'
       : JSON.stringify(stageInput.priorOutput, null, 2);
+  // Surface intentMaxBlastRadius as the literal envelope ceiling for
+  // the LLM's delegation.implied_blast_radius classification. Empty
+  // string => the seed intent had no envelope; the writing-plans
+  // skill instructs the LLM to default to the smallest accurate
+  // radius in that case.
+  const renderedIntentMaxBlastRadius =
+    intentMaxBlastRadius.length > 0 ? intentMaxBlastRadius : '(unset)';
   return [
     skillBundle,
     '',
@@ -114,6 +129,7 @@ function buildPlanPrompt(opts: {
     `- canon directives applicable: ${canonAtomIds.length} (you have read access via Read on .lag/atoms/)`,
     `- verified citation set (cite ONLY from these ids in derived_from + principles_applied; OMIT rather than guess): ${verifiedCited}`,
     `- verified sub-actor set (delegate ONLY to these principal ids; do NOT name stage principals or pol-* atoms): ${verifiedSubActors}`,
+    `- intent_max_blast_radius (delegation.implied_blast_radius MUST NOT exceed this rank; pick the SMALLEST accurate value): ${renderedIntentMaxBlastRadius}`,
     '',
     '## Operator-intent (literal text; do NOT abstract)',
     '',
@@ -135,8 +151,11 @@ function buildPlanPrompt(opts: {
     'subset of derived_from. Delegate ONLY to a principal in the',
     'verified sub-actor set. Anchor the plan title and body to the',
     'literal operator-intent above; if the spec drifted, anchor back.',
-    'Your final-turn text content MUST be a single JSON object matching',
-    'the PlanPayload schema. No prose outside the JSON.',
+    'Set delegation.implied_blast_radius to the SMALLEST radius that',
+    'still describes the change accurately AND does not exceed',
+    'intent_max_blast_radius above; over-classification blocks',
+    'auto-approval. Your final-turn text content MUST be a single JSON',
+    'object matching the PlanPayload schema. No prose outside the JSON.',
   ].join('\n');
 }
 
@@ -208,6 +227,12 @@ export function buildAgenticPlanStage(
     input: StageInput<unknown>,
   ): Promise<StageOutput<PlanPayload>> {
     const skillBundle = await resolveSkillBundle('writing-plans');
+    // Resolve the seed operator-intent's max_blast_radius once before
+    // the agent-loop dispatch so the prompt's HARD-CONSTRAINT block
+    // can fence the LLM's blast-radius classification at draft-time.
+    // Mirrors runPlan's resolution in index.ts (extracted at N=2 per
+    // the duplication-floor canon).
+    const intentMaxBlastRadius = await resolveIntentMaxBlastRadius(input);
     // Compose the helper input as a literal so exactOptionalPropertyTypes
     // narrows on the canonAuditPromptBuilder branch (the option-key is
     // either present or omitted; never present-and-undefined). The
@@ -224,6 +249,7 @@ export function buildAgenticPlanStage(
           stageInput,
           canonAtomIds: canonAtomIds.map(String),
           stagePrincipal: sp,
+          intentMaxBlastRadius,
         }),
       outputSchema: planPayloadSchema,
       agentLoop: config.agentLoop,

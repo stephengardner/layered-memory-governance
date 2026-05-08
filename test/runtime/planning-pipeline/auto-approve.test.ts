@@ -921,4 +921,164 @@ describe('runPipelinePlanAutoApproval', () => {
       expect(plan?.plan_state).toBe('approved');
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // pipeline-audit-finding surfacing on envelope mismatches.
+  //
+  // A plan that the auto-approve evaluator skips with reason
+  // 'delegation_radius_exceeds_envelope' (or any other envelope-mismatch
+  // reason) MUST surface as a queryable pipeline-audit-finding atom when
+  // the plan was authored inside a pipeline. Before this fix the
+  // rejection only landed in the auditor.log channel, which the Console
+  // /pipelines/<id> view does not project; operators saw a "completed"
+  // pipeline with a stuck-proposed plan and no surface that explained
+  // why.
+  //
+  // Plans authored OUTSIDE a pipeline (single-pass cto-actor flow,
+  // pre-pipeline runs) still rely on the audit-log entry alone because
+  // there is no pipeline surface to project the finding into; the
+  // existing 'plan.skipped-by-intent' audit log remains the operator-
+  // facing signal there.
+  // ---------------------------------------------------------------------------
+  describe('pipeline-audit-finding surfacing on envelope mismatch', () => {
+    const PIPELINE_ANCESTOR_ID = 'pipeline-cto-1778203746366-cu9r09' as AtomId;
+    const CORRELATION_ID = 'cto-1778203746366-cu9r09';
+
+    /**
+     * Build a plan atom whose provenance carries a pipeline-prefixed
+     * ancestor so findPipelineAncestor walks back to the pipeline.
+     * Mirrors the shape mkPlanOutputAtoms produces in the runner: index
+     * 0 of derived_from is the pipeline atom id, the operator-intent is
+     * appended as a downstream chain entry.
+     */
+    function pipelinePlanAtom(
+      id: string,
+      intentId: string,
+      overrides: Parameters<typeof planAtom>[2] = {},
+    ): Atom {
+      const base = planAtom(id, intentId, overrides);
+      return {
+        ...base,
+        provenance: {
+          ...base.provenance,
+          source: {
+            ...(base.provenance.source as Record<string, unknown>),
+            session_id: CORRELATION_ID,
+          },
+          derived_from: [PIPELINE_ANCESTOR_ID, intentId as AtomId],
+        },
+      };
+    }
+
+    it('writes a pipeline-audit-finding atom when implied_blast_radius exceeds intent envelope', async () => {
+      const host = createMemoryHost();
+      await host.atoms.put(intentApprovePolicyAtom());
+      await host.atoms.put(intentCreationPolicyAtom());
+      // Intent envelope max_blast_radius='tooling'; plan claims 'framework'.
+      // Mirrors the dogfeed pipeline-cto-1778203746366-cu9r09 reproducer.
+      await host.atoms.put(intentAtom('intent-1', { max_blast_radius: 'tooling' }));
+      await host.atoms.put(
+        pipelinePlanAtom('plan-1', 'intent-1', { implied_blast_radius: 'framework' }),
+      );
+
+      const result = await runPipelinePlanAutoApproval(
+        host,
+        ['plan-1' as AtomId],
+        { now: () => NOW_ISO },
+      );
+      expect(result.skipped).toBe(1);
+      expect(result.approved).toBe(0);
+
+      // The plan stays proposed (existing behavior).
+      const plan = await host.atoms.get('plan-1' as AtomId);
+      expect(plan?.plan_state).toBe('proposed');
+
+      // The audit-log entry still fires (back-compat with prior consumers).
+      const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+      expect(events.length).toBe(1);
+      expect(events[0]?.details['reason']).toBe(
+        SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE,
+      );
+
+      // The new pipeline-audit-finding atom is queryable.
+      const findings = await host.atoms.query(
+        { type: ['pipeline-audit-finding'] },
+        10,
+      );
+      expect(findings.atoms.length).toBe(1);
+      const finding = findings.atoms[0]!;
+      const fmeta = finding.metadata as Record<string, unknown>;
+      expect(fmeta['pipeline_id']).toBe(PIPELINE_ANCESTOR_ID);
+      expect(fmeta['stage_name']).toBe('plan-stage');
+      expect(fmeta['severity']).toBe('major');
+      expect(fmeta['category']).toBe('delegation-radius-exceeds-envelope');
+      expect(fmeta['cited_atom_ids']).toEqual(['plan-1', 'intent-1']);
+      expect(fmeta['cited_paths']).toEqual([]);
+      expect(String(fmeta['message'])).toContain('framework');
+      expect(String(fmeta['message'])).toContain('tooling');
+      expect(finding.principal_id).toBe('cto-actor');
+      // The finding atom's derived_from threads back to the pipeline id
+      // (via the mint helper's baseAtom shape) so the console
+      // /pipelines/<id> projection can find it.
+      expect(finding.provenance.derived_from).toContain(PIPELINE_ANCESTOR_ID);
+    });
+
+    it('does NOT write a pipeline-audit-finding when the plan was authored outside a pipeline', async () => {
+      const host = createMemoryHost();
+      await host.atoms.put(intentApprovePolicyAtom());
+      await host.atoms.put(intentCreationPolicyAtom());
+      await host.atoms.put(intentAtom('intent-1', { max_blast_radius: 'tooling' }));
+      // Plain planAtom helper builds derived_from=[intentId] with no
+      // pipeline ancestor; this is the single-pass cto-actor shape.
+      await host.atoms.put(
+        planAtom('plan-1', 'intent-1', { implied_blast_radius: 'framework' }),
+      );
+
+      const result = await runPipelinePlanAutoApproval(
+        host,
+        ['plan-1' as AtomId],
+        { now: () => NOW_ISO },
+      );
+      expect(result.skipped).toBe(1);
+
+      const findings = await host.atoms.query(
+        { type: ['pipeline-audit-finding'] },
+        10,
+      );
+      expect(findings.atoms.length).toBe(0);
+
+      // Audit-log entry still fires (operator-facing signal for non-
+      // pipeline plans).
+      const events = await host.auditor.query({ kind: ['plan.skipped-by-intent'] }, 10);
+      expect(events.length).toBe(1);
+    });
+
+    it('uses skip reason as kebab-cased category for non-radius mismatches', async () => {
+      const host = createMemoryHost();
+      await host.atoms.put(intentApprovePolicyAtom());
+      await host.atoms.put(intentCreationPolicyAtom());
+      // Intent demands 0.95 confidence; plan is at 0.50.
+      await host.atoms.put(intentAtom('intent-1', { min_plan_confidence: 0.95 }));
+      await host.atoms.put(
+        pipelinePlanAtom('plan-1', 'intent-1', { confidence: 0.50 }),
+      );
+
+      const result = await runPipelinePlanAutoApproval(
+        host,
+        ['plan-1' as AtomId],
+        { now: () => NOW_ISO },
+      );
+      expect(result.skipped).toBe(1);
+
+      const findings = await host.atoms.query(
+        { type: ['pipeline-audit-finding'] },
+        10,
+      );
+      expect(findings.atoms.length).toBe(1);
+      const fmeta = findings.atoms[0]!.metadata as Record<string, unknown>;
+      expect(fmeta['category']).toBe('below-min-confidence');
+      expect(String(fmeta['message'])).toContain('0.5');
+      expect(String(fmeta['message'])).toContain('0.95');
+    });
+  });
 });

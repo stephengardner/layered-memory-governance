@@ -238,12 +238,92 @@ fits the plan you would emit, the plan is incomplete and you must
 NOT emit it. Inventing or paraphrasing a sub-actor outside the
 verified set produces a critical audit finding and halts the stage.
 
+HARD CONSTRAINT on delegation.implied_blast_radius classification:
+the seed operator-intent supplies max_blast_radius in its trust
+envelope (data.intent_max_blast_radius). Set
+delegation.implied_blast_radius to the SMALLEST radius that still
+describes the change accurately, AND that does NOT exceed
+data.intent_max_blast_radius. The auto-approve evaluator rejects any
+plan whose radius rank exceeds the intent envelope, so an over-
+classified plan stays proposed forever -- the dispatch stage emits
+dispatched=0 and the run silently produces no PR.
+
+Radius reference (rank order; each row a strict-superset of the
+preceding):
+- "none": no externally observable change (config-only, dry-run).
+- "docs": documentation-only change (README, design notes,
+  comments, or any tracked .md file).
+- "tooling": changes confined to apps/console, scripts/, .github/
+  workflows, examples/ scaffolding, or other non-framework subtrees
+  (UI, CI, dev tooling).
+- "framework": changes inside src/ that alter framework behavior
+  consumers depend on. NEVER use "framework" for a change that only
+  touches apps/console/, scripts/, examples/, or any other tooling
+  subtree.
+- "l3-canon-proposal": a canon-edit moment proposing a new L3
+  directive, decision, or policy atom.
+
+Worked examples:
+- "Update apps/console/src/features/pipelines-viewer/PipelineDetailView.tsx
+  to render a freshness pill" -> tooling (no src/ touch, console-only).
+- "Add a one-line note to README.md" -> docs.
+- "Wire a new arbitration rule in src/runtime/arbitration/source-rank.ts" ->
+  framework.
+- "Propose pol-plan-author-blast-radius-floor as a new L3 atom" ->
+  l3-canon-proposal.
+
+When in doubt between two radii, pick the SMALLER one and explain in
+delegation.reason why the larger radius is unnecessary; over-
+classification is the more common failure mode and prevents
+auto-approval. Inventing a radius outside the enum or exceeding the
+intent envelope produces a critical or major audit finding and the
+plan does not auto-approve.
+
 Emit ONLY a payload that matches the provided schema; no prose
 outside the schema fields.`;
+
+/**
+ * Resolve the seed operator-intent atom's
+ * `metadata.trust_envelope.max_blast_radius` from the input's seed
+ * atom set. Walks `seedAtomIds` looking for the first
+ * `operator-intent` atom and returns its envelope's max radius
+ * label. Returns the empty string when no operator-intent is in the
+ * seed set or the envelope is malformed; the prompt's HARD
+ * CONSTRAINT instructs the LLM to fall back to a "treat as 'docs' if
+ * the radius is missing" posture so a malformed envelope does not
+ * silently produce an over-classified plan.
+ *
+ * Exported for the agentic adapter's prompt builder so the same
+ * resolution logic feeds both the single-shot and agentic paths
+ * (extracted at N=2 per the duplication-floor canon).
+ */
+export async function resolveIntentMaxBlastRadius(
+  input: StageInput<unknown>,
+): Promise<string> {
+  for (const id of input.seedAtomIds) {
+    const atom = await input.host.atoms.get(id);
+    if (atom === null) continue;
+    if (atom.type !== 'operator-intent') continue;
+    const envelope = (atom.metadata as Record<string, unknown> | undefined)?.[
+      'trust_envelope'
+    ] as Record<string, unknown> | undefined;
+    const max = envelope?.['max_blast_radius'];
+    if (typeof max === 'string' && max.length > 0) {
+      return max;
+    }
+    return '';
+  }
+  return '';
+}
 
 async function runPlan(
   input: StageInput<unknown>,
 ): Promise<StageOutput<PlanPayload>> {
+  // Resolve the seed operator-intent's max_blast_radius before the
+  // judge call so the prompt's HARD-CONSTRAINT block can fence the
+  // LLM at draft-time rather than relying on the post-stage
+  // auto-approve evaluator to reject an over-classified plan.
+  const intentMaxBlastRadius = await resolveIntentMaxBlastRadius(input);
   // Mechanism scaffold: route through host.llm.judge. The caller is
   // responsible for resolving per-principal disallowedTools from the
   // per-principal LLM tool-policy atom and forwarding via LlmOptions;
@@ -299,6 +379,17 @@ async function runPlan(
       // case.
       operator_intent_content: input.operatorIntentContent,
       correlation_id: input.correlationId,
+      // Blast-radius envelope: the seed operator-intent's
+      // metadata.trust_envelope.max_blast_radius, threaded through so
+      // the LLM honours the HARD-CONSTRAINT block on
+      // delegation.implied_blast_radius classification. The auto-
+      // approve evaluator rejects any plan whose radius rank exceeds
+      // this value, so an over-classified plan stays proposed and the
+      // dispatch-stage emits dispatched=0. Empty string when the seed
+      // intent is missing or its envelope is malformed; the prompt
+      // instructs the LLM to default to the smallest radius that
+      // describes the change accurately in that case.
+      intent_max_blast_radius: intentMaxBlastRadius,
       // Forward the upstream spec-stage payload so the plan synthesises
       // against the goal, body, cited_paths, and cited_atom_ids the
       // spec produced. Without this, the model sees only correlation

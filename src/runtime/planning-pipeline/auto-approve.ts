@@ -46,6 +46,7 @@ import {
   findIntentInProvenance,
   type BlastRadius,
 } from '../actor-message/intent-approve.js';
+import { mkPipelineAuditFindingAtom } from './atom-shapes.js';
 import type { Host } from '../../substrate/interface.js';
 import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
 
@@ -313,6 +314,143 @@ export function evaluatePipelinePlanAutoApproval(
 }
 
 // ---------------------------------------------------------------------------
+// Helpers for surfacing skipped verdicts as pipeline-audit-finding atoms
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a SkipReason snake_case value (e.g.
+ * 'delegation_radius_exceeds_envelope') to a kebab-cased category
+ * suitable for a pipeline-audit-finding atom (e.g.
+ * 'delegation-radius-exceeds-envelope'). The audit-finding shape's
+ * `category` field is freeform string but reads cleaner in console
+ * projections when it matches the kebab convention used by every
+ * other category seeded by stage adapters (e.g. 'fabricated-cited-
+ * atom', 'non-verified-cited-atom').
+ */
+function skipReasonToCategory(reason: SkipReason): string {
+  return String(reason).replace(/_/g, '-');
+}
+
+/**
+ * Walk a plan's `provenance.derived_from` for the first id starting
+ * with `pipeline-`. The deep planning pipeline runner stamps the
+ * pipeline atom id at index 0 of every plan-stage emit's derived_from
+ * (see mkPlanOutputAtoms in atom-shapes.ts), so when a plan was
+ * authored inside a pipeline, this helper returns its pipeline atom
+ * id. When the plan was authored outside a pipeline (single-pass
+ * cto-actor flow), no pipeline ancestor exists and the helper returns
+ * null; the caller skips the audit-finding write in that case
+ * because the existing 'plan.skipped-by-intent' audit-log entry is
+ * already the operator-facing signal there.
+ */
+function findPipelineAncestor(plan: Atom): AtomId | null {
+  const derivedFrom = plan.provenance?.derived_from ?? [];
+  for (const id of derivedFrom) {
+    if (typeof id === 'string' && id.startsWith('pipeline-')) {
+      return id as AtomId;
+    }
+  }
+  return null;
+}
+
+/**
+ * Build the human-readable message for an envelope-mismatch finding.
+ * Captures the field-level cause + the operator-actionable guidance
+ * the console renders without re-reading the verdict.details bag.
+ *
+ * The message names the specific failure mode so an operator skimming
+ * the /pipelines/<id> view sees the cause inline:
+ *   - radius mismatch: which radius was claimed and what the intent
+ *     allows
+ *   - confidence mismatch: which threshold the plan missed
+ *   - sub-actor mismatch: which actor was named and which the
+ *     envelope or policy permits
+ *   - missing envelope / no delegation: structural guidance
+ */
+function envelopeMismatchMessage(
+  reason: SkipReason,
+  details: Readonly<Record<string, unknown>>,
+): string {
+  switch (reason) {
+    case SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE: {
+      const planRadius = String(details['plan_radius'] ?? '<unknown>');
+      const envelopeMax = String(details['envelope_max_radius'] ?? '<unknown>');
+      return (
+        `Plan rejected by autonomous-intent envelope: implied_blast_radius="${planRadius}" `
+        + `exceeds intent.max_blast_radius="${envelopeMax}". Tighten the plan-author `
+        + 'classification or widen the intent envelope.'
+      );
+    }
+    case SkipReason.RADIUS_UNKNOWN: {
+      const planRadius =
+        details['plan_radius'] === null ? '<missing>' : String(details['plan_radius']);
+      return (
+        `Plan rejected by autonomous-intent envelope: implied_blast_radius="${planRadius}" `
+        + 'is not a known radius label (none, docs, tooling, framework, l3-canon-proposal). '
+        + 'Fix the plan-author classification.'
+      );
+    }
+    case SkipReason.DELEGATION_RADIUS_UNKNOWN: {
+      const envelopeMax =
+        details['envelope_max_radius'] === null
+          ? '<missing>'
+          : String(details['envelope_max_radius']);
+      return (
+        `Plan rejected by autonomous-intent envelope: intent.max_blast_radius="${envelopeMax}" `
+        + 'is not a known radius label. Fix the operator-intent envelope.'
+      );
+    }
+    case SkipReason.BELOW_MIN_CONFIDENCE: {
+      const planConf = String(details['plan_confidence'] ?? '<unknown>');
+      const minConf = String(details['envelope_min_confidence'] ?? '<unknown>');
+      return (
+        `Plan rejected by autonomous-intent envelope: plan.confidence=${planConf} is below `
+        + `intent.min_plan_confidence=${minConf}. Raise the plan-author confidence or lower `
+        + 'the envelope threshold.'
+      );
+    }
+    case SkipReason.SUB_ACTOR_NOT_ALLOWED: {
+      const planSubActor = String(details['plan_sub_actor'] ?? '<unknown>');
+      const envAllowed = Array.isArray(details['envelope_allowed_sub_actors'])
+        ? (details['envelope_allowed_sub_actors'] as ReadonlyArray<unknown>)
+            .map((v) => String(v))
+            .join(', ')
+        : null;
+      const policyAllowed = Array.isArray(details['policy_allowed_sub_actors'])
+        ? (details['policy_allowed_sub_actors'] as ReadonlyArray<unknown>)
+            .map((v) => String(v))
+            .join(', ')
+        : null;
+      const allowedSummary =
+        envAllowed !== null
+          ? `intent.trust_envelope.allowed_sub_actors=[${envAllowed}]`
+          : policyAllowed !== null
+            ? `pol-plan-autonomous-intent-approve.allowed_sub_actors=[${policyAllowed}]`
+            : 'the autonomous-intent allowlist';
+      return (
+        `Plan rejected by autonomous-intent envelope: delegation.sub_actor_principal_id `
+        + `"${planSubActor}" is not in ${allowedSummary}. Pick an allowed sub-actor or widen `
+        + 'the allowlist.'
+      );
+    }
+    case SkipReason.MISSING_TRUST_ENVELOPE:
+      return (
+        'Plan rejected by autonomous-intent envelope: the seed operator-intent has no '
+        + 'trust_envelope block. Re-author the intent with min_plan_confidence, '
+        + 'max_blast_radius, and allowed_sub_actors.'
+      );
+    case SkipReason.NO_DELEGATION:
+      return (
+        'Plan rejected by autonomous-intent envelope: the plan has no metadata.delegation '
+        + 'block. The plan-author must emit delegation.sub_actor_principal_id, reason, and '
+        + 'implied_blast_radius.'
+      );
+    default:
+      return `Plan rejected by autonomous-intent envelope: ${String(reason)}.`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Runner-facing wrapper: reads policies, evaluates, persists, audits.
 // ---------------------------------------------------------------------------
 
@@ -459,6 +597,54 @@ export async function runPipelinePlanAutoApproval(
           ...verdict.details,
         },
       });
+      // Surface the envelope-mismatch as a queryable
+      // pipeline-audit-finding atom so the console pipeline-detail
+      // projection renders the cause inline rather than relying on
+      // the audit-log entry above (which is invisible to the
+      // /pipelines/<id> view). The finding is written ONLY when the
+      // plan was authored inside a pipeline (its
+      // provenance.derived_from carries a pipeline ancestor); plans
+      // authored outside the pipeline (single-pass cto-actor) keep
+      // the audit-log-only signal because there is no pipeline
+      // surface to project the finding into.
+      const pipelineAncestorId = findPipelineAncestor(plan);
+      if (pipelineAncestorId !== null) {
+        // Read the correlationId from the plan's provenance so the
+        // finding atom shares the deterministic id slug with the
+        // pipeline's other stage atoms (no need to thread it through
+        // RunPipelinePlanAutoApprovalOptions; the plan IS the
+        // primary input here and already carries the value the
+        // runner stamped at mint time).
+        const correlationId =
+          typeof plan.provenance?.source?.session_id === 'string'
+            ? plan.provenance.source.session_id
+            : 'unknown';
+        await host.atoms.put(
+          mkPipelineAuditFindingAtom({
+            pipelineId: pipelineAncestorId,
+            // The auto-approve pass runs after plan-stage exits;
+            // the rejection is plan-author-actionable, so the
+            // finding is anchored to plan-stage so the console
+            // groups it with the plan output rather than orphaning
+            // it under a separate "approval" surface.
+            stageName: 'plan-stage',
+            principalId: plan.principal_id as PrincipalId,
+            correlationId,
+            now: nowFn() as Time,
+            // Major (not critical): envelope mismatch is operator-
+            // actionable but not a hard failure of the pipeline run
+            // itself. The pipeline still reaches dispatch-stage with
+            // dispatched=0; the operator inspects the finding,
+            // tightens classification or widens the envelope, and
+            // re-intends.
+            severity: 'major',
+            category: skipReasonToCategory(verdict.reason),
+            message: envelopeMismatchMessage(verdict.reason, verdict.details),
+            citedAtomIds: [plan.id, verdict.intentId],
+            citedPaths: [],
+          }),
+        );
+      }
       continue;
     }
 
