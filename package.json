@@ -13,7 +13,8 @@
     "lag-respond": "./bin/lag-respond.js",
     "lag-run-loop": "./bin/lag-run-loop.js",
     "lag-tg": "./bin/lag-tg.mjs",
-    "lag-actors": "./bin/lag-actors.js"
+    "lag-actors": "./bin/lag-actors.js",
+    "lag-audit-pipeline": "./scripts/audit-pipeline.mjs"
   },
   "imports": {
     "#runtime/actor-message": {
@@ -141,6 +142,7 @@
     "resume-session": "node scripts/resume-session.mjs",
     "wt": "node scripts/wt.mjs",
     "intend": "node scripts/intend.mjs",
+    "audit-pipeline": "node scripts/audit-pipeline.mjs",
     "clean": "rimraf dist coverage .vitest-cache *.tsbuildinfo .lag"
   },
   "dependencies": {
