@@ -20,6 +20,7 @@ import {
   stageStateTone,
 } from './tones';
 import { formatDurationMs, formatRelative, formatUsd } from './PipelinesView';
+import { IntentOutcomeCard } from './IntentOutcomeCard';
 import { PipelineLifecycle } from './PipelineLifecycle';
 import { StageInputs } from './StageInputs';
 import styles from './PipelineDetailView.module.css';
@@ -150,6 +151,8 @@ function PipelineDetailBody({
         id={pipeline.id}
         onClear={() => setRoute('pipelines')}
       />
+
+      <IntentOutcomeCard pipelineId={pipeline.id} />
 
       <header className={styles.detailHead}>
         <div className={styles.detailHeadTop}>
