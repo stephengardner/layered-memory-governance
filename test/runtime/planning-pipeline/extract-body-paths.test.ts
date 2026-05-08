@@ -251,7 +251,6 @@ describe('shared filesystem-token extractor', () => {
         'README.md',
         'LICENSE',
         'CHANGELOG.md',
-        'CLAUDE.md',
         '.gitignore',
         '.env.example',
         'tsconfig.json',

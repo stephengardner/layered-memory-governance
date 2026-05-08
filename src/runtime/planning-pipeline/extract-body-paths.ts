@@ -163,7 +163,6 @@ const REPO_ROOT_BARE_ALLOWLIST: ReadonlySet<string> = new Set([
   'CHANGELOG.md',
   'CONTRIBUTING.md',
   'CODE_OF_CONDUCT.md',
-  'CLAUDE.md',
   '.gitignore',
   '.gitattributes',
   '.npmrc',
