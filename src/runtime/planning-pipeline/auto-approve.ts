@@ -338,10 +338,11 @@ function skipReasonToCategory(reason: SkipReason): string {
  * (see mkPlanOutputAtoms in atom-shapes.ts), so when a plan was
  * authored inside a pipeline, this helper returns its pipeline atom
  * id. When the plan was authored outside a pipeline (single-pass
- * cto-actor flow), no pipeline ancestor exists and the helper returns
- * null; the caller skips the audit-finding write in that case
- * because the existing 'plan.skipped-by-intent' audit-log entry is
- * already the operator-facing signal there.
+ * non-pipeline planner flow), no pipeline ancestor exists and the
+ * helper returns null; the caller skips the audit-finding write in
+ * that case because the existing 'plan.skipped-by-intent' audit-log
+ * entry remains the operator-facing signal (no pipeline surface to
+ * project a finding into).
  */
 function findPipelineAncestor(plan: Atom): AtomId | null {
   const derivedFrom = plan.provenance?.derived_from ?? [];
@@ -601,12 +602,12 @@ export async function runPipelinePlanAutoApproval(
       // pipeline-audit-finding atom so the console pipeline-detail
       // projection renders the cause inline rather than relying on
       // the audit-log entry above (which is invisible to the
-      // /pipelines/<id> view). The finding is written ONLY when the
+      // pipeline-detail view). The finding is written ONLY when the
       // plan was authored inside a pipeline (its
       // provenance.derived_from carries a pipeline ancestor); plans
-      // authored outside the pipeline (single-pass cto-actor) keep
-      // the audit-log-only signal because there is no pipeline
-      // surface to project the finding into.
+      // authored outside the pipeline (single-pass non-pipeline
+      // planner) keep the audit-log-only signal because there is no
+      // pipeline surface to project the finding into.
       const pipelineAncestorId = findPipelineAncestor(plan);
       if (pipelineAncestorId !== null) {
         // Read the correlationId from the plan's provenance so the
