@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type FocusEvent,
+  type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from 'react';
@@ -81,6 +82,16 @@ export function Tooltip({ content, children, testId }: TooltipProps) {
   const handleBlur = (): void => {
     hide();
   };
+  /*
+   * WAI-ARIA Tooltip pattern: Escape dismisses the tooltip while the
+   * trigger retains focus. Listening on the wrapper catches the key
+   * regardless of which descendant element holds focus.
+   */
+  const handleKeyDown = (event: KeyboardEvent<HTMLSpanElement>): void => {
+    if (event.key === 'Escape') {
+      hide();
+    }
+  };
 
   return (
     <>
@@ -91,6 +102,7 @@ export function Tooltip({ content, children, testId }: TooltipProps) {
         onMouseLeave={handleMouseLeave}
         onFocus={handleFocus}
         onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
         {...(open ? { 'aria-describedby': tooltipId } : {})}
       >
         {children}
@@ -105,7 +117,15 @@ export function Tooltip({ content, children, testId }: TooltipProps) {
               className={styles.tooltip}
               style={{
                 top: pos.y,
-                left: Math.max(12, Math.min(pos.x, window.innerWidth - 12)),
+                /*
+                 * Right-edge clamp accounts for the tooltip's
+                 * `translateX(-50%)` centering and `max-width: 18rem`
+                 * (~288px). Half-width (~144px) sits to the right of
+                 * the anchor x; clamping at innerWidth - 12 alone
+                 * would let the right edge spill past the viewport
+                 * by up to ~144px on narrow screens.
+                 */
+                left: Math.max(12, Math.min(pos.x, window.innerWidth - 12 - 144)),
               }}
               initial={{ opacity: 0, y: -4 }}
               animate={{ opacity: 1, y: 0 }}

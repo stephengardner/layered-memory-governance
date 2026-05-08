@@ -67,7 +67,10 @@
 
 /*
  * Honor reduced-motion preference per `dev-web-interaction-quality-no-jank`.
- * The dot's pulse loop disables; everything else is a one-shot fade.
+ * NOTE: this rule only disables CSS transitions on `.pill`. The dot's
+ * pulse is driven by framer-motion on `<motion.span>` and CSS cannot
+ * gate it; `FreshnessPill.tsx` reads `useReducedMotion()` and gates
+ * the framer `animate` prop directly. Both layers are required.
  */
 @media (prefers-reduced-motion: reduce) {
   .pill {

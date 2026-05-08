@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import styles from './FreshnessPill.module.css';
 
 /**
@@ -47,6 +47,16 @@ export function FreshnessPill({ lastSuccessAt, testId }: FreshnessPillProps) {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
+  /*
+   * Honor `prefers-reduced-motion` for the framer-driven scale pulse.
+   * The CSS-side `@media (prefers-reduced-motion: reduce)` block in
+   * FreshnessPill.module.css only suppresses CSS transitions on the
+   * pill chrome; motion props on a `<motion.span>` run regardless of
+   * the media query unless we gate them explicitly. `useReducedMotion`
+   * tracks the same media query so a single source of truth governs
+   * both.
+   */
+  const shouldReduceMotion = useReducedMotion();
 
   if (lastSuccessAt === null) {
     return (
@@ -87,10 +97,10 @@ export function FreshnessPill({ lastSuccessAt, testId }: FreshnessPillProps) {
         className={styles.dot}
         aria-hidden="true"
         data-state={stale ? 'stale' : 'fresh'}
-        animate={{ scale: stale ? 1 : [1, 1.18, 1] }}
+        animate={{ scale: stale || shouldReduceMotion ? 1 : [1, 1.18, 1] }}
         transition={{
-          duration: stale ? 0 : 1.6,
-          repeat: stale ? 0 : Infinity,
+          duration: stale || shouldReduceMotion ? 0 : 1.6,
+          repeat: stale || shouldReduceMotion ? 0 : Infinity,
           ease: 'easeInOut',
         }}
       />

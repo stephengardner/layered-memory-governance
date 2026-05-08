@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronRight, Clock, Coins, Cpu, ListChecks, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Workflow, XCircle } from 'lucide-react';
@@ -76,17 +75,13 @@ export function PipelineDetailView({ pipelineId }: { pipelineId: string }) {
    * `query.dataUpdatedAt` is the canonical TanStack Query signal: it
    * advances on every settled fetchSuccess, sticks across error
    * retries (so the pill keeps ticking against the last good time on
-   * a hard poll failure), and is `0` until the first success. Mirror
-   * it into local state so the surface re-renders only when a new
-   * successful update lands -- the 1s ticker that drives the relative
-   * phrase lives inside <FreshnessPill>, not here.
+   * a hard poll failure), and is `0` until the first success. Derive
+   * directly rather than mirroring into state -- canon
+   * `dev-web-no-useeffect-for-data` reserves useEffect for real DOM
+   * side effects, and v5's `dataUpdatedAt` already preserves the last
+   * successful update across error retries.
    */
-  const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
-  useEffect(() => {
-    if (query.dataUpdatedAt > 0 && !query.isError) {
-      setLastSuccessAt(query.dataUpdatedAt);
-    }
-  }, [query.dataUpdatedAt, query.isError]);
+  const lastSuccessAt = query.dataUpdatedAt > 0 ? query.dataUpdatedAt : null;
 
   if (query.isPending) {
     return <LoadingState label="Loading pipeline..." testId="pipeline-detail-loading" />;
