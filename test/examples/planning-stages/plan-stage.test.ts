@@ -16,6 +16,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   PLAN_SYSTEM_PROMPT,
+  extractBodyPaths,
   planStage,
 } from '../../../examples/planning-stages/plan/index.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
@@ -42,6 +43,11 @@ const samplePlan = {
     reason: 'mechanical edits within scope',
     implied_blast_radius: 'framework' as const,
   },
+  // Form B (NAVIGATIONAL) per substrate fix #288 -- empty array
+  // means the drafter discovers paths at draft time. Tests that
+  // assert the partial-list failure mode override this with an
+  // explicit non-empty value.
+  target_paths: [],
 };
 
 describe('planStage', () => {
@@ -690,6 +696,207 @@ describe('planStage', () => {
     expect(captured).not.toBeNull();
     if (captured === null) return;
     expect(captured.data.intent_max_blast_radius).toBe('');
+  });
+
+  // Substrate fix #288 (pipeline-cto-1778218364025-j09vxv of
+   // 2026-05-08): the plan-stage schema MUST enforce target_paths
+   // completeness so a partial list (some files listed, others
+   // deferred) fails at the schema layer rather than silently
+   // producing an empty-diff PR at the drafter. The drafter's
+   // empty-diff fence cannot tell which paths are intentionally
+   // out-of-scope vs forgotten; the dogfeed produced
+   // dispatched=1 / failed=0 with zero PR shipped.
+   //
+   // CR-narrowing follow-up on PR #351 (2026-05-08): the schema
+   // walker is NARROW -- it scans only step-target marker lines (the
+   // bolded numbered step pattern from
+   // examples/planning-stages/skills/writing-plans.md). Prose-only
+   // mentions in Why-this / context paragraphs are NOT flagged
+   // because writing-plans.md explicitly designates those as
+   // read-only context references, not deliverables. The fixtures
+   // below use the step-bolded shape so they exercise the actual
+   // contract; the new "Why-this prose narrowing" test pins the
+   // narrowing invariant against regression.
+  describe('target_paths completeness fence (substrate fix #288)', () => {
+    // Step-bolded body: two deliverable steps under Concrete steps.
+    // The marker pattern is `^\s*\d+\.\s+\*\*[^*]+\*\*\s+-\s+`,
+    // which the narrow walker uses to find step-target lines; the
+    // file path on each step line is the deliverable.
+    const partialBody =
+      '## Concrete steps\n\n'
+      + '1. **Render the chip** - `apps/console/src/components/Header.tsx`\n'
+      + '   <code block with the chip render>\n'
+      + '2. **Wire the badge style** - `apps/console/src/components/ui/badge.tsx`\n'
+      + '   <code block with the badge edit>';
+
+    it('rejects a plan whose step-targets reference a path not in target_paths (Form A partial)', () => {
+      // Reproduces the dogfeed: two step-targets name two files;
+      // target_paths lists only one. The schema must catch this
+      // BEFORE the drafter runs so the failure is loud at plan-stage.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body: partialBody,
+            target_paths: ['apps/console/package.json'],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(false);
+      if (!result?.success) {
+        const messages = result?.error?.issues.map((i) => i.message).join('\n') ?? '';
+        expect(messages).toMatch(/partial|substrate fix #288/i);
+        expect(messages).toMatch(/apps\/console\/src\/components\/Header\.tsx/);
+      }
+    });
+
+    it('accepts a plan with target_paths empty (Form B navigational)', () => {
+      // Form B is the explicit deferral: empty target_paths means the
+      // drafter discovers paths at draft time via prose extraction +
+      // Glob/Grep navigation. The schema does NOT walk the body when
+      // target_paths is empty -- the drafter is the authority.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body: partialBody,
+            target_paths: [],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(true);
+    });
+
+    it('accepts a plan with target_paths covering every step-target path (Form A concrete)', () => {
+      // Form A is the strict declaration: every step-target path is
+      // in target_paths and the drafter scopes its diff to exactly
+      // that set. The Header.tsx + badge.tsx pair from the dogfeed
+      // body, both qualified with their directory.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body: partialBody,
+            target_paths: [
+              'apps/console/src/components/Header.tsx',
+              'apps/console/src/components/ui/badge.tsx',
+            ],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(true);
+    });
+
+    it('does NOT flag a path mentioned only in Why-this prose (narrow walker)', () => {
+      // CR Fix 2 (PR #351, 2026-05-08): the schema walker is NARROW.
+      // A read-only context path in Why-this prose ("mirrors how
+      // pkg/foo/bar.ts handles X") is NOT a deliverable per
+      // examples/planning-stages/skills/writing-plans.md and MUST
+      // NOT inflate the required target_paths set. Without
+      // narrowing, the broad regex would pick up `pkg/foo/bar.ts`
+      // and demand it appear in target_paths, contradicting the
+      // skill doc's "prose-only paths are not deliverables" rule.
+      const body =
+        '## Why this\n\n'
+        + 'Mirrors how `pkg/foo/bar.ts` handles the lifecycle today; '
+        + 'the new code applies the same shape to `pkg/baz/qux.ts` '
+        + 'in spirit but does not edit either file.\n\n'
+        + '## Concrete steps\n\n'
+        + '1. **Render the chip** - `apps/console/src/components/Header.tsx`\n'
+        + '   <code block with the chip render>';
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body,
+            // Only the step-target deliverable is required; the
+            // Why-this references stay out of the required set.
+            target_paths: ['apps/console/src/components/Header.tsx'],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(true);
+    });
+
+    it('rejects a plan with a bare-filename target_paths entry (no directory separator)', () => {
+      // The dogfeed reproducer's specific failure mode: emitting
+      // 'header-version-chip.spec.ts' (bare filename) instead of
+      // 'apps/console/tests/e2e/header-version-chip.spec.ts'. The
+      // drafter resolves entries relative to the repo root, so a
+      // bare filename creates a file at repo root which is almost
+      // never intended. Schema rejects with a directive-pointing
+      // message so the LLM sees the right answer at draft time.
+      const result = planStage.outputSchema?.safeParse({
+        plans: [
+          {
+            ...samplePlan,
+            body:
+              '## Concrete steps\n\n'
+              + '1. **Add coverage spec** - `header-version-chip.spec.ts`\n'
+              + '   <code block with the spec>',
+            target_paths: ['header-version-chip.spec.ts'],
+          },
+        ],
+        cost_usd: 0,
+      });
+      expect(result?.success).toBe(false);
+      if (!result?.success) {
+        const messages = result?.error?.issues.map((i) => i.message).join('\n') ?? '';
+        expect(messages).toMatch(/bare filename/);
+      }
+    });
+
+    it('extractBodyPaths returns step-target paths in first-occurrence order, deduplicated, with diff prefixes folded', () => {
+      // The narrow walker scans only step-target marker lines.
+      // Two step-targets to `apps/console/package.json` collapse to
+      // one occurrence; the diff-prefix-strip rule keeps `a/foo.ts`
+      // (no `/` in stripped form) but folds `a/dir/foo.ts` ->
+      // `dir/foo.ts`.
+      const body =
+        '## Why this\n\n'
+        + 'Prose mention of `unrelated/context.md` should NOT appear in the output.\n\n'
+        + '## Concrete steps\n\n'
+        + '1. **First touch** - `apps/console/package.json`\n'
+        + '   <code block>\n'
+        + '2. **Second touch (same file)** - `apps/console/package.json`\n'
+        + '   <code block>\n'
+        + '3. **Diff-prefix path top-level** - `a/foo.ts`\n'
+        + '   <code block>\n'
+        + '4. **Diff-prefix path nested folds** - `a/dir/foo.ts`\n'
+        + '   <code block>';
+      const paths = extractBodyPaths(body);
+      // Step-target paths are present.
+      expect(paths).toContain('apps/console/package.json');
+      // Diff-prefix top-level kept (stripping `a/` would leave `foo.ts`,
+      // which has no `/`, so the prefix is preserved per
+      // stripDiffPrefix's invariant).
+      expect(paths).toContain('a/foo.ts');
+      // Diff-prefix nested folded to bare `dir/foo.ts` (stripping
+      // `a/` leaves a path with `/`, so the fold applies).
+      expect(paths).toContain('dir/foo.ts');
+      // Dedup: package.json appears once even though two step-targets
+      // mention it.
+      const occurrences = paths.filter((p) => p === 'apps/console/package.json');
+      expect(occurrences.length).toBe(1);
+      // Narrowing invariant: prose-only paths are NOT in the output.
+      expect(paths).not.toContain('unrelated/context.md');
+    });
+
+    it('PLAN_SYSTEM_PROMPT carries the target_paths completeness HARD CONSTRAINT', () => {
+      // Two prompt markers a downstream prompt-edit reviewer can
+      // grep for: the HARD CONSTRAINT header and the explicit Form
+      // A / Form B language so the LLM has the positive choice
+      // surface, not a vague "be specific" instruction.
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/HARD CONSTRAINT on target_paths completeness/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/Form A \(CONCRETE\)/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/Form B \(NAVIGATIONAL\)/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/NEVER emit a partial target_paths/);
+      expect(PLAN_SYSTEM_PROMPT).toMatch(/NEVER emit bare filenames/);
+    });
   });
 
   it('audit() short-circuits the sub-actor closure check when the verified set is empty (legacy callers)', async () => {

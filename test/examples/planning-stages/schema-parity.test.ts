@@ -563,6 +563,7 @@ describe('runStage wiring asserts the bounded schema', () => {
               reason: 'r',
               implied_blast_radius: 'framework' as const,
             },
+            target_paths: [],
           },
         ],
         cost_usd: 0,

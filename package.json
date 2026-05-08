@@ -20,6 +20,10 @@
       "types": "./src/runtime/actor-message/index.ts",
       "default": "./dist/runtime/actor-message/index.js"
     },
+    "#runtime/planning-pipeline/extract-body-paths": {
+      "types": "./src/runtime/planning-pipeline/extract-body-paths.ts",
+      "default": "./dist/runtime/planning-pipeline/extract-body-paths.js"
+    },
     "#substrate/policy/llm-tool-policy": {
       "types": "./src/substrate/policy/llm-tool-policy.ts",
       "default": "./dist/substrate/policy/llm-tool-policy.js"

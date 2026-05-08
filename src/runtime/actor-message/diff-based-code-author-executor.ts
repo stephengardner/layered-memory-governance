@@ -28,6 +28,7 @@ import type { Atom, PrincipalId } from '../../types.js';
 import type { Host } from '../../interface.js';
 import type { GhClient } from '../../external/github/index.js';
 import type { Workspace, WorkspaceProvider } from '../../substrate/workspace-provider.js';
+import { extractFsShapedTokens } from '../planning-pipeline/extract-body-paths.js';
 import {
   draftCodeChange,
   DrafterError,
@@ -759,79 +760,32 @@ function buildCommitMessage(plan: Atom, draftNotes: string): string {
 /**
  * Heuristic path extractor over prose plan content. Looks for
  * `<dir>/<file>.<ext>` shapes where `<ext>` is a known text or code
- * extension. Intended as a FALLBACK when plan.metadata.target_paths
- * is unset -- a structured field is always preferred. The extension
- * allowlist is deliberately narrow so prose like `example.com` or
- * `1.2.3` does not get misread as a file path.
+ * extension. Intended as a FALLBACK when `plan.metadata.target_paths`
+ * is unset -- a structured field is always preferred.
+ *
+ * Single source of truth for the regex / extension allowlist /
+ * traversal guard / diff-prefix-strip is the shared
+ * `extractFsShapedTokens` primitive in the planning pipeline. The
+ * schema's narrow walker (`extractBodyPaths`) imports the same
+ * primitive so a tweak in one place lands everywhere; without
+ * sharing, the schema could accept plans the drafter then no-ops on
+ * (or vice versa).
+ *
+ * NARROW vs BROAD scoping: this drafter fallback is BROAD (walks any
+ * prose, no step-bolded constraint) because it must serve plans that
+ * predate the deep-pipeline plan-stage shape -- freeform Decision
+ * prose, Question prompts, manually-authored plans without the
+ * "Concrete steps" markdown discipline. The schema's narrow walker
+ * (step-targets only) applies the bolded-numbered-step constraint
+ * because pipeline plans always carry that shape and prose-only
+ * mentions there are read-only context references, not deliverables.
  *
  * The returned list is de-duplicated and order-stable to the first
  * occurrence in the prose (for deterministic DATA-hash behavior in
  * tests that depend on the drafter call fingerprint).
  */
-function extractTargetPathsFromProse(prose: string): string[] {
-  // Extension allowlist -- text/code files we expect the Code Author
-  // to touch. Deliberately excludes extensions that show up in prose
-  // for other reasons (e.g., `.com`, `.org`, `.net`, version strings).
-  const extAllowlist = 'md|ts|tsx|js|jsx|mjs|cjs|json|yml|yaml|toml|css|scss|html|sh|py|go|rs|java|kt|rb|ex|exs';
-  // The leading lookbehind `(?<![A-Za-z0-9_\\/.])` blocks matches
-  // that begin adjacent to a word char, `/`, or `.` -- i.e., the
-  // match must start fresh at a true prose boundary (whitespace,
-  // punctuation other than `/.`, start-of-string). This is what
-  // keeps a traversal-attempt like `../../etc/passwd.md` from
-  // matching any of its inner fragments (`etc/...`, `tc/...`,
-  // `passwd.md`'s leaf, etc.) -- every starting position inside
-  // the escape token is preceded by a blocked char.
-  // First segment cannot start with a `.` (excludes `./foo.md`) but
-  // may contain `.` so dotted top-level filenames (`my.config.yml`,
-  // `tsconfig.json`, `README.md`) match. Path segments are
-  // zero-or-more so a top-level filename in prose ("update README.md")
-  // is recognized; the prior `+` quantifier required at least one `/`
-  // and silently dropped top-level paths. Together with the per-
-  // segment `..` / `.` guard below and the reader sandbox check, this
-  // is three independent lines of defense against a plan whose prose
-  // tries to exfiltrate or write outside repoDir.
-  const pathRe = new RegExp(
-    `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\\/[A-Za-z0-9_.-]+)*\\.(?:${extAllowlist}))\\b`,
-    'g',
-  );
-  const seen = new Set<string>();
-  const out: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = pathRe.exec(prose)) !== null) {
-    // Normalize unified-diff path prefixes. When plan content itself
-    // embeds a diff, the heuristic would otherwise emit `a/foo.md`
-    // AND `b/foo.md` as distinct targets; the drafter then produces
-    // a diff touching the bare `foo.md`, and the downstream path-
-    // scope check fails because the bare path is not in the
-    // inflated target set. Folding `a/` and `b/` to the bare path
-    // mirrors git semantics.
-    const p = stripDiffPathPrefix(m[1]!);
-    if (hasTraversalSegment(p)) continue;
-    if (!seen.has(p)) {
-      seen.add(p);
-      out.push(p);
-    }
-  }
-  return out;
-}
-
-function stripDiffPathPrefix(p: string): string {
-  // Only fold when stripping the `a/` or `b/` prefix still leaves a
-  // `<dir>/<file>` shape. This keeps a legitimate top-level directory
-  // named `a` or `b` (e.g., `a/index.md`) from being collapsed to a
-  // leaf-only path that the drafter would then reject under a
-  // different invariant.
-  const isDiffPrefix = p.startsWith('a/') || p.startsWith('b/');
-  if (!isDiffPrefix) return p;
-  const stripped = p.slice(2);
-  return stripped.includes('/') ? stripped : p;
-}
-
-function hasTraversalSegment(p: string): boolean {
-  for (const seg of p.split('/')) {
-    if (seg === '..' || seg === '.') return true;
-  }
-  return false;
+function extractTargetPathsFromProse(prose: string): ReadonlyArray<string> {
+  return extractFsShapedTokens(prose);
 }
 
 /**

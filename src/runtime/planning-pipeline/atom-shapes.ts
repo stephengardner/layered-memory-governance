@@ -851,6 +851,7 @@ interface PlanEntryLike {
     readonly reason?: unknown;
     readonly implied_blast_radius?: unknown;
   };
+  readonly target_paths?: ReadonlyArray<unknown>;
 }
 
 /**
@@ -873,6 +874,14 @@ const RESERVED_PLAN_METADATA_KEYS: ReadonlySet<string> = new Set([
   'alternatives_rejected',
   'what_breaks_if_revisit',
   'delegation',
+  // target_paths is the plan-stage's authoritative deliverable-path
+  // allowlist consumed by the drafter (extractStringArray reads
+  // plan.metadata.target_paths first, falling back to body extraction
+  // only when the structured field is absent). Reserving the key here
+  // fences a misbehaving stage runner from injecting a synthetic
+  // target_paths via extraMetadata that bypasses the plan-stage
+  // schema's Form-A completeness check.
+  'target_paths',
 ]);
 
 /**
@@ -984,6 +993,16 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
           }
         : {};
 
+    // Propagate the plan-entry's target_paths into the atom's
+    // metadata so the drafter's `extractStringArray(meta,
+    // 'target_paths')` lookup finds it. Empty array =>
+    // navigational-mode (Form B per substrate fix #288); the
+    // drafter falls back to extractTargetPathsFromProse on plan
+    // content. Non-empty array => concrete-mode (Form A); the
+    // drafter's modify-fence scopes the diff to exactly this set.
+    const targetPaths = asStringArray(entry.target_paths);
+    const targetPathsMetadata = targetPaths.length > 0 ? { target_paths: [...targetPaths] } : {};
+
     atoms.push({
       schema_version: 1,
       id,
@@ -1032,6 +1051,7 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
         alternatives_rejected: alternativesRejected.map((a) => a.option),
         what_breaks_if_revisit: asString(entry.what_breaks_if_revisit),
         ...delegationMetadata,
+        ...targetPathsMetadata,
       },
     });
   }

@@ -59,6 +59,13 @@ import type {
   StageInput,
   StageOutput,
 } from '../../../src/runtime/planning-pipeline/index.js';
+// Value import via the package's `imports` map (Node subpath import,
+// resolved at runtime). The literal `../../../src/...` path would
+// compile fine but break at module load: tsc flattens src/ into dist/
+// (no `dist/src/`), so the resolved URL would be `dist/src/runtime/...`
+// which doesn't exist. The subpath import maps to `./dist/runtime/...`
+// in installed shape and to the `./src/...` source for type resolution.
+import { extractBodyPaths, stripDiffPrefix } from '#runtime/planning-pipeline/extract-body-paths';
 import type { AtomId, PrincipalId } from '../../../src/types.js';
 import { buildCanonAtRuntimeStamp } from '../lib/build-canon-at-runtime-stamp.js';
 import { bindingForStage } from '../lib/stage-mapping.js';
@@ -85,12 +92,28 @@ const MAX_DELEGATION_REASON = 1000;
 /** Maximum length for the delegation principal field; mirrors PLAN_DRAFT. */
 const MAX_DELEGATION_PRINCIPAL = 200;
 
+/** Maximum length for a single target_paths entry; bounds runaway emissions. */
+const MAX_TARGET_PATH = 500;
+
 /**
  * Reject any directive-markup token an LLM might smuggle into a plan
  * body to re-prompt a downstream stage. Conservative: a literal
  * occurrence of the string is sufficient signal for v1.
  */
 const INJECTION_TOKEN = '<system-reminder>';
+
+/**
+ * Re-export the shared `extractBodyPaths` helper from the framework's
+ * planning-pipeline module so existing test imports
+ * (`import { extractBodyPaths } from '.../plan/index.js'`) continue to
+ * work without churn. The single source of truth is
+ * `src/runtime/planning-pipeline/extract-body-paths.ts`; both the
+ * schema's completeness fence here and the drafter executors under
+ * `src/runtime/actor-message/` import from that one module so a
+ * regex/extension/diff-prefix tweak lands in one place per substrate
+ * fix #288 (CR finding 2026-05-08 on PR #351).
+ */
+export { extractBodyPaths };
 
 const alternativeSchema = z.object({
   option: z.string().min(1).max(MAX_TITLE),
@@ -109,22 +132,98 @@ const delegationSchema = z.object({
   ]),
 });
 
-const planEntrySchema = z.object({
-  title: z.string().min(1).max(MAX_TITLE),
-  body: z
-    .string()
-    .min(1)
-    .max(MAX_BODY)
-    .refine((s) => !s.includes(INJECTION_TOKEN), {
-      message: 'body contains directive markup that could re-prompt a downstream stage',
-    }),
-  derived_from: z.array(z.string().min(1)).min(1).max(MAX_LIST),
-  principles_applied: z.array(z.string().min(1)).max(MAX_LIST),
-  alternatives_rejected: z.array(alternativeSchema).max(MAX_LIST),
-  what_breaks_if_revisit: z.string().min(1).max(MAX_STR_SHORT),
-  confidence: z.number().min(0).max(1),
-  delegation: delegationSchema,
-});
+const planEntrySchema = z
+  .object({
+    title: z.string().min(1).max(MAX_TITLE),
+    body: z
+      .string()
+      .min(1)
+      .max(MAX_BODY)
+      .refine((s) => !s.includes(INJECTION_TOKEN), {
+        message: 'body contains directive markup that could re-prompt a downstream stage',
+      }),
+    derived_from: z.array(z.string().min(1)).min(1).max(MAX_LIST),
+    principles_applied: z.array(z.string().min(1)).max(MAX_LIST),
+    alternatives_rejected: z.array(alternativeSchema).max(MAX_LIST),
+    what_breaks_if_revisit: z.string().min(1).max(MAX_STR_SHORT),
+    confidence: z.number().min(0).max(1),
+    delegation: delegationSchema,
+    // target_paths is the explicit deliverable-path allowlist that
+    // gates the drafter's modify-fence at execution time. The LLM
+    // emits ONE of two forms (substrate fix #288):
+    //   Form A (CONCRETE): every file the plan steps will edit or
+    //     create appears as an explicit literal entry; the drafter
+    //     scopes its diff to exactly this set.
+    //   Form B (NAVIGATIONAL): empty array; the drafter's prose
+    //     extractor + Glob/Grep navigation discovers paths at draft
+    //     time per dev-drafter-citation-verification-required.
+    // The partial form (some files listed, others deferred) is a
+    // bug: the drafter's empty-diff fence cannot tell which paths
+    // are intentionally out-of-scope vs forgotten, so it ships a
+    // no-op. The post-Zod refinement below enforces Form-A
+    // completeness when the array is non-empty.
+    target_paths: z
+      .array(z.string().min(1).max(MAX_TARGET_PATH))
+      .max(MAX_LIST),
+  })
+  // Form-A completeness check: when target_paths is non-empty, every
+  // filesystem-shaped token declared as a step-target in the body
+  // MUST appear in target_paths. The walker is NARROW: it scans only
+  // step-target marker lines (the bolded numbered step pattern from
+  // examples/planning-stages/skills/writing-plans.md) so prose-only
+  // mentions in Why-this / context paragraphs are NOT flagged. That
+  // alignment matters: the skill doc explicitly says "read-only
+  // context paths belong in prose", and a broader walker would
+  // generate false-positive friction the doc contradicts. The
+  // drafter's extractTargetPathsFromProse fallback shares the same
+  // low-level regex/extension/diff-prefix primitive but walks
+  // freeform prose (no step-bolded constraint) so a non-pipeline
+  // plan with raw prose still yields a usable scope.
+  .superRefine((entry, ctx) => {
+    if (entry.target_paths.length === 0) return;
+    // Reject bare filenames (no `/` separator) entries to prevent
+    // the drafter from creating files at repo root. The drafter
+    // resolves entries relative to repoDir, so a bare filename like
+    // `header-version-chip.spec.ts` becomes `<repoDir>/header-version-chip.spec.ts`
+    // which is almost never intended. Form B is the right answer
+    // when the plan cannot resolve the directory.
+    for (const entry_ of entry.target_paths) {
+      if (!entry_.includes('/')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['target_paths'],
+          message:
+            `target_paths entry "${entry_}" is a bare filename without a `
+            + 'directory separator. The drafter resolves entries relative '
+            + 'to the repo root, so a bare filename creates a file at repo '
+            + 'root which is almost never intended. Either qualify the '
+            + 'path (e.g., "apps/console/tests/e2e/'
+            + entry_
+            + '") or empty target_paths to use navigational mode '
+            + '(Form B).',
+        });
+      }
+    }
+    const declaredSet = new Set(entry.target_paths.map((p) => stripDiffPrefix(p)));
+    const bodyPaths = extractBodyPaths(entry.body);
+    for (const bodyPath of bodyPaths) {
+      if (!declaredSet.has(bodyPath)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['target_paths'],
+          message:
+            'target_paths is partial (substrate fix #288): body references '
+            + `path "${bodyPath}" but it is not in target_paths. Either add `
+            + 'every path the body mentions to target_paths (Form A: '
+            + 'CONCRETE), or empty target_paths to use the drafter\'s '
+            + 'navigational fallback (Form B: NAVIGATIONAL). Partial lists '
+            + 'cause the drafter to ship an empty diff because its '
+            + 'modify-fence cannot tell which paths are intentionally '
+            + 'out-of-scope vs forgotten.',
+        });
+      }
+    }
+  });
 
 export const planPayloadSchema = z.object({
   plans: z.array(planEntrySchema).min(1).max(MAX_PLANS),
@@ -278,6 +377,44 @@ classification is the more common failure mode and prevents
 auto-approval. Inventing a radius outside the enum or exceeding the
 intent envelope produces a critical or major audit finding and the
 plan does not auto-approve.
+
+HARD CONSTRAINT on target_paths completeness: target_paths must
+satisfy ONE of these forms -- never the partial form between them.
+
+Form A (CONCRETE): list EVERY file the plan steps will edit, create,
+or read for guidance. If your plan body says "render in the header
+component" then target_paths MUST contain the resolved header path.
+If your plan body says "find the X file (likely Y or Z)" -- STOP.
+Resolve it via Glob/Grep before emitting. A plan that defers
+file-location to a later step is a plan that hasn't been written
+yet.
+
+Form B (NAVIGATIONAL): leave target_paths EMPTY ([]) when you
+cannot enumerate every file with confidence. The drafter has
+Glob/Grep fallback navigation per
+dev-drafter-citation-verification-required and will discover paths
+at draft time. Empty target_paths is honest; partial target_paths
+is a bug.
+
+NEVER emit a partial target_paths (some files listed, others
+deferred). The drafter's empty-diff fence rejects partial lists
+because it cannot tell which paths are intentionally out-of-scope
+vs forgotten -- the result is dispatched=1 / failed=0 with zero PR
+shipped (substrate fix #288 reproducer:
+pipeline-cto-1778218364025-j09vxv). The schema's
+post-validation walks the body's STEP-TARGET MARKER LINES (the
+"1. **<action>** - <path>" pattern under "Concrete steps") for
+filesystem-shaped tokens and fails the stage when target_paths is
+partial. Prose-only path references (Why-this paragraphs, context
+mentions like "mirrors how pkg/foo/bar.ts does X") are NOT
+deliverables and do NOT enter the completeness check; only
+step-target paths do.
+
+For repo-relative paths only: NEVER emit bare filenames like
+'header-version-chip.spec.ts'. The drafter resolves entries
+relative to the repo root, so a bare filename creates a file at
+repo root which is almost never intended. If you cannot resolve the
+directory, use Form B.
 
 Emit ONLY a payload that matches the provided schema; no prose
 outside the schema fields.`;
