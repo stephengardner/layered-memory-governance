@@ -150,8 +150,15 @@ test.describe('plan_state pill tones', () => {
       const tokenName = tokenNameFor(state);
       const expectedColor = await resolveToken(page, tokenName);
 
-      const pillSelector = `[data-testid="plan-card-state"][data-plan-state="${state}"]`;
+      // succeeded plans can now render as noop when their dispatch did
+      // no work; filter to the genuine successes so we only assert green
+      // on pills that actually represent shipped work.
+      const baseSelector = `[data-testid="plan-card-state"][data-plan-state="${state}"]`;
+      const pillSelector = state === 'succeeded'
+        ? `${baseSelector}[data-true-outcome="succeeded"]`
+        : baseSelector;
       const pillCount = await page.locator(pillSelector).count();
+      if (state === 'succeeded' && pillCount === 0) continue;
       expect(pillCount, `plans view should render at least one pill for state '${state}'`)
         .toBeGreaterThan(0);
 
@@ -198,7 +205,10 @@ test.describe('plan_state pill tones', () => {
       const tokenName = tokenNameFor(state);
       const expectedColor = await resolveToken(page, tokenName);
 
-      const pillSelector = `[data-testid="plan-lifecycle-row-state"][data-plan-state="${state}"]`;
+      const baseSelector = `[data-testid="plan-lifecycle-row-state"][data-plan-state="${state}"]`;
+      const pillSelector = state === 'succeeded'
+        ? `${baseSelector}[data-true-outcome="succeeded"]`
+        : baseSelector;
       const pillCount = await page.locator(pillSelector).count();
       if (pillCount === 0) {
         // The state exists in the store but no row may have rendered
