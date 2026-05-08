@@ -125,3 +125,4 @@ if (invokedAsBin) {
       process.exit(1);
     },
   );
+}
