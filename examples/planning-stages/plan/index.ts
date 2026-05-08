@@ -66,6 +66,7 @@ import type {
 // which doesn't exist. The subpath import maps to `./dist/runtime/...`
 // in installed shape and to the `./src/...` source for type resolution.
 import {
+  GITIGNORED_FIRST_SEGMENTS,
   extractBodyPaths,
   isGitignoredFirstSegment,
   isRepoRootAllowedBare,
@@ -216,9 +217,9 @@ const planEntrySchema = z
           path: ['target_paths'],
           message:
             `target_paths entry "${entry_}" is gitignored / build-output / `
-            + 'tool-cache shaped (first segment matches dist | build | out '
-            + '| .next | node_modules | coverage | .vitest-cache | .cache '
-            + '| .lag | .git). Such paths are runtime import targets, '
+            + 'tool-cache shaped (first segment matches '
+            + [...GITIGNORED_FIRST_SEGMENTS].join(' | ')
+            + '). Such paths are runtime import targets, '
             + 'never plan deliverables. Reference the source file the '
             + 'build produces (e.g., src/runtime/foo.ts instead of '
             + 'dist/runtime/foo.js).',

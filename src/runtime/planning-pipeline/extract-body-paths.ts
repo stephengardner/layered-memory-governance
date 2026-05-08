@@ -116,7 +116,7 @@ function hasTraversalSegment(path: string): boolean {
  * sufficient because nesting under any of these implies the same
  * read-only-import-target semantics.
  */
-const GITIGNORED_FIRST_SEGMENTS: ReadonlySet<string> = new Set([
+export const GITIGNORED_FIRST_SEGMENTS: ReadonlySet<string> = new Set([
   'dist',
   'build',
   'out',
