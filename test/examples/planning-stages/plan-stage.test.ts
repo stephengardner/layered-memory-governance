@@ -545,6 +545,153 @@ describe('planStage', () => {
     expect(critical).toBeUndefined();
   });
 
+  // Substrate-design fix (pipeline-cto-1778203746366-cu9r09 of
+  // 2026-05-08): the plan prompt MUST tighten the LLM's
+  // delegation.implied_blast_radius classification. The dogfeed plan
+  // produced an apps/console UI change (clearly 'tooling' scope) but
+  // classified itself as 'framework'; the auto-approve evaluator
+  // skipped the plan with delegation_radius_exceeds_envelope and the
+  // dispatch-stage emitted dispatched=0 with no PR ever shipping. The
+  // fix front-loads the discipline at draft-time by surfacing the
+  // intent envelope's max_blast_radius and giving the LLM the radius-
+  // ladder + worked examples so it picks the smallest accurate value.
+  it('PLAN_SYSTEM_PROMPT carries the blast-radius classification fence contract', () => {
+    expect(PLAN_SYSTEM_PROMPT).toMatch(
+      /HARD CONSTRAINT on delegation\.implied_blast_radius/,
+    );
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/intent_max_blast_radius/);
+    // The LLM must be told to pick the SMALLEST accurate radius.
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/SMALLEST/);
+    // The LLM must be told to NEVER classify framework for tooling-
+    // subtree changes (the specific failure mode the dogfeed surfaced).
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/NEVER use "framework"/i);
+    // The radius ladder must enumerate every enum value so the LLM has
+    // a positive reference rather than guessing.
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/"none"/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/"docs"/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/"tooling"/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/"framework"/);
+    expect(PLAN_SYSTEM_PROMPT).toMatch(/"l3-canon-proposal"/);
+  });
+
+  it('runPlan resolves the seed operator-intent max_blast_radius and forwards it to the LLM data block', async () => {
+    const host = createMemoryHost();
+    // Seed an operator-intent atom with max_blast_radius='tooling';
+    // mirrors the dogfeed reproducer where the intent envelope was
+    // 'tooling' and the plan-author over-classified to 'framework'.
+    const intentId = 'intent-blast-radius-fence' as AtomId;
+    await host.atoms.put({
+      schema_version: 1,
+      id: intentId,
+      content: 'apps/console freshness-pill change',
+      type: 'operator-intent',
+      layer: 'L1',
+      provenance: {
+        kind: 'operator-seeded',
+        source: { tool: 'intend-cli' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: '2026-05-08T00:00:00.000Z',
+      last_reinforced_at: '2026-05-08T00:00:00.000Z',
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'operator-principal' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        trust_envelope: {
+          max_blast_radius: 'tooling',
+          min_plan_confidence: 0.55,
+          allowed_sub_actors: ['code-author'],
+        },
+      },
+    });
+    const captured = await captureStageRunPrompt({
+      stage: planStage,
+      stubOutput: { plans: [samplePlan], cost_usd: 0 },
+      stageInput: {
+        host,
+        principal: 'plan-author' as PrincipalId,
+        correlationId: 'corr',
+        priorOutput: null,
+        pipelineId: 'p' as AtomId,
+        seedAtomIds: [intentId],
+        verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
+      },
+    });
+    expect(captured).not.toBeNull();
+    if (captured === null) return;
+    expect(captured.data.intent_max_blast_radius).toBe('tooling');
+    // The system prompt MUST reference the data field by exact name so
+    // a downstream prompt-edit reviewer sees the contract wired
+    // end-to-end.
+    expect(captured.system).toMatch(/intent_max_blast_radius/);
+  });
+
+  it('runPlan forwards an empty intent_max_blast_radius when no operator-intent is in seedAtomIds', async () => {
+    const host = createMemoryHost();
+    // Seed atom set with NO operator-intent: resolveIntentMaxBlastRadius
+    // returns the empty string and the prompt's HARD-CONSTRAINT block
+    // instructs the LLM to default to the smallest accurate radius.
+    const observationId = 'observation-no-intent' as AtomId;
+    await host.atoms.put({
+      schema_version: 1,
+      id: observationId,
+      content: 'no intent here',
+      type: 'observation',
+      layer: 'L0',
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'test' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: '2026-05-08T00:00:00.000Z',
+      last_reinforced_at: '2026-05-08T00:00:00.000Z',
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'apex-agent' as PrincipalId,
+      taint: 'clean',
+      metadata: {},
+    });
+    const captured = await captureStageRunPrompt({
+      stage: planStage,
+      stubOutput: { plans: [samplePlan], cost_usd: 0 },
+      stageInput: {
+        host,
+        principal: 'plan-author' as PrincipalId,
+        correlationId: 'corr',
+        priorOutput: null,
+        pipelineId: 'p' as AtomId,
+        seedAtomIds: [observationId],
+        verifiedCitedAtomIds: [],
+        verifiedSubActorPrincipalIds: [],
+        operatorIntentContent: '',
+      },
+    });
+    expect(captured).not.toBeNull();
+    if (captured === null) return;
+    expect(captured.data.intent_max_blast_radius).toBe('');
+  });
+
   it('audit() short-circuits the sub-actor closure check when the verified set is empty (legacy callers)', async () => {
     const host = createMemoryHost();
     const seededId = 'observation-legacy-empty-set' as AtomId;

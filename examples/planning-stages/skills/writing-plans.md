@@ -45,6 +45,31 @@ needs to be revisited. The output captures:
   name policy atom ids (anything starting with pol-). If no allowed
   sub-actor fits the plan you would emit, the plan is incomplete and
   you must NOT emit it.
+- **Classify blast_radius to the SMALLEST accurate value.** The seed
+  operator-intent supplies `data.intent_max_blast_radius` (the trust
+  envelope's `max_blast_radius`). Set
+  `delegation.implied_blast_radius` to the SMALLEST radius that still
+  describes the change accurately, AND that does NOT exceed
+  `data.intent_max_blast_radius`. Auto-approve rejects any plan whose
+  radius rank exceeds the intent envelope; over-classification leaves
+  the plan stuck in `proposed` and the dispatch stage emits
+  `dispatched=0` (no PR ever ships). Reference (rank order, each row
+  a strict-superset):
+    - `none`: no externally observable change.
+    - `docs`: documentation-only change (any tracked `.md`).
+    - `tooling`: changes confined to `apps/console/`, `scripts/`,
+      `.github/workflows/`, `examples/` scaffolding, or other
+      non-framework subtrees (UI, CI, dev tooling).
+    - `framework`: changes inside `src/` that alter framework
+      behavior consumers depend on. NEVER use `framework` for a
+      change that only touches `apps/console/`, `scripts/`,
+      `examples/`, or any other tooling subtree.
+    - `l3-canon-proposal`: a canon-edit moment proposing a new L3
+      directive, decision, or policy atom.
+  When in doubt between two radii, pick the SMALLER one and explain
+  in `delegation.reason` why the larger radius is unnecessary;
+  over-classification is the more common failure mode and prevents
+  auto-approval.
 - **Read the codebase**, not your imagination. Use Read, Grep, and
   Glob to verify every cited path resolves on disk and every cited
   symbol is real. A made-up citation is worse than no citation.
