@@ -495,16 +495,12 @@ function extractStringArray(
 }
 
 /**
- * Heuristic path extractor over prose plan content. Mirrors the
- * diff-based path's resolver so an agentic-path consumer interprets
- * the same plan identically; both delegate to the shared
- * `extractFsShapedTokens` primitive in
- * `src/runtime/planning-pipeline/extract-body-paths.ts` so the
- * regex / extension allowlist / traversal guard / diff-prefix-strip
- * lives in one place. Pre-refactor each call site carried an inline
- * copy and CR flagged the drift risk on PR #351; substrate fix #288
- * hinges on schema + drafter agreeing on which filesystem shapes
- * count.
+ * Heuristic path extractor over prose plan content. Both drafter
+ * paths (diff-based + agentic) and the plan-stage schema delegate to
+ * the shared `extractFsShapedTokens` primitive in the planning
+ * pipeline so the regex / extension allowlist / traversal guard /
+ * diff-prefix-strip lives in one place. Without that, the schema
+ * could accept plans the drafter then no-ops on (or vice versa).
  *
  * NARROW vs BROAD scoping: this fallback is BROAD (walks any prose,
  * no step-bolded constraint) because freeform Decision prose,

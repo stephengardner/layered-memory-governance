@@ -4,28 +4,27 @@
  * Two call sites depend on the same regex + extension allowlist +
  * diff-prefix-strip logic:
  *
- *   - The plan-stage zod schema's `target_paths` completeness fence
- *     (substrate fix #288). Narrowed to only walk step-target marker
- *     lines so prose-only path mentions (Why this, context paragraphs,
- *     read-only references) do NOT inflate the required set.
+ *   - The plan-stage zod schema's `target_paths` completeness fence.
+ *     Narrowed to only walk step-target marker lines so prose-only
+ *     path mentions (read-only context references) do NOT inflate the
+ *     required set.
  *
  *   - The diff-based + agentic CodeAuthorExecutors' fallback when
  *     `plan.metadata.target_paths` is missing entirely. Walks the
  *     plan content as freeform prose to discover paths the drafter
  *     should scope to.
  *
- * Before this module the regex, extension allowlist, traversal guard,
- * and diff-prefix-strip lived inline in three places (one schema, two
- * executors). Drift between them was the failure mode CR raised:
- * a tweak to the schema regex would let the schema accept plans the
- * drafter then no-ops on (or vice versa). The shared primitive here
- * is the single source of truth for that low-level shape; per-call-site
- * helpers add scoping concerns (narrow walk vs. broad walk) on top.
+ * The shared primitive here is the single source of truth for the
+ * low-level token shape (regex + extension allowlist + traversal
+ * guard + diff-prefix strip); per-call-site helpers add scoping
+ * concerns (narrow walk vs. broad walk) on top. Without sharing,
+ * drift between the schema regex and the executors' inline regexes
+ * would let the schema accept plans the drafters then no-op on (or
+ * vice versa).
  *
- * Why this lives in src/runtime/planning-pipeline/ and not in
- * examples/planning-stages/lib/: the executors under src/ MUST NOT
- * import from examples/ (canon `arch-framework-mechanism-only-no-vendor-logic`),
- * but examples/ adapters MAY import from src/. Lifting the shared
+ * Why this lives under src/runtime/planning-pipeline/ rather than in
+ * examples/: framework code MUST NOT import from examples/, while
+ * examples/ adapters MAY import from src/. Lifting the shared
  * primitive into the framework is the only direction that satisfies
  * both invariants.
  */
@@ -56,8 +55,14 @@ const PATH_EXT_ALLOWLIST =
  * micro-optimisation.
  */
 function buildBodyPathRegex(): RegExp {
+  // Leading char class allows `.` so dot-prefixed paths like
+  // `.github/workflows/ci.yml`, `.eslintrc.cjs`, `.changeset/foo.md`
+  // are extracted. The negative lookbehind still blocks matches
+  // adjacent to a word char or `/`; a leading dot is allowed at the
+  // start of a token because the lookbehind is anchored to the
+  // PRECEDING char, not the captured first char.
   return new RegExp(
-    `(?<![A-Za-z0-9_\\/.])([A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\\/[A-Za-z0-9_.-]+)*\\.(?:${PATH_EXT_ALLOWLIST}))\\b`,
+    `(?<![A-Za-z0-9_\\/])([.A-Za-z0-9_-][A-Za-z0-9_.-]*(?:\\/[A-Za-z0-9_.-]+)*\\.(?:${PATH_EXT_ALLOWLIST}))\\b`,
     'g',
   );
 }
@@ -127,7 +132,7 @@ export function extractFsShapedTokens(text: string): ReadonlyArray<string> {
 
 /**
  * Pattern matching the start of a "Concrete steps" entry in a plan
- * body, per `examples/planning-stages/skills/writing-plans.md`:
+ * body:
  *
  *   1. **<exact action>** - <file path>:<line range if known>
  *   2. **<exact action>** - ...
@@ -135,15 +140,15 @@ export function extractFsShapedTokens(text: string): ReadonlyArray<string> {
  * Anchored at start-of-line, optional leading whitespace, an integer
  * step number, dot, whitespace, bolded action label, separator dash
  * surrounded by whitespace. Captures everything AFTER the dash on the
- * same line (the step body's first line) so the schema walker scans
+ * same line (the step body's first line) so the narrow walker scans
  * only the path target, not the entire surrounding markdown body
  * (Why this, alternatives_rejected prose, code-fence content, etc.).
  *
  * Deliberately conservative: a step line that lacks the bolded action
  * label or the dash separator is treated as prose and skipped. The
- * skill doc enforces the marker shape; plan-authors that drift from
- * it produce no schema-flagged paths and the schema lets such bodies
- * through without a false-positive completeness check.
+ * adapter-side guidance enforces the marker shape; plans that drift
+ * from it produce no schema-flagged paths and the schema lets such
+ * bodies through without a false-positive completeness check.
  */
 const STEP_TARGET_LINE_RE = /^[ \t]*\d+\.[ \t]+\*\*[^*\n]+\*\*[ \t]+-[ \t]+(.+)$/gm;
 
@@ -152,15 +157,15 @@ const STEP_TARGET_LINE_RE = /^[ \t]*\d+\.[ \t]+\*\*[^*\n]+\*\*[ \t]+-[ \t]+(.+)$
  * filesystem-shaped tokens declared as step targets, deduplicated and
  * order-stable to first occurrence.
  *
- * NARROW vs BROAD: per `examples/planning-stages/skills/writing-plans.md`,
- * paths in step-target position (the bolded numbered step pattern) are
- * the plan's deliverables; paths in surrounding prose (Why this,
- * context paragraphs, alternatives_rejected reasons) are read-only
- * context references that are NOT deliverables. The schema's
- * target_paths completeness fence (substrate fix #288) MUST NOT flag
- * prose-only mentions, or it generates a false-positive friction the
- * skill doc explicitly contradicts. This narrow walker scans ONLY the
- * step-target lines so the schema fences exactly the deliverable set.
+ * NARROW vs BROAD: paths in step-target position (the bolded numbered
+ * step pattern) are the plan's deliverables; paths in surrounding
+ * prose (Why this, context paragraphs, alternatives_rejected reasons)
+ * are read-only context references that are NOT deliverables. The
+ * schema's target_paths completeness fence MUST NOT flag prose-only
+ * mentions, or it generates a false-positive friction the adapter-
+ * side guidance explicitly contradicts. This narrow walker scans ONLY
+ * the step-target lines so the schema fences exactly the deliverable
+ * set.
  *
  * The broad walker `extractFsShapedTokens` remains the right primitive
  * for the drafter's fallback when `meta.target_paths` is unset and the

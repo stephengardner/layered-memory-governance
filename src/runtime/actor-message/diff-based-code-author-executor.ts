@@ -765,13 +765,11 @@ function buildCommitMessage(plan: Atom, draftNotes: string): string {
  *
  * Single source of truth for the regex / extension allowlist /
  * traversal guard / diff-prefix-strip is the shared
- * `extractFsShapedTokens` primitive in
- * `src/runtime/planning-pipeline/extract-body-paths.ts`. The schema's
- * narrow walker (`extractBodyPaths`) imports the same primitive so a
- * tweak to one place lands everywhere; pre-refactor each call site
- * carried an inline copy, which CR flagged on PR #351 as a drift risk
- * (substrate fix #288 hinges on schema + drafter agreeing on which
- * filesystem shapes count).
+ * `extractFsShapedTokens` primitive in the planning pipeline. The
+ * schema's narrow walker (`extractBodyPaths`) imports the same
+ * primitive so a tweak in one place lands everywhere; without
+ * sharing, the schema could accept plans the drafter then no-ops on
+ * (or vice versa).
  *
  * NARROW vs BROAD scoping: this drafter fallback is BROAD (walks any
  * prose, no step-bolded constraint) because it must serve plans that
