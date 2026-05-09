@@ -393,6 +393,30 @@ describe('readPipelineCostCapPolicy', () => {
     const result = await readPipelineCostCapPolicy(host);
     expect(result.cap_usd).toBeNull();
   });
+
+  it('returns null when cap_usd is NaN (fail-closed on non-finite value)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-cost-cap', {
+        subject: 'pipeline-cost-cap',
+        cap_usd: Number.NaN,
+      }),
+    );
+    const result = await readPipelineCostCapPolicy(host);
+    expect(result.cap_usd).toBeNull();
+  });
+
+  it('returns null when cap_usd is Infinity (fail-closed on non-finite value)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-cost-cap', {
+        subject: 'pipeline-cost-cap',
+        cap_usd: Number.POSITIVE_INFINITY,
+      }),
+    );
+    const result = await readPipelineCostCapPolicy(host);
+    expect(result.cap_usd).toBeNull();
+  });
 });
 
 describe('readPipelineStageImplementationsPolicy', () => {
