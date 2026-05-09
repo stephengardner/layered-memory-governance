@@ -361,6 +361,19 @@ export async function markStageAtomReaped(
       `markStageAtomReaped called on a pipeline root atom: ${String(atomId)}`,
     );
   }
+  // Outer-misuse guard: this primitive is exported, so a programmatic
+  // caller could reach it with an unrelated atom type (plan,
+  // observation, directive). Rejecting any type outside the explicit
+  // subgraph membership set keeps the audit kind
+  // 'pipeline.stage_atom_reaped' from accumulating false positives that
+  // would mislead a downstream auditor walking the pipeline reap
+  // history. The internal sweep path always passes a member of the
+  // set, so this guard never fires from the in-tree call site.
+  if (!SUBGRAPH_CHILD_TYPES.has(atom.type)) {
+    throw new Error(
+      `markStageAtomReaped: not a pipeline subgraph child atom (type=${atom.type}): ${String(atomId)}`,
+    );
+  }
   if ((atom.metadata as Record<string, unknown>)['reaped_at'] !== undefined) {
     return atom;
   }
@@ -442,9 +455,14 @@ export async function loadAllTerminalPipelines(
  * derived_from chains tie back to a pipeline-stage event in the
  * agentic adapter path; they cascade-reap with the parent pipeline.
  * Standalone agent-sessions (no pipeline_id metadata) are reaped on
- * the independent `agentSessionMs` TTL, not via this set.
+ * the independent `agentSessionMs` TTL via the standalone-session pass
+ * inside `runPipelineReaperSweep`, not via this set.
+ *
+ * Exposed as a `Set` (not just an array) so `markStageAtomReaped` can
+ * O(1)-validate that the caller is passing a subgraph child rather
+ * than an unrelated atom type (plan, observation, directive, ...).
  */
-const SUBGRAPH_CHILD_TYPES: ReadonlyArray<AtomType> = [
+const SUBGRAPH_CHILD_TYPES_LIST: ReadonlyArray<AtomType> = [
   'pipeline-stage-event',
   'pipeline-audit-finding',
   'pipeline-failed',
@@ -457,6 +475,7 @@ const SUBGRAPH_CHILD_TYPES: ReadonlyArray<AtomType> = [
   'agent-session',
   'agent-turn',
 ];
+const SUBGRAPH_CHILD_TYPES: ReadonlySet<AtomType> = new Set(SUBGRAPH_CHILD_TYPES_LIST);
 
 /**
  * Result of one full sweep. The classifications expose what the
@@ -496,11 +515,16 @@ export interface RunPipelineReaperSweepResult {
  * if a future cascade adds intermediate nodes the structure
  * accommodates them without a refactor.
  */
+interface LoadSubgraphChildrenResult {
+  readonly children: ReadonlyArray<Atom>;
+  readonly truncated: boolean;
+}
+
 async function loadSubgraphChildren(
   host: Host,
   pipelineId: AtomId,
-): Promise<ReadonlyArray<Atom>> {
-  const filter: AtomFilter = { type: SUBGRAPH_CHILD_TYPES };
+): Promise<LoadSubgraphChildrenResult> {
+  const filter: AtomFilter = { type: SUBGRAPH_CHILD_TYPES_LIST };
   const out: Atom[] = [];
   let cursor: string | undefined;
   for (let i = 0; i < PIPELINE_REAPER_PAGE_LIMIT; i++) {
@@ -515,10 +539,16 @@ async function loadSubgraphChildren(
       // turns linked via session_atom_id. For the current substrate the
       // turns also carry pipeline_id so this single check covers both.
     }
-    if (!page.nextCursor) break;
+    if (!page.nextCursor) {
+      return { children: out, truncated: false };
+    }
     cursor = page.nextCursor;
   }
-  return out;
+  // Cap fired with cursor still present: the page-iteration limit
+  // saw only the first window of children. Surfaced so the caller
+  // skips the root reap and the next sweep retries with the same
+  // pipeline still classified as reap-eligible.
+  return { children: out, truncated: true };
 }
 
 /**
@@ -632,9 +662,9 @@ export async function runPipelineReaperSweep(
     // child + the root. This preserves the per-atom audit invariant:
     // a partial-success reap still emits one audit row per child that
     // succeeded, and the operator-visible state matches the audit log.
-    let children: ReadonlyArray<Atom>;
+    let childResult: LoadSubgraphChildrenResult;
     try {
-      children = await loadSubgraphChildren(host, c.atomId);
+      childResult = await loadSubgraphChildren(host, c.atomId);
     } catch (err) {
       skipped.push({
         atomId: c.atomId,
@@ -642,6 +672,7 @@ export async function runPipelineReaperSweep(
       });
       continue;
     }
+    const children = childResult.children;
 
     for (const child of children) {
       if (host.scheduler.killswitchCheck()) {
@@ -670,6 +701,24 @@ export async function runPipelineReaperSweep(
     }
     if (truncatedByKillSwitch) break;
 
+    // If the child enumeration hit the page-iteration cap, the tail
+    // of the subgraph is unseen: marking the root reaped now would
+    // strand those tail children unreaped (the next sweep would see
+    // a reaped root + unreaped children with the same pipeline_id and
+    // skip the root, never revisiting the tail). Defer the root reap;
+    // the next sweep will retry the full subgraph walk because the
+    // pipeline's pipeline_state is unchanged. The substrate cost is
+    // one extra page-load per affected pipeline per sweep, paid only
+    // until the operator widens PIPELINE_REAPER_PAGE_LIMIT or splits
+    // the subgraph.
+    if (childResult.truncated) {
+      skipped.push({
+        atomId: c.atomId,
+        error: 'subgraph-truncated:root-deferred',
+      });
+      continue;
+    }
+
     // Reap the root last so the audit log ordering reads "leaves
     // first, then root" -- the operator's mental model of a cascade
     // is bottom-up, and the audit row sequence should match.
@@ -691,10 +740,172 @@ export async function runPipelineReaperSweep(
     }
   }
 
+  // Standalone-agent-session pass. Pipeline-derived agent-sessions
+  // were already cascade-reaped above (they carry
+  // metadata.pipeline_id). This pass picks up agent-session atoms
+  // that do NOT carry a pipeline_id (e.g. PrFix sessions, future
+  // agentic adapters not bundled into a pipeline). They reap on the
+  // independent `agentSessionMs` TTL using the same kill-switch +
+  // best-effort + idempotent shape as the pipeline path.
+  const standalone = await runStandaloneAgentSessionPass(
+    host,
+    nowMs,
+    ttls.agentSessionMs,
+    principalId,
+  );
+  for (const r of standalone.reaped) reaped.push(r);
+  for (const s of standalone.skipped) skipped.push(s);
+  if (standalone.killSwitchTripped) truncatedByKillSwitch = true;
+
   return {
     classifications,
     reaped,
     skipped,
-    truncated: loadTruncated || truncatedByKillSwitch,
+    truncated: loadTruncated || truncatedByKillSwitch || standalone.loadTruncated,
   };
+}
+
+interface StandaloneAgentSessionPassResult {
+  readonly reaped: ReadonlyArray<PipelineReapSummary>;
+  readonly skipped: ReadonlyArray<{ readonly atomId: AtomId; readonly error: string }>;
+  readonly killSwitchTripped: boolean;
+  readonly loadTruncated: boolean;
+}
+
+/**
+ * Walk every agent-session atom NOT linked to a pipeline (no
+ * `metadata.pipeline_id`), classify by `agentSessionMs`, and reap the
+ * stale ones. Agent-turn children of those sessions are reaped too:
+ * each turn carries `metadata.agent_turn.session_atom_id` pointing at
+ * its parent session, and turns whose parent session is in the reap
+ * set get marked alongside the session.
+ *
+ * Mirrors the pipeline pass shape: kill-switch checked before every
+ * write, best-effort per atom (logged + skipped, never thrown), root
+ * (the session) reaped after its leaves (the turns) so the audit row
+ * sequence reads bottom-up.
+ */
+async function runStandaloneAgentSessionPass(
+  host: Host,
+  nowMs: number,
+  agentSessionMs: number,
+  principalId: PrincipalId,
+): Promise<StandaloneAgentSessionPassResult> {
+  if (host.scheduler.killswitchCheck()) {
+    return { reaped: [], skipped: [], killSwitchTripped: true, loadTruncated: false };
+  }
+
+  // Load every agent-session atom + every agent-turn atom.
+  // Standalone sessions are filtered by absence of pipeline_id; turns
+  // are filtered by their session pointer matching a reap-set session.
+  const sessionFilter: AtomFilter = { type: ['agent-session'] };
+  const turnFilter: AtomFilter = { type: ['agent-turn'] };
+  const sessions: Atom[] = [];
+  const turns: Atom[] = [];
+  let loadTruncated = false;
+
+  let cursor: string | undefined;
+  for (let i = 0; i < PIPELINE_REAPER_PAGE_LIMIT; i++) {
+    const page = await host.atoms.query(sessionFilter, PIPELINE_REAPER_PAGE_SIZE, cursor);
+    for (const a of page.atoms) sessions.push(a);
+    if (!page.nextCursor) {
+      cursor = undefined;
+      break;
+    }
+    cursor = page.nextCursor;
+    if (i === PIPELINE_REAPER_PAGE_LIMIT - 1) {
+      loadTruncated = true;
+    }
+  }
+  cursor = undefined;
+  for (let i = 0; i < PIPELINE_REAPER_PAGE_LIMIT; i++) {
+    const page = await host.atoms.query(turnFilter, PIPELINE_REAPER_PAGE_SIZE, cursor);
+    for (const a of page.atoms) turns.push(a);
+    if (!page.nextCursor) {
+      break;
+    }
+    cursor = page.nextCursor;
+    if (i === PIPELINE_REAPER_PAGE_LIMIT - 1) {
+      loadTruncated = true;
+    }
+  }
+
+  // Classify standalone (non-pipeline-derived) sessions by age.
+  const reapSessionIds = new Set<AtomId>();
+  const reapableSessions: Array<{ session: Atom; reason: string }> = [];
+  for (const session of sessions) {
+    const meta = session.metadata as Record<string, unknown>;
+    if (meta['pipeline_id'] !== undefined) continue; // cascade-reaped via pipeline path
+    if (meta['reaped_at'] !== undefined) continue;   // already reaped (idempotent)
+    // Resolve age: prefer agent_session.completed_at when set;
+    // fall back to last_reinforced_at; finally created_at.
+    const sessionMeta = meta['agent_session'] as Record<string, unknown> | undefined;
+    const completedAt =
+      sessionMeta !== undefined && typeof sessionMeta['completed_at'] === 'string'
+        ? (sessionMeta['completed_at'] as string)
+        : undefined;
+    let referenceMs = NaN;
+    if (completedAt) referenceMs = Date.parse(completedAt);
+    if (!Number.isFinite(referenceMs)) referenceMs = Date.parse(session.last_reinforced_at);
+    if (!Number.isFinite(referenceMs)) referenceMs = Date.parse(session.created_at);
+    if (!Number.isFinite(referenceMs)) continue; // unparseable: skip
+    const ageMs = nowMs - referenceMs;
+    if (ageMs < 0) continue; // future-dated
+    if (ageMs >= agentSessionMs) {
+      const ageDays = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+      const reason = `standalone-agent-session-after-${ageDays}d`;
+      reapSessionIds.add(session.id);
+      reapableSessions.push({ session, reason });
+    }
+  }
+
+  const reaped: PipelineReapSummary[] = [];
+  const skipped: { atomId: AtomId; error: string }[] = [];
+  let killSwitchTripped = false;
+
+  // Reap the linked turns first (leaves), then the sessions (roots).
+  for (const turn of turns) {
+    if (host.scheduler.killswitchCheck()) {
+      killSwitchTripped = true;
+      break;
+    }
+    const meta = turn.metadata as Record<string, unknown>;
+    if (meta['reaped_at'] !== undefined) continue;
+    const turnMeta = meta['agent_turn'] as Record<string, unknown> | undefined;
+    const parentId = turnMeta?.['session_atom_id'] as AtomId | undefined;
+    if (!parentId) continue;
+    if (!reapSessionIds.has(parentId)) continue;
+    // Find the reason from the parent session entry.
+    const parentEntry = reapableSessions.find(s => s.session.id === parentId);
+    const reason = parentEntry?.reason ?? 'standalone-agent-session-cascade';
+    try {
+      await markStageAtomReaped(host, turn.id, principalId, reason);
+      reaped.push({ atomId: turn.id, atomType: turn.type, reason });
+    } catch (err) {
+      skipped.push({
+        atomId: turn.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (!killSwitchTripped) {
+    for (const { session, reason } of reapableSessions) {
+      if (host.scheduler.killswitchCheck()) {
+        killSwitchTripped = true;
+        break;
+      }
+      try {
+        await markStageAtomReaped(host, session.id, principalId, reason);
+        reaped.push({ atomId: session.id, atomType: session.type, reason });
+      } catch (err) {
+        skipped.push({
+          atomId: session.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  return { reaped, skipped, killSwitchTripped, loadTruncated };
 }

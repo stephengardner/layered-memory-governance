@@ -546,6 +546,60 @@ describe('markStageAtomReaped', () => {
     ).rejects.toThrow(/pipeline root atom/);
   });
 
+  it('rejects a non-subgraph atom type (e.g. plan, observation)', async () => {
+    const host = createMemoryHost();
+    // Put a plan atom directly (bypassing childAtom which sets type).
+    const planAtom: Atom = {
+      schema_version: 1,
+      id: 'p-plan-misuse' as AtomId,
+      content: 'a plan',
+      type: 'plan',
+      layer: 'L1',
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'cto-actor' },
+        derived_from: [],
+      },
+      confidence: 0.9,
+      created_at: '2026-04-01T00:00:00.000Z' as Time,
+      last_reinforced_at: '2026-04-01T00:00:00.000Z' as Time,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'cto-actor' as PrincipalId,
+      taint: 'clean',
+      metadata: {},
+      plan_state: 'proposed',
+    };
+    await host.atoms.put(planAtom);
+    await expect(
+      markStageAtomReaped(
+        host,
+        planAtom.id,
+        'plan-reaper' as PrincipalId,
+        'whatever',
+      ),
+    ).rejects.toThrow(/not a pipeline subgraph child/);
+
+    const obs = childAtom('obs-misuse', 'observation', 'p-1');
+    await host.atoms.put(obs);
+    await expect(
+      markStageAtomReaped(
+        host,
+        obs.id,
+        'plan-reaper' as PrincipalId,
+        'whatever',
+      ),
+    ).rejects.toThrow(/not a pipeline subgraph child/);
+  });
+
   it('throws when the atom does not exist', async () => {
     const host = createMemoryHost();
     await expect(
@@ -988,6 +1042,184 @@ describe('runPipelineReaperSweep', () => {
         terminalPipelineMs: 0,
       }),
     ).rejects.toThrow(/terminalPipelineMs/);
+  });
+
+  it('truncated subgraph: skips root reap and surfaces in skipped', async () => {
+    const host = createMemoryHost();
+    (host.clock as { now: () => Time }).now = () => NOW_ISO as Time;
+    // Seed the root pipeline so the classifier finds it.
+    await host.atoms.put(
+      pipelineAtom('p-trunc', {
+        pipeline_state: 'completed',
+        completed_at: '2026-04-01T20:00:00.000Z',
+      }),
+    );
+
+    // Replace host.atoms.query for the SECOND call onward (the
+    // first call is loadAllTerminalPipelines for pipelines; the
+    // subsequent calls are loadSubgraphChildren). Stub the
+    // child query to keep returning a non-null cursor so the
+    // page-iteration cap fires.
+    const realQuery = host.atoms.query.bind(host.atoms);
+    let callIndex = 0;
+    (host.atoms as { query: typeof host.atoms.query }).query = async (
+      filter,
+      limit,
+      cursor,
+    ) => {
+      callIndex += 1;
+      // First call: pipeline list. Use the real query.
+      if (callIndex === 1) return realQuery(filter, limit, cursor);
+      // Subsequent calls: child list. Force perpetual non-null cursor.
+      return { atoms: [], nextCursor: 'pretend-more-remain' };
+    };
+
+    const out = await runPipelineReaperSweep(
+      host,
+      'plan-reaper' as PrincipalId,
+      TTLS,
+    );
+
+    // Root NOT reaped; surfaced as skipped with subgraph-truncated.
+    const rootAfter = await host.atoms.get('p-trunc' as AtomId);
+    expect((rootAfter?.metadata as Record<string, unknown>)['reaped_at']).toBeUndefined();
+    const trunc = out.skipped.find(s => s.atomId === 'p-trunc');
+    expect(trunc?.error).toMatch(/subgraph-truncated/);
+  });
+
+  it('standalone agent-session pass: reaps an old session without pipeline_id', async () => {
+    const host = createMemoryHost();
+    (host.clock as { now: () => Time }).now = () => NOW_ISO as Time;
+    // Standalone session: no pipeline_id in metadata. Old enough to reap (>30d).
+    const session: Atom = {
+      schema_version: 1,
+      id: 'standalone-session' as AtomId,
+      content: 'session',
+      type: 'agent-session',
+      layer: 'L0',
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'pr-fix-actor' },
+        derived_from: [],
+      },
+      confidence: 1.0,
+      // 35 days ago: past the 30d agent-session TTL.
+      created_at: '2026-04-04T00:00:00.000Z' as Time,
+      last_reinforced_at: '2026-04-04T00:00:00.000Z' as Time,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'pr-fix-actor' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        agent_session: { completed_at: '2026-04-04T01:00:00.000Z' },
+      },
+    };
+    await host.atoms.put(session);
+
+    // Linked turn for the standalone session.
+    const turn: Atom = {
+      ...session,
+      id: 'standalone-turn-0' as AtomId,
+      content: 'turn 0',
+      type: 'agent-turn',
+      metadata: {
+        agent_turn: { session_atom_id: 'standalone-session', turn_index: 0 },
+      },
+    };
+    await host.atoms.put(turn);
+
+    const out = await runPipelineReaperSweep(
+      host,
+      'plan-reaper' as PrincipalId,
+      TTLS,
+    );
+
+    // Both the session + the turn should be reaped via the standalone pass.
+    expect(out.reaped.map(r => r.atomId).sort()).toEqual([
+      'standalone-session',
+      'standalone-turn-0',
+    ]);
+    const sessionAfter = await host.atoms.get('standalone-session' as AtomId);
+    expect((sessionAfter?.metadata as Record<string, unknown>)['reaped_at']).toBe(NOW_ISO);
+    expect((sessionAfter?.metadata as Record<string, unknown>)['reaped_reason']).toMatch(
+      /standalone-agent-session-after-\d+d/,
+    );
+    const turnAfter = await host.atoms.get('standalone-turn-0' as AtomId);
+    expect((turnAfter?.metadata as Record<string, unknown>)['reaped_at']).toBe(NOW_ISO);
+  });
+
+  it('standalone agent-session pass: skips a session that carries pipeline_id (cascade-handled)', async () => {
+    const host = createMemoryHost();
+    (host.clock as { now: () => Time }).now = () => NOW_ISO as Time;
+    // Session WITH pipeline_id but NO parent pipeline atom. The
+    // cascade pass would handle it normally, but with no parent atom
+    // present, it should remain unreaped (the standalone pass skips it
+    // because pipeline_id is set).
+    await host.atoms.put(
+      childAtom('orphan-pipelined-session', 'agent-session', 'no-such-pipeline', {
+        created_at: '2026-04-04T00:00:00.000Z',
+      }),
+    );
+
+    const out = await runPipelineReaperSweep(
+      host,
+      'plan-reaper' as PrincipalId,
+      TTLS,
+    );
+
+    expect(out.reaped).toHaveLength(0);
+    const after = await host.atoms.get('orphan-pipelined-session' as AtomId);
+    expect((after?.metadata as Record<string, unknown>)['reaped_at']).toBeUndefined();
+  });
+
+  it('standalone agent-session pass: fresh standalone session is not reaped', async () => {
+    const host = createMemoryHost();
+    (host.clock as { now: () => Time }).now = () => NOW_ISO as Time;
+    const session: Atom = {
+      schema_version: 1,
+      id: 'fresh-session' as AtomId,
+      content: 'fresh session',
+      type: 'agent-session',
+      layer: 'L0',
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'pr-fix-actor' },
+        derived_from: [],
+      },
+      confidence: 1.0,
+      // 5 days ago: well under the 30d agent-session TTL.
+      created_at: '2026-05-04T20:00:00.000Z' as Time,
+      last_reinforced_at: '2026-05-04T20:00:00.000Z' as Time,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'pr-fix-actor' as PrincipalId,
+      taint: 'clean',
+      metadata: {},
+    };
+    await host.atoms.put(session);
+
+    const out = await runPipelineReaperSweep(
+      host,
+      'plan-reaper' as PrincipalId,
+      TTLS,
+    );
+    expect(out.reaped).toHaveLength(0);
   });
 });
 
