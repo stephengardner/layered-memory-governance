@@ -72,6 +72,27 @@ describe('isPushCommand', () => {
     expect(isPushCommand(['-C', '/tmp/repo', '-c', 'foo=bar', 'push', 'origin'])).toBe(true);
   });
 
+  it('returns true for inline `--config-env=<name=envvar> push` (single token, alternate form)', () => {
+    expect(isPushCommand(['--config-env=http.extraHeader=MY_ENV', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for two `-c` flags before push (multiple config overrides)', () => {
+    expect(
+      isPushCommand([
+        '-c',
+        'http.proxy=http://example.com',
+        '-c',
+        'core.autocrlf=false',
+        'push',
+        'origin',
+      ]),
+    ).toBe(true);
+  });
+
+  it('returns true for `--namespace <ns> push` (namespace before subcommand)', () => {
+    expect(isPushCommand(['--namespace', 'my-ns', 'push', 'origin'])).toBe(true);
+  });
+
   it('returns false for fetch', () => {
     expect(isPushCommand(['fetch', 'origin'])).toBe(false);
   });
