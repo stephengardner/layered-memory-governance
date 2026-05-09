@@ -29,6 +29,7 @@ import type {
   PipelineAuditFinding,
   PipelineAuditSeverity,
   PipelineDetail,
+  PipelineDispatchSummary,
   PipelineFailureRecord,
   PipelineLiveOpsResult,
   PipelineLiveOpsRow,
@@ -405,6 +406,13 @@ interface PipelineIndex {
   readonly findingsByPipeline: Map<string, PipelineAuditFinding[]>;
   readonly failureByPipeline: Map<string, PipelineFailureRecord>;
   readonly resumesByPipeline: Map<string, PipelineResumeRecord[]>;
+  /*
+   * One dispatch-record atom per pipeline (substrate writes one at the
+   * end of dispatch-stage). Indexed here so the summarize/detail paths
+   * can surface scanned/dispatched/failed counters without re-walking
+   * the atom set or stitching through the lifecycle envelope.
+   */
+  readonly dispatchByPipeline: Map<string, PipelineDispatchSummary>;
   readonly atomById: Map<string, PipelineSourceAtom>;
 }
 
@@ -414,6 +422,7 @@ function buildPipelineIndex(atoms: ReadonlyArray<PipelineSourceAtom>): PipelineI
   const findingsByPipeline = new Map<string, PipelineAuditFinding[]>();
   const failureByPipeline = new Map<string, PipelineFailureRecord>();
   const resumesByPipeline = new Map<string, PipelineResumeRecord[]>();
+  const dispatchByPipeline = new Map<string, PipelineDispatchSummary>();
   const atomById = new Map<string, PipelineSourceAtom>();
 
   for (const atom of atoms) {
@@ -421,6 +430,23 @@ function buildPipelineIndex(atoms: ReadonlyArray<PipelineSourceAtom>): PipelineI
     if (!isCleanLive(atom)) continue;
     if (atom.type === 'pipeline') {
       pipelinesById.set(atom.id, atom);
+      continue;
+    }
+    if (atom.type === 'dispatch-record') {
+      const meta = readMeta(atom);
+      const pipelineId = readString(meta, 'pipeline_id');
+      if (!pipelineId) continue;
+      // Counters live under metadata.stage_output (per the dispatch-stage
+      // atom shape); read defensively so a malformed atom yields zeros
+      // rather than throwing for the whole list response.
+      const stageOutput = (meta['stage_output'] && typeof meta['stage_output'] === 'object')
+        ? (meta['stage_output'] as Record<string, unknown>)
+        : {};
+      dispatchByPipeline.set(pipelineId, {
+        scanned: readNumber(stageOutput, 'scanned'),
+        dispatched: readNumber(stageOutput, 'dispatched'),
+        failed: readNumber(stageOutput, 'failed'),
+      });
       continue;
     }
     if (
@@ -470,6 +496,7 @@ function buildPipelineIndex(atoms: ReadonlyArray<PipelineSourceAtom>): PipelineI
     findingsByPipeline,
     failureByPipeline,
     resumesByPipeline,
+    dispatchByPipeline,
     atomById,
   };
 }
@@ -551,6 +578,7 @@ function summarizePipeline(
     audit_counts: auditCounts,
     has_failed_atom: index.failureByPipeline.has(pipeline.id),
     has_resume_atom: (index.resumesByPipeline.get(pipeline.id) ?? []).length > 0,
+    dispatch_summary: index.dispatchByPipeline.get(pipeline.id) ?? null,
   };
 }
 
@@ -628,6 +656,7 @@ export function listLiveOpsPipelines(
       total_stages: p.total_stages,
       last_event_at: p.last_event_at,
       total_cost_usd: p.total_cost_usd,
+      dispatch_summary: p.dispatch_summary,
     });
   }
   return {
@@ -729,5 +758,6 @@ export function getPipelineDetail(
     current_stage_index: current.index,
     total_stages: stages.length,
     last_event_at: lastEventIso,
+    dispatch_summary: index.dispatchByPipeline.get(pipeline.id) ?? null,
   };
 }
