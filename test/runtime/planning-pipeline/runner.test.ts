@@ -450,6 +450,110 @@ describe('runPipeline', () => {
     if (result.kind === 'failed') expect(result.cause).toMatch(/budget/);
   });
 
+  it('halts the pipeline when a stage exceeds its timeout_ms', async () => {
+    const host = createMemoryHost();
+    // No HIL-pause seeding required: the failure path returns before
+    // the HIL gate runs, so the default 'always' policy never fires.
+    const hangingStage: PlanningStage<unknown, unknown> = {
+      name: 'hang-stage',
+      timeout_ms: 25,
+      async run() {
+        // Sleep well past the deadline. The setTimeout reject fires
+        // first; the runner catches it and routes through failPipeline.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return {
+          value: {},
+          cost_usd: 0,
+          duration_ms: 250,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const result = await runPipeline([hangingStage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-timeout-stage',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.failedStageName).toBe('hang-stage');
+      expect(result.cause).toMatch(/pipeline-stage-timeout/);
+      expect(result.cause).toMatch(/25ms/);
+    }
+  });
+
+  it('respects the canon `pipeline-stage-timeout` policy when the stage adapter omits timeout_ms', async () => {
+    // Operator-tunable knob: an org wants a global per-stage timeout
+    // without forcing every stage adapter to declare one. Seed a
+    // canon directive with subject='pipeline-stage-timeout' for the
+    // stage and verify the runner picks it up via the policy
+    // resolver. Mirrors how cost-cap policy and HIL policy already
+    // ship.
+    const host = createMemoryHost();
+    await host.atoms.put({
+      schema_version: 1,
+      id: 'pol-pipeline-stage-timeout-slow' as AtomId,
+      content: 'pipeline-stage-timeout for slow-stage = 30ms',
+      type: 'directive',
+      layer: 'L3',
+      provenance: {
+        kind: 'human-asserted',
+        source: { tool: 'test' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'apex-agent' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'pipeline-stage-timeout',
+          stage_name: 'slow-stage',
+          timeout_ms: 30,
+        },
+      },
+    });
+    const slowStage: PlanningStage<unknown, unknown> = {
+      name: 'slow-stage',
+      async run() {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return {
+          value: {},
+          cost_usd: 0,
+          duration_ms: 250,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const result = await runPipeline([slowStage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-timeout-policy',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.cause).toMatch(/pipeline-stage-timeout/);
+      expect(result.cause).toMatch(/30ms/);
+    }
+  });
+
   it('forwards StageOutput.extraMetadata onto the persisted stage-output atom metadata', async () => {
     // Substrate fix coverage: a stage that returns extraMetadata on its
     // StageOutput must see those keys appear on the persisted typed

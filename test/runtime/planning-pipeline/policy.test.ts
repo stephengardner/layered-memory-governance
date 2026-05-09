@@ -4,6 +4,7 @@ import {
   readPipelineStageHilPolicy,
   readPipelineDefaultModePolicy,
   readPipelineStageCostCapPolicy,
+  readPipelineStageTimeoutPolicy,
   readPipelineStageImplementationsPolicy,
 } from '../../../src/runtime/planning-pipeline/policy.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
@@ -298,6 +299,53 @@ describe('readPipelineStageCostCapPolicy', () => {
     );
     const result = await readPipelineStageCostCapPolicy(host, 'spec-stage');
     expect(result.cap_usd).toBeNull();
+  });
+});
+
+describe('readPipelineStageTimeoutPolicy', () => {
+  it('returns null when no per-stage atom exists', async () => {
+    const host = createMemoryHost();
+    const result = await readPipelineStageTimeoutPolicy(host, 'spec-stage');
+    expect(result.timeout_ms).toBeNull();
+  });
+
+  it('returns the configured timeout when present', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-timeout-spec', {
+        subject: 'pipeline-stage-timeout',
+        stage_name: 'spec-stage',
+        timeout_ms: 30_000,
+      }),
+    );
+    const result = await readPipelineStageTimeoutPolicy(host, 'spec-stage');
+    expect(result.timeout_ms).toBe(30_000);
+  });
+
+  it('returns null when timeout_ms is non-positive (fail-closed on malformed value)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-timeout-spec', {
+        subject: 'pipeline-stage-timeout',
+        stage_name: 'spec-stage',
+        timeout_ms: 0,
+      }),
+    );
+    const result = await readPipelineStageTimeoutPolicy(host, 'spec-stage');
+    expect(result.timeout_ms).toBeNull();
+  });
+
+  it('does not match a different stage name', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-timeout-spec', {
+        subject: 'pipeline-stage-timeout',
+        stage_name: 'spec-stage',
+        timeout_ms: 60_000,
+      }),
+    );
+    const result = await readPipelineStageTimeoutPolicy(host, 'plan-stage');
+    expect(result.timeout_ms).toBeNull();
   });
 });
 

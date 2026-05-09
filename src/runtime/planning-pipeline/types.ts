@@ -175,6 +175,18 @@ export interface PlanningStage<TInput = unknown, TOutput = unknown> {
   readonly retry?: RetryStrategy;
   /** Per-stage budget cap in USD; orchestrator halts the stage on breach. */
   readonly budget_cap_usd?: number;
+  /**
+   * Per-stage timeout in milliseconds. When set, the runner races
+   * stage.run() against a setTimeout and halts the pipeline on
+   * deadline-miss with cause prefixed `pipeline-stage-timeout:`. A
+   * stage-supplied value wins over the canon `pipeline-stage-timeout`
+   * policy fallback (parallel to budget_cap_usd / cost-cap policy).
+   * Omit (or set to zero / negative) to disable; the policy resolver
+   * also returns null when no canon entry matches the stage name, so
+   * the default posture is "no timeout enforced at this layer" and a
+   * stage that hangs forever stays hung until the kill switch fires.
+   */
+  readonly timeout_ms?: number;
   /** v1: linear ordering only; depends_on reserved for a forward-compat DAG seam. */
   readonly dependsOn?: ReadonlyArray<string>;
 }
