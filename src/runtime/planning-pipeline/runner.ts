@@ -998,9 +998,22 @@ function mkGenericStageOutputAtom(input: {
  * stage's RetryStrategy. On `kind: 'no-retry'` (or undefined), calls the
  * function once and returns its result. On `kind: 'with-jitter'`, retries
  * the function up to `max_attempts` times, sleeping a full-jitter random
- * delay in `[0, base_delay_ms * 2^(attempt-1))` between attempts. The
- * killswitch is polled before each retry sleep so a STOP during backoff
- * halts immediately rather than ticking through every remaining attempt.
+ * delay in `[0, base_delay_ms * 2^(attempt-1))` between attempts.
+ *
+ * Timeout errors (`pipeline-stage-timeout: ...` from raceStageWithTimeout)
+ * are NOT retried -- the prior attempt's stage.run() promise stays in
+ * flight after raceStageWithTimeout rejects (the helper does not cancel
+ * the underlying work; cancellation requires an AbortSignal seam in
+ * stage.run() that the substrate does not yet thread). Retrying on
+ * timeout would overlap a fresh stage.run() with the still-running prior
+ * one, which is unsafe for any stage that mutates state or performs
+ * non-idempotent external work. Treat timeout as terminal here; the
+ * pipeline fails through the existing failPipeline path.
+ *
+ * Backoff sleep is interruptible: the killswitch is polled at ~50ms
+ * granularity during the wait so a STOP during backoff halts as soon as
+ * the next slice fires, instead of waiting out the full delay. STOP also
+ * halts BEFORE the next attempt invocation.
  *
  * `attemptFn` MUST be a fresh-attempt-producer (it is invoked once per
  * attempt). Per-attempt timeouts are the caller's responsibility: pass
@@ -1029,6 +1042,7 @@ async function runStageWithRetry<T>(
     } catch (err) {
       lastError = err;
       if (attempt >= max) break;
+      if (isTimeoutError(err)) break;
       if (killswitchCheck()) {
         throw new Error(
           `pipeline-stage-retry-halted-by-stop: stage '${stageName}' aborted after attempt ${attempt}`,
@@ -1037,11 +1051,34 @@ async function runStageWithRetry<T>(
       const cap = base * 2 ** (attempt - 1);
       const sleepMs = Math.floor(Math.random() * cap);
       if (sleepMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, sleepMs));
+        await sleepWithKillswitch(sleepMs, killswitchCheck);
+        if (killswitchCheck()) {
+          throw new Error(
+            `pipeline-stage-retry-halted-by-stop: stage '${stageName}' aborted after attempt ${attempt}`,
+          );
+        }
       }
     }
   }
   throw lastError;
+}
+
+function isTimeoutError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.startsWith('pipeline-stage-timeout:');
+}
+
+async function sleepWithKillswitch(
+  totalMs: number,
+  killswitchCheck: () => boolean,
+): Promise<void> {
+  const start = Date.now();
+  const slice = 50;
+  while (Date.now() - start < totalMs) {
+    if (killswitchCheck()) return;
+    const remaining = totalMs - (Date.now() - start);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(slice, remaining)));
+  }
 }
 
 async function raceStageWithTimeout<T>(
