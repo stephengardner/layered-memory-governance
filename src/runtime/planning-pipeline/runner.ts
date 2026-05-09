@@ -72,6 +72,9 @@ import { runPipelinePlanAutoApproval } from './auto-approve.js';
  */
 const MAX_STAGES = 64;
 
+const USD_MICROS = 1_000_000;
+const toUsdMicros = (v: number): number => Math.round(v * USD_MICROS);
+
 export type PipelineResult =
   | { readonly kind: 'completed'; readonly pipelineId: AtomId }
   | {
@@ -322,18 +325,12 @@ export async function runPipeline(
   ];
   let totalCostUsd = 0;
 
-  // Per-pipeline total-cost cap. Read once per run rather than per
-  // stage to avoid the O(N stages * N policy atoms) walk; the policy
-  // is global (not stage-scoped) so a single read covers the whole
-  // pipeline. A null cap means "no per-pipeline cap enforced"; the
-  // per-stage cost cap (read inside the loop) remains the per-stage
-  // fence and still applies independently. Resume path also reads
-  // here -- a resumed pipeline that already accumulated cost in
-  // earlier stages is held to the same cap (the runner's totalCostUsd
-  // is recomputed from this run's stages, so a resumed run starts
-  // from zero and still trips the cap if the new walk burns above
-  // it; reconstructing the prior burn from atoms is a forward-compat
-  // refinement, deferred per dev-extreme-rigor-and-research).
+  // Per-pipeline total-cost cap, read once per run because the policy
+  // is global (no stage-name filter). The per-stage cap is read inside
+  // the loop below and applies independently; a null value here means
+  // no per-pipeline cap. Resume restarts totalCostUsd from zero, so a
+  // resumed run only enforces the cap against this run's accumulated
+  // cost.
   const pipelineCostCapUsd = (await readPipelineCostCapPolicy(host)).cap_usd;
 
   for (let i = startIdx; i < stages.length; i++) {
@@ -476,7 +473,7 @@ export async function runPipeline(
     if (
       stageCap !== null
       && stageCap !== undefined
-      && output.cost_usd > stageCap
+      && toUsdMicros(output.cost_usd) > toUsdMicros(stageCap)
     ) {
       await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
       return await failPipeline(
@@ -493,7 +490,7 @@ export async function runPipeline(
 
     if (
       pipelineCostCapUsd !== null &&
-      totalCostUsd > pipelineCostCapUsd
+      toUsdMicros(totalCostUsd) > toUsdMicros(pipelineCostCapUsd)
     ) {
       await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
       return await failPipeline(

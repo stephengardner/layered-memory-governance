@@ -215,16 +215,9 @@ export async function readPipelineStageCostCapPolicy(
  *
  * Distinct from `readPipelineStageCostCapPolicy`: the per-stage reader
  * gates a SINGLE stage's cost; this reader gates the SUM of every
- * stage's cost across one pipeline run. A long-running deep-pipeline
- * run can stay under each individual stage's per-stage cap and still
- * burn a multiple of any single stage's budget; the per-pipeline cap is
- * the run-level fence that catches the cumulative burn.
- *
- * Reader is intentionally global (no scope or stage-name filter) so
- * one canon directive governs every pipeline run. The org-ceiling
- * mechanism is a higher-priority atom replacing this one (existing
- * arbitration); the indie-floor default is "no per-pipeline cap" until
- * a deployment opts in.
+ * stage's cost across one pipeline run. The reader has no scope or
+ * stage-name filter; a higher-priority atom replaces it via existing
+ * arbitration.
  */
 export async function readPipelineCostCapPolicy(
   host: Host,

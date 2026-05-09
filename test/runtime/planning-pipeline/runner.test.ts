@@ -708,6 +708,80 @@ describe('runPipeline', () => {
     }
   });
 
+  it('does not falsely trip the per-pipeline cost cap on IEEE-754 representation drift (0.1 + 0.2 vs 0.3)', async () => {
+    // Regression for CR-flagged precision bug: comparing accumulated
+    // USD floats directly trips when 0.1 + 0.2 evaluates to
+    // 0.30000000000000004 > 0.3. The runner converts to integer micros
+    // before comparing so the canonical floating-point footgun does
+    // NOT cause a false overflow.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
+    await host.atoms.put({
+      schema_version: 1,
+      id: 'pol-pipeline-cost-cap' as AtomId,
+      content: 'pipeline-cost-cap = 0.30',
+      type: 'directive',
+      layer: 'L3',
+      provenance: {
+        kind: 'human-asserted',
+        source: { tool: 'test' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'apex-agent' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'pipeline-cost-cap',
+          cap_usd: 0.3,
+        },
+      },
+    });
+    const stageA: PlanningStage<unknown, unknown> = {
+      name: 'stage-a',
+      async run() {
+        return {
+          value: {},
+          cost_usd: 0.1,
+          duration_ms: 0,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const stageB: PlanningStage<unknown, unknown> = {
+      name: 'stage-b',
+      async run() {
+        return {
+          value: {},
+          cost_usd: 0.2,
+          duration_ms: 0,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const result = await runPipeline([stageA, stageB], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-pipeline-cost-cap-precision',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).not.toBe('failed');
+  });
+
   it('forwards StageOutput.extraMetadata onto the persisted stage-output atom metadata', async () => {
     // Substrate fix coverage: a stage that returns extraMetadata on its
     // StageOutput must see those keys appear on the persisted typed
