@@ -11,6 +11,11 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/state-display
 import { listPlans, type PlanAtom } from '@/services/plans.service';
 import { storage } from '@/services/storage.service';
 import { planStateTone } from '@/features/plan-state/tones';
+import {
+  deriveTrueOutcome,
+  readPlanDispatchSummary,
+  trueOutcomeTone,
+} from '@/features/plan-state/trueOutcome';
 import { StageContextPanel } from '@/features/stage-context/StageContextPanel';
 import { useRouteId, setRoute, routeHref } from '@/state/router.store';
 import { formatClarifyStubTitle } from './clarifyStubTitle';
@@ -280,6 +285,25 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
   const [expanded, setExpanded] = useState(focused);
 
   const state = plan.plan_state ?? 'unknown';
+  /*
+   * TRUE-outcome derivation per dev-state-pill-true-outcome: a plan
+   * with plan_state='succeeded' and dispatch_summary.dispatched===0
+   * (silent-skip / drafter-empty-diff) should NOT render as a green
+   * 'succeeded' pill -- the operator reads green as "shipped" but
+   * dispatch produced no PR. Combine plan_state + dispatch_result to
+   * paint the correct pill (succeeded/noop/failed/...). When the
+   * derivation says 'succeeded' or has no dispatch info to disagree
+   * with, fall back to the existing per-state tone (planStateTone)
+   * so the visual vocabulary is identical for unaffected plans.
+   */
+  const trueOutcome = deriveTrueOutcome({
+    plan_state: plan.plan_state ?? null,
+    dispatch_summary: readPlanDispatchSummary(plan.metadata),
+  });
+  const pillTone = trueOutcome === 'unknown'
+    ? planStateTone(state)
+    : trueOutcomeTone(trueOutcome);
+  const pillLabel = trueOutcome === 'noop' ? 'noop' : state;
   const { title, body } = splitTitleAndBody(plan.content);
   const failure = summarizePlanFailure(plan);
   /*
@@ -326,9 +350,10 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
           className={styles.statePill}
           data-testid="plan-card-state"
           data-plan-state={state}
-          style={{ borderColor: planStateTone(state), color: planStateTone(state) }}
+          data-true-outcome={trueOutcome}
+          style={{ borderColor: pillTone, color: pillTone }}
         >
-          {state}
+          {pillLabel}
         </span>
         <code className={styles.id}>{plan.id}</code>
       </header>
