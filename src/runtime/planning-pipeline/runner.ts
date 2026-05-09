@@ -58,6 +58,7 @@ import {
   serializeStageOutput,
 } from './atom-shapes.js';
 import {
+  readPipelineCostCapPolicy,
   readPipelineStageCostCapPolicy,
   readPipelineStageHilPolicy,
   readPipelineStageTimeoutPolicy,
@@ -70,6 +71,9 @@ import { runPipelinePlanAutoApproval } from './auto-approve.js';
  * forward-compat dependsOn seam cannot infinite-loop here.
  */
 const MAX_STAGES = 64;
+
+const USD_MICROS = 1_000_000;
+const toUsdMicros = (v: number): number => Math.round(v * USD_MICROS);
 
 export type PipelineResult =
   | { readonly kind: 'completed'; readonly pipelineId: AtomId }
@@ -321,6 +325,14 @@ export async function runPipeline(
   ];
   let totalCostUsd = 0;
 
+  // Per-pipeline total-cost cap, read once per run because the policy
+  // is global (no stage-name filter). The per-stage cap is read inside
+  // the loop below and applies independently; a null value here means
+  // no per-pipeline cap. Resume restarts totalCostUsd from zero, so a
+  // resumed run only enforces the cap against this run's accumulated
+  // cost.
+  const pipelineCostCapUsd = (await readPipelineCostCapPolicy(host)).cap_usd;
+
   for (let i = startIdx; i < stages.length; i++) {
     const stage = stages[i]!;
 
@@ -461,7 +473,7 @@ export async function runPipeline(
     if (
       stageCap !== null
       && stageCap !== undefined
-      && output.cost_usd > stageCap
+      && toUsdMicros(output.cost_usd) > toUsdMicros(stageCap)
     ) {
       await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
       return await failPipeline(
@@ -475,6 +487,22 @@ export async function runPipeline(
       );
     }
     totalCostUsd += output.cost_usd;
+
+    if (
+      pipelineCostCapUsd !== null &&
+      toUsdMicros(totalCostUsd) > toUsdMicros(pipelineCostCapUsd)
+    ) {
+      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+      return await failPipeline(
+        host,
+        pipelineId,
+        options,
+        now,
+        stage.name,
+        `pipeline-cost-overflow: total ${totalCostUsd} > cap ${pipelineCostCapUsd}`,
+        i,
+      );
+    }
 
     // Persist the stage's StageOutput.value as a typed queryable atom
     // BEFORE audit runs. The atom serves two consumers regardless of
