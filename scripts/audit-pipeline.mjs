@@ -104,12 +104,33 @@ async function main(argv) {
   const here = dirname(fileURLToPath(import.meta.url));
   const adapterUrl = pathToFileURL(resolve(here, '..', 'dist', 'adapters', 'file', 'index.js')).href;
   const mod = await import(adapterUrl);
-  const adapter =
+  // Resolve the adapter factory across export shapes; null if none of the
+  // known shapes match. We intentionally distinguish factory-resolution
+  // failure from contract-validation failure so the operator sees the
+  // actual root cause rather than a generic "adapter is undefined".
+  const adapterFactory =
     typeof mod.createFileAdapter === 'function'
-      ? mod.createFileAdapter()
+      ? mod.createFileAdapter
       : typeof mod.default === 'function'
-        ? mod.default()
-        : new mod.FileAdapter();
+        ? mod.default
+        : typeof mod.FileAdapter === 'function'
+          ? () => new mod.FileAdapter()
+          : null;
+  if (!adapterFactory) {
+    process.stderr.write(
+      'Unable to construct file adapter from dist/adapters/file/index.js: '
+      + 'expected createFileAdapter, default, or FileAdapter export.\n',
+    );
+    return 2;
+  }
+  const adapter = adapterFactory();
+  if (!adapter || typeof adapter.query !== 'function') {
+    process.stderr.write(
+      'File adapter is missing required query(...) API; '
+      + 'rebuild dist/ with `npm run build` to refresh adapter exports.\n',
+    );
+    return 2;
+  }
   const result = await auditPipeline({ adapter, pipelineId: args.pipelineId });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
