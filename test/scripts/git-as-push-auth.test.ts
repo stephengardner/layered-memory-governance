@@ -44,13 +44,53 @@ describe('isPushCommand', () => {
     expect(isPushCommand(['push', '-u', 'origin', 'feat/x'])).toBe(true);
   });
 
-  it('returns false for `-C <dir> push` (callers pass the subcommand as the first positional)', () => {
-    // Documented caveat, not aspirational support: `-C` takes a
-    // value, so the implementation sees `/tmp/repo` as the next
-    // positional (not `push`) and short-circuits. git-as.mjs callers
-    // always lead with the subcommand, so this edge is exercised via
-    // the contract rather than via `-C`-pre-subcommand forms.
-    expect(isPushCommand(['-C', '/tmp/repo', 'push', 'origin'])).toBe(false);
+  it('returns true for `-C <dir> push` (skips git-level value-taking flag)', () => {
+    expect(isPushCommand(['-C', '/tmp/repo', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for `-c <name=value> push` (config override before subcommand)', () => {
+    expect(isPushCommand(['-c', 'http.proxy=http://example.com', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for `--config-env <name=envvar> push` (env-derived config override)', () => {
+    expect(isPushCommand(['--config-env', 'http.extraHeader=MY_ENV', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for `--git-dir <path> push`', () => {
+    expect(isPushCommand(['--git-dir', '/tmp/repo/.git', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for `--work-tree <path> push`', () => {
+    expect(isPushCommand(['--work-tree', '/tmp/repo', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for inline `--git-dir=<path> push` (single token)', () => {
+    expect(isPushCommand(['--git-dir=/tmp/repo/.git', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for combined `-C <dir> -c <kv> push`', () => {
+    expect(isPushCommand(['-C', '/tmp/repo', '-c', 'foo=bar', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for inline `--config-env=<name=envvar> push` (single token, alternate form)', () => {
+    expect(isPushCommand(['--config-env=http.extraHeader=MY_ENV', 'push', 'origin'])).toBe(true);
+  });
+
+  it('returns true for two `-c` flags before push (multiple config overrides)', () => {
+    expect(
+      isPushCommand([
+        '-c',
+        'http.proxy=http://example.com',
+        '-c',
+        'core.autocrlf=false',
+        'push',
+        'origin',
+      ]),
+    ).toBe(true);
+  });
+
+  it('returns true for `--namespace <ns> push` (namespace before subcommand)', () => {
+    expect(isPushCommand(['--namespace', 'my-ns', 'push', 'origin'])).toBe(true);
   });
 
   it('returns false for fetch', () => {
