@@ -1037,6 +1037,78 @@ describe('runPipeline', () => {
     });
   });
 
+  it('treats stage.budget_cap_usd === 0 as an explicit cap (not "uncapped"), matching runtime resolution', async () => {
+    // CR-flagged Major: runtime uses `stage.budget_cap_usd ?? policyCap`
+    // so an explicit 0 is a real cap. The projection MUST match that
+    // semantics or it will mis-classify a 0-cap stage as uncapped + emit
+    // null projected_total_usd when the runtime would actually enforce 0.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['zero-cap', 'one-dollar']);
+    const zeroCap: PlanningStage<unknown, unknown> = {
+      name: 'zero-cap',
+      budget_cap_usd: 0,
+      async run() {
+        return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec-output' };
+      },
+    };
+    const oneDollar: PlanningStage<unknown, unknown> = {
+      name: 'one-dollar',
+      budget_cap_usd: 1,
+      async run() {
+        return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec-output' };
+      },
+    };
+    await runPipeline([zeroCap, oneDollar], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-projection-zero-cap',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    const persisted = await host.atoms.get('pipeline-corr-projection-zero-cap' as AtomId);
+    const projection = (persisted?.metadata as Record<string, unknown> | undefined)?.cost_projection;
+    expect(projection).toEqual({
+      projected_total_usd: 1,
+      capped_stage_count: 2,
+      uncapped_stage_names: [],
+    });
+  });
+
+  it('uses integer micros to sum projection caps so 0.1 + 0.2 yields exactly 0.3 (no IEEE-754 drift)', async () => {
+    // CR-flagged Major: direct float summation would leak IEEE-754
+    // representation drift into projected_total_usd. Using integer
+    // micros (matching the runtime cap-check at runner.ts:479+496)
+    // keeps the projection exact for canonical values.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
+    const stageA: PlanningStage<unknown, unknown> = {
+      name: 'stage-a',
+      budget_cap_usd: 0.1,
+      async run() {
+        return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec-output' };
+      },
+    };
+    const stageB: PlanningStage<unknown, unknown> = {
+      name: 'stage-b',
+      budget_cap_usd: 0.2,
+      async run() {
+        return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec-output' };
+      },
+    };
+    await runPipeline([stageA, stageB], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-projection-precision',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    const persisted = await host.atoms.get('pipeline-corr-projection-precision' as AtomId);
+    const projection = (persisted?.metadata as Record<string, unknown> | undefined)?.cost_projection;
+    expect((projection as { projected_total_usd: number }).projected_total_usd).toBe(0.3);
+  });
+
   it('does not falsely trip the per-pipeline cost cap on IEEE-754 representation drift (0.1 + 0.2 vs 0.3)', async () => {
     // Regression for CR-flagged precision bug: comparing accumulated
     // USD floats directly trips when 0.1 + 0.2 evaluates to

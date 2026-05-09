@@ -1109,29 +1109,29 @@ async function projectPipelineCost(
   readonly capped_stage_count: number;
   readonly uncapped_stage_names: ReadonlyArray<string>;
 }> {
-  let totalUsd = 0;
+  let totalMicros = 0;
   let cappedCount = 0;
   const uncapped: string[] = [];
   for (const stage of stages) {
     const explicit =
-      typeof stage.budget_cap_usd === 'number' && stage.budget_cap_usd > 0
+      typeof stage.budget_cap_usd === 'number' && Number.isFinite(stage.budget_cap_usd)
         ? stage.budget_cap_usd
-        : null;
-    if (explicit !== null) {
-      totalUsd += explicit;
+        : undefined;
+    if (explicit !== undefined) {
+      totalMicros += toUsdMicros(explicit);
       cappedCount++;
       continue;
     }
     const policyCap = (await readPipelineStageCostCapPolicy(host, stage.name)).cap_usd;
     if (policyCap !== null) {
-      totalUsd += policyCap;
+      totalMicros += toUsdMicros(policyCap);
       cappedCount++;
     } else {
       uncapped.push(stage.name);
     }
   }
   return {
-    projected_total_usd: uncapped.length === 0 ? totalUsd : null,
+    projected_total_usd: uncapped.length === 0 ? totalMicros / USD_MICROS : null,
     capped_stage_count: cappedCount,
     uncapped_stage_names: uncapped,
   };
