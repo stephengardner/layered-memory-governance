@@ -179,5 +179,35 @@ export function runAtomsSpec(label: string, factory: TargetFactory): void {
     it('contentHash differs for semantically different text', () => {
       expect(host.atoms.contentHash('use postgres')).not.toBe(host.atoms.contentHash('use mysql'));
     });
+
+    /**
+     * Round-trip the `metadata.reaped_at` + `metadata.reaped_reason` pair
+     * documented on `AtomPatch.metadata` in `src/substrate/types.ts`. Future
+     * GC code (per the reaper plan at
+     * `docs/superpowers/plans/2026-05-09-reaper-pipeline-atom-gc.md`) will
+     * write these keys via `host.atoms.update`; this conformance test pins
+     * the round-trip so any future adapter (FileAtomStore, MemoryAtomStore,
+     * a hypothetical SQLite or Postgres backend) preserves the convention.
+     *
+     * Pinning at the substrate layer means: a Console projection that hides
+     * reaped atoms by default, or an arbitration consumer that floors
+     * confidence on reaped atoms, can rely on this metadata being readable
+     * after a put + update cycle on every adapter without per-adapter tests.
+     */
+    it('metadata.reaped_at + metadata.reaped_reason survive put + update round-trip', async () => {
+      const atom = sampleAtom({ id: 'reaped-roundtrip' as AtomId, content: 'pipeline root' });
+      await host.atoms.put(atom);
+      const reapedAt = '2026-05-09T00:00:00.000Z';
+      const reapedReason = 'terminal-pipeline-ttl';
+      const updated = await host.atoms.update(atom.id, {
+        metadata: { reaped_at: reapedAt, reaped_reason: reapedReason },
+      });
+      expect(updated.metadata['reaped_at']).toBe(reapedAt);
+      expect(updated.metadata['reaped_reason']).toBe(reapedReason);
+      const reread = await host.atoms.get(atom.id);
+      expect(reread).not.toBeNull();
+      expect(reread?.metadata['reaped_at']).toBe(reapedAt);
+      expect(reread?.metadata['reaped_reason']).toBe(reapedReason);
+    });
   });
 }
