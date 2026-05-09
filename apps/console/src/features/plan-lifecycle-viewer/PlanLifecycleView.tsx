@@ -20,6 +20,11 @@ import {
 import { listPlans, type PlanAtom } from '@/services/plans.service';
 import { planStateTone } from '@/features/plan-state/tones';
 import {
+  deriveTrueOutcome,
+  readPlanDispatchSummary,
+  trueOutcomeTone,
+} from '@/features/plan-state/trueOutcome';
+import {
   getPlanLifecycle,
   type PlanLifecycle,
   type PlanLifecycleFailure,
@@ -153,6 +158,16 @@ function PlanLifecycleList() {
 function PlanRow({ plan, index }: { plan: PlanAtom; index: number }) {
   const state = plan.plan_state ?? 'unknown';
   const title = extractTitle(plan.content);
+  // TRUE-outcome derivation: a 'succeeded' plan with no PR rendered
+  // (silent-skip / empty-diff) paints the noop tone instead of green.
+  const trueOutcome = deriveTrueOutcome({
+    plan_state: plan.plan_state ?? null,
+    dispatch_summary: readPlanDispatchSummary(plan.metadata),
+  });
+  const pillTone = trueOutcome === 'unknown'
+    ? planStateTone(state)
+    : trueOutcomeTone(trueOutcome);
+  const pillLabel = trueOutcome === 'noop' ? 'noop' : state;
   return (
     <motion.li
       className={styles.planRow}
@@ -177,12 +192,13 @@ function PlanRow({ plan, index }: { plan: PlanAtom; index: number }) {
           className={styles.statePill}
           data-testid="plan-lifecycle-row-state"
           data-plan-state={state}
+          data-true-outcome={trueOutcome}
           style={{
-            borderColor: planStateTone(state),
-            color: planStateTone(state),
+            borderColor: pillTone,
+            color: pillTone,
           }}
         >
-          {state}
+          {pillLabel}
         </span>
         <span className={styles.planRowTitle}>{title || plan.id}</span>
         <code className={styles.planRowId}>{plan.id}</code>
@@ -243,6 +259,28 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
   if (!plan) return null;
   const title = extractTitle(plan.content);
   const state = plan.plan_state ?? 'unknown';
+  /*
+   * Detail-view pill follows the same TRUE-outcome rule as the row
+   * view: a plan that lands as silent-skip reads the same on both
+   * surfaces. The PlanLifecycle projection does not carry the plan's
+   * metadata bag (it slims to a focused subset), but it DOES carry
+   * the dispatch projection. A dispatch projection with a populated
+   * `pr_number` means the chain shipped a PR; absent dispatch on a
+   * succeeded plan is exactly the noop signal.
+   */
+  const dispatchSummary = dispatch && typeof dispatch.pr_number === 'number'
+    ? { dispatched: 1, failed: 0 }
+    : failure
+      ? { dispatched: 0, failed: 1 }
+      : null;
+  const trueOutcome = deriveTrueOutcome({
+    plan_state: plan.plan_state ?? null,
+    dispatch_summary: dispatchSummary,
+  });
+  const pillTone = trueOutcome === 'unknown'
+    ? planStateTone(state)
+    : trueOutcomeTone(trueOutcome);
+  const pillLabel = trueOutcome === 'noop' ? 'noop' : state;
 
   return (
     <section className={styles.view}>
@@ -256,13 +294,14 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
         <span
           className={styles.statePill}
           style={{
-            borderColor: planStateTone(state),
-            color: planStateTone(state),
+            borderColor: pillTone,
+            color: pillTone,
           }}
           data-testid="plan-lifecycle-state"
           data-plan-state={state}
+          data-true-outcome={trueOutcome}
         >
-          {state}
+          {pillLabel}
         </span>
         <h2 className={styles.detailTitle}>{title || plan.id}</h2>
         <div className={styles.detailMeta}>

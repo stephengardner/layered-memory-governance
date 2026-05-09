@@ -12,6 +12,10 @@ import { setRoute, useRouteId, routeHref } from '@/state/router.store';
 import { PipelineDetailView } from './PipelineDetailView';
 import { pipelineStateTone } from './tones';
 import {
+  deriveTrueOutcome,
+  trueOutcomeTone,
+} from '@/features/plan-state/trueOutcome';
+import {
   bucketForPipelineState,
   matchesBucket,
   normalizeBucket,
@@ -211,7 +215,22 @@ function PipelineFilterChips({
 }
 
 function PipelineCard({ pipeline, index }: { pipeline: PipelineSummary; index: number }) {
-  const tone = pipelineStateTone(pipeline.pipeline_state);
+  /*
+   * TRUE-outcome derivation per dev-state-pill-true-outcome: a
+   * pipeline_state of 'completed' with `dispatch_summary.dispatched===0`
+   * (or no dispatch summary on a completed pipeline) reads as a noop,
+   * not as a green ship. Falls back to the existing pipelineStateTone
+   * for unrecognized states so a substrate-vocabulary addition keeps
+   * rendering the pill until the helper is updated.
+   */
+  const trueOutcome = deriveTrueOutcome({
+    pipeline_state: pipeline.pipeline_state,
+    dispatch_summary: pipeline.dispatch_summary,
+  });
+  const tone = trueOutcome === 'unknown'
+    ? pipelineStateTone(pipeline.pipeline_state)
+    : trueOutcomeTone(trueOutcome);
+  const pillLabel = trueOutcome === 'noop' ? 'noop' : pipeline.pipeline_state;
   const progress = pipeline.total_stages > 0
     ? (pipeline.current_stage_index + 1) / pipeline.total_stages
     : 0;
@@ -242,9 +261,10 @@ function PipelineCard({ pipeline, index }: { pipeline: PipelineSummary; index: n
           className={styles.statePill}
           data-testid="pipeline-card-state"
           data-pipeline-state={pipeline.pipeline_state}
+          data-true-outcome={trueOutcome}
           style={{ borderColor: tone, color: tone }}
         >
-          {pipeline.pipeline_state}
+          {pillLabel}
         </span>
         {pipeline.mode && <span className={styles.modeChip}>{pipeline.mode}</span>}
         <code className={styles.cardId}>{pipeline.pipeline_id}</code>
