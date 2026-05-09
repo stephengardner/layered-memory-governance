@@ -232,7 +232,11 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     expect(body).toContain('"plan-happy"');
     expect(body).toContain('"deadbeefcafe0011223344556677889900aabbcc"');
     const title = (prArgs['fields'] as Record<string, unknown>)['title'] as string;
-    expect(title).toBe('code-author: Bump README title');
+    // Conventional Commits prefix per dev-pr-titles-conventional-commits;
+    // a plan title without an existing conventional-type prefix is
+    // wrapped with feat(autonomous): so reviewers (CR + auditor) accept
+    // automation-opened PRs without a manual rename.
+    expect(title).toBe('feat(autonomous): Bump README title');
   });
 
   it('drafter LLM failure -> stage drafter/llm-call-failed', async () => {
@@ -825,7 +829,10 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     const msgFlagIdx = commitCall!.args.indexOf('-m');
     expect(msgFlagIdx).toBeGreaterThanOrEqual(0);
     const msg = commitCall!.args[msgFlagIdx + 1];
-    expect(msg).toContain('code-author: Release prep');
+    // Commit message inherits the same Conventional Commits prefix
+    // as the PR title (see dev-pr-titles-conventional-commits + the
+    // shared buildConventionalCommitsPrTitle helper).
+    expect(msg).toContain('feat(autonomous): Release prep');
     expect(msg).toContain('The specific change: bumped version.');
   });
 
