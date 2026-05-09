@@ -96,9 +96,13 @@ function emit(verdict) {
 async function fetchOriginQuiet() {
   try {
     await execa('git', ['fetch', '--quiet', 'origin'], { cwd: REPO_ROOT });
-  } catch {
-    // Non-fatal: subsequent ls-remote will surface a network error
-    // with a clearer message than fetch's first-stderr line.
+  } catch (err) {
+    // Fail fast: a fetch failure means origin/main is stale, which
+    // makes the commits-ahead computation unreliable and could
+    // misclassify a follow-on empty ls-remote as missing-branch.
+    // Surface the underlying error and exit 5 so the parent sees
+    // a tooling failure, not a semantic verdict.
+    failTooling('git fetch origin', err);
   }
 }
 
@@ -146,13 +150,23 @@ async function getCommitsAheadOfMain(remoteSha) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/**
+ * Bot identity used for the read-only `gh pr list` lookup. Defaults to
+ * `lag-ceo` (the operator-proxy bot in this deployment) but is
+ * overridable via `VERIFY_GH_ACTOR` so a different deployment running
+ * this script can route the read through whatever bot identity it has
+ * provisioned. Reads stay routed through `gh-as.mjs` either way; the
+ * env var only swaps the actor argument it passes to the gh CLI.
+ */
+const GH_ACTOR = process.env['VERIFY_GH_ACTOR'] ?? 'lag-ceo';
+
 async function getPrsForBranch(branch) {
   const ghAs = resolve(REPO_ROOT, 'scripts/gh-as.mjs');
   let result;
   try {
     result = await execa(
       'node',
-      [ghAs, 'lag-ceo', 'pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,state,title,headRefName'],
+      [ghAs, GH_ACTOR, 'pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,state,title,headRefName'],
       { cwd: REPO_ROOT },
     );
   } catch (err) {
