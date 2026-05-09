@@ -3,8 +3,16 @@
  * cr-trigger: post `@coderabbitai review` as the LAG_OPS_PAT machine user.
  *
  * Usage:
- *   set -a && . .env && set +a
  *   node scripts/cr-trigger.mjs <pr-number> [--owner <o>] [--repo <r>]
+ *
+ * The script auto-loads `.env` from the repo root via Node's built-in
+ * `process.loadEnvFile` so a fresh shell (cron tick, autonomous-loop
+ * pass, one-off operator invocation) does not need a manual
+ * `set -a && . .env && set +a` step. Existing process env vars take
+ * precedence over the .env file (Node's loadEnvFile semantics: it
+ * reads but does not overwrite). Missing or unreadable .env is
+ * fail-soft: the LAG_OPS_PAT-presence check below is the
+ * authoritative gate and surfaces the missing-credential error.
  *
  * Why: canon `dev-cr-triggers-via-machine-user` requires CR triggers
  * to be authored by the machine user (LAG_OPS_PAT). CodeRabbit's
@@ -13,9 +21,22 @@
  *
  * Exit codes:
  *   0  trigger posted (returns the comment URL on stdout)
- *   1  bad usage
+ *   1  bad usage / LAG_OPS_PAT unset
  *   2  HTTP / network failure
  */
+
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+if (!process.env.LAG_OPS_PAT) {
+  try {
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+    process.loadEnvFile(resolve(repoRoot, '.env'));
+  } catch {
+    // No .env file or unreadable; the LAG_OPS_PAT check below is
+    // authoritative and emits a clear missing-credential error.
+  }
+}
 
 const args = process.argv.slice(2);
 if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
@@ -38,7 +59,7 @@ for (let i = 1; i < args.length; i++) {
 
 const token = process.env.LAG_OPS_PAT?.trim();
 if (!token) {
-  console.error('cr-trigger: LAG_OPS_PAT not set. Run: set -a && . .env && set +a');
+  console.error('cr-trigger: LAG_OPS_PAT not set. Add to .env at repo root or export in env.');
   process.exit(1);
 }
 
