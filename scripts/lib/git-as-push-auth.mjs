@@ -59,6 +59,7 @@ export function findRemoteArg(gitArgs) {
 const GIT_LEVEL_VALUE_OPTIONS = new Set([
   '-C',
   '-c',
+  '--config-env',
   '--git-dir',
   '--work-tree',
   '--namespace',

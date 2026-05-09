@@ -52,6 +52,10 @@ describe('isPushCommand', () => {
     expect(isPushCommand(['-c', 'http.proxy=http://example.com', 'push', 'origin'])).toBe(true);
   });
 
+  it('returns true for `--config-env <name=envvar> push` (env-derived config override)', () => {
+    expect(isPushCommand(['--config-env', 'http.extraHeader=MY_ENV', 'push', 'origin'])).toBe(true);
+  });
+
   it('returns true for `--git-dir <path> push`', () => {
     expect(isPushCommand(['--git-dir', '/tmp/repo/.git', 'push', 'origin'])).toBe(true);
   });
