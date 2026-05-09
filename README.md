@@ -273,7 +273,7 @@ node -e "import('./dist/actors/index.js').then(m => console.log(Object.keys(m).s
 
 Operator commands ship as npm bins:
 
-- `lag-run-loop` - autonomous tick daemon. Walks decay, TTL expiration, L2 promotion, L3 promotion (with human gate), canon file applier.
+- `lag-run-loop` - autonomous tick daemon. Walks decay, TTL expiration, L2 promotion, L3 promotion (with human gate), canon file applier. Pass `--reap-stale-plans` to abandon plans stuck in `proposed` past TTL, and `--reconcile-pr-orphans` to detect open PRs whose dispatching sub-agent terminated mid-CR-cycle and dispatch a fresh driver via `scripts/run-pr-fix.mjs` (canon-tunable threshold + cadence; see [`docs/getting-started.md`](docs/getting-started.md#operator-commands)).
 - `lag-respond` - interactive human-approval prompt. Displays pending notifications; accepts approve/reject/ignore/skip/quit via stdin.
 - `lag-compromise` - operator incident response. Marks a principal compromised, propagates taint across direct and derived atoms, prints the affected atom ids and an audit summary.
 - `lag-actors` - per-role GitHub App identity provisioning. `sync` walks `roles.json` and creates one App per un-provisioned actor (browser-approval flow, one click per role). `list` enumerates provisioned actors and their `<slug>[bot]` identities. `demo-pr` and `demo-adapter` exercise the full auth chain end-to-end. See "Actor identities" below.
