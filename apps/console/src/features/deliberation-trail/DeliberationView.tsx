@@ -17,6 +17,10 @@ import {
 } from '@/services/deliberation.service';
 import { toErrorMessage } from '@/services/errors';
 import { planStateTone } from '@/features/plan-state/tones';
+import {
+  deriveTrueOutcome,
+  trueOutcomeTone,
+} from '@/features/plan-state/trueOutcome';
 import { StageContextPanel } from '@/features/stage-context/StageContextPanel';
 import {
   routeForAtomId,
@@ -115,7 +119,12 @@ function DeliberationList() {
 
 function DeliberationCard({ item, index }: { item: DeliberationSummary; index: number }) {
   const state = item.plan_state ?? null;
-  const tone = planStateTone(state);
+  const trueOutcome = deriveTrueOutcome({
+    plan_state: state,
+    dispatch_summary: item.dispatch_summary,
+  });
+  const tone = trueOutcome === 'unknown' ? planStateTone(state) : trueOutcomeTone(trueOutcome);
+  const pillLabel = trueOutcome === 'noop' ? 'noop' : state;
   return (
     <motion.li
       className={styles.card}
@@ -143,12 +152,13 @@ function DeliberationCard({ item, index }: { item: DeliberationSummary; index: n
           {state && (
             <span
               className={styles.statePill}
+              data-true-outcome={trueOutcome}
               style={{
                 borderColor: tone,
                 color: tone,
               }}
             >
-              {state}
+              {pillLabel}
             </span>
           )}
           <time className={styles.cardTime} dateTime={item.created_at}>
@@ -231,7 +241,14 @@ function DeliberationDetailView({ planId }: { planId: string }) {
 
 function DeliberationTrail({ data }: { data: DeliberationDetail }) {
   const { plan, alternatives, principles_applied, citations, what_breaks_if_revisit } = data;
-  const stateTone = planStateTone(plan.plan_state);
+  const trueOutcome = deriveTrueOutcome({
+    plan_state: plan.plan_state,
+    dispatch_summary: plan.dispatch_summary,
+  });
+  const stateTone = trueOutcome === 'unknown'
+    ? planStateTone(plan.plan_state)
+    : trueOutcomeTone(trueOutcome);
+  const pillLabel = trueOutcome === 'noop' ? 'noop' : plan.plan_state;
 
   return (
     <section className={styles.view}>
@@ -247,8 +264,9 @@ function DeliberationTrail({ data }: { data: DeliberationDetail }) {
             className={styles.statePill}
             style={{ borderColor: stateTone, color: stateTone }}
             data-testid="deliberation-detail-state"
+            data-true-outcome={trueOutcome}
           >
-            {plan.plan_state}
+            {pillLabel}
           </span>
         )}
         <h2 className={styles.detailTitle}>{plan.title}</h2>

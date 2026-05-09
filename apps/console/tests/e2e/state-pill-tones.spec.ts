@@ -150,8 +150,15 @@ test.describe('plan_state pill tones', () => {
       const tokenName = tokenNameFor(state);
       const expectedColor = await resolveToken(page, tokenName);
 
-      const pillSelector = `[data-testid="plan-card-state"][data-plan-state="${state}"]`;
+      // succeeded plans can now render as noop when their dispatch did
+      // no work; filter to the genuine successes so we only assert green
+      // on pills that actually represent shipped work.
+      const baseSelector = `[data-testid="plan-card-state"][data-plan-state="${state}"]`;
+      const pillSelector = state === 'succeeded'
+        ? `${baseSelector}[data-true-outcome="succeeded"]`
+        : baseSelector;
       const pillCount = await page.locator(pillSelector).count();
+      if (state === 'succeeded' && pillCount === 0) continue;
       expect(pillCount, `plans view should render at least one pill for state '${state}'`)
         .toBeGreaterThan(0);
 
@@ -198,7 +205,10 @@ test.describe('plan_state pill tones', () => {
       const tokenName = tokenNameFor(state);
       const expectedColor = await resolveToken(page, tokenName);
 
-      const pillSelector = `[data-testid="plan-lifecycle-row-state"][data-plan-state="${state}"]`;
+      const baseSelector = `[data-testid="plan-lifecycle-row-state"][data-plan-state="${state}"]`;
+      const pillSelector = state === 'succeeded'
+        ? `${baseSelector}[data-true-outcome="succeeded"]`
+        : baseSelector;
       const pillCount = await page.locator(pillSelector).count();
       if (pillCount === 0) {
         // The state exists in the store but no row may have rendered
@@ -232,6 +242,13 @@ test.describe('plan_state pill tones', () => {
      *
      * Skip if neither state is present in the store; the test asserts
      * a property that requires an example to compare against.
+     *
+     * Note: a follow-up regression (2026-05-07 operator-flagged) splits
+     * the green-pill rule further. A plan with plan_state='succeeded'
+     * but `dispatch_summary.dispatched===0` (silent-skip / empty-diff)
+     * paints the noop tone (warning) instead of success. The assertion
+     * below filters to pills marked `data-true-outcome="succeeded"` so
+     * a noop'd plan in the store doesn't false-fail the green check.
      */
     const response = await request.post('/api/plans.list');
     const body = await response.json();
@@ -252,12 +269,18 @@ test.describe('plan_state pill tones', () => {
     expect(successColor, 'success token should resolve').not.toBe(dangerColor);
 
     if (hasSucceeded) {
-      const pill = page
-        .locator('[data-testid="plan-card-state"][data-plan-state="succeeded"]')
-        .first();
-      await expect(pill).toBeVisible();
-      const c = await pill.evaluate((el) => window.getComputedStyle(el).color);
-      expect(c, 'succeeded pill must paint --status-success').toBe(successColor);
+      // Filter to genuinely-succeeded pills (TRUE-outcome=succeeded);
+      // skip noop'd succeeded plans because those legitimately render
+      // amber per dev-state-pill-true-outcome.
+      const trueSuccessSelector
+        = '[data-testid="plan-card-state"][data-plan-state="succeeded"][data-true-outcome="succeeded"]';
+      const trueSuccessCount = await page.locator(trueSuccessSelector).count();
+      if (trueSuccessCount > 0) {
+        const pill = page.locator(trueSuccessSelector).first();
+        await expect(pill).toBeVisible();
+        const c = await pill.evaluate((el) => window.getComputedStyle(el).color);
+        expect(c, 'true-succeeded pill must paint --status-success').toBe(successColor);
+      }
     }
     if (hasFailed) {
       const pill = page
@@ -267,5 +290,54 @@ test.describe('plan_state pill tones', () => {
       const c = await pill.evaluate((el) => window.getComputedStyle(el).color);
       expect(c, 'failed pill must paint --status-danger').toBe(dangerColor);
     }
+  });
+
+  test('plan with plan_state=succeeded but dispatched=0 renders the noop tone, not green', async ({
+    page,
+    request,
+  }) => {
+    /*
+     * 2026-05-07 operator quote: "a plan should also not show a
+     * succeeded green pill if it failed to dispatch."
+     *
+     * A plan that landed at plan_state='succeeded' but whose dispatch
+     * produced ZERO PRs (silent-skip, drafter-empty-diff) is the bug
+     * this assertion guards against. The pill must paint amber
+     * (warning), not green (success). The card is marked with
+     * `data-true-outcome="noop"` so the test can find it without
+     * fishing through dispatch_result text.
+     */
+    const response = await request.post('/api/plans.list');
+    const body = await response.json();
+    const plans: ReadonlyArray<PlanShape> = body?.data ?? body ?? [];
+    test.skip(
+      plans.length === 0,
+      'plans.list returned no atoms; cannot exercise noop-pill behavior',
+    );
+
+    await showAllPlanStates(page);
+    await page.reload();
+    await expect(page.getByTestId('plan-card').first()).toBeVisible({ timeout: 10_000 });
+
+    const noopSelector
+      = '[data-testid="plan-card-state"][data-true-outcome="noop"]';
+    const noopCount = await page.locator(noopSelector).count();
+    test.skip(
+      noopCount === 0,
+      'no plan with succeeded+dispatched=0 in store; cannot exercise noop-pill behavior',
+    );
+
+    const successColor = await resolveToken(page, '--status-success');
+    const warningColor = await resolveToken(page, '--status-warning');
+    expect(warningColor, 'warning token should resolve').not.toBe(successColor);
+
+    const pill = page.locator(noopSelector).first();
+    await expect(pill).toBeVisible();
+    const color = await pill.evaluate((el) => window.getComputedStyle(el).color);
+    expect(color, 'noop pill must paint --status-warning, not --status-success').toBe(warningColor);
+    expect(color, 'noop pill must NOT paint --status-success').not.toBe(successColor);
+
+    const text = (await pill.textContent())?.trim();
+    expect(text, 'noop pill text should read "noop" so the operator sees the cause').toBe('noop');
   });
 });

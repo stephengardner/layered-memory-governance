@@ -222,6 +222,70 @@ describe('listPipelineSummaries — single pipeline + 5 events', () => {
     expect(row.has_failed_atom).toBe(false);
     expect(row.has_resume_atom).toBe(false);
     expect(row.seed_atom_ids).toEqual(['operator-intent-test']);
+    // No dispatch-record in the fixture: dispatch_summary is null until
+    // the substrate emits one. Front-end derives 'unknown' or 'noop'
+    // from this absence (see trueOutcome.ts).
+    expect(row.dispatch_summary).toBeNull();
+  });
+});
+
+describe('listPipelineSummaries -- dispatch_summary surfacing', () => {
+  /*
+   * Regression for the misleading-green-pill bug: a 'completed'
+   * pipeline that produced no PR (silent-skip / empty-diff) must
+   * surface dispatch_summary.dispatched===0 so the front-end can
+   * paint the noop pill instead of green succeeded.
+   */
+  it('populates dispatch_summary from a dispatch-record atom', () => {
+    const pipeline = pipelineAtom({ id: 'p-noop', state: 'completed' });
+    const dispatchRecord: PipelineSourceAtom = {
+      id: 'dispatch-record-p-noop',
+      type: 'dispatch-record',
+      layer: 'L0',
+      content: '',
+      principal_id: 'cto-actor',
+      created_at: new Date(NOW - 5 * 60 * 1000).toISOString(),
+      taint: 'clean',
+      metadata: {
+        pipeline_id: 'p-noop',
+        stage_output: {
+          dispatch_status: 'completed',
+          scanned: 1,
+          dispatched: 0,
+          failed: 0,
+          cost_usd: 0,
+        },
+      },
+    };
+    const result = listPipelineSummaries([pipeline, dispatchRecord], NOW);
+    const row = result.pipelines.find((p) => p.pipeline_id === 'p-noop');
+    expect(row?.dispatch_summary).toEqual({ scanned: 1, dispatched: 0, failed: 0 });
+  });
+
+  it('populates dispatch_summary with dispatched=1 on a real ship', () => {
+    const pipeline = pipelineAtom({ id: 'p-shipped', state: 'completed' });
+    const dispatchRecord: PipelineSourceAtom = {
+      id: 'dispatch-record-p-shipped',
+      type: 'dispatch-record',
+      layer: 'L0',
+      content: '',
+      principal_id: 'cto-actor',
+      created_at: new Date(NOW - 5 * 60 * 1000).toISOString(),
+      taint: 'clean',
+      metadata: {
+        pipeline_id: 'p-shipped',
+        stage_output: {
+          dispatch_status: 'completed',
+          scanned: 1,
+          dispatched: 1,
+          failed: 0,
+          cost_usd: 0,
+        },
+      },
+    };
+    const result = listPipelineSummaries([pipeline, dispatchRecord], NOW);
+    const row = result.pipelines.find((p) => p.pipeline_id === 'p-shipped');
+    expect(row?.dispatch_summary).toEqual({ scanned: 1, dispatched: 1, failed: 0 });
   });
 });
 
