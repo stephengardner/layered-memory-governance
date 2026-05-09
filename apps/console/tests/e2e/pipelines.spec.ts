@@ -61,12 +61,14 @@ test.describe('pipelines list view', () => {
     await expect(chips).toBeVisible();
 
     const allChip = page.getByTestId('pipelines-filter-chip-all');
+    const needsAttentionChip = page.getByTestId('pipelines-filter-chip-needs-attention');
     const runningChip = page.getByTestId('pipelines-filter-chip-running');
     const pausedChip = page.getByTestId('pipelines-filter-chip-paused');
     const completedChip = page.getByTestId('pipelines-filter-chip-completed');
     const failedChip = page.getByTestId('pipelines-filter-chip-failed');
 
     await expect(allChip).toBeVisible();
+    await expect(needsAttentionChip).toBeVisible();
     await expect(runningChip).toBeVisible();
     await expect(pausedChip).toBeVisible();
     await expect(completedChip).toBeVisible();
@@ -86,6 +88,41 @@ test.describe('pipelines list view', () => {
     await expect(firstCard.getByTestId('pipeline-card-cost')).toBeVisible();
     await expect(firstCard.getByTestId('pipeline-card-duration')).toBeVisible();
     await expect(firstCard.getByTestId('pipeline-card-findings')).toBeVisible();
+  });
+
+  test('needs-attention chip filters via URL query and updates URL on click', async ({ page }) => {
+    /*
+     * The `needs-attention` bucket is permalinkable via
+     * `?state=needs-attention` so an operator paged about a stuck
+     * pipeline can drop the URL into chat and the recipient lands on
+     * the actionable subset directly. Clicking the chip should also
+     * update the URL so the back/forward buttons restore the filter.
+     */
+    const pipelines = await fetchPipelines(page);
+    test.skip(pipelines.length === 0, 'no pipeline atoms; cannot exercise filter');
+
+    // Arrive via URL: chip is selected, others are not.
+    await page.goto('/pipelines?state=needs-attention');
+    const needsChip = page.getByTestId('pipelines-filter-chip-needs-attention');
+    await expect(needsChip).toBeVisible({ timeout: 10_000 });
+    await expect(needsChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('pipelines-filter-chip-all')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    // Click 'all' and the URL should drop the query param (default
+    // bucket is encoded as a missing param so the URL stays clean).
+    await page.getByTestId('pipelines-filter-chip-all').click();
+    await expect(page).toHaveURL(/\/pipelines(\?(?!state=).*)?$/);
+    await expect(page.getByTestId('pipelines-filter-chip-all')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    // Click needs-attention again and the URL should add the param.
+    await needsChip.click();
+    await expect(page).toHaveURL(/\?state=needs-attention/);
   });
 
   test('drill-in view renders for a real pipeline id when one exists', async ({ page }) => {
