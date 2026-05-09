@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Stage list hardcoded for v1; future: lift from canon at
-// pol-planning-pipeline-stages-default.
+// Bin entrypoint for `lag-audit-pipeline`. The shebang lives here so
+// the file is directly executable; the pure rendering logic lives in
+// scripts/lib/audit-pipeline-core.mjs (shebang-free) so .test.ts files
+// can static-import without vitest's Windows-CI shebang-strip bug.
+// Pattern mirrors scripts/cr-precheck.mjs + lib/cr-precheck.mjs.
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { auditPipeline } from './lib/audit-pipeline-core.mjs';
 
-const STAGE_TYPES = [
-  'operator-intent',
-  'brainstorm-output',
-  'spec-output',
-  'plan-output',
-  'review-output',
-  'dispatch-output',
-];
+// Re-export so an out-of-tree caller importing 'audit-pipeline.mjs'
+// directly (the prior public surface before the lib/ extraction) still
+// resolves the function. New callers should import from lib/ directly.
+export { auditPipeline } from './lib/audit-pipeline-core.mjs';
 
 const USAGE = `Usage: lag-audit-pipeline --pipeline-id <id>
 
@@ -43,48 +43,6 @@ function parseArgs(argv) {
     }
   }
   return out;
-}
-
-function renderTree(pipelineId, stages) {
-  let out = `${pipelineId}\n`;
-  for (let i = 0; i < STAGE_TYPES.length; i++) {
-    const atomType = STAGE_TYPES[i];
-    const lastStage = i === STAGE_TYPES.length - 1;
-    const stageBranch = lastStage ? '└── ' : '├── ';
-    const leafIndent = lastStage ? '    ' : '│   ';
-    const matches = stages[atomType];
-    if (matches.length === 0) {
-      out += `${stageBranch}${atomType} (empty)\n`;
-      continue;
-    }
-    out += `${stageBranch}${atomType}\n`;
-    for (let j = 0; j < matches.length; j++) {
-      const lastLeaf = j === matches.length - 1;
-      const leafBranch = lastLeaf ? '└── ' : '├── ';
-      const m = matches[j];
-      out += `${leafIndent}${leafBranch}${m.atom_id}  ${m.timestamp}  ${m.atom_type}\n`;
-    }
-  }
-  return out;
-}
-
-export async function auditPipeline({ adapter, pipelineId }) {
-  const stages = {};
-  let total = 0;
-  for (const atomType of STAGE_TYPES) {
-    const rows = await adapter.query({ atom_type: atomType, pipeline_id: pipelineId });
-    rows.sort((a, b) => {
-      const ta = a.timestamp ?? '';
-      const tb = b.timestamp ?? '';
-      return ta < tb ? -1 : ta > tb ? 1 : 0;
-    });
-    stages[atomType] = rows;
-    total += rows.length;
-  }
-  if (total === 0) {
-    return { exitCode: 0, stdout: `No atoms found for pipeline-id ${pipelineId}\n`, stderr: '' };
-  }
-  return { exitCode: 0, stdout: renderTree(pipelineId, stages), stderr: '' };
 }
 
 async function main(argv) {

@@ -1,7 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { auditPipeline } from '../../scripts/audit-pipeline.mjs';
+import { auditPipeline } from '../../scripts/lib/audit-pipeline-core.mjs';
 
-function makeAdapter(atoms) {
+interface FixtureAtom {
+  readonly atom_id: string;
+  readonly atom_type: string;
+  readonly pipeline_id: string;
+  readonly timestamp: string;
+}
+
+interface FixtureAdapter {
+  query(args: { atom_type: string; pipeline_id: string }): Promise<ReadonlyArray<FixtureAtom>>;
+}
+
+function makeAdapter(atoms: ReadonlyArray<FixtureAtom>): FixtureAdapter {
   return {
     async query({ atom_type, pipeline_id }) {
       return atoms.filter(
@@ -43,7 +54,7 @@ describe('auditPipeline', () => {
 
   it('renders all six stages with leaves sorted by ascending timestamp', async () => {
     const pipelineId = 'pipeline-full';
-    const atoms = [
+    const atoms: ReadonlyArray<FixtureAtom> = [
       { atom_id: 'intent-1',     atom_type: 'operator-intent',    pipeline_id: pipelineId, timestamp: '2026-05-08T22:00:00.000Z' },
       { atom_id: 'brainstorm-1', atom_type: 'brainstorm-output',  pipeline_id: pipelineId, timestamp: '2026-05-08T22:01:00.000Z' },
       { atom_id: 'spec-1',       atom_type: 'spec-output',        pipeline_id: pipelineId, timestamp: '2026-05-08T22:02:00.000Z' },
