@@ -19,6 +19,10 @@ import {
   pipelineStateTone,
   stageStateTone,
 } from './tones';
+import {
+  deriveTrueOutcome,
+  trueOutcomeTone,
+} from '@/features/plan-state/trueOutcome';
 import { formatDurationMs, formatRelative, formatUsd } from './PipelinesView';
 import { PipelineLifecycle } from './PipelineLifecycle';
 import { StageInputs } from './StageInputs';
@@ -141,7 +145,31 @@ function PipelineDetailBody({
   lastSuccessAt: number | null;
 }) {
   const { pipeline, stages, events, findings, audit_counts: audit, failure, resumes } = data;
-  const stateTone = pipelineStateTone(pipeline.pipeline_state);
+  /*
+   * Detail view paints the same TRUE-outcome pill as the card grid:
+   * a 'completed' pipeline that produced no PR (silent-skip /
+   * empty-diff) reads as noop, not green succeeded.
+   */
+  const trueOutcome = deriveTrueOutcome({
+    pipeline_state: pipeline.pipeline_state,
+    dispatch_summary: data.dispatch_summary,
+  });
+  const stateTone = trueOutcome === 'unknown'
+    ? pipelineStateTone(pipeline.pipeline_state)
+    : trueOutcomeTone(trueOutcome);
+  // Use trueOutcome as the label whenever it diverges from the raw
+  // pipeline_state — both for noop (succeeded but produced 0 PRs) and
+  // for failed (completed pipeline whose dispatch_summary.failed > 0).
+  // Without the failed branch the pill renders a RED tone with the
+  // text "completed", which is a visual lie: red + completed reads as
+  // contradictory and operators have to mouse over to figure out the
+  // dispatch failed.
+  const pillLabel = (
+    trueOutcome === 'noop'
+    || (trueOutcome === 'failed' && pipeline.pipeline_state === 'completed')
+  )
+    ? trueOutcome
+    : pipeline.pipeline_state;
 
   return (
     <section className={styles.view} data-testid="pipeline-detail-view">
@@ -157,9 +185,10 @@ function PipelineDetailBody({
             className={styles.statePill}
             data-testid="pipeline-detail-state"
             data-pipeline-state={pipeline.pipeline_state}
+            data-true-outcome={trueOutcome}
             style={{ borderColor: stateTone, color: stateTone }}
           >
-            {pipeline.pipeline_state}
+            {pillLabel}
           </span>
           {pipeline.mode && <span className={styles.modeChip}>{pipeline.mode}</span>}
           {failure && (

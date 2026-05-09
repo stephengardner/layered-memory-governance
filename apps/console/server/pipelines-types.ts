@@ -92,6 +92,21 @@ export interface PipelineStageSummary {
 }
 
 /**
+ * Dispatch counters surfaced from the dispatch-record atom that
+ * matches a pipeline (one record per pipeline, scoped via
+ * metadata.pipeline_id). Surfaced on the pipeline summary so the
+ * grid card can paint a TRUE-outcome state pill: a pipeline_state
+ * of `completed` with `dispatched === 0` reads as a noop, not as a
+ * green ship. Null when no dispatch-record exists for the pipeline
+ * yet (the pipeline hasn't crossed dispatch-stage).
+ */
+export interface PipelineDispatchSummary {
+  readonly scanned: number;
+  readonly dispatched: number;
+  readonly failed: number;
+}
+
+/**
  * One row in `/api/pipelines.list`. Pre-rolled stats so the grid
  * renders without N round-trips.
  */
@@ -115,6 +130,12 @@ export interface PipelineSummary {
   readonly audit_counts: PipelineAuditCounts;
   readonly has_failed_atom: boolean;
   readonly has_resume_atom: boolean;
+  /**
+   * Counters from the matching dispatch-record atom (when one exists).
+   * The card uses `dispatched > 0` to gate the green succeeded pill;
+   * `dispatched === 0` on a completed pipeline is the noop signal.
+   */
+  readonly dispatch_summary: PipelineDispatchSummary | null;
 }
 
 export interface PipelineListResult {
@@ -136,6 +157,8 @@ export interface PipelineLiveOpsRow {
   readonly total_stages: number;
   readonly last_event_at: string;
   readonly total_cost_usd: number;
+  /** Same TRUE-outcome carrier as PipelineSummary; null until dispatch. */
+  readonly dispatch_summary: PipelineDispatchSummary | null;
 }
 
 export interface PipelineLiveOpsResult {
@@ -221,4 +244,10 @@ export interface PipelineDetail {
   readonly current_stage_index: number;
   readonly total_stages: number;
   readonly last_event_at: string;
+  /**
+   * Same TRUE-outcome carrier as PipelineSummary; surfaces here so the
+   * detail header can paint the noop pill when a completed pipeline
+   * shipped no PR, without re-fetching the lifecycle envelope.
+   */
+  readonly dispatch_summary: PipelineDispatchSummary | null;
 }
