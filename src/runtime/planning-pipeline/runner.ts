@@ -379,14 +379,19 @@ export async function runPipeline(
     await emitStageEvent(stage.name, 'enter', 0, 0);
 
     const t0 = Date.now();
-    // Resolve the per-stage hang deadline. Stage-supplied value beats
-    // the canon `pipeline-stage-timeout` policy fallback (parallel to
-    // budget_cap_usd / cost-cap policy). A null result means "no
-    // timeout enforced at this layer"; the kill switch is the absolute
+    // Resolve the per-stage hang deadline. The contract on
+    // PlanningStage.timeout_ms is: any explicit value (defined,
+    // including zero/negative) overrides the canon `pipeline-stage-timeout`
+    // policy fallback. Zero/negative disables the timeout at the
+    // stage layer rather than falling through to canon, so a stage
+    // that wants "definitely no deadline at this layer" can express
+    // it explicitly (mirrors the docstring on the field). The canon
+    // resolver itself only returns positive numbers; null means "no
+    // timeout enforced". The kill switch remains the absolute
     // backstop for a stage that hangs forever.
     const timeoutMs =
-      stage.timeout_ms !== undefined && stage.timeout_ms > 0
-        ? stage.timeout_ms
+      stage.timeout_ms !== undefined
+        ? (stage.timeout_ms > 0 ? stage.timeout_ms : null)
         : (await readPipelineStageTimeoutPolicy(host, stage.name)).timeout_ms;
     let output: StageOutput<unknown>;
     try {

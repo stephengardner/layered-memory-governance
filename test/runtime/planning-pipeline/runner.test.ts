@@ -485,6 +485,78 @@ describe('runPipeline', () => {
     }
   });
 
+  it('honors stage.timeout_ms = 0 as "disable at the stage layer" (does NOT fall through to canon)', async () => {
+    // The PlanningStage.timeout_ms contract: any explicit value the
+    // stage adapter declares (defined, including zero / negative)
+    // overrides the canon `pipeline-stage-timeout` policy fallback.
+    // A stage that says "I do NOT want a timeout at this layer" by
+    // setting timeout_ms = 0 must NOT silently inherit canon. CR
+    // caught the original asymmetry where `> 0` tested both fields,
+    // pushing zero-valued stage entries into the canon path. Lock the
+    // intent here: a slow stage with timeout_ms=0 and a 30ms canon
+    // policy completes successfully, NOT failed-with-timeout.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['no-timeout-stage']);
+    await host.atoms.put({
+      schema_version: 1,
+      id: 'pol-pipeline-stage-timeout-no-timeout-stage' as AtomId,
+      content: 'pipeline-stage-timeout for no-timeout-stage = 30ms',
+      type: 'directive',
+      layer: 'L3',
+      provenance: {
+        kind: 'human-asserted',
+        source: { tool: 'test' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'apex-agent' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'pipeline-stage-timeout',
+          stage_name: 'no-timeout-stage',
+          timeout_ms: 30,
+        },
+      },
+    });
+    const stage: PlanningStage<unknown, unknown> = {
+      name: 'no-timeout-stage',
+      timeout_ms: 0,
+      async run() {
+        // Intentionally slower than the canon 30ms cap. If the runner
+        // mistakenly fell through to canon, this would fail.
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return {
+          value: { ok: true },
+          cost_usd: 0,
+          duration_ms: 80,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const result = await runPipeline([stage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-disable-timeout',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('completed');
+  });
+
   it('respects the canon `pipeline-stage-timeout` policy when the stage adapter omits timeout_ms', async () => {
     // Operator-tunable knob: an org wants a global per-stage timeout
     // without forcing every stage adapter to declare one. Seed a
