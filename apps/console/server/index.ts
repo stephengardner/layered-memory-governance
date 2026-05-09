@@ -83,6 +83,8 @@ import type {
   PipelineSourceAtom,
 } from './pipelines-types';
 import { buildPipelineLifecycle } from './pipeline-lifecycle';
+import { buildIntentOutcome } from './intent-outcome';
+import type { IntentOutcome, IntentOutcomeSourceAtom } from './intent-outcome-types';
 import type {
   PipelineLifecycle,
   PipelineLifecycleSourceAtom,
@@ -1772,6 +1774,35 @@ async function handlePipelineLifecycle(pipelineId: string): Promise<PipelineLife
   return result;
 }
 
+/**
+ * /api/pipeline.intent-outcome handler. Synthesizes the pipeline +
+ * post-dispatch chain into a single intent-outcome state-pill +
+ * summary so the operator can read "did this intent ship?" at the
+ * top of /pipelines/<id> without scrolling the stage strip.
+ *
+ * Returns null when neither a pipeline atom nor a dispatch-record can
+ * be resolved for the id (mirrors handlePipelineLifecycle's 404
+ * contract).
+ */
+async function handleIntentOutcome(pipelineId: string): Promise<IntentOutcome | null> {
+  const all = await readAllAtoms();
+  const sourceAtoms = all as unknown as ReadonlyArray<IntentOutcomeSourceAtom>;
+  const result = buildIntentOutcome(sourceAtoms, pipelineId, Date.now());
+  // 'intent-unknown' WITHOUT a pipeline_atom_id AND without a
+  // dispatched_count signal means the synthesizer found literally
+  // nothing for this id. Treat that as not-found so the client renders
+  // the same empty state as pipelines.detail's 404.
+  if (
+    result.state === 'intent-unknown'
+    && result.pipeline_atom_id === null
+    && result.dispatched_count === 0
+    && result.skip_reasons.length === 0
+  ) {
+    return null;
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Resume audit: cross-actor projection of resume-vs-fresh-spawn telemetry.
 //
@@ -3013,6 +3044,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'pipeline-lifecycle-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipeline.intent-outcome' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
+    if (!pipelineId) {
+      sendErr(req, res, 400, 'missing-pipeline-id', 'pipeline.intent-outcome requires { pipeline_id: string }');
+      return;
+    }
+    try {
+      const data = await handleIntentOutcome(pipelineId);
+      if (data === null) {
+        sendErr(req, res, 404, 'pipeline-not-found', `no pipeline atom or dispatch-record found for ${pipelineId}`);
+        return;
+      }
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pipeline-intent-outcome-failed', (err as Error).message);
     }
     return;
   }
