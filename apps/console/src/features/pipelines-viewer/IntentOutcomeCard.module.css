@@ -1,0 +1,415 @@
+/*
+ * IntentOutcomeCard styling. Sits at the top of /pipelines/<id> and
+ * carries a state-pill + summary + secondary lines.
+ *
+ * Mobile-first per dev-web-mobile-first-required: layout is a single
+ * column at 390px; pill row wraps as a flex group; meta lines stack
+ * vertically. Progressive enhancement at 30rem widens metadata into
+ * a fluid label + value flow.
+ *
+ * Token discipline: tones resolve via [data-tone] attributes that map
+ * to semantic status tokens defined in tokens.css; no per-instance
+ * style props, no hex.
+ */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  position: relative;
+}
+
+.card[data-tone="success"] {
+  border-color: color-mix(in srgb, var(--status-success) 35%, transparent);
+}
+
+.card[data-tone="danger"] {
+  border-color: color-mix(in srgb, var(--status-danger) 35%, transparent);
+}
+
+.card[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--status-warning) 35%, transparent);
+}
+
+.card[data-tone="info"] {
+  border-color: color-mix(in srgb, var(--status-info) 30%, transparent);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.headIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-7);
+  height: var(--space-7);
+  border-radius: var(--radius-pill);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  color: var(--text-tertiary);
+}
+
+.headIcon[data-tone="success"] {
+  color: var(--status-success);
+  border-color: color-mix(in srgb, var(--status-success) 40%, transparent);
+}
+
+.headIcon[data-tone="danger"] {
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 40%, transparent);
+}
+
+.headIcon[data-tone="warning"] {
+  color: var(--status-warning);
+  border-color: color-mix(in srgb, var(--status-warning) 40%, transparent);
+}
+
+.headIcon[data-tone="info"] {
+  color: var(--status-info);
+  border-color: color-mix(in srgb, var(--status-info) 40%, transparent);
+}
+
+.headTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.pillRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-pill);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  background: var(--surface-raised);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-primary);
+  /* 44px tap target floor per dev-web-mobile-first-required. */
+  min-height: var(--size-touch-target-min);
+}
+
+.pill[data-tone="success"] {
+  background: color-mix(in srgb, var(--status-success) 14%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--status-success) 50%, transparent);
+  color: var(--status-success);
+}
+
+.pill[data-tone="danger"] {
+  background: color-mix(in srgb, var(--status-danger) 14%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--status-danger) 50%, transparent);
+  color: var(--status-danger);
+}
+
+.pill[data-tone="warning"] {
+  background: color-mix(in srgb, var(--status-warning) 14%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--status-warning) 50%, transparent);
+  color: var(--status-warning);
+}
+
+.pill[data-tone="info"] {
+  background: color-mix(in srgb, var(--status-info) 14%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--status-info) 50%, transparent);
+  color: var(--status-info);
+}
+
+.dispatchPill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+}
+
+.summary {
+  margin: 0;
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+  line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.prSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.prRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.prLink {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-sm);
+  /* 44px tap target floor per dev-web-mobile-first-required. */
+  min-height: var(--size-touch-target-min);
+}
+
+.prLink:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.prLink:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.prTitle {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 0;
+}
+
+.prMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.skipReasons {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: color-mix(in srgb, var(--status-danger) 6%, var(--surface-raised));
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-danger) 30%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.skipReasonsLabel {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--status-danger);
+  font-weight: var(--font-weight-semibold);
+}
+
+.skipReasonList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.skipReasonItem {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  line-height: var(--line-height-relaxed);
+}
+
+.skipReasonItem svg {
+  color: var(--status-danger);
+  flex-shrink: 0;
+  margin-top: 0.125rem;
+}
+
+.skipReasonSource {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  background: var(--surface-base);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.skipReasonText {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+@media (min-width: 30rem) {
+  .meta {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+  }
+}
+
+.metaLine {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.metaLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.metaCode {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  background: var(--surface-base);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+/*
+ * Empty + loading + error placeholders -- match the .card padding so
+ * the surface doesn't shift when the data lands.
+ */
+.empty {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.shimmer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+}
+
+.shimmerPill {
+  width: 8rem;
+  height: 1.75rem;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    90deg,
+    var(--surface-raised) 0%,
+    var(--surface-base) 50%,
+    var(--surface-raised) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+.shimmerLine {
+  width: 100%;
+  height: 1rem;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(
+    90deg,
+    var(--surface-raised) 0%,
+    var(--surface-base) 50%,
+    var(--surface-raised) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+.shimmerLineShort {
+  width: 60%;
+  height: 1rem;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(
+    90deg,
+    var(--surface-raised) 0%,
+    var(--surface-base) 50%,
+    var(--surface-raised) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmerPill,
+  .shimmerLine,
+  .shimmerLineShort {
+    animation: none;
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/*
+ * Spin animation for the running-state icon. Honors
+ * prefers-reduced-motion per dev-web-interaction-quality-no-jank.
+ */
+.spin {
+  animation: spin 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

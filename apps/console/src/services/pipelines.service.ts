@@ -45,12 +45,19 @@ export type {
   PipelineLifecycleObservation,
 } from '../../server/pipeline-lifecycle-types';
 
+export type {
+  IntentOutcome,
+  IntentOutcomeSkipReason,
+  IntentOutcomeState,
+} from '../../server/intent-outcome-types';
+
 import type {
   PipelineDetail,
   PipelineListResult,
   PipelineLiveOpsResult,
 } from '../../server/pipelines-types';
 import type { PipelineLifecycle } from '../../server/pipeline-lifecycle-types';
+import type { IntentOutcome } from '../../server/intent-outcome-types';
 
 export async function listPipelines(signal?: AbortSignal): Promise<PipelineListResult> {
   return transport.call<PipelineListResult>(
@@ -97,6 +104,25 @@ export async function getPipelineLifecycle(
 ): Promise<PipelineLifecycle> {
   return transport.call<PipelineLifecycle>(
     'pipelines.lifecycle',
+    { pipeline_id: pipelineId },
+    signal ? { signal } : undefined,
+  );
+}
+
+/**
+ * Fetch the synthesized intent-outcome for a pipeline. Aggregates the
+ * pipeline + post-dispatch chain into a single state-pill + summary,
+ * answering "did this intent ship a PR?" without forcing the operator
+ * to scroll the stage strip and post-dispatch sections.
+ *
+ * Renders above the stage timeline on /pipelines/<id>.
+ */
+export async function getIntentOutcome(
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<IntentOutcome> {
+  return transport.call<IntentOutcome>(
+    'pipeline.intent-outcome',
     { pipeline_id: pipelineId },
     signal ? { signal } : undefined,
   );
