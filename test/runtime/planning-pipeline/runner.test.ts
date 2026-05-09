@@ -626,6 +626,88 @@ describe('runPipeline', () => {
     }
   });
 
+  it('halts the pipeline when total stage cost exceeds the per-pipeline `pipeline-cost-cap` policy', async () => {
+    // Per-pipeline cap is the run-level fence on cumulative cost: a
+    // long-running deep-pipeline run can stay under each per-stage cap
+    // and still burn a multiple of any single stage's budget. The
+    // canon directive `pipeline-cost-cap` (no stage_name; global)
+    // governs the total. Two cheap stages here: 0.20 + 0.15 = 0.35,
+    // cap = 0.30, so the cap trips on the second stage's accumulator
+    // update -- not the first -- proving the runner sums across
+    // stages rather than checking a single-stage value.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
+    await host.atoms.put({
+      schema_version: 1,
+      id: 'pol-pipeline-cost-cap' as AtomId,
+      content: 'pipeline-cost-cap = 0.30',
+      type: 'directive',
+      layer: 'L3',
+      provenance: {
+        kind: 'human-asserted',
+        source: { tool: 'test' },
+        derived_from: [],
+      },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'apex-agent' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'pipeline-cost-cap',
+          cap_usd: 0.30,
+        },
+      },
+    });
+    const stageA: PlanningStage<unknown, unknown> = {
+      name: 'stage-a',
+      async run() {
+        return {
+          value: {},
+          cost_usd: 0.20,
+          duration_ms: 0,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const stageB: PlanningStage<unknown, unknown> = {
+      name: 'stage-b',
+      async run() {
+        return {
+          value: {},
+          cost_usd: 0.15,
+          duration_ms: 0,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const result = await runPipeline([stageA, stageB], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-pipeline-cost-cap',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.cause).toMatch(/pipeline-cost-overflow/);
+      expect(result.cause).toMatch(/0\.3/);
+      expect(result.failedStageName).toBe('stage-b');
+    }
+  });
+
   it('forwards StageOutput.extraMetadata onto the persisted stage-output atom metadata', async () => {
     // Substrate fix coverage: a stage that returns extraMetadata on its
     // StageOutput must see those keys appear on the persisted typed

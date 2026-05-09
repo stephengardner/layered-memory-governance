@@ -5,6 +5,7 @@ import {
   readPipelineDefaultModePolicy,
   readPipelineStageCostCapPolicy,
   readPipelineStageTimeoutPolicy,
+  readPipelineCostCapPolicy,
   readPipelineStageImplementationsPolicy,
 } from '../../../src/runtime/planning-pipeline/policy.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
@@ -346,6 +347,51 @@ describe('readPipelineStageTimeoutPolicy', () => {
     );
     const result = await readPipelineStageTimeoutPolicy(host, 'plan-stage');
     expect(result.timeout_ms).toBeNull();
+  });
+});
+
+describe('readPipelineCostCapPolicy', () => {
+  it('returns null when no per-pipeline atom exists', async () => {
+    const host = createMemoryHost();
+    const result = await readPipelineCostCapPolicy(host);
+    expect(result.cap_usd).toBeNull();
+  });
+
+  it('returns the configured cap when present', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-cost-cap', {
+        subject: 'pipeline-cost-cap',
+        cap_usd: 5,
+      }),
+    );
+    const result = await readPipelineCostCapPolicy(host);
+    expect(result.cap_usd).toBe(5);
+  });
+
+  it('returns null when cap_usd is non-positive (fail-closed on malformed value)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-cost-cap', {
+        subject: 'pipeline-cost-cap',
+        cap_usd: 0,
+      }),
+    );
+    const result = await readPipelineCostCapPolicy(host);
+    expect(result.cap_usd).toBeNull();
+  });
+
+  it('ignores per-stage atoms when reading the per-pipeline cap', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-cost-cap-spec', {
+        subject: 'pipeline-stage-cost-cap',
+        stage_name: 'spec-stage',
+        cap_usd: 0.5,
+      }),
+    );
+    const result = await readPipelineCostCapPolicy(host);
+    expect(result.cap_usd).toBeNull();
   });
 });
 

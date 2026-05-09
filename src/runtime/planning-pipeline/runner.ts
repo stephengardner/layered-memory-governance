@@ -58,6 +58,7 @@ import {
   serializeStageOutput,
 } from './atom-shapes.js';
 import {
+  readPipelineCostCapPolicy,
   readPipelineStageCostCapPolicy,
   readPipelineStageHilPolicy,
   readPipelineStageTimeoutPolicy,
@@ -321,6 +322,20 @@ export async function runPipeline(
   ];
   let totalCostUsd = 0;
 
+  // Per-pipeline total-cost cap. Read once per run rather than per
+  // stage to avoid the O(N stages * N policy atoms) walk; the policy
+  // is global (not stage-scoped) so a single read covers the whole
+  // pipeline. A null cap means "no per-pipeline cap enforced"; the
+  // per-stage cost cap (read inside the loop) remains the per-stage
+  // fence and still applies independently. Resume path also reads
+  // here -- a resumed pipeline that already accumulated cost in
+  // earlier stages is held to the same cap (the runner's totalCostUsd
+  // is recomputed from this run's stages, so a resumed run starts
+  // from zero and still trips the cap if the new walk burns above
+  // it; reconstructing the prior burn from atoms is a forward-compat
+  // refinement, deferred per dev-extreme-rigor-and-research).
+  const pipelineCostCapUsd = (await readPipelineCostCapPolicy(host)).cap_usd;
+
   for (let i = startIdx; i < stages.length; i++) {
     const stage = stages[i]!;
 
@@ -475,6 +490,22 @@ export async function runPipeline(
       );
     }
     totalCostUsd += output.cost_usd;
+
+    if (
+      pipelineCostCapUsd !== null &&
+      totalCostUsd > pipelineCostCapUsd
+    ) {
+      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+      return await failPipeline(
+        host,
+        pipelineId,
+        options,
+        now,
+        stage.name,
+        `pipeline-cost-overflow: total ${totalCostUsd} > cap ${pipelineCostCapUsd}`,
+        i,
+      );
+    }
 
     // Persist the stage's StageOutput.value as a typed queryable atom
     // BEFORE audit runs. The atom serves two consumers regardless of

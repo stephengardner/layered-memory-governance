@@ -43,6 +43,10 @@ export interface PipelineStageTimeoutPolicyResult {
   readonly timeout_ms: number | null;
 }
 
+export interface PipelineCostCapPolicyResult {
+  readonly cap_usd: number | null;
+}
+
 /** Modes a stage adapter can be selected as. */
 export type PipelineStageImplementationMode = 'agentic' | 'single-shot';
 
@@ -200,6 +204,38 @@ export async function readPipelineStageCostCapPolicy(
     if (policy.stage_name !== stageName) continue;
     const cap = policy.cap_usd;
     if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0) return { cap_usd: cap };
+  }
+  return { cap_usd: null };
+}
+
+/**
+ * Per-pipeline total-cost cap. A `pipeline-cost-cap` directive with a
+ * positive numeric `cap_usd` field returns that value; everything else
+ * collapses to null (no per-pipeline cap enforced at this layer).
+ *
+ * Distinct from `readPipelineStageCostCapPolicy`: the per-stage reader
+ * gates a SINGLE stage's cost; this reader gates the SUM of every
+ * stage's cost across one pipeline run. A long-running deep-pipeline
+ * run can stay under each individual stage's per-stage cap and still
+ * burn a multiple of any single stage's budget; the per-pipeline cap is
+ * the run-level fence that catches the cumulative burn.
+ *
+ * Reader is intentionally global (no scope or stage-name filter) so
+ * one canon directive governs every pipeline run. The org-ceiling
+ * mechanism is a higher-priority atom replacing this one (existing
+ * arbitration); the indie-floor default is "no per-pipeline cap" until
+ * a deployment opts in.
+ */
+export async function readPipelineCostCapPolicy(
+  host: Host,
+): Promise<PipelineCostCapPolicyResult> {
+  for await (const atom of iteratePolicyAtoms(host)) {
+    const policy = readPolicy(atom);
+    if (policy?.subject !== 'pipeline-cost-cap') continue;
+    const cap = policy.cap_usd;
+    if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0) {
+      return { cap_usd: cap };
+    }
   }
   return { cap_usd: null };
 }
