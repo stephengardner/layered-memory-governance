@@ -941,6 +941,65 @@ describe('runPipeline', () => {
     expect(attempts).toBe(3);
   });
 
+  it('prefers explicit stage.retry over canon `pipeline-stage-retry` policy', async () => {
+    // Precedence contract: stage.retry on the adapter is authoritative;
+    // canon is the fallback when the adapter omits it. Seed a permissive
+    // canon (max 5 / base 1ms) and a stage that explicitly sets
+    // { kind: 'no-retry' }; verify the stage runs exactly once.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['canon-vs-explicit']);
+    await host.atoms.put({
+      schema_version: 1,
+      id: 'pol-pipeline-stage-retry-canon-vs-explicit' as AtomId,
+      content: 'canon retry for canon-vs-explicit = max 5 / base 1ms',
+      type: 'directive',
+      layer: 'L3',
+      provenance: { kind: 'human-asserted', source: { tool: 'test' }, derived_from: [] },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'apex-agent' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'pipeline-stage-retry',
+          stage_name: 'canon-vs-explicit',
+          max_attempts: 5,
+          base_delay_ms: 1,
+        },
+      },
+    });
+    let attempts = 0;
+    const stage: PlanningStage<unknown, unknown> = {
+      name: 'canon-vs-explicit',
+      retry: { kind: 'no-retry' },
+      async run() {
+        attempts++;
+        throw new Error('boom: canon would retry but explicit no-retry wins');
+      },
+    };
+    const result = await runPipeline([stage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-explicit-retry-wins',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('failed');
+    expect(attempts).toBe(1);
+  });
+
   it('does not retry when stage.retry is omitted (default no-retry posture)', async () => {
     // Default-deny: no retry config means a single attempt. Lock it
     // so future agents do not assume retry-on-by-default and ship a
