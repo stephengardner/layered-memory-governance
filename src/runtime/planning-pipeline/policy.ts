@@ -39,6 +39,10 @@ export interface PipelineStageCostCapPolicyResult {
   readonly cap_usd: number | null;
 }
 
+export interface PipelineStageTimeoutPolicyResult {
+  readonly timeout_ms: number | null;
+}
+
 /** Modes a stage adapter can be selected as. */
 export type PipelineStageImplementationMode = 'agentic' | 'single-shot';
 
@@ -198,6 +202,34 @@ export async function readPipelineStageCostCapPolicy(
     if (typeof cap === 'number' && Number.isFinite(cap) && cap > 0) return { cap_usd: cap };
   }
   return { cap_usd: null };
+}
+
+/**
+ * Per-stage hang-deadline policy. A `pipeline-stage-timeout` directive
+ * with `stage_name` matching the requested stage AND a positive numeric
+ * `timeout_ms` field returns that value; everything else collapses to
+ * null (no timeout enforced at this layer).
+ *
+ * Mirrors readPipelineStageCostCapPolicy: same shape, same fail-closed
+ * fallback. The runner reads stage.timeout_ms first and only falls back
+ * here when the stage adapter did not declare a value, so an org that
+ * wants a global per-stage default sets the canon atom and an org that
+ * wants a stage-by-stage override declares it on the adapter.
+ */
+export async function readPipelineStageTimeoutPolicy(
+  host: Host,
+  stageName: string,
+): Promise<PipelineStageTimeoutPolicyResult> {
+  for await (const atom of iteratePolicyAtoms(host)) {
+    const policy = readPolicy(atom);
+    if (policy?.subject !== 'pipeline-stage-timeout') continue;
+    if (policy.stage_name !== stageName) continue;
+    const ms = policy.timeout_ms;
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) {
+      return { timeout_ms: ms };
+    }
+  }
+  return { timeout_ms: null };
 }
 
 /**

@@ -60,6 +60,7 @@ import {
 import {
   readPipelineStageCostCapPolicy,
   readPipelineStageHilPolicy,
+  readPipelineStageTimeoutPolicy,
 } from './policy.js';
 import { runPipelinePlanAutoApproval } from './auto-approve.js';
 
@@ -378,6 +379,20 @@ export async function runPipeline(
     await emitStageEvent(stage.name, 'enter', 0, 0);
 
     const t0 = Date.now();
+    // Resolve the per-stage hang deadline. The contract on
+    // PlanningStage.timeout_ms is: any explicit value (defined,
+    // including zero/negative) overrides the canon `pipeline-stage-timeout`
+    // policy fallback. Zero/negative disables the timeout at the
+    // stage layer rather than falling through to canon, so a stage
+    // that wants "definitely no deadline at this layer" can express
+    // it explicitly (mirrors the docstring on the field). The canon
+    // resolver itself only returns positive numbers; null means "no
+    // timeout enforced". The kill switch remains the absolute
+    // backstop for a stage that hangs forever.
+    const timeoutMs =
+      stage.timeout_ms !== undefined
+        ? (stage.timeout_ms > 0 ? stage.timeout_ms : null)
+        : (await readPipelineStageTimeoutPolicy(host, stage.name)).timeout_ms;
     let output: StageOutput<unknown>;
     try {
       const stageInput: StageInput<unknown> = {
@@ -391,7 +406,10 @@ export async function runPipeline(
         verifiedSubActorPrincipalIds,
         operatorIntentContent,
       };
-      output = await stage.run(stageInput);
+      output =
+        timeoutMs !== null
+          ? await raceStageWithTimeout(stage.run(stageInput), timeoutMs, stage.name)
+          : await stage.run(stageInput);
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       // Even when the stage threw, re-check the kill switch before
@@ -919,6 +937,48 @@ function mkGenericStageOutputAtom(input: {
       generic_stage_output: true,
     },
   };
+}
+
+/**
+ * Race a stage's run() promise against a setTimeout-driven rejection.
+ *
+ * On timeout the rejection's message is prefixed
+ * `pipeline-stage-timeout:` so the runner's existing catch block (which
+ * routes through failPipeline) carries the prefix into the
+ * pipeline-failed atom's `cause` field. A downstream audit consumer
+ * can therefore distinguish a hang-deadline halt from a generic
+ * stage-throw without parsing free-form error text.
+ *
+ * The stage's promise is NOT cancelled on timeout: this matches the
+ * existing kill-switch posture in the runner header ("an in-flight
+ * stage's promise is awaited then ignored rather than left dangling").
+ * A stage that wants to honour cancellation can plumb its own AbortSignal
+ * into stage.run; the runner does not enforce that at the seam.
+ *
+ * The setTimeout handle is always cleared before this helper resolves
+ * or rejects so the Node event loop is not held open by a never-fired
+ * timer when the stage finishes inside the deadline.
+ */
+async function raceStageWithTimeout<T>(
+  stagePromise: Promise<T>,
+  timeoutMs: number,
+  stageName: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(
+          `pipeline-stage-timeout: stage '${stageName}' exceeded ${timeoutMs}ms`,
+        ),
+      );
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([stagePromise, timeoutPromise]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 async function failPipeline(
