@@ -40,7 +40,7 @@ A single substrate-deep pipeline run produces ~15-25 atoms. At 49 runs to date t
 
 Confirmed from `scripts/lib/reaper-canon-policies.mjs:32-61`:
 
-```
+```js
 metadata.policy = {
   subject: 'reaper-ttls',
   reason: '<rationale>',
@@ -181,7 +181,7 @@ Total: 7 tasks. Each ships as a separate atomic PR.
 - Test: `test/scripts/bootstrap-pipeline-reaper-canon.test.ts` - drift-pin between POLICIES factory and `DEFAULT_PIPELINE_REAPER_TTLS`.
 
 **Policy atom shape:**
-```
+```js
 metadata.policy = {
   subject: 'pipeline-reaper-ttls',
   reason: '<rationale>',
