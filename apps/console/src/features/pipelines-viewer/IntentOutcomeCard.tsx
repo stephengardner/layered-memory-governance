@@ -39,15 +39,23 @@ export function IntentOutcomeCard({ pipelineId }: { pipelineId: string }) {
       if (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('pipeline-not-found')) return 10_000;
-        return false;
+        // Generic error: slow-poll instead of stopping. A transient
+        // 5xx or network blip should self-heal once the backend is
+        // back, not strand the card on the error state forever.
+        return 30_000;
       }
       const data = queryState.state.data;
       if (!data) return 5000;
       if (data.state === 'intent-running' || data.state === 'intent-dispatched-pending-review') {
         return 5000;
       }
-      // Terminal states: fulfilled / dispatch-failed / paused / abandoned / unknown.
-      return false;
+      // Terminal states (fulfilled / dispatch-failed / paused /
+      // abandoned / unknown) slow-poll rather than stopping. A
+      // late-landing merge atom or a paused pipeline that resumes
+      // should refresh the card without forcing the operator to
+      // reload the page; 30s is gentle on the backend while still
+      // closing the self-heal gap.
+      return 30_000;
     },
     refetchOnWindowFocus: true,
     retry: (failureCount, error) => {

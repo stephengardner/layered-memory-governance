@@ -144,9 +144,17 @@ function countStages(
     const transition = readString(meta, 'transition');
     if (!stageName || !transition) continue;
     seen.add(stageName);
-    const dur = meta['duration_ms'];
-    if (typeof dur === 'number' && Number.isFinite(dur)) {
-      totalDuration += dur;
+    // Only sum duration on a stage's terminal transition. A multi-event
+    // stage (enter + pause + resume + exit) carries duration on each
+    // event the substrate emits, and naively summing all of them
+    // double-counts the wall-clock time. The terminal transitions are
+    // exit-success and exit-failure; enter / pause / resume contribute
+    // nothing to the total.
+    if (transition === 'exit-success' || transition === 'exit-failure') {
+      const dur = meta['duration_ms'];
+      if (typeof dur === 'number' && Number.isFinite(dur)) {
+        totalDuration += dur;
+      }
     }
     const ts = Date.parse(atom.created_at);
     if (Number.isFinite(ts)) {
@@ -425,7 +433,11 @@ export function buildIntentOutcome(
     pr_number: codeAuthor?.pr_number ?? observation?.pr_number ?? null,
     pr_url: codeAuthor?.pr_html_url ?? null,
     pr_title: observation?.pr_title ?? null,
-    merge_commit_sha: merge?.merge_commit_sha ?? observation?.head_sha ?? null,
+    // Only the settled merge atom carries the true merge SHA. The
+    // pr-observation atom's head_sha is the PR-tip commit BEFORE the
+    // merge lands; using it as a fallback would mislabel the chip
+    // ("Merged at <head_sha>") when no merge has actually happened.
+    merge_commit_sha: merge?.merge_commit_sha ?? null,
     pr_merged_at: merge?.settled_at ?? (observation?.pr_state === 'MERGED' ? observation.observed_at : null),
     skip_reasons: skipReasons,
     computed_at: new Date(now).toISOString(),
