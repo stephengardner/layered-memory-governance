@@ -313,6 +313,9 @@
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   margin-left: auto;
+  /* Tap-target floor per dev-web-mobile-first-required: 44px min so
+     touch input lands reliably once task #295 wires the action up. */
+  min-height: var(--size-touch-target-min);
 }
 
 .resumeButton:hover:not(:disabled) {
@@ -622,6 +625,9 @@
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
+  /* Tap-target floor per dev-web-mobile-first-required: 44px min for
+     the "Back to pipelines" affordance on the not-found empty state. */
+  min-height: var(--size-touch-target-min);
 }
 
 .clearButton:hover {

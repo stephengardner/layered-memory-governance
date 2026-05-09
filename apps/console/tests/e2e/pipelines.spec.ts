@@ -251,6 +251,43 @@ test.describe('pipelines list view', () => {
           expect(box.height, 'pr link height >= 44').toBeGreaterThanOrEqual(44);
         }
       }
+
+      // The Resume button on each stage card is a real interactive
+      // control even while the substrate gate is pending (task #295);
+      // the tap-target floor must hold so future-enabling the action
+      // doesn't introduce a sub-44px hit area. Pick the first one when
+      // the page rendered any stage cards at all.
+      const resumeButton = page.getByTestId('pipeline-stage-resume').first();
+      if (await resumeButton.isVisible().catch(() => false)) {
+        const box = await resumeButton.boundingBox();
+        expect(box, 'resume button box').not.toBeNull();
+        if (box) {
+          expect(box.height, 'resume button height >= 44').toBeGreaterThanOrEqual(44);
+        }
+      }
+    }
+  });
+
+  test('drill-in not-found "Back to pipelines" affordance meets the 44px tap floor on mobile', async ({ page, viewport }) => {
+    /*
+     * The empty-state "Back to pipelines" button is a real touch target
+     * on the unknown-id detail view. Per dev-web-mobile-first-required
+     * the button height must clear the 44px floor on mobile widths.
+     * The desktop project also runs this; the assertion is gated on
+     * viewport width so we only enforce it where it matters.
+     */
+    await page.goto('/pipelines/pipeline-does-not-exist-zzz');
+    const empty = page.getByTestId('pipeline-detail-empty');
+    await expect(empty).toBeVisible({ timeout: 10_000 });
+    const backButton = page.getByRole('button', { name: 'Back to pipelines' });
+    await expect(backButton).toBeVisible();
+
+    if (viewport && viewport.width <= 480) {
+      const box = await backButton.boundingBox();
+      expect(box, 'back button box').not.toBeNull();
+      if (box) {
+        expect(box.height, 'back button height >= 44').toBeGreaterThanOrEqual(44);
+      }
     }
   });
 
