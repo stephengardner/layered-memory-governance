@@ -122,6 +122,14 @@ export type AtomType =
   // `metadata.agent_turn.session_atom_id` carries the same pointer
   // for projection-scoped queries (the two pointers are required
   // to agree; a future validator may enforce this).
+  //
+  // GC posture: both types are reaped via the pipeline-reaper at TTL
+  // (see the convention block on `AtomPatch.metadata`). When a parent
+  // pipeline atom is reaped, its derived agent-session and agent-turn
+  // children cascade-reap immediately (ttl-derived from the parent),
+  // since their lifetime is bounded by the pipeline run. Standalone
+  // agent-session atoms not derived from a pipeline reap on the
+  // independent `agentSessionMs` TTL.
   | 'agent-session'
   | 'agent-turn'
   // Deep planning pipeline atom types. The 'spec' type is a
@@ -144,6 +152,17 @@ export type AtomType =
   // consumers do not need branching logic); the other four stages
   // get dedicated types so their schemas can diverge without
   // polluting the plan vocabulary.
+  //
+  // GC posture: every type in this block is reaped via the pipeline
+  // reaper at TTL (see the convention block on `AtomPatch.metadata`).
+  // The 'pipeline' atom is the subgraph root; its children
+  // ('pipeline-stage-event', 'pipeline-audit-finding',
+  // 'pipeline-failed', 'pipeline-resume', 'brainstorm-output',
+  // 'spec-output', 'review-report', 'dispatch-record') cascade-reap
+  // when the root reaps. The 'spec' type is reaped on the same TTL
+  // as the pipeline whose plan-stage produced it. None of these
+  // types are deleted; reaping is a leaf metadata write
+  // (`reaped_at` + `reaped_reason`) plus a confidence floor.
   | 'spec'
   | 'brainstorm-output'
   | 'spec-output'
@@ -409,7 +428,30 @@ export interface AtomPatch {
   readonly superseded_by?: ReadonlyArray<AtomId>;
   readonly signals?: Partial<AtomSignals>;
   readonly taint?: TaintState;
-  /** Merged into existing metadata. */
+  /**
+   * Merged into existing metadata.
+   *
+   * Reserved metadata convention for the pipeline reaper (see
+   * `src/runtime/plans/reaper.ts` and the future `pipeline-reaper.ts`):
+   *
+   *   - `reaped_at` (ISO-8601 UTC timestamp string): when the atom was
+   *     marked reaped. MUST be obtained from `host.clock.now()`, never
+   *     constructed via `new Date().toISOString()` directly. Routing
+   *     timestamps through the host clock keeps the substrate
+   *     deterministic under test pinning and consistent across adapters.
+   *   - `reaped_reason` (finite string discriminator): why the atom was
+   *     reaped. Examples: `'terminal-pipeline-ttl'`, `'stage-event-ttl'`,
+   *     `'orphaned-stage-event'`. The vocabulary is finite (enumerated
+   *     by the reaper module that owns each kind) so projections and
+   *     audit consumers can branch deterministically; free-form strings
+   *     defeat that.
+   *
+   * Atoms are never deleted from the AtomStore (no deletion verb on the
+   * substrate; provenance chains and `derived_from` traversal must keep
+   * resolving). Reaping is a leaf metadata write plus a confidence
+   * floor; consumers (Console projections, arbitration) check
+   * `metadata.reaped_at` to decide whether to surface or deprioritize.
+   */
   readonly metadata?: Readonly<Record<string, unknown>>;
   /** Transition for plan atoms. Validated by transitionPlanState(). */
   readonly plan_state?: PlanState;
