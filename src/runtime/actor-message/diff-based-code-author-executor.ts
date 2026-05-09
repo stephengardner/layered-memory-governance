@@ -29,6 +29,7 @@ import type { Host } from '../../interface.js';
 import type { GhClient } from '../../external/github/index.js';
 import type { Workspace, WorkspaceProvider } from '../../substrate/workspace-provider.js';
 import { extractFsShapedTokens } from '../planning-pipeline/extract-body-paths.js';
+import { buildConventionalCommitsPrTitle } from './code-author-pr-title.js';
 import {
   draftCodeChange,
   DrafterError,
@@ -748,7 +749,7 @@ function buildPrTitle(plan: Atom): string {
   const title = typeof meta['title'] === 'string' && meta['title'].length > 0
     ? meta['title']
     : `plan ${plan.id}`;
-  return `code-author: ${title}`;
+  return buildConventionalCommitsPrTitle(title);
 }
 
 function buildCommitMessage(plan: Atom, draftNotes: string): string {
