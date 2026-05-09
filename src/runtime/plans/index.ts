@@ -63,6 +63,25 @@ export type {
   RunReaperSweepResult,
 } from './reaper.js';
 export {
+  classifyPipelineForReap,
+  markPipelineReaped,
+  markStageAtomReaped,
+  loadAllTerminalPipelines,
+  runPipelineReaperSweep,
+  validatePipelineReaperTtls,
+  DEFAULT_PIPELINE_REAPER_TTLS,
+  PIPELINE_REAPER_PAGE_SIZE,
+  PIPELINE_REAPER_PAGE_LIMIT,
+} from './pipeline-reaper.js';
+export type {
+  PipelineReaperTtls,
+  PipelineReaperVerdict,
+  PipelineReaperClassification,
+  PipelineReapSummary,
+  LoadAllTerminalPipelinesResult,
+  RunPipelineReaperSweepResult,
+} from './pipeline-reaper.js';
+export {
   buildPrDriverClaim,
   buildReleasePrDriverClaim,
   findActiveDriverClaim,
