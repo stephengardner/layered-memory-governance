@@ -16,8 +16,7 @@
  * `readPrObservationFreshnessMs` so future maintainers see one pattern,
  * not four.
  *
- * Resolution chain at the call site (driver script + future
- * LoopRunner pass per Task 5):
+ * Resolution chain at the call site (driver script + LoopRunner pass):
  *   1. canon policy atom (this reader): preferred, deployment-tunable
  *   2. env vars (e.g. LAG_PIPELINE_REAPER_TERMINAL_MS): fallback
  *   3. `DEFAULT_PIPELINE_REAPER_TTLS`: hardcoded floor (30d / 14d / 30d)
@@ -71,8 +70,18 @@ export async function readPipelineReaperTtlsFromCanon(
     for (const atom of page.atoms) {
       if (atom.taint !== 'clean') continue;
       if (atom.superseded_by.length > 0) continue;
-      const meta = atom.metadata as Record<string, unknown>;
-      const policy = meta['policy'] as Record<string, unknown> | undefined;
+      // Guard the metadata shape before indexing. Atom.metadata is a
+      // best-effort record on the substrate side -- a JSON write that
+      // dropped the field, an externally-edited atom file, or a future
+      // schema migration could leave it null/undefined/non-object.
+      // Indexing through `as Record<string, unknown>` would TypeError on
+      // those shapes and break the documented fail-soft posture
+      // (malformed operator data must warn + null, never throw).
+      const meta = atom.metadata;
+      if (typeof meta !== 'object' || meta === null) continue;
+      const policy = (meta as Record<string, unknown>)['policy'] as
+        | Record<string, unknown>
+        | undefined;
       if (!policy || policy['subject'] !== POLICY_SUBJECT) continue;
       // Named fields are canonical. Reject unknown shapes loud-but-
       // recoverable: stderr warning + return null so the caller falls

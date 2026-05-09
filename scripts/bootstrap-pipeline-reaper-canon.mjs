@@ -42,9 +42,11 @@ const DRY_RUN = argv.includes('--dry-run');
 
 // Operator principal id. Every deployment picks its own; a hardcoded
 // default here would leak one instance's shape into the script.
-// Require explicit configuration.
-const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
-if (!OPERATOR_ID || OPERATOR_ID.length === 0) {
+// Require explicit configuration. Trim before the empty-check so a
+// whitespace-only env value (e.g. `LAG_OPERATOR_ID=" "`) does not slip
+// through and write a bad principal_id.
+const OPERATOR_ID = process.env.LAG_OPERATOR_ID?.trim();
+if (!OPERATOR_ID) {
   console.error(
     '[bootstrap-pipeline-reaper-canon] ERROR: LAG_OPERATOR_ID is not set. Export your\n'
       + 'operator principal id before running this script, e.g.\n\n'

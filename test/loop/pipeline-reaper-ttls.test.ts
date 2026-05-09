@@ -299,4 +299,20 @@ describe('readPipelineReaperTtlsFromCanon', () => {
     await host.atoms.put(unrelated);
     expect(await readPipelineReaperTtlsFromCanon(host)).toBeNull();
   });
+
+  it('skips atoms whose metadata is null without throwing', async () => {
+    const host = createMemoryHost();
+    // A directive atom whose metadata round-tripped through a path that
+    // left the field null must not crash the reader. The documented
+    // fail-soft contract is "malformed operator data warns + returns
+    // null, never throws"; a null metadata is the limit case of
+    // "malformed payload" and must skip cleanly without indexing into
+    // a null record.
+    const broken: Atom = {
+      ...policyAtom('pol-null-metadata', VALID),
+      metadata: null as unknown as Record<string, unknown>,
+    };
+    await host.atoms.put(broken);
+    expect(await readPipelineReaperTtlsFromCanon(host)).toBeNull();
+  });
 });
