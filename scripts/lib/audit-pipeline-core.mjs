@@ -51,13 +51,16 @@ export async function auditPipeline({ adapter, pipelineId }) {
   let total = 0;
   for (const atomType of STAGE_TYPES) {
     const rows = await adapter.query({ atom_type: atomType, pipeline_id: pipelineId });
-    rows.sort((a, b) => {
+    // Copy before sort: an adapter may return a shared cached array or a
+    // ReadonlyArray, so an in-place .sort() can either leak side effects to
+    // a downstream caller or throw on a frozen-array shape.
+    const sortedRows = [...rows].sort((a, b) => {
       const ta = a.timestamp ?? '';
       const tb = b.timestamp ?? '';
       return ta < tb ? -1 : ta > tb ? 1 : 0;
     });
-    stages[atomType] = rows;
-    total += rows.length;
+    stages[atomType] = sortedRows;
+    total += sortedRows.length;
   }
   if (total === 0) {
     return { exitCode: 0, stdout: `No atoms found for pipeline-id ${pipelineId}\n`, stderr: '' };
