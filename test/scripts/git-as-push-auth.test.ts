@@ -297,6 +297,11 @@ describe('buildPushEnv (push does NOT set Authorization: Bearer)', () => {
       }
     }
   });
+
+  it('neutralizes GIT_ASKPASS / SSH_ASKPASS to prevent inherited helper hangs', () => {
+    expect(env.GIT_ASKPASS).toBe('');
+    expect(env.SSH_ASKPASS).toBe('');
+  });
 });
 
 describe('buildReadOnlyEnv (fetch / pull / clone / etc.)', () => {
