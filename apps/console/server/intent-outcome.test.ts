@@ -486,6 +486,86 @@ describe('buildIntentOutcome: intent-dispatched-pending-review', () => {
     expect(result.pr_url).toBe('https://github.com/x/y/pull/411');
     expect(result.summary).toMatch(/PR #411 open, awaiting review/);
   });
+
+  /*
+   * Partial-chain regression: a pr-observation can survive without
+   * its sibling code-author-invoked atom (the latter reaped, missing,
+   * or written under a different plan id). Pre-fix this fell through
+   * to intent-running and the state pill misled the operator.
+   */
+  it('returns intent-dispatched-pending-review when pr-observation is OPEN but code-author atom is missing', () => {
+    const intent = intentAtom({
+      id: 'operator-intent-partial-pr-1',
+      created_at: '2026-05-08T14:00:00.000Z',
+    });
+    const pipeline = pipelineAtom({
+      id: 'pipeline-partial-pr-1',
+      intent_id: intent.id,
+      created_at: '2026-05-08T14:01:00.000Z',
+      pipeline_state: 'completed',
+    });
+    const plan = planAtom({
+      id: 'plan-partial-pr-1',
+      pipelineId: pipeline.id,
+      created_at: '2026-05-08T14:04:00.000Z',
+    });
+    const dispatch = dispatchRecord({
+      pipelineId: pipeline.id,
+      dispatched: 1,
+      created_at: '2026-05-08T14:05:00.000Z',
+    });
+    const observation = prObservation({
+      planId: plan.id,
+      prNumber: 999,
+      prState: 'OPEN',
+      created_at: '2026-05-08T14:30:00.000Z',
+    });
+    const result = buildIntentOutcome(
+      [intent, pipeline, plan, dispatch, observation],
+      pipeline.id,
+      NOW,
+    );
+    expect(result.state).toBe('intent-dispatched-pending-review');
+    expect(result.pr_number).toBe(999);
+  });
+});
+
+describe('buildIntentOutcome: partial-chain dispatch failures', () => {
+  /*
+   * Partial-chain regression: a dispatch_record can survive without
+   * its sibling pipeline atom (pipeline reaped or never written).
+   * Pre-fix this fell through to intent-running because the zero-
+   * dispatch failure rung required pipelineState === 'completed'.
+   * The plan atom is included because the lifecycle projector reads
+   * the error_message from plan.metadata.dispatch_result, not from
+   * the dispatch-record itself.
+   */
+  it('returns intent-dispatch-failed when dispatched=0 but pipeline atom is missing', () => {
+    const intent = intentAtom({
+      id: 'operator-intent-partial-dispatch-1',
+      created_at: '2026-05-08T14:00:00.000Z',
+    });
+    const plan = planAtom({
+      id: 'plan-partial-dispatch-1',
+      pipelineId: 'pipeline-partial-dispatch-1',
+      created_at: '2026-05-08T14:04:00.000Z',
+      errorMessage: 'envelope mismatch (orphan partial chain)',
+    });
+    const dispatch = dispatchRecord({
+      pipelineId: 'pipeline-partial-dispatch-1',
+      dispatched: 0,
+      scanned: 1,
+      created_at: '2026-05-08T14:05:00.000Z',
+    });
+    const result = buildIntentOutcome(
+      [intent, plan, dispatch],
+      'pipeline-partial-dispatch-1',
+      NOW,
+    );
+    expect(result.state).toBe('intent-dispatch-failed');
+    expect(result.skip_reasons.length).toBeGreaterThan(0);
+    expect(result.skip_reasons[0]?.reason).toContain('envelope mismatch');
+  });
 });
 
 describe('buildIntentOutcome: intent-paused', () => {

@@ -280,6 +280,15 @@ export function buildIntentOutcome(
   const isMerged = (merge && merge.pr_state === 'MERGED')
     || (observation && observation.pr_state === 'MERGED');
   const prClosedUnmerged = observation && observation.pr_state === 'CLOSED';
+  // Partial-chain recovery: the lifecycle atoms a pipeline writes can
+  // be reaped or fail to land independently. A pr-observation can
+  // exist without a surviving code-author-invoked, and a dispatch_record
+  // can exist without a surviving pipeline atom. Synthesize from
+  // whichever atoms are present so the state pill reflects ground truth
+  // even when the chain is incomplete. The MERGED case is filtered out
+  // because isMerged above already terminates that rung.
+  const hasObservedPr = observation?.pr_number != null
+    && observation.pr_state !== 'MERGED';
 
   // Pull a pipeline title from the pipeline atom's content / metadata.
   const pipelineMeta = (pipeline?.metadata ?? {}) as Record<string, unknown>;
@@ -308,12 +317,17 @@ export function buildIntentOutcome(
     state = 'intent-abandoned';
   } else if (paused) {
     state = 'intent-paused';
-  } else if (codeAuthor && codeAuthor.kind === 'dispatched' && codeAuthor.pr_number) {
+  } else if (
+    (codeAuthor?.kind === 'dispatched' && codeAuthor.pr_number)
+    || hasObservedPr
+  ) {
     /*
-     * A code-author invocation produced a real PR. The PR is in flight
-     * (not merged, since the isMerged rung above didn't fire). The
-     * observation may be missing entirely (early state) or present
-     * with pr_state=OPEN; either way the row is "pending review".
+     * A code-author invocation produced a real PR, OR a pr-observation
+     * survives without its code-author-invoked sibling (partial chain).
+     * The PR is in flight (not merged, since the isMerged rung above
+     * didn't fire). The observation may be missing entirely (early
+     * state) or present with pr_state=OPEN; either way the row is
+     * "pending review" unless the observation marks it CLOSED.
      */
     if (prClosedUnmerged) {
       // PR was opened but later closed without merge -- a dispatch failure
@@ -323,15 +337,18 @@ export function buildIntentOutcome(
       state = 'intent-dispatched-pending-review';
     }
   } else if (
-    pipelineState === 'completed'
-    && dispatchRecord
+    dispatchRecord
     && dispatchedCount === 0
+    && (pipelineState === 'completed' || pipeline === null)
   ) {
     /*
-     * Pipeline finished but produced zero dispatches. This is the
-     * canonical "envelope mismatch / plan confidence too low / etc"
-     * failure mode; surface it as dispatch-failed with the skip
-     * reason inline.
+     * Pipeline finished but produced zero dispatches, OR the pipeline
+     * atom was reaped and only the dispatch_record survives with
+     * dispatched === 0. Both are the canonical "envelope mismatch /
+     * plan confidence too low / etc" failure mode; surface as
+     * dispatch-failed with the skip reason inline. The pipeline-running
+     * case is intentionally excluded -- still-running pipelines can
+     * still produce a dispatch on a later stage.
      */
     state = 'intent-dispatch-failed';
   } else if (
