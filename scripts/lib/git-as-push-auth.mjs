@@ -46,14 +46,46 @@ export function findRemoteArg(gitArgs) {
 }
 
 /**
+ * Git-level (pre-subcommand) flags that consume the next argv entry.
+ * Used by isPushCommand to skip over flag values when locating the
+ * subcommand. Inline `--flag=value` forms are a single token and
+ * already pass through the .startsWith('-') branch.
+ *
+ * `-c name=value` is included even though the value is `name=value`
+ * (a single token) because git's grammar still treats it as a
+ * separate argument; missing it would mis-classify
+ * `git -c http.proxy=... push origin foo` as a non-push command.
+ */
+const GIT_LEVEL_VALUE_OPTIONS = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--exec-path',
+  '--super-prefix',
+  '--list-cmds',
+]);
+
+/**
  * True if gitArgs' first positional is `push`. Matches bare `push`
- * and skips preceding git-level options (rare in practice, but
- * `-C <dir> push` is legal).
+ * and skips preceding git-level options including value-taking
+ * flags like `-C <dir>`. Inline forms (`--git-dir=path`) are single
+ * tokens and don't need the value-skip path.
  */
 export function isPushCommand(gitArgs) {
-  for (const a of gitArgs) {
+  let i = 0;
+  while (i < gitArgs.length) {
+    const a = gitArgs[i];
     if (a === 'push') return true;
-    if (a.startsWith('-')) continue;
+    if (a.startsWith('-')) {
+      if (GIT_LEVEL_VALUE_OPTIONS.has(a)) {
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
     return false;
   }
   return false;
