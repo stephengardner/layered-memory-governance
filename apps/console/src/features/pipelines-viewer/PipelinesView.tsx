@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Clock, Coins, ListChecks, Workflow } from 'lucide-react';
@@ -8,7 +8,7 @@ import { LoadingState, ErrorState, EmptyState } from '@/components/state-display
 import { listPipelines, type PipelineSummary } from '@/services/pipelines.service';
 import { toErrorMessage } from '@/services/errors';
 import { storage } from '@/services/storage.service';
-import { setRoute, useRouteId, routeHref } from '@/state/router.store';
+import { setRoute, setRouteQuery, useRouteId, useRouteQuery, routeHref } from '@/state/router.store';
 import { PipelineDetailView } from './PipelineDetailView';
 import { pipelineStateTone } from './tones';
 import {
@@ -17,8 +17,10 @@ import {
 } from '@/features/plan-state/trueOutcome';
 import {
   bucketForPipelineState,
-  matchesBucket,
+  matchesPipelineBucket,
   normalizeBucket,
+  pipelineNeedsAttention,
+  PIPELINE_FILTER_QUERY_KEY,
   PIPELINE_FILTER_STORAGE_KEY,
   DEFAULT_PIPELINE_FILTER,
   type PipelineStateBucket,
@@ -54,13 +56,45 @@ function PipelinesList() {
     queryFn: ({ signal }) => listPipelines(signal),
   });
 
+  /*
+   * Filter precedence: URL query param `?state=<bucket>` wins over
+   * localStorage so a deep-linked share (e.g. paging an operator at
+   * `/pipelines?state=needs-attention`) lands on the actionable
+   * subset regardless of their stored preference. Falls back to
+   * localStorage, then to the indie-friendly `all` default.
+   */
+  const routeQuery = useRouteQuery();
   const [bucket, setBucket] = useState<PipelineStateBucket>(
-    () => normalizeBucket(storage.get<unknown>(PIPELINE_FILTER_STORAGE_KEY)) ?? DEFAULT_PIPELINE_FILTER,
+    () => normalizeBucket(routeQuery.get(PIPELINE_FILTER_QUERY_KEY))
+      ?? normalizeBucket(storage.get<unknown>(PIPELINE_FILTER_STORAGE_KEY))
+      ?? DEFAULT_PIPELINE_FILTER,
   );
+
+  /*
+   * Sync the bucket when the URL changes from outside this component
+   * (browser back/forward, programmatic setRoute, another tab via
+   * popstate). Without this the chip row would lag a popstate event
+   * because `useState` ignores the new initial argument on re-render.
+   */
+  useEffect(() => {
+    const fromUrl = normalizeBucket(routeQuery.get(PIPELINE_FILTER_QUERY_KEY));
+    if (fromUrl !== null && fromUrl !== bucket) {
+      setBucket(fromUrl);
+    }
+  }, [routeQuery, bucket]);
 
   const handleBucketChange = (next: PipelineStateBucket) => {
     setBucket(next);
     storage.set(PIPELINE_FILTER_STORAGE_KEY, next);
+    /*
+     * Keep the URL in sync. The DEFAULT_PIPELINE_FILTER bucket is
+     * encoded as a missing query param so a default-state URL stays
+     * clean; any non-default bucket gets `?state=<bucket>` so the
+     * choice is permalinkable.
+     */
+    setRouteQuery({
+      [PIPELINE_FILTER_QUERY_KEY]: next === DEFAULT_PIPELINE_FILTER ? null : next,
+    });
   };
 
   const allPipelines = query.data?.pipelines ?? [];
@@ -69,7 +103,13 @@ function PipelinesList() {
     // `unknown` covers any pipeline_state the UI does not have a chip
     // for yet (future state, malformed atom). Tracked separately so a
     // new state never silently inflates the Running count.
+    //
+    // `needs-attention` is a composite bucket: it overlaps with
+    // failed, paused, and the noop-completed case rather than being
+    // mutually exclusive with them. Counted separately via
+    // pipelineNeedsAttention so the chip badge is honest.
     const c: Record<PipelineStateBucket, number> = {
+      'needs-attention': 0,
       running: 0,
       paused: 0,
       completed: 0,
@@ -80,12 +120,13 @@ function PipelinesList() {
     for (const p of allPipelines) {
       const b = bucketForPipelineState(p.pipeline_state);
       c[b] += 1;
+      if (pipelineNeedsAttention(p)) c['needs-attention'] += 1;
     }
     return c;
   }, [allPipelines]);
 
   const pipelines = useMemo(
-    () => allPipelines.filter((p) => matchesBucket(p.pipeline_state, bucket)),
+    () => allPipelines.filter((p) => matchesPipelineBucket(p, bucket)),
     [allPipelines, bucket],
   );
 
@@ -170,7 +211,15 @@ function PipelinesList() {
   );
 }
 
+/*
+ * `needs-attention` leads the chip row because it answers the
+ * operator's "what should I look at right now?" question without
+ * scanning every chip individually. The remaining chips are
+ * ordered by likelihood-of-use: in-flight pipelines first, terminal
+ * outcomes after, `all` as the wide-open escape hatch.
+ */
 const FILTER_LABELS: ReadonlyArray<{ bucket: PipelineStateBucket; label: string }> = [
+  { bucket: 'needs-attention', label: 'Needs attention' },
   { bucket: 'running', label: 'Running' },
   { bucket: 'paused', label: 'Paused' },
   { bucket: 'completed', label: 'Completed' },
