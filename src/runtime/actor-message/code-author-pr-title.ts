@@ -1,38 +1,27 @@
 /**
  * Shared helper that builds Conventional-Commits-shaped titles for
- * autonomous PRs opened by code-author executors.
+ * automation-opened pull requests.
  *
- * Two call sites depend on the same logic:
- *
- *   - examples-side `agentic-code-author-executor.createPrViaGhClient`
- *     (the substrate-deep path; PR title derives from the plan atom's
- *     metadata.title).
- *   - examples-side `diff-based-code-author-executor.buildPrTitle`
- *     (the legacy single-shot path; same shape).
- *
- * Both used to hardcode `code-author: <plan title>` which fails the
- * `dev-pr-titles-conventional-commits` canon directive: PR titles MUST
- * start with `<type>(<scope>): <description>` where type is one of
- * feat | fix | docs | style | refactor | perf | test | build | ci |
- * chore | revert. `code-author:` is not a valid type, so reviewers
- * (CR + auditor) flag every autonomous PR as non-conforming until the
- * driver agent renames it manually.
+ * Code-author executors (any path that drafts a PR from a plan atom)
+ * historically formed titles by concatenating a fixed prefix to the
+ * plan title. That fixed prefix was not a Conventional Commits type
+ * (`feat | fix | docs | style | refactor | perf | test | build | ci |
+ * chore | revert`), so every autonomous PR opened with a non-conforming
+ * title and required a downstream rename. Two callers in this module
+ * directory invoked this helper at N=2 once the canon directive
+ * required Conventional Commits; further callers reuse the same
+ * primitive rather than embedding a third copy that can drift.
  *
  * Behavior:
  *
- *   - If the plan title already starts with a conventional-commits
+ *   - If the plan title already starts with a Conventional Commits
  *     prefix (`feat:`, `feat(scope):`, `fix(...):` etc), pass it
- *     through as-is. The plan author has already shaped it.
+ *     through as-is. The drafter has already shaped it.
  *   - Otherwise prepend `feat(autonomous):` so the PR title becomes
  *     `feat(autonomous): <plan title>`. `feat` because most plans
  *     introduce new behavior; `autonomous` as the scope so a release-
- *     notes generator can group autonomous PRs together for audit.
- *
- * Why a shared helper rather than the two existing inline copies:
- * canon `dev-no-duplication-beyond-n2`. Extract at N=2 so the next
- * call site (a future PR-fix executor, the resume-author wrapper, a
- * Slack-driven autonomous PR flow) inherits the same shape without
- * a third copy that drifts.
+ *     notes generator can group automation-opened PRs together for
+ *     audit.
  */
 
 /**
