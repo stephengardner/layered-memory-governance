@@ -14,7 +14,7 @@
 
 The reaper at `src/runtime/plans/reaper.ts` (332 lines) only abandons stale `proposed` plans (24h warn / 72h auto-abandon). The driver `scripts/reap-stale-plans.mjs` and the LoopRunner pass at `src/runtime/loop/runner.ts:486` both wrap that single function. Eleven other atom types accumulate per pipeline run and are never reaped.
 
-## Section 1 — Audit findings
+## Section 1 - Audit findings
 
 ### 1.1 What types accumulate (concrete, today)
 
@@ -53,7 +53,7 @@ Today this is a single warn/abandon pair, not parameterized by atom-type. The re
 
 ### 1.3 Deletion vs. labeling doctrine for non-plan atoms
 
-The doctrine in `reaper.ts:9` ("Content is preserved; the label is the change") is enforced at the substrate layer: `AtomStore` has `put`, `get`, `query`, `update`, `batchUpdate`, `embed`, `similarity`, `contentHash`, `subscribe` — and **zero deletion verbs**. Hard deletion would violate substrate purity (atom-detail viewer, `derived_from` provenance chains).
+The doctrine in `reaper.ts:9` ("Content is preserved; the label is the change") is enforced at the substrate layer: `AtomStore` has `put`, `get`, `query`, `update`, `batchUpdate`, `embed`, `similarity`, `contentHash`, `subscribe` - and **zero deletion verbs**. Hard deletion would violate substrate purity (atom-detail viewer, `derived_from` provenance chains).
 
 V0 doctrine for non-plan atoms:
 - Keep "atoms are never deleted" as the unchanged invariant.
@@ -67,14 +67,14 @@ V0 doctrine for non-plan atoms:
 `transitionPlanState` is plan-specific by construction (throws on `atom.type !== 'plan'`, validates against `PlanState` machine). For pipeline atoms the runner already uses direct `host.atoms.update` calls; no enforced state machine on `pipeline_state`. For stage outputs and agent atoms, no equivalent state field exists.
 
 **Decision:** introduce two new transition primitives, mirroring the shape of `transitionPlanState`:
-- `markPipelineReaped(host, atomId, principalId, reason)` — emits audit `kind: 'pipeline.reaped'`.
-- `markStageAtomReaped(host, atomId, principalId, reason)` — emits audit `kind: 'pipeline.stage_atom_reaped'`.
+- `markPipelineReaped(host, atomId, principalId, reason)` - emits audit `kind: 'pipeline.reaped'`.
+- `markStageAtomReaped(host, atomId, principalId, reason)` - emits audit `kind: 'pipeline.stage_atom_reaped'`.
 
 Do NOT widen `transitionPlanState`; its plan-specificity is correctness load-bearing.
 
 ---
 
-## Section 2 — Design choice: new `pipeline-reaper.ts` module
+## Section 2 - Design choice: new `pipeline-reaper.ts` module
 
 **Choice:** Introduce a new `src/runtime/plans/pipeline-reaper.ts` module (sibling to `reaper.ts`).
 
@@ -82,7 +82,7 @@ Do NOT widen `transitionPlanState`; its plan-specificity is correctness load-bea
 
 1. **Different doctrine, different module.** The plan reaper transitions `proposed → abandoned` via the existing state machine (one-shot label change on a single atom type). The pipeline reaper GCs the entire subgraph rooted at a terminal-state pipeline (multi-type cascade walk through `derived_from` traversal). The two share zero code paths past the TTL-arithmetic helpers.
 
-2. **Substrate-not-prescription, applied to TTL maps.** The plan reaper's `ReaperTtls` is `{staleWarnMs, staleAbandonMs}` — two scalars. Extending to per-atom-type TTLs would force every existing caller to thread a `Map<AtomType, ...>` through that signature, breaking every test fixture.
+2. **Substrate-not-prescription, applied to TTL maps.** The plan reaper's `ReaperTtls` is `{staleWarnMs, staleAbandonMs}` - two scalars. Extending to per-atom-type TTLs would force every existing caller to thread a `Map<AtomType, ...>` through that signature, breaking every test fixture.
 
 3. **Independent kill-switch + pagination posture.** Pagination caps need to be different (per-type budgets vs. one global cap).
 
@@ -107,16 +107,16 @@ The alternative considered and rejected: a per-atom-type TTL map inside the exis
 
 ---
 
-## Section 3 — Per-task breakdown
+## Section 3 - Per-task breakdown
 
 Total: 7 tasks. Each ships as a separate atomic PR.
 
-### Task 1 — Document `metadata.reaped_at` convention on `AtomPatch`
+### Task 1 - Document `metadata.reaped_at` convention on `AtomPatch`
 
 **Files (modify):**
 - Create: (none)
-- Modify: `src/substrate/types.ts` — JSDoc on `AtomPatch.metadata` documenting the convention; JSDoc on `AtomType` for pipeline-related types describing GC posture.
-- Test: `test/conformance/atom-store-conformance.test.ts` — round-trip `metadata.reaped_at`/`metadata.reaped_reason` on MemoryAtomStore + FileAtomStore.
+- Modify: `src/substrate/types.ts` - JSDoc on `AtomPatch.metadata` documenting the convention; JSDoc on `AtomType` for pipeline-related types describing GC posture.
+- Test: `test/conformance/atom-store-conformance.test.ts` - round-trip `metadata.reaped_at`/`metadata.reaped_reason` on MemoryAtomStore + FileAtomStore.
 
 **Steps:**
 - [ ] **Step 1:** Read `src/substrate/types.ts` to locate `AtomPatch` + `AtomType` definitions.
@@ -134,12 +134,12 @@ Total: 7 tasks. Each ships as a separate atomic PR.
 
 ---
 
-### Task 2 — Add `pipeline-reaper.ts` module
+### Task 2 - Add `pipeline-reaper.ts` module
 
 **Files (new):**
-- Create: `src/runtime/plans/pipeline-reaper.ts` — exports `PipelineReaperTtls`, `DEFAULT_PIPELINE_REAPER_TTLS`, `validatePipelineReaperTtls`, `classifyPipelineForReap`, `markPipelineReaped`, `markStageAtomReaped`, `loadAllTerminalPipelines`, `runPipelineReaperSweep`.
-- Modify: `src/runtime/plans/index.ts` — re-export the new public surface.
-- Test: `test/runtime/plans/pipeline-reaper.test.ts` — mirrors structure of `reaper.test.ts`.
+- Create: `src/runtime/plans/pipeline-reaper.ts` - exports `PipelineReaperTtls`, `DEFAULT_PIPELINE_REAPER_TTLS`, `validatePipelineReaperTtls`, `classifyPipelineForReap`, `markPipelineReaped`, `markStageAtomReaped`, `loadAllTerminalPipelines`, `runPipelineReaperSweep`.
+- Modify: `src/runtime/plans/index.ts` - re-export the new public surface.
+- Test: `test/runtime/plans/pipeline-reaper.test.ts` - mirrors structure of `reaper.test.ts`.
 
 **Default TTLs (conservative):**
 - `terminalPipelineMs`: 30 days
@@ -171,14 +171,14 @@ Total: 7 tasks. Each ships as a separate atomic PR.
 
 ---
 
-### Task 3 — Canon-policy reader for pipeline-reaper TTLs
+### Task 3 - Canon-policy reader for pipeline-reaper TTLs
 
 **Files (new):**
-- Create: `src/runtime/loop/pipeline-reaper-ttls.ts` — `readPipelineReaperTtlsFromCanon(host)`. Mirrors `reaper-ttls.ts`.
-- Create: `scripts/lib/pipeline-reaper-canon-policies.mjs` — pure POLICIES factory.
-- Create: `scripts/bootstrap-pipeline-reaper-canon.mjs` — idempotent installer.
+- Create: `src/runtime/loop/pipeline-reaper-ttls.ts` - `readPipelineReaperTtlsFromCanon(host)`. Mirrors `reaper-ttls.ts`.
+- Create: `scripts/lib/pipeline-reaper-canon-policies.mjs` - pure POLICIES factory.
+- Create: `scripts/bootstrap-pipeline-reaper-canon.mjs` - idempotent installer.
 - Test: `test/loop/pipeline-reaper-ttls.test.ts` (mirrors `reaper-ttls.test.ts`).
-- Test: `test/scripts/bootstrap-pipeline-reaper-canon.test.ts` — drift-pin between POLICIES factory and `DEFAULT_PIPELINE_REAPER_TTLS`.
+- Test: `test/scripts/bootstrap-pipeline-reaper-canon.test.ts` - drift-pin between POLICIES factory and `DEFAULT_PIPELINE_REAPER_TTLS`.
 
 **Policy atom shape:**
 ```
@@ -202,11 +202,11 @@ metadata.policy = {
 
 ---
 
-### Task 4 — Driver script `scripts/reap-stale-pipelines.mjs`
+### Task 4 - Driver script `scripts/reap-stale-pipelines.mjs`
 
 **Files (new):**
-- Create: `scripts/reap-stale-pipelines.mjs` — sibling to `reap-stale-plans.mjs`. Same exit-code convention (0/1/2/3), same `--dry-run`, `--principal` flags.
-- Test: `test/scripts/reap-stale-pipelines.test.ts` — parse-args, dry-run output shape, missing-principal exit, STOP-sentinel exit.
+- Create: `scripts/reap-stale-pipelines.mjs` - sibling to `reap-stale-plans.mjs`. Same exit-code convention (0/1/2/3), same `--dry-run`, `--principal` flags.
+- Test: `test/scripts/reap-stale-pipelines.test.ts` - parse-args, dry-run output shape, missing-principal exit, STOP-sentinel exit.
 
 **Steps:**
 - [ ] Mirror `reap-stale-plans.mjs` argument parsing + STOP/principal resolution.
@@ -223,12 +223,12 @@ metadata.policy = {
 
 ---
 
-### Task 5 — LoopRunner pass: extend `runReaperPass` to call both reapers
+### Task 5 - LoopRunner pass: extend `runReaperPass` to call both reapers
 
 **Files (modify):**
-- Modify: `src/runtime/loop/runner.ts` — extend `reaperPass` private method (lines 907-967) to call `runPipelineReaperSweep` after the plan-reaper sweep.
-- Modify: `src/runtime/loop/types.ts` — add `pipelineReaperReport` field to `LoopTickReport`.
-- Test: `test/loop/runner.test.ts` — add cases for both-reapers-run, false-flag-disables-both, decoupled-failure (one fails, other still runs), TTL chain.
+- Modify: `src/runtime/loop/runner.ts` - extend `reaperPass` private method (lines 907-967) to call `runPipelineReaperSweep` after the plan-reaper sweep.
+- Modify: `src/runtime/loop/types.ts` - add `pipelineReaperReport` field to `LoopTickReport`.
+- Test: `test/loop/runner.test.ts` - add cases for both-reapers-run, false-flag-disables-both, decoupled-failure (one fails, other still runs), TTL chain.
 
 **Steps:**
 - [ ] **Step 1:** Read `runner.ts:907-967` (existing reaperPass) + `types.ts` (existing LoopTickReport).
@@ -248,14 +248,14 @@ metadata.policy = {
 
 ---
 
-### Task 6 — Console projection: hide reaped atoms by default
+### Task 6 - Console projection: hide reaped atoms by default
 
 **Files (modify):**
 - Investigate: `apps/console/server/...` (existing query/projection layer).
 - Investigate: `apps/console/src/...` (React surface for the toggle UI).
 - Modify: extend filter shape to skip atoms with `metadata.reaped_at` set.
 - Add: "Show reaped (N)" toggle in the atom-list view.
-- Test: Console integration test — seed a reaped pipeline, default view hides; toggle shows.
+- Test: Console integration test - seed a reaped pipeline, default view hides; toggle shows.
 
 **Steps:**
 - [ ] **Step 1:** Read the Console server query layer to confirm existing filter shape (likely already supports `superseded_by` skip).
@@ -274,11 +274,11 @@ metadata.policy = {
 
 ---
 
-### Task 7 — Documentation + dogfood the GC
+### Task 7 - Documentation + dogfood the GC
 
 **Files (new/modify):**
-- Modify: `docs/framework.md` — append "Reaper" section describing both passes.
-- Modify: `docs/observability.md` — describe new audit kinds (`pipeline.reaped`, `pipeline.stage_atom_reaped`).
+- Modify: `docs/framework.md` - append "Reaper" section describing both passes.
+- Modify: `docs/observability.md` - describe new audit kinds (`pipeline.reaped`, `pipeline.stage_atom_reaped`).
 - Dogfood: run `node scripts/reap-stale-pipelines.mjs --dry-run` against real `.lag/atoms/`. Confirm counts.
 - Then run live (after operator approval).
 
@@ -296,7 +296,7 @@ metadata.policy = {
 
 ---
 
-## Section 4 — Pre-push checklist + canon-audit + cr-precheck gate
+## Section 4 - Pre-push checklist + canon-audit + cr-precheck gate
 
 ### 4.1 Pre-push gates (mechanical)
 
@@ -309,15 +309,15 @@ metadata.policy = {
 ### 4.2 Canon-audit step (per `dev-implementation-canon-audit-loop`)
 
 For EACH task that modifies `src/`, dispatch a canon-compliance auditor sub-agent. Auditor verifies (citing each):
-- `inv-provenance-every-write` — new audit kinds carry `refs.atom_ids`
-- `inv-kill-switch-first` — sweep calls `host.scheduler.killswitchCheck()` before mutation
-- `inv-l3-requires-human` — no L3 atom is reaped (filter excludes directives)
-- `arch-atomstore-source-of-truth` — no deletion verbs added to AtomStore
-- `arch-atom-index-is-projection` — Console filter is projection-layer
-- `dev-substrate-not-prescription` — TTL knobs land in canon, not framework constants
-- `dev-canon-is-strategic-not-tactical` — TTL list enumerated explicitly, not generic
-- `dev-dry-extract-at-second-duplication` — shared helpers extracted at second use site
-- `dev-extreme-rigor-and-research` — audit findings ride directly into implementer revisions before commit
+- `inv-provenance-every-write` - new audit kinds carry `refs.atom_ids`
+- `inv-kill-switch-first` - sweep calls `host.scheduler.killswitchCheck()` before mutation
+- `inv-l3-requires-human` - no L3 atom is reaped (filter excludes directives)
+- `arch-atomstore-source-of-truth` - no deletion verbs added to AtomStore
+- `arch-atom-index-is-projection` - Console filter is projection-layer
+- `dev-substrate-not-prescription` - TTL knobs land in canon, not framework constants
+- `dev-canon-is-strategic-not-tactical` - TTL list enumerated explicitly, not generic
+- `dev-dry-extract-at-second-duplication` - shared helpers extracted at second use site
+- `dev-extreme-rigor-and-research` - audit findings ride directly into implementer revisions before commit
 
 ### 4.3 CR-precheck gate (per `dev-coderabbit-cli-pre-push`)
 
