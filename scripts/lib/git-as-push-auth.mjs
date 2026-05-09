@@ -225,10 +225,19 @@ export function extractSetUpstreamPlan(gitArgs) {
  * pull, clone, ls-remote, ...). GitHub accepts Bearer on these
  * endpoints, so the token flows via `http.extraHeader` and never
  * touches argv.
+ *
+ * The empty `GIT_ASKPASS` / `SSH_ASKPASS` fields neutralize ambient
+ * askpass helpers some shells inherit (notably MSYS git-bash, which
+ * exports `SSH_ASKPASS` pointing at a GUI helper that hangs ~30s
+ * waiting for a TTY when invoked from a non-interactive child).
+ * Empty strings make git skip both helpers, then `GIT_TERMINAL_PROMPT=0`
+ * fails fast instead of hanging on a prompt that never arrives.
  */
 export function buildReadOnlyEnv(token) {
   return {
     GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    SSH_ASKPASS: '',
     GIT_CONFIG_COUNT: '2',
     GIT_CONFIG_KEY_0: 'http.extraHeader',
     GIT_CONFIG_VALUE_0: `Authorization: Bearer ${token}`,
@@ -243,10 +252,16 @@ export function buildReadOnlyEnv(token) {
  * token reaches git via the transient URL argv position (see
  * buildPushSpawnArgs). credential.helper= still clears the ambient
  * helper, and GIT_TERMINAL_PROMPT=0 still fails fast on misconfig.
+ *
+ * `GIT_ASKPASS` / `SSH_ASKPASS` are neutralized for the same reason
+ * as buildReadOnlyEnv: prevent inherited helper scripts from hanging
+ * on a TTY that the wrapper's child never has.
  */
 export function buildPushEnv() {
   return {
     GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    SSH_ASKPASS: '',
     GIT_CONFIG_COUNT: '1',
     GIT_CONFIG_KEY_0: 'credential.helper',
     GIT_CONFIG_VALUE_0: '',
