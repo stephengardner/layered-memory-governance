@@ -238,6 +238,7 @@ export async function runPipeline(
   // atom is in a resumable state before calling runPipeline.
   const existingPipelineAtom = await host.atoms.get(pipelineId);
   if (existingPipelineAtom === null) {
+    const costProjection = await projectPipelineCost(stages, host);
     const pipelineAtom = mkPipelineAtom({
       pipelineId,
       principalId: options.principal,
@@ -246,6 +247,7 @@ export async function runPipeline(
       seedAtomIds: options.seedAtomIds,
       stagePolicyAtomId: options.stagePolicyAtomId,
       mode: options.mode,
+      costProjection,
     });
     await host.atoms.put(pipelineAtom);
   } else if (options.resumeFromStage === undefined) {
@@ -1079,6 +1081,60 @@ async function sleepWithKillswitch(
     const remaining = totalMs - (Date.now() - start);
     await new Promise((resolve) => setTimeout(resolve, Math.min(slice, remaining)));
   }
+}
+
+/**
+ * Compute upfront cost projection for a pipeline run. For each stage we
+ * resolve the effective cap (stage.budget_cap_usd if defined, else the
+ * canon `pipeline-stage-cost-cap` for that stage name, else null).
+ *
+ * `projected_total_usd` is the sum of every effective cap; when ANY
+ * stage is uncapped we cannot project a meaningful total and return
+ * null with the offending stage names captured in
+ * `uncapped_stage_names`. Console + audit walks read this off the
+ * pipeline atom to surface "estimated total" alongside the running
+ * `total_cost_usd` so the operator sees the per-run upper bound at
+ * a glance.
+ *
+ * Read-only: walks canon atoms via the existing per-stage policy
+ * reader; no atom writes. Best-effort: a thrown reader rejects the
+ * whole pipeline tick into the existing failure path so the operator
+ * sees an explicit error rather than a silently-missing projection.
+ */
+async function projectPipelineCost(
+  stages: ReadonlyArray<PlanningStage>,
+  host: Host,
+): Promise<{
+  readonly projected_total_usd: number | null;
+  readonly capped_stage_count: number;
+  readonly uncapped_stage_names: ReadonlyArray<string>;
+}> {
+  let totalMicros = 0;
+  let cappedCount = 0;
+  const uncapped: string[] = [];
+  for (const stage of stages) {
+    const explicit =
+      typeof stage.budget_cap_usd === 'number' && Number.isFinite(stage.budget_cap_usd)
+        ? stage.budget_cap_usd
+        : undefined;
+    if (explicit !== undefined) {
+      totalMicros += toUsdMicros(explicit);
+      cappedCount++;
+      continue;
+    }
+    const policyCap = (await readPipelineStageCostCapPolicy(host, stage.name)).cap_usd;
+    if (policyCap !== null) {
+      totalMicros += toUsdMicros(policyCap);
+      cappedCount++;
+    } else {
+      uncapped.push(stage.name);
+    }
+  }
+  return {
+    projected_total_usd: uncapped.length === 0 ? totalMicros / USD_MICROS : null,
+    capped_stage_count: cappedCount,
+    uncapped_stage_names: uncapped,
+  };
 }
 
 async function raceStageWithTimeout<T>(

@@ -123,6 +123,20 @@ function baseAtom(input: {
 // pipeline atom (root for a run; pipeline_state is top-level)
 // ---------------------------------------------------------------------------
 
+/**
+ * Upfront cost projection stamped on the pipeline atom at run-start.
+ * `projected_total_usd` is the sum of every stage's effective cap
+ * (stage.budget_cap_usd or canon pol-pipeline-stage-cost-cap), or null
+ * when any stage is uncapped (no projection possible). Console + audit
+ * walks read this to surface "estimated total" alongside the running
+ * `total_cost_usd`.
+ */
+export interface PipelineCostProjection {
+  readonly projected_total_usd: number | null;
+  readonly capped_stage_count: number;
+  readonly uncapped_stage_names: ReadonlyArray<string>;
+}
+
 export interface MkPipelineAtomInput {
   readonly pipelineId: AtomId;
   readonly principalId: PrincipalId;
@@ -131,6 +145,7 @@ export interface MkPipelineAtomInput {
   readonly seedAtomIds: ReadonlyArray<AtomId>;
   readonly stagePolicyAtomId: string;
   readonly mode: 'single-pass' | 'substrate-deep';
+  readonly costProjection?: PipelineCostProjection;
 }
 
 export function mkPipelineAtom(input: MkPipelineAtomInput): Atom {
@@ -153,6 +168,9 @@ export function mkPipelineAtom(input: MkPipelineAtomInput): Atom {
         started_at: input.now,
         completed_at: null,
         total_cost_usd: 0,
+        ...(input.costProjection !== undefined
+          ? { cost_projection: input.costProjection }
+          : {}),
       },
     }),
     pipeline_state: 'pending',
