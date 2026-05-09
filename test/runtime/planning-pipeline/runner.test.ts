@@ -878,6 +878,69 @@ describe('runPipeline', () => {
     expect(attempts).toBe(1);
   });
 
+  it('falls back to canon `pipeline-stage-retry` policy when stage.retry is omitted', async () => {
+    // Operator-tunable knob: an org wants a global per-stage retry
+    // strategy without forcing every stage adapter to declare one.
+    // Seed a canon directive with subject='pipeline-stage-retry' for
+    // the stage and verify the runner picks it up. Mirrors how cost-cap
+    // and timeout policies already ship.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['canon-flaky']);
+    await host.atoms.put({
+      schema_version: 1,
+      id: 'pol-pipeline-stage-retry-canon-flaky' as AtomId,
+      content: 'canon retry for canon-flaky = max 3 / base 1ms',
+      type: 'directive',
+      layer: 'L3',
+      provenance: { kind: 'human-asserted', source: { tool: 'test' }, derived_from: [] },
+      confidence: 1,
+      created_at: NOW,
+      last_reinforced_at: NOW,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'apex-agent' as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        policy: {
+          subject: 'pipeline-stage-retry',
+          stage_name: 'canon-flaky',
+          max_attempts: 3,
+          base_delay_ms: 1,
+        },
+      },
+    });
+    let attempts = 0;
+    const stage: PlanningStage<unknown, unknown> = {
+      name: 'canon-flaky',
+      // No `retry` field declared on the adapter; rely on canon.
+      async run() {
+        attempts++;
+        if (attempts < 3) {
+          throw new Error('transient: canon-driven retry');
+        }
+        return { value: {}, cost_usd: 0, duration_ms: 0, atom_type: 'spec-output' };
+      },
+    };
+    const result = await runPipeline([stage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-canon-retry-fallback',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('completed');
+    expect(attempts).toBe(3);
+  });
+
   it('does not retry when stage.retry is omitted (default no-retry posture)', async () => {
     // Default-deny: no retry config means a single attempt. Lock it
     // so future agents do not assume retry-on-by-default and ship a

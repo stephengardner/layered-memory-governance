@@ -47,6 +47,11 @@ export interface PipelineCostCapPolicyResult {
   readonly cap_usd: number | null;
 }
 
+export interface PipelineStageRetryPolicyResult {
+  readonly max_attempts: number | null;
+  readonly base_delay_ms: number | null;
+}
+
 /** Modes a stage adapter can be selected as. */
 export type PipelineStageImplementationMode = 'agentic' | 'single-shot';
 
@@ -259,6 +264,45 @@ export async function readPipelineStageTimeoutPolicy(
     }
   }
   return { timeout_ms: null };
+}
+
+/**
+ * Per-stage retry policy. A `pipeline-stage-retry` directive with
+ * `stage_name` matching the requested stage AND positive integer
+ * `max_attempts` AND non-negative integer `base_delay_ms` returns
+ * those values; everything else collapses to a null pair (no canon
+ * retry enforced at this layer).
+ *
+ * Mirrors readPipelineStageTimeoutPolicy: same shape, same fail-closed
+ * fallback. The runner reads stage.retry first and only falls back here
+ * when the stage adapter did not declare a strategy, so an org that
+ * wants a global per-stage default sets the canon atom and an org that
+ * wants a stage-by-stage override declares it on the adapter. A null
+ * pair = no retry (default-deny). The runner uses both fields together;
+ * one without the other is treated as malformed and collapses to null.
+ */
+export async function readPipelineStageRetryPolicy(
+  host: Host,
+  stageName: string,
+): Promise<PipelineStageRetryPolicyResult> {
+  for await (const atom of iteratePolicyAtoms(host)) {
+    const policy = readPolicy(atom);
+    if (policy?.subject !== 'pipeline-stage-retry') continue;
+    if (policy.stage_name !== stageName) continue;
+    const max = policy.max_attempts;
+    const base = policy.base_delay_ms;
+    if (
+      typeof max === 'number'
+      && Number.isInteger(max)
+      && max > 0
+      && typeof base === 'number'
+      && Number.isInteger(base)
+      && base >= 0
+    ) {
+      return { max_attempts: max, base_delay_ms: base };
+    }
+  }
+  return { max_attempts: null, base_delay_ms: null };
 }
 
 /**

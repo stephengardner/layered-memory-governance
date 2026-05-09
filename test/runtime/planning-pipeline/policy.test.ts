@@ -6,6 +6,7 @@ import {
   readPipelineStageCostCapPolicy,
   readPipelineStageTimeoutPolicy,
   readPipelineCostCapPolicy,
+  readPipelineStageRetryPolicy,
   readPipelineStageImplementationsPolicy,
 } from '../../../src/runtime/planning-pipeline/policy.js';
 import { createMemoryHost } from '../../../src/adapters/memory/index.js';
@@ -416,6 +417,83 @@ describe('readPipelineCostCapPolicy', () => {
     );
     const result = await readPipelineCostCapPolicy(host);
     expect(result.cap_usd).toBeNull();
+  });
+});
+
+describe('readPipelineStageRetryPolicy', () => {
+  it('returns null pair when no per-stage atom exists (default-deny)', async () => {
+    const host = createMemoryHost();
+    const result = await readPipelineStageRetryPolicy(host, 'spec-stage');
+    expect(result).toEqual({ max_attempts: null, base_delay_ms: null });
+  });
+
+  it('returns the configured retry strategy when present', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-retry-spec', {
+        subject: 'pipeline-stage-retry',
+        stage_name: 'spec-stage',
+        max_attempts: 3,
+        base_delay_ms: 500,
+      }),
+    );
+    const result = await readPipelineStageRetryPolicy(host, 'spec-stage');
+    expect(result).toEqual({ max_attempts: 3, base_delay_ms: 500 });
+  });
+
+  it('returns null pair when max_attempts is missing (fail-closed on partial config)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-retry-spec', {
+        subject: 'pipeline-stage-retry',
+        stage_name: 'spec-stage',
+        base_delay_ms: 500,
+      }),
+    );
+    const result = await readPipelineStageRetryPolicy(host, 'spec-stage');
+    expect(result).toEqual({ max_attempts: null, base_delay_ms: null });
+  });
+
+  it('returns null pair when max_attempts is non-positive (fail-closed)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-retry-spec', {
+        subject: 'pipeline-stage-retry',
+        stage_name: 'spec-stage',
+        max_attempts: 0,
+        base_delay_ms: 100,
+      }),
+    );
+    const result = await readPipelineStageRetryPolicy(host, 'spec-stage');
+    expect(result).toEqual({ max_attempts: null, base_delay_ms: null });
+  });
+
+  it('accepts base_delay_ms === 0 (zero jitter, immediate retry)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-retry-spec', {
+        subject: 'pipeline-stage-retry',
+        stage_name: 'spec-stage',
+        max_attempts: 2,
+        base_delay_ms: 0,
+      }),
+    );
+    const result = await readPipelineStageRetryPolicy(host, 'spec-stage');
+    expect(result).toEqual({ max_attempts: 2, base_delay_ms: 0 });
+  });
+
+  it('does not match a different stage name', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-pipeline-stage-retry-spec', {
+        subject: 'pipeline-stage-retry',
+        stage_name: 'spec-stage',
+        max_attempts: 3,
+        base_delay_ms: 100,
+      }),
+    );
+    const result = await readPipelineStageRetryPolicy(host, 'plan-stage');
+    expect(result).toEqual({ max_attempts: null, base_delay_ms: null });
   });
 });
 
