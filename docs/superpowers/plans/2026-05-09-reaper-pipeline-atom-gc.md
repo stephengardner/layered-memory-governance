@@ -18,7 +18,7 @@ The reaper at `src/runtime/plans/reaper.ts` (332 lines) only abandons stale `pro
 
 ### 1.1 What types accumulate (concrete, today)
 
-Census of `C:/Users/opens/memory-governance/.lag/atoms/` (3,239 files total):
+Census of `.lag/atoms/` (3,239 files total):
 
 | Atom type | Count today | Per-pipeline | Reaped today? |
 |---|---|---|---|
@@ -152,7 +152,7 @@ Total: 7 tasks. Each ships as a separate atomic PR.
 - [ ] **Step 2:** Write failing tests for `validatePipelineReaperTtls`, `classifyPipelineForReap` (skip running, skip recently-completed, classify old as `reap`, HIL-paused-stale, future-dated safety).
 - [ ] **Step 3:** Implement `pipeline-reaper.ts` (TTL types, validation, classification).
 - [ ] **Step 4:** Write failing tests for `markPipelineReaped` + `markStageAtomReaped` (idempotent, audit log shape, TOCTOU safety).
-- [ ] **Step 5:** Implement transition primitives.
+- [ ] **Step 5:** Implement transition primitives. Both `markPipelineReaped` and `markStageAtomReaped` MUST set `confidence: 0.01` in the `host.atoms.update` call alongside `metadata.reaped_at` / `metadata.reaped_reason`, so arbitration deprioritizes reaped atoms (per Section 1.3 doctrine).
 - [ ] **Step 6:** Write failing tests for end-to-end `runPipelineReaperSweep` (seed full subgraph on MemoryHost, pin clock, assert all children + parent reaped in correct order).
 - [ ] **Step 7:** Implement `runPipelineReaperSweep` with `derived_from` walk, per-atom best-effort apply, kill-switch gate.
 - [ ] **Step 8:** Add re-exports to `index.ts`.
