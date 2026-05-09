@@ -62,6 +62,7 @@ import {
   readPipelineCostCapPolicy,
   readPipelineStageCostCapPolicy,
   readPipelineStageHilPolicy,
+  readPipelineStageRetryPolicy,
   readPipelineStageTimeoutPolicy,
 } from './policy.js';
 import { runPipelinePlanAutoApproval } from './auto-approve.js';
@@ -408,6 +409,22 @@ export async function runPipeline(
       stage.timeout_ms !== undefined
         ? (stage.timeout_ms > 0 ? stage.timeout_ms : null)
         : (await readPipelineStageTimeoutPolicy(host, stage.name)).timeout_ms;
+    // Resolve effective retry strategy. stage.retry wins if declared;
+    // otherwise fall through to the canon `pipeline-stage-retry` policy
+    // for this stage. A null/null pair from the canon reader collapses
+    // to undefined here, which runStageWithRetry treats identically to
+    // an explicit `kind: 'no-retry'` (default-deny floor).
+    let effectiveRetry: RetryStrategy | undefined = stage.retry;
+    if (effectiveRetry === undefined) {
+      const canonRetry = await readPipelineStageRetryPolicy(host, stage.name);
+      if (canonRetry.max_attempts !== null && canonRetry.base_delay_ms !== null) {
+        effectiveRetry = {
+          kind: 'with-jitter',
+          max_attempts: canonRetry.max_attempts,
+          base_delay_ms: canonRetry.base_delay_ms,
+        };
+      }
+    }
     let output: StageOutput<unknown>;
     try {
       const stageInput: StageInput<unknown> = {
@@ -426,7 +443,7 @@ export async function runPipeline(
           timeoutMs !== null
             ? raceStageWithTimeout(stage.run(stageInput), timeoutMs, stage.name)
             : stage.run(stageInput),
-        stage.retry,
+        effectiveRetry,
         stage.name,
         () => host.scheduler.killswitchCheck(),
       );
