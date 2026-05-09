@@ -69,7 +69,16 @@ export function IntentOutcomeCard({ pipelineId }: { pipelineId: string }) {
     return <CardShell><LoadingShimmer /></CardShell>;
   }
 
-  if (query.isError) {
+  /*
+   * `query.isLoadingError` is true ONLY when no successful response has
+   * ever landed; once data is cached, a background refetch failure does
+   * NOT flip this back to true. Using it here (instead of the broader
+   * `query.isError`) means a transient 5xx during a poll keeps the
+   * last-good outcome visible to the operator while the slow-poll
+   * fallback retries — the card never blanks back into an error wall
+   * after it has rendered real data once.
+   */
+  if (query.isLoadingError) {
     const err = query.error instanceof Error ? query.error : null;
     const msg = err?.message ?? String(query.error);
     if (msg.includes('pipeline-not-found')) {
@@ -88,6 +97,21 @@ export function IntentOutcomeCard({ pipelineId }: { pipelineId: string }) {
           message={msg}
           testId="intent-outcome-error"
         />
+      </CardShell>
+    );
+  }
+
+  // Defensive guard: TanStack Query types `data` as `T | undefined` for
+  // the post-isPending/post-isLoadingError narrow path. If we somehow
+  // reach here without data (a successful query that returned nothing),
+  // fall through to the empty state rather than passing undefined to
+  // CardBody.
+  if (query.data === undefined) {
+    return (
+      <CardShell>
+        <p className={styles.empty} data-testid="intent-outcome-empty">
+          No atoms reference this pipeline yet. Outcome will appear here as soon as the chain lands.
+        </p>
       </CardShell>
     );
   }
