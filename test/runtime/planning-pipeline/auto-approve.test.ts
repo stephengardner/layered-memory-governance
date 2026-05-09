@@ -868,6 +868,51 @@ describe('runPipelinePlanAutoApproval', () => {
     expect(result.approved).toBe(0);
   });
 
+  it('claim-time guard rejects a plan that becomes superseded BETWEEN the candidate-pickup read and the claim read', async () => {
+    // Direct exercise of the claim-time second-read guard at
+    // auto-approve.ts:669. The earlier upfront-filter test catches
+    // pre-tick supersessions; this test catches the genuine race window
+    // where a peer writer revokes the plan AFTER the loop has
+    // candidate-filtered it as eligible but BEFORE the claim-mutate
+    // update lands. Intercept host.atoms.get so the SECOND call for
+    // plan-1 returns the now-superseded version, simulating the peer
+    // write that happened in the gap.
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-1'));
+    await host.atoms.put(planAtom('plan-1', 'intent-1'));
+
+    const realGet = host.atoms.get.bind(host.atoms);
+    let plan1GetCalls = 0;
+    host.atoms.get = (async (id: AtomId) => {
+      const atom = await realGet(id);
+      if (id === ('plan-1' as AtomId)) {
+        plan1GetCalls++;
+        if (plan1GetCalls >= 2 && atom !== null) {
+          // Simulate peer-writer supersession that landed between the
+          // first (filter) read and the second (claim) read.
+          return { ...atom, superseded_by: ['plan-2' as AtomId] };
+        }
+      }
+      return atom;
+    }) as typeof host.atoms.get;
+
+    const result = await runPipelinePlanAutoApproval(
+      host,
+      ['plan-1' as AtomId],
+      { now: () => NOW_ISO },
+    );
+    expect(result.notEligible).toBe(1);
+    expect(result.approved).toBe(0);
+    expect(plan1GetCalls).toBeGreaterThanOrEqual(2);
+
+    // The actual atom on disk was never mutated to 'approved' because
+    // the claim-time guard caught the (mocked) supersession.
+    const plan = await realGet('plan-1' as AtomId);
+    expect(plan?.plan_state).toBe('proposed');
+  });
+
   it('does not approve a plan superseded between candidate-pickup and the claim read', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
