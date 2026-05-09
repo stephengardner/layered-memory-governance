@@ -16,8 +16,7 @@
  *   - skips atoms whose policy.subject does NOT match the discriminator
  *
  * Resolution-chain integration (canon > env > defaults) is asserted in
- * test/loop/runner.test.ts where the LoopRunner orchestrates the chain
- * (Task 5).
+ * test/loop/runner.test.ts where the LoopRunner orchestrates the chain.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -214,11 +213,15 @@ describe('readPipelineReaperTtlsFromCanon', () => {
 
   it('returns null + warns when terminal_pipeline_ms is missing', async () => {
     const host = createMemoryHost();
-    // Builder accepts undefined to omit the numeric value while
-    // preserving the subject discriminator.
+    // Truly omit the field. Spreading { ...fields } below carries
+    // through `undefined` properties as present-but-undefined, which
+    // the reader's `typeof raw === 'number'` guard handles the same
+    // as a missing key, but the wire-format scenario this test
+    // documents is "the JSON object did not include the field at all".
+    // Build the policy object without the key so the on-disk shape
+    // matches the failure mode under test.
     await host.atoms.put(
       policyAtom('pol-missing-terminal', {
-        terminal_pipeline_ms: undefined,
         hil_paused_pipeline_ms: VALID.hil_paused_pipeline_ms,
         agent_session_ms: VALID.agent_session_ms,
       }),
@@ -233,7 +236,6 @@ describe('readPipelineReaperTtlsFromCanon', () => {
     await host.atoms.put(
       policyAtom('pol-missing-hil', {
         terminal_pipeline_ms: VALID.terminal_pipeline_ms,
-        hil_paused_pipeline_ms: undefined,
         agent_session_ms: VALID.agent_session_ms,
       }),
     );
@@ -248,7 +250,6 @@ describe('readPipelineReaperTtlsFromCanon', () => {
       policyAtom('pol-missing-session', {
         terminal_pipeline_ms: VALID.terminal_pipeline_ms,
         hil_paused_pipeline_ms: VALID.hil_paused_pipeline_ms,
-        agent_session_ms: undefined,
       }),
     );
     const { ttls, calls } = await readWithCapturedStderr(host);
