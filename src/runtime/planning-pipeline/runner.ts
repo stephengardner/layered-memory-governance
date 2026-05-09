@@ -41,6 +41,7 @@ import type { Atom, AtomId, PrincipalId, Time } from '../../substrate/types.js';
 import type {
   AuditFinding,
   PlanningStage,
+  RetryStrategy,
   StageInput,
   StageOutput,
 } from './types.js';
@@ -418,10 +419,15 @@ export async function runPipeline(
         verifiedSubActorPrincipalIds,
         operatorIntentContent,
       };
-      output =
-        timeoutMs !== null
-          ? await raceStageWithTimeout(stage.run(stageInput), timeoutMs, stage.name)
-          : await stage.run(stageInput);
+      output = await runStageWithRetry(
+        () =>
+          timeoutMs !== null
+            ? raceStageWithTimeout(stage.run(stageInput), timeoutMs, stage.name)
+            : stage.run(stageInput),
+        stage.retry,
+        stage.name,
+        () => host.scheduler.killswitchCheck(),
+      );
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       // Even when the stage threw, re-check the kill switch before
@@ -987,6 +993,57 @@ function mkGenericStageOutputAtom(input: {
  * or rejects so the Node event loop is not held open by a never-fired
  * timer when the stage finishes inside the deadline.
  */
+/**
+ * Wraps a stage attempt-producing function in retry-with-backoff per the
+ * stage's RetryStrategy. On `kind: 'no-retry'` (or undefined), calls the
+ * function once and returns its result. On `kind: 'with-jitter'`, retries
+ * the function up to `max_attempts` times, sleeping a full-jitter random
+ * delay in `[0, base_delay_ms * 2^(attempt-1))` between attempts. The
+ * killswitch is polled before each retry sleep so a STOP during backoff
+ * halts immediately rather than ticking through every remaining attempt.
+ *
+ * `attemptFn` MUST be a fresh-attempt-producer (it is invoked once per
+ * attempt). Per-attempt timeouts are the caller's responsibility: pass
+ * `() => raceStageWithTimeout(stage.run(...), ...)` to inherit the
+ * existing per-attempt deadline. Cost accounting is a known limitation
+ * for v1 -- only the final attempt's `cost_usd` lands on the persisted
+ * stage-output atom; LLMs that charge for failed attempts under-account
+ * here. Stages that need cumulative cost across attempts can implement
+ * their own retry inside stage.run() and leave the runner's retry off.
+ */
+async function runStageWithRetry<T>(
+  attemptFn: () => Promise<T>,
+  retry: RetryStrategy | undefined,
+  stageName: string,
+  killswitchCheck: () => boolean,
+): Promise<T> {
+  if (retry === undefined || retry.kind === 'no-retry') {
+    return attemptFn();
+  }
+  const max = Math.max(1, retry.max_attempts);
+  const base = Math.max(0, retry.base_delay_ms);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= max; attempt++) {
+    try {
+      return await attemptFn();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= max) break;
+      if (killswitchCheck()) {
+        throw new Error(
+          `pipeline-stage-retry-halted-by-stop: stage '${stageName}' aborted after attempt ${attempt}`,
+        );
+      }
+      const cap = base * 2 ** (attempt - 1);
+      const sleepMs = Math.floor(Math.random() * cap);
+      if (sleepMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, sleepMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function raceStageWithTimeout<T>(
   stagePromise: Promise<T>,
   timeoutMs: number,

@@ -770,6 +770,140 @@ describe('runPipeline', () => {
     expect(result.kind).toBe('completed');
   });
 
+  it('retries a stage with `retry: with-jitter` until it succeeds within max_attempts', async () => {
+    // The PlanningStage.retry seam was reserved as a type but never
+    // wired into the runner; this test locks the wiring. A flaky
+    // stage that throws on the first two calls and succeeds on the
+    // third must complete the pipeline when retry.max_attempts >= 3.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['flaky-stage']);
+    let attempts = 0;
+    const flakyStage: PlanningStage<unknown, unknown> = {
+      name: 'flaky-stage',
+      retry: { kind: 'with-jitter', max_attempts: 3, base_delay_ms: 1 },
+      async run() {
+        attempts++;
+        if (attempts < 3) {
+          throw new Error('transient: connection reset');
+        }
+        return {
+          value: {},
+          cost_usd: 0,
+          duration_ms: 0,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const result = await runPipeline([flakyStage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-retry-success',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('completed');
+    expect(attempts).toBe(3);
+  });
+
+  it('fails the pipeline when a stage throws on every retry attempt', async () => {
+    // Once max_attempts is reached, the runner re-throws the last
+    // error and the existing failPipeline path takes over. The cause
+    // surfaces the original message so an operator can read what the
+    // final attempt hit.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['always-fails']);
+    let attempts = 0;
+    const failingStage: PlanningStage<unknown, unknown> = {
+      name: 'always-fails',
+      retry: { kind: 'with-jitter', max_attempts: 2, base_delay_ms: 1 },
+      async run() {
+        attempts++;
+        throw new Error('upstream-LLM-503');
+      },
+    };
+    const result = await runPipeline([failingStage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-retry-exhausted',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.cause).toMatch(/upstream-LLM-503/);
+      expect(result.failedStageName).toBe('always-fails');
+    }
+    expect(attempts).toBe(2);
+  });
+
+  it('does NOT retry on timeout errors (timeout = stage hung; retry would overlap)', async () => {
+    // CR-flagged Critical: raceStageWithTimeout does not cancel the
+    // underlying stage.run() promise. Retrying on timeout would start
+    // a fresh stage.run() while the prior one is still in flight,
+    // which is unsafe for any non-idempotent stage. Lock the
+    // contract: timeout = terminal, no retry. The pipeline fails on
+    // attempt 1 even when max_attempts > 1.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['hang-stage']);
+    let attempts = 0;
+    const hangStage: PlanningStage<unknown, unknown> = {
+      name: 'hang-stage',
+      timeout_ms: 25,
+      retry: { kind: 'with-jitter', max_attempts: 5, base_delay_ms: 1 },
+      async run() {
+        attempts++;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return {
+          value: {},
+          cost_usd: 0,
+          duration_ms: 250,
+          atom_type: 'spec-output',
+        };
+      },
+    };
+    const result = await runPipeline([hangStage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-no-retry-on-timeout',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.cause).toMatch(/pipeline-stage-timeout/);
+    }
+    expect(attempts).toBe(1);
+  });
+
+  it('does not retry when stage.retry is omitted (default no-retry posture)', async () => {
+    // Default-deny: no retry config means a single attempt. Lock it
+    // so future agents do not assume retry-on-by-default and ship a
+    // change that quietly multiplies LLM spend.
+    const host = createMemoryHost();
+    await seedPauseNeverPolicies(host, ['no-retry-stage']);
+    let attempts = 0;
+    const stage: PlanningStage<unknown, unknown> = {
+      name: 'no-retry-stage',
+      async run() {
+        attempts++;
+        throw new Error('boom');
+      },
+    };
+    const result = await runPipeline([stage], host, {
+      principal: 'cto-actor' as PrincipalId,
+      correlationId: 'corr-no-retry-default',
+      seedAtomIds: ['intent-1' as AtomId],
+      now: () => NOW,
+      mode: 'substrate-deep',
+      stagePolicyAtomId: 'pol-test',
+    });
+    expect(result.kind).toBe('failed');
+    expect(attempts).toBe(1);
+  });
+
   it('does not falsely trip the per-pipeline cost cap on IEEE-754 representation drift (0.1 + 0.2 vs 0.3)', async () => {
     // Regression for CR-flagged precision bug: comparing accumulated
     // USD floats directly trips when 0.1 + 0.2 evaluates to
