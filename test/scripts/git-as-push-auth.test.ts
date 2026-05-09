@@ -336,6 +336,11 @@ describe('buildReadOnlyEnv (fetch / pull / clone / etc.)', () => {
       }
     }
   });
+
+  it('neutralizes GIT_ASKPASS / SSH_ASKPASS to prevent inherited helper hangs', () => {
+    expect(env.GIT_ASKPASS).toBe('');
+    expect(env.SSH_ASKPASS).toBe('');
+  });
 });
 
 describe('extractSetUpstreamPlan', () => {
