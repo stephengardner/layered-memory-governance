@@ -224,6 +224,31 @@ export interface LoopOptions {
    */
   readonly reaperAbandonMs?: number;
   /**
+   * Override the terminal-pipeline TTL for the pipeline reaper, in
+   * milliseconds. Defaults to
+   * `DEFAULT_PIPELINE_REAPER_TTLS.terminalPipelineMs`. Validated as a
+   * positive integer when supplied. Mirrors the env-override surface
+   * the driver script reads from `LAG_PIPELINE_REAPER_TERMINAL_MS`,
+   * just promoted into the runner constructor so a misconfigured
+   * wiring fails the boot path rather than producing one bad sweep.
+   * Used only when `runReaperPass: true`.
+   */
+  readonly pipelineReaperTerminalMs?: number;
+  /**
+   * Override the hil-paused-pipeline TTL for the pipeline reaper, in
+   * milliseconds. Defaults to
+   * `DEFAULT_PIPELINE_REAPER_TTLS.hilPausedPipelineMs`. Mirrors the
+   * driver's `LAG_PIPELINE_REAPER_HIL_PAUSED_MS` env knob.
+   */
+  readonly pipelineReaperHilPausedMs?: number;
+  /**
+   * Override the standalone-agent-session TTL for the pipeline
+   * reaper, in milliseconds. Defaults to
+   * `DEFAULT_PIPELINE_REAPER_TTLS.agentSessionMs`. Mirrors the
+   * driver's `LAG_PIPELINE_REAPER_AGENT_SESSION_MS` env knob.
+   */
+  readonly pipelineReaperAgentSessionMs?: number;
+  /**
    * Run the plan-state reconcile pass on every tick. Default `false`
    * so existing callers observe no behavior change. When enabled,
    * transitions plans whose linked pr-observation atoms carry a
@@ -492,6 +517,31 @@ export interface LoopTickReport {
         readonly failedDispatches: number;
         readonly rateLimited: number;
         readonly skipped: Readonly<Record<string, number>>;
+      }
+    | null;
+  /**
+   * Per-tick pipeline-reaper sweep summary. `null` when the reaper
+   * pass is disabled (the default) OR when the pipeline reaper itself
+   * fails (its error logs to `errors[]` and the field stays null --
+   * the field is the positive signal of a successful pipeline-reaper
+   * sweep, not a status flag, and a plan-reaper failure does NOT
+   * cascade into this field).
+   *
+   * `classified` is the count of pipeline atoms the sweep inspected,
+   * `reaped` is the count of leaf-write reap markers actually
+   * applied this tick (including stage-atom children + the root),
+   * `skipped` is the count of per-atom errors collected during apply
+   * (each one logged through the auditor inside the sweep but not
+   * thrown so a single bad child does not stall the sweep), and
+   * `truncated` flags pagination overflow OR a kill-switch trip
+   * mid-sweep so the operator can re-run for the remainder.
+   */
+  readonly pipelineReaperReport:
+    | {
+        readonly classified: number;
+        readonly reaped: number;
+        readonly skipped: number;
+        readonly truncated: boolean;
       }
     | null;
 }

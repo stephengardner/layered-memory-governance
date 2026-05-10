@@ -590,6 +590,373 @@ describe('LoopRunner.tick reaper TTL resolution chain', () => {
 });
 
 /**
+ * Build a stale completed pipeline atom older than the default 30-day
+ * terminal TTL. Inline (vs. extracting to fixtures.ts) because the
+ * pipeline-reaper test uses a slightly different shape (full subgraph
+ * helper); this is the minimal root-only shape the runner.test.ts
+ * needs. Per dev-dry-extract-at-second-duplication, if a third call
+ * site lands the right move is the extraction not the third copy.
+ */
+function pipelineRootAtom(
+  id: string,
+  overrides: { readonly created_at?: string; readonly pipeline_state?: string } = {},
+): Atom {
+  const created = overrides.created_at ?? '2026-04-01T00:00:00.000Z';
+  return {
+    schema_version: 1,
+    id: id as AtomId,
+    content: `pipeline:${id}`,
+    type: 'pipeline',
+    layer: 'L0',
+    provenance: {
+      kind: 'agent-observed',
+      source: { tool: 'planning-pipeline', agent_id: 'cto-actor' },
+      derived_from: [],
+    },
+    confidence: 1.0,
+    created_at: created as Time,
+    last_reinforced_at: created as Time,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: 'cto-actor' as PrincipalId,
+    taint: 'clean',
+    metadata: { completed_at: created },
+    pipeline_state: overrides.pipeline_state ?? 'completed',
+  };
+}
+
+/**
+ * Build a `pol-pipeline-reaper-ttls` policy atom. Mirrors the shape
+ * `bootstrap-pipeline-reaper-canon.mjs` writes (snake_case fields
+ * under metadata.policy with subject discriminator).
+ */
+function pipelineReaperTtlsPolicyAtom(
+  id: string,
+  fields: {
+    readonly terminal_pipeline_ms: number;
+    readonly hil_paused_pipeline_ms: number;
+    readonly agent_session_ms: number;
+  },
+): Atom {
+  return {
+    schema_version: 1,
+    id: id as AtomId,
+    content: 'pipeline-reaper TTLs',
+    type: 'directive',
+    layer: 'L3',
+    provenance: {
+      kind: 'operator-seeded',
+      source: { agent_id: 'bootstrap' },
+      derived_from: [],
+    },
+    confidence: 1,
+    created_at: REAPER_NOW_ISO as Time,
+    last_reinforced_at: REAPER_NOW_ISO as Time,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: 'apex-agent' as PrincipalId,
+    taint: 'clean',
+    metadata: {
+      policy: {
+        subject: 'pipeline-reaper-ttls',
+        ...fields,
+      },
+    },
+  };
+}
+
+describe('LoopRunner.tick pipeline-reaper integration', () => {
+  // The pipeline reaper looks at metadata.completed_at. Pin the clock to
+  // a date >> 30 days after the seeded pipeline's completion so the
+  // default terminalPipelineMs (30 days) classifies it as `reap`.
+  const NOW_ISO = '2026-06-01T00:00:00.000Z';
+  const NOW_MS = new Date(NOW_ISO).getTime();
+
+  it('runs the pipeline-reaper in addition to the plan-reaper on the same tick', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // Seed BOTH stale work-items: a stale proposed plan (>72h old) and
+    // a stale completed pipeline (>30d old). One tick must reap both.
+    await host.atoms.put(samplePlanAtom('p-stale-plan', '2026-05-25T19:00:00.000Z'));
+    await host.atoms.put(
+      pipelineRootAtom('p-stale-pipeline', {
+        created_at: '2026-04-01T00:00:00.000Z',
+      }),
+    );
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+    });
+    const report = await runner.tick();
+    // Both reports populated -- no failure cascade between sub-passes.
+    expect(report.reaperReport).not.toBeNull();
+    expect(report.reaperReport?.abandoned).toBe(1);
+    expect(report.pipelineReaperReport).not.toBeNull();
+    expect(report.pipelineReaperReport?.classified).toBe(1);
+    expect(report.pipelineReaperReport?.reaped).toBe(1);
+    expect(report.pipelineReaperReport?.skipped).toBe(0);
+    expect(report.pipelineReaperReport?.truncated).toBe(false);
+    // Disk-side effect: pipeline atom carries metadata.reaped_at
+    // (leaf-write per the substrate doctrine).
+    const reaped = await host.atoms.get('p-stale-pipeline' as AtomId);
+    expect((reaped?.metadata as Record<string, unknown>)['reaped_at']).toBe(NOW_ISO);
+    expect(reaped?.confidence).toBe(0.01);
+    // Plan-reaper still abandoned the plan (independent transition).
+    const stalePlan = await host.atoms.get('p-stale-plan' as AtomId);
+    expect(stalePlan?.plan_state).toBe('abandoned');
+  });
+
+  it('runReaperPass: false disables BOTH the plan-reaper AND the pipeline-reaper', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(NOW_ISO);
+    // Seed work-items both reapers WOULD process if enabled.
+    await host.atoms.put(samplePlanAtom('p-stale-default', '2026-05-25T19:00:00.000Z'));
+    await host.atoms.put(
+      pipelineRootAtom('pipe-stale-default', {
+        created_at: '2026-04-01T00:00:00.000Z',
+      }),
+    );
+    const runner = new LoopRunner(host, { principalId: principal });
+    const report = await runner.tick();
+    // Both flags off -> both reports null, no transitions/reaps applied.
+    expect(report.reaperReport).toBeNull();
+    expect(report.pipelineReaperReport).toBeNull();
+    const stalePlan = await host.atoms.get('p-stale-default' as AtomId);
+    expect(stalePlan?.plan_state).toBe('proposed');
+    const pipeline = await host.atoms.get('pipe-stale-default' as AtomId);
+    // No metadata.reaped_at marker because the pipeline reaper never ran.
+    // The L0 decay pass may rewrite confidence (the pipeline atom is on
+    // L0); the relevant assertion is that the pipeline-reaper's
+    // confidence-floor (0.01) was NOT applied -- the pipeline atom
+    // remains well above the reaped floor. Anchoring on 0.01 explicitly
+    // avoids a false-pass if a future decay tweak coincidentally lands
+    // on 1.0.
+    expect((pipeline?.metadata as Record<string, unknown>)['reaped_at']).toBeUndefined();
+    expect(pipeline?.confidence).toBeGreaterThan(0.01);
+  });
+
+  it('plan-reaper failure does NOT cascade into the pipeline-reaper (decoupled sub-passes)', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // Stale pipeline still seeded so the pipeline-reaper has something
+    // to reap and we can prove it ran independently of the plan-reaper
+    // throw.
+    await host.atoms.put(
+      pipelineRootAtom('pipe-decoupled', {
+        created_at: '2026-04-01T00:00:00.000Z',
+      }),
+    );
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+    });
+    /*
+     * Stub host.atoms.query so the PLAN reaper's pagination throws,
+     * while leaving the pipeline-reaper's pagination intact. The plan
+     * reaper queries by `type: ['plan'], plan_state: ['proposed']`;
+     * the pipeline reaper queries by `type: ['pipeline']`. Targeting
+     * the throw on the plan filter keeps the pipeline path clean so
+     * we can prove decoupling: the second sub-pass still executes
+     * end-to-end despite the first sub-pass failing.
+     */
+    const realQuery = host.atoms.query.bind(host.atoms);
+    (host.atoms as { query: typeof host.atoms.query }).query = async (filter, limit, cursor) => {
+      const types = (filter as { type?: ReadonlyArray<string> } | undefined)?.type;
+      if (types && types.includes('plan')) {
+        throw new Error('synthetic plan-reaper failure');
+      }
+      return realQuery(filter, limit, cursor);
+    };
+    const report = await runner.tick();
+    // Plan-reaper failure is recorded.
+    expect(report.reaperReport).toBeNull();
+    expect(report.errors.some((e) => e.startsWith('reaper-pass:'))).toBe(true);
+    // Pipeline-reaper still ran AND completed -- decoupling confirmed.
+    expect(report.pipelineReaperReport).not.toBeNull();
+    expect(report.pipelineReaperReport?.reaped).toBe(1);
+    const reaped = await host.atoms.get('pipe-decoupled' as AtomId);
+    expect((reaped?.metadata as Record<string, unknown>)['reaped_at']).toBe(NOW_ISO);
+  });
+
+  it('pipeline-reaper failure does NOT cascade into the plan-reaper (decoupled sub-passes)', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // Plan stale enough to be abandoned (>72h relative to pinned NOW).
+    await host.atoms.put(samplePlanAtom('p-stale-decoupled', '2026-05-25T19:00:00.000Z'));
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+    });
+    // Throw ONLY on the pipeline reaper's filter (`type: ['pipeline']`);
+    // leave plan-reaper queries intact. This is the symmetric guard for
+    // the prior test: the plan-reaper must complete independently of a
+    // pipeline-reaper fault.
+    const realQuery = host.atoms.query.bind(host.atoms);
+    (host.atoms as { query: typeof host.atoms.query }).query = async (filter, limit, cursor) => {
+      const types = (filter as { type?: ReadonlyArray<string> } | undefined)?.type;
+      if (types && types.includes('pipeline')) {
+        throw new Error('synthetic pipeline-reaper failure');
+      }
+      return realQuery(filter, limit, cursor);
+    };
+    const report = await runner.tick();
+    // Plan-reaper still ran AND abandoned the stale plan.
+    expect(report.reaperReport).not.toBeNull();
+    expect(report.reaperReport?.abandoned).toBe(1);
+    const stalePlan = await host.atoms.get('p-stale-decoupled' as AtomId);
+    expect(stalePlan?.plan_state).toBe('abandoned');
+    // Pipeline-reaper failure is recorded.
+    expect(report.pipelineReaperReport).toBeNull();
+    expect(report.errors.some((e) => e.startsWith('pipeline-reaper-pass:'))).toBe(true);
+  });
+
+  it('canon pipeline-reaper-ttls policy WINS over env / defaults', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // Canon: terminal=10ms (so ANY past completion reaps).
+    // Env / defaults would put the pipeline at FRESH (30d default
+    // > 1d age). Under canon TTLs the pipeline is in `reap`.
+    await host.atoms.put(
+      pipelineReaperTtlsPolicyAtom('pol-pipeline-reaper-ttls-default', {
+        terminal_pipeline_ms: 10,
+        hil_paused_pipeline_ms: 5,
+        agent_session_ms: 5,
+      }),
+    );
+    // 1-day-old completed pipeline. Under defaults this is FRESH; under
+    // the canon's 10ms TTL this is overdue -> reap.
+    const yesterdayMs = NOW_MS - 24 * 60 * 60 * 1000;
+    const yesterdayIso = new Date(yesterdayMs).toISOString();
+    await host.atoms.put(
+      pipelineRootAtom('pipe-canon-test', { created_at: yesterdayIso }),
+    );
+    const cap = captureStderr();
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+      // Env says terminal=300d -> would NOT reap a 1-day-old pipeline.
+      pipelineReaperTerminalMs: 300 * 24 * 60 * 60 * 1000,
+      pipelineReaperHilPausedMs: 14 * 24 * 60 * 60 * 1000,
+      pipelineReaperAgentSessionMs: 30 * 24 * 60 * 60 * 1000,
+    });
+    const report = await runner.tick();
+    cap.restore();
+    // Canon's tight TTLs were applied -> pipeline reaped this tick.
+    expect(report.pipelineReaperReport).not.toBeNull();
+    expect(report.pipelineReaperReport?.reaped).toBe(1);
+    // Stderr names the canon-policy source.
+    const lines = cap.calls.map((c) => String(c[0]));
+    expect(
+      lines.some((l) =>
+        l.includes('[pipeline-reaper] using TTLs from canon-policy'),
+      ),
+    ).toBe(true);
+  });
+
+  it('falls through to env override when no canon atom exists', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // No canon atom seeded. Env override: terminal=10ms.
+    const yesterdayMs = NOW_MS - 24 * 60 * 60 * 1000;
+    const yesterdayIso = new Date(yesterdayMs).toISOString();
+    await host.atoms.put(
+      pipelineRootAtom('pipe-env-test', { created_at: yesterdayIso }),
+    );
+    const cap = captureStderr();
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+      pipelineReaperTerminalMs: 10,
+      pipelineReaperHilPausedMs: 5,
+      pipelineReaperAgentSessionMs: 5,
+    });
+    const report = await runner.tick();
+    cap.restore();
+    expect(report.pipelineReaperReport).not.toBeNull();
+    expect(report.pipelineReaperReport?.reaped).toBe(1);
+    const lines = cap.calls.map((c) => String(c[0]));
+    expect(
+      lines.some(
+        (l) =>
+          l.includes('[pipeline-reaper] using TTLs from env')
+          && !l.includes('canon-policy'),
+      ),
+    ).toBe(true);
+  });
+
+  it('falls through to DEFAULT_PIPELINE_REAPER_TTLS when neither canon nor env override is supplied', async () => {
+    const host = createMemoryHost();
+    host.clock.setTime(NOW_ISO);
+    await host.principals.put(samplePrincipal({ id: 'lag-loop' as PrincipalId }));
+    // 1-day old pipeline. Default terminal TTL is 30 days -> classify
+    // as skip (not reap).
+    const yesterdayMs = NOW_MS - 24 * 60 * 60 * 1000;
+    const yesterdayIso = new Date(yesterdayMs).toISOString();
+    await host.atoms.put(
+      pipelineRootAtom('pipe-defaults-test', { created_at: yesterdayIso }),
+    );
+    const cap = captureStderr();
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runReaperPass: true,
+      reaperPrincipal: 'lag-loop',
+      // No pipelineReaper* options supplied -> env-override flag is false.
+    });
+    const report = await runner.tick();
+    cap.restore();
+    expect(report.pipelineReaperReport).not.toBeNull();
+    // Defaults applied -> 1-day pipeline is classified but NOT reaped.
+    expect(report.pipelineReaperReport?.classified).toBe(1);
+    expect(report.pipelineReaperReport?.reaped).toBe(0);
+    const lines = cap.calls.map((c) => String(c[0]));
+    expect(
+      lines.some((l) =>
+        l.includes('[pipeline-reaper] using TTLs from defaults'),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a non-positive pipelineReaperTerminalMs at construction', () => {
+    const host = createMemoryHost();
+    expect(
+      () =>
+        new LoopRunner(host, {
+          principalId: principal,
+          runReaperPass: true,
+          reaperPrincipal: 'lag-loop',
+          pipelineReaperTerminalMs: 0,
+        }),
+    ).toThrow(/pipelineReaperTerminalMs/);
+  });
+});
+
+/**
  * Build a pr-observation atom suitable for the in-process reconcile +
  * refresh ticks. The shape mirrors the inline factory in
  * test/runtime/plans/pr-merge-reconcile.test.ts; it's rebuilt here

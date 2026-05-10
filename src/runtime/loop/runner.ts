@@ -41,7 +41,14 @@ import {
   type ReaperTtls,
   type RunReaperSweepResult,
 } from '../plans/reaper.js';
+import {
+  DEFAULT_PIPELINE_REAPER_TTLS,
+  runPipelineReaperSweep,
+  type PipelineReaperTtls,
+  type RunPipelineReaperSweepResult,
+} from '../plans/pipeline-reaper.js';
 import { readReaperTtlsFromCanon } from './reaper-ttls.js';
+import { readPipelineReaperTtlsFromCanon } from './pipeline-reaper-ttls.js';
 import {
   runPlanStateReconcileTick,
   type PlanReconcileTickResult,
@@ -116,6 +123,24 @@ export class LoopRunner {
    * can see the loop is using the floor, not a deliberate override.
    */
   private readonly reaperEnvOverride: boolean;
+  /**
+   * Constructor-validated env / CLI fallback for the pipeline-reaper
+   * TTL set. The actual TTLs used per pass come from the same
+   * canon > env > defaults chain `reaperPass` walks for the plan
+   * reaper, just resolved through the pipeline-reaper's reader.
+   * Holding the env-derived set separately keeps the canon path
+   * additive for the pipeline reaper exactly as it does for the
+   * plan reaper.
+   */
+  private readonly pipelineReaperEnvTtls: PipelineReaperTtls;
+  /**
+   * `true` when ANY pipeline-reaper field was supplied explicitly via
+   * `LoopOptions.pipelineReaperTerminalMs` /
+   * `pipelineReaperHilPausedMs` / `pipelineReaperAgentSessionMs`.
+   * When `false`, the env set equals `DEFAULT_PIPELINE_REAPER_TTLS`
+   * and the per-pass log labels the source as `defaults`.
+   */
+  private readonly pipelineReaperEnvOverride: boolean;
   /**
    * `null` means we have not yet checked the principal exists in the
    * host's PrincipalStore. We defer the lookup to the first reaper
@@ -320,10 +345,48 @@ export class LoopRunner {
       // for "where did these TTLs come from" should see that distinction.
       this.reaperEnvOverride =
         options.reaperWarnMs !== undefined || options.reaperAbandonMs !== undefined;
+      // Pipeline-reaper TTL set: validate any supplied env override
+      // here so the boot-up path fails loud on a typo. Each field is
+      // optional independently; an unset field falls through to the
+      // hardcoded floor in DEFAULT_PIPELINE_REAPER_TTLS so the env
+      // set is always a complete object regardless of how many of
+      // the three knobs the caller supplied.
+      const pTerminal =
+        options.pipelineReaperTerminalMs ?? DEFAULT_PIPELINE_REAPER_TTLS.terminalPipelineMs;
+      const pHil =
+        options.pipelineReaperHilPausedMs ?? DEFAULT_PIPELINE_REAPER_TTLS.hilPausedPipelineMs;
+      const pSession =
+        options.pipelineReaperAgentSessionMs ?? DEFAULT_PIPELINE_REAPER_TTLS.agentSessionMs;
+      if (!Number.isInteger(pTerminal) || pTerminal <= 0) {
+        throw new Error(
+          `LoopRunner: pipelineReaperTerminalMs must be a positive integer ms (got ${String(pTerminal)})`,
+        );
+      }
+      if (!Number.isInteger(pHil) || pHil <= 0) {
+        throw new Error(
+          `LoopRunner: pipelineReaperHilPausedMs must be a positive integer ms (got ${String(pHil)})`,
+        );
+      }
+      if (!Number.isInteger(pSession) || pSession <= 0) {
+        throw new Error(
+          `LoopRunner: pipelineReaperAgentSessionMs must be a positive integer ms (got ${String(pSession)})`,
+        );
+      }
+      this.pipelineReaperEnvTtls = {
+        terminalPipelineMs: pTerminal,
+        hilPausedPipelineMs: pHil,
+        agentSessionMs: pSession,
+      };
+      this.pipelineReaperEnvOverride =
+        options.pipelineReaperTerminalMs !== undefined
+        || options.pipelineReaperHilPausedMs !== undefined
+        || options.pipelineReaperAgentSessionMs !== undefined;
     } else {
       this.reaperPrincipal = null;
       this.reaperEnvTtls = DEFAULT_REAPER_TTLS;
       this.reaperEnvOverride = false;
+      this.pipelineReaperEnvTtls = DEFAULT_PIPELINE_REAPER_TTLS;
+      this.pipelineReaperEnvOverride = false;
     }
     const principal = this.options.principalId as PrincipalId;
     // `promotionThresholds` is passed through so callers can opt out of
@@ -373,6 +436,7 @@ export class LoopRunner {
     let l3Proposed = 0;
     let canonApplied = 0;
     let reaperReport: LoopTickReport['reaperReport'] = null;
+    let pipelineReaperReport: LoopTickReport['pipelineReaperReport'] = null;
     let planReconcileReport: LoopTickReport['planReconcileReport'] = null;
     let planObservationRefreshReport: LoopTickReport['planObservationRefreshReport'] = null;
     let planProposalNotifyReport: LoopTickReport['planProposalNotifyReport'] = null;
@@ -394,6 +458,7 @@ export class LoopRunner {
         canonApplied,
         errors,
         reaperReport,
+        pipelineReaperReport,
         planReconcileReport,
         planObservationRefreshReport,
         planProposalNotifyReport,
@@ -490,6 +555,16 @@ export class LoopRunner {
     // errors but does NOT fail the tick: the reaper is best-effort
     // cleanup and one aborted sweep should not stall the rest of the
     // loop's responsibilities.
+    //
+    // The same `runReaperPass` flag activates BOTH the plan reaper
+    // (this section) and the pipeline reaper (next section). They
+    // share the configured `reaperPrincipal` for audit attribution
+    // and the constructor-time principal validation; they do NOT
+    // share their failure surface. Each pass runs inside its own
+    // try/catch so a plan-reaper fault does not cascade into the
+    // pipeline reaper and vice versa, mirroring the decayPass /
+    // l2Engine.runPass independence pattern already in this file.
+    // The doctrine: best-effort cleanup, one fault per sub-pass.
     if (this.options.runReaperPass && this.reaperPrincipal !== null) {
       try {
         reaperReport = await this.reaperPass(this.reaperPrincipal);
@@ -497,6 +572,20 @@ export class LoopRunner {
         this.errorCounter += 1;
         errors.push(
           `reaper-pass: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      // --- Pipeline-reaper pass -------------------------------------------
+      // Sequenced AFTER the plan reaper (plan-reaper transitions plan
+      // atoms; pipeline-reaper GCs the pipeline-stage subgraph that may
+      // reference those plans). Independent try/catch so a plan-reaper
+      // throw above does NOT short-circuit this sub-pass; the second
+      // catch handles the pipeline-reaper's own faults symmetrically.
+      try {
+        pipelineReaperReport = await this.pipelineReaperPass(this.reaperPrincipal);
+      } catch (err) {
+        this.errorCounter += 1;
+        errors.push(
+          `pipeline-reaper-pass: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -647,6 +736,7 @@ export class LoopRunner {
       canonApplied,
       errors,
       reaperReport,
+      pipelineReaperReport,
       planReconcileReport,
       planObservationRefreshReport,
       planProposalNotifyReport,
@@ -662,6 +752,16 @@ export class LoopRunner {
     if (reaperReport !== null) {
       this.host.auditor.metric('loop.reaper_swept', reaperReport.swept);
       this.host.auditor.metric('loop.reaper_abandoned', reaperReport.abandoned);
+    }
+    if (pipelineReaperReport !== null) {
+      this.host.auditor.metric(
+        'loop.pipeline_reaper_classified',
+        pipelineReaperReport.classified,
+      );
+      this.host.auditor.metric(
+        'loop.pipeline_reaper_reaped',
+        pipelineReaperReport.reaped,
+      );
     }
     if (planReconcileReport !== null) {
       this.host.auditor.metric('loop.plan_reconcile_scanned', planReconcileReport.scanned);
@@ -731,6 +831,14 @@ export class LoopRunner {
               reaper_abandoned: reaperReport.abandoned,
               reaper_warned: reaperReport.warned,
               reaper_fresh: reaperReport.fresh,
+            }
+          : {}),
+        ...(pipelineReaperReport !== null
+          ? {
+              pipeline_reaper_classified: pipelineReaperReport.classified,
+              pipeline_reaper_reaped: pipelineReaperReport.reaped,
+              pipeline_reaper_skipped: pipelineReaperReport.skipped,
+              pipeline_reaper_truncated: pipelineReaperReport.truncated,
             }
           : {}),
         ...(planReconcileReport !== null
@@ -963,6 +1071,73 @@ export class LoopRunner {
       abandoned,
       warned,
       fresh,
+    };
+  }
+
+  /**
+   * Run a single pipeline-reaper sweep and shape the result into the
+   * per-tick report struct. Reuses the configured `reaperPrincipal` for
+   * audit attribution; the constructor + `reaperPass` already validate
+   * that the principal exists in the host's PrincipalStore so a
+   * misconfigured wiring fails loud at the plan-reaper boundary,
+   * before any pipeline reap. Reusing the same principal is the
+   * canon-aligned choice: both reapers attribute leaf-write reaps for
+   * the operator's chosen reaper bot identity, so `dev-no-hardcoded-
+   * principal-fallback` holds across both passes.
+   *
+   * TTL resolution order on every pass (re-read each tick so a canon
+   * edit takes effect on the next sweep without a daemon restart),
+   * mirroring `reaperPass` exactly:
+   *   1. canon `pol-pipeline-reaper-ttls` policy atom (preferred)
+   *   2. `LoopOptions.pipelineReaper*Ms` (CLI / env)
+   *   3. `DEFAULT_PIPELINE_REAPER_TTLS` (hardcoded floor)
+   *
+   * Each pass logs one stderr line naming the source so an operator
+   * scanning logs can see which path the TTLs came from at a glance.
+   */
+  private async pipelineReaperPass(
+    principal: PrincipalId,
+  ): Promise<NonNullable<LoopTickReport['pipelineReaperReport']>> {
+    // Re-read canon every tick so a pipeline-reaper-ttls edit takes
+    // effect on the NEXT pass without a daemon restart. The reader
+    // returns null on absence OR malformed payload (the malformed
+    // path has already logged a stderr warning); fall through to env
+    // / defaults preserves the operator-data vs framework-state
+    // distinction documented on the reader.
+    const fromCanon = await readPipelineReaperTtlsFromCanon(this.host);
+    let ttls: PipelineReaperTtls;
+    let source: 'canon-policy' | 'env' | 'defaults';
+    if (fromCanon !== null) {
+      ttls = fromCanon;
+      source = 'canon-policy';
+    } else if (this.pipelineReaperEnvOverride) {
+      ttls = this.pipelineReaperEnvTtls;
+      source = 'env';
+    } else {
+      ttls = this.pipelineReaperEnvTtls; // == DEFAULT_PIPELINE_REAPER_TTLS when no override
+      source = 'defaults';
+    }
+    // Loud-at-boundaries: one line per pass naming the source. Goes
+    // to stderr so it does not pollute the structured tick stdout
+    // stream. An operator wanting to see which TTL path the loop
+    // chose at any moment greps for "[pipeline-reaper] using TTLs".
+    // eslint-disable-next-line no-console
+    console.error(
+      `[pipeline-reaper] using TTLs from ${source}: `
+        + `terminal=${ttls.terminalPipelineMs}ms `
+        + `hil-paused=${ttls.hilPausedPipelineMs}ms `
+        + `agent-session=${ttls.agentSessionMs}ms`,
+    );
+    const sweep: RunPipelineReaperSweepResult = await runPipelineReaperSweep(
+      this.host,
+      principal,
+      ttls,
+    );
+    return {
+      classified: sweep.classifications.length,
+      reaped: sweep.reaped.length,
+      skipped: sweep.skipped.length,
+      truncated: sweep.truncated,
     };
   }
 
