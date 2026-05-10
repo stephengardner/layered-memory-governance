@@ -1128,5 +1128,35 @@ describe('getPipelineDetail - agent_turns projection', () => {
     expect(row.latency_ms).toBeNull();
     expect(row.tool_calls_count).toBeNull();
     expect(row.llm_input_preview).toBeNull();
+
+    // Companion: same gate fires on `superseded_by`. CR finding round 4
+    // pointed out the test name claimed two paths but only exercised
+    // one; this second half covers the superseded path so the name
+    // matches the assertion.
+    const supersededEvent = agentTurnIndexEventAtom({
+      pipelineId: 'p-taint',
+      stageName: 'plan',
+      turnIndex: 1,
+      agentTurnAtomId: 'agent-turn-p-taint-1',
+      at: new Date(NOW - 30_000).toISOString(),
+    });
+    const supersededTurn: PipelineSourceAtom = {
+      ...agentTurnAtom({
+        id: 'agent-turn-p-taint-1',
+        sessionAtomId: 'agent-session-p-taint',
+        turnIndex: 1,
+        llmInputInline: 'should-also-be-skipped',
+        toolCallsCount: 2,
+        latencyMs: 111,
+        at: new Date(NOW - 30_000).toISOString(),
+      }),
+      superseded_by: ['agent-turn-p-taint-1-successor'],
+    };
+    const result2 = getPipelineDetail([pipeline, supersededEvent, supersededTurn], 'p-taint');
+    expect(result2!.agent_turns).toHaveLength(1);
+    const row2 = result2!.agent_turns[0]!;
+    expect(row2.latency_ms).toBeNull();
+    expect(row2.tool_calls_count).toBeNull();
+    expect(row2.llm_input_preview).toBeNull();
   });
 });
