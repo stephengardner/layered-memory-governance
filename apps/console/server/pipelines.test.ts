@@ -657,6 +657,17 @@ function agentTurnAtom(opts: {
     content: `turn ${opts.turnIndex}`,
     principal_id: 'cto-actor',
     created_at: opts.at,
+    // Mirror the real-atom shape: agent-turn atoms minted by the
+    // substrate always carry provenance.derived_from referencing
+    // their owning agent-session. The pipelines.ts cross-walk
+    // integrity check uses this as a structural proof that the
+    // hydrated atom is genuinely a child of the claimed session
+    // (see "Cross-walk integrity gates" in agentTurnRowFromIndex).
+    provenance: {
+      kind: 'agent-observed' as const,
+      source: { tool: 'test-fixture', agent_id: 'cto-actor' },
+      derived_from: [opts.sessionAtomId],
+    },
     metadata: {
       session_id: opts.sessionAtomId,
       agent_turn: {
@@ -1004,6 +1015,84 @@ describe('getPipelineDetail - agent_turns projection', () => {
     // Telemetry from the wrong-pipeline agent-turn atom is NOT
     // surfaced — the projection treats the cross-walk as a dangling
     // pointer.
+    expect(row.latency_ms).toBeNull();
+    expect(row.tool_calls_count).toBeNull();
+    expect(row.llm_input_preview).toBeNull();
+  });
+
+  it('skips agent-turn atoms whose session_atom_id is not in provenance.derived_from', () => {
+    // CR finding on PR #387 round 3: a corrupted index event pointing
+    // at the WRONG live agent-turn (one belonging to a different
+    // session) must not leak that turn's telemetry under the current
+    // pipeline. The cross-walk gate is: agent_turn.session_atom_id
+    // MUST be referenced by the agent-turn atom's
+    // provenance.derived_from. An honest substrate always satisfies
+    // this; an adversarial atom that claims a session_atom_id but
+    // does not derive from it fails this gate, surfacing the index
+    // row with null telemetry.
+    const pipeline = pipelineAtom({ id: 'p-forged', state: 'running' });
+    const event = agentTurnIndexEventAtom({
+      pipelineId: 'p-forged',
+      stageName: 'plan',
+      turnIndex: 0,
+      agentTurnAtomId: 'agent-turn-p-forged-0',
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const forgedTurn: PipelineSourceAtom = {
+      ...agentTurnAtom({
+        id: 'agent-turn-p-forged-0',
+        sessionAtomId: 'agent-session-claimed',
+        turnIndex: 0,
+        llmInputInline: 'should-not-leak',
+        toolCallsCount: 3,
+        latencyMs: 1234,
+        at: new Date(NOW - 60_000).toISOString(),
+      }),
+      // Tamper: provenance.derived_from references a DIFFERENT session
+      // atom than the one the metadata claims. The cross-walk must
+      // reject this and surface null telemetry rather than the forged
+      // payload.
+      provenance: {
+        kind: 'agent-observed' as const,
+        source: { tool: 'test-fixture', agent_id: 'cto-actor' },
+        derived_from: ['agent-session-different'],
+      },
+    };
+    const result = getPipelineDetail([pipeline, event, forgedTurn], 'p-forged');
+    expect(result!.agent_turns).toHaveLength(1);
+    const row = result!.agent_turns[0]!;
+    expect(row.latency_ms).toBeNull();
+    expect(row.tool_calls_count).toBeNull();
+    expect(row.llm_input_preview).toBeNull();
+  });
+
+  it('skips agent-turn atoms with malformed session_atom_id', () => {
+    // Companion to the provenance-mismatch test: a session_atom_id that
+    // does not start with 'agent-session-' (or is empty / non-string)
+    // signals a malformed/forged atom and must NOT have its telemetry
+    // surfaced. Same CR finding, second gate.
+    const pipeline = pipelineAtom({ id: 'p-malformed', state: 'running' });
+    const event = agentTurnIndexEventAtom({
+      pipelineId: 'p-malformed',
+      stageName: 'plan',
+      turnIndex: 0,
+      agentTurnAtomId: 'agent-turn-p-malformed-0',
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const malformedTurn: PipelineSourceAtom = {
+      ...agentTurnAtom({
+        id: 'agent-turn-p-malformed-0',
+        sessionAtomId: 'not-a-real-session-prefix',
+        turnIndex: 0,
+        llmInputInline: 'should-not-leak',
+        toolCallsCount: 1,
+        latencyMs: 42,
+        at: new Date(NOW - 60_000).toISOString(),
+      }),
+    };
+    const result = getPipelineDetail([pipeline, event, malformedTurn], 'p-malformed');
+    expect(result!.agent_turns).toHaveLength(1);
+    const row = result!.agent_turns[0]!;
     expect(row.latency_ms).toBeNull();
     expect(row.tool_calls_count).toBeNull();
     expect(row.llm_input_preview).toBeNull();

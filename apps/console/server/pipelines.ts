@@ -488,13 +488,25 @@ function agentTurnRowFromIndex(
   //   3. It must be live (taint='clean' AND not superseded). A
   //      tainted atom is by definition NOT a trustworthy data source.
   //   4. Its agent_turn.turn_index MUST equal the index event's
-  //      turn_index. This is the pointer-integrity proof per CR
-  //      review on PR #387: if a corrupted index event points at
-  //      the wrong agent-turn atom (e.g. one belonging to a
-  //      DIFFERENT pipeline or session), the turn_index will not
-  //      match. Without this check the projection would surface that
-  //      other pipeline's prompt + telemetry under the current
-  //      pipeline -- a data-leak across pipelines.
+  //      turn_index.
+  //   5. Its agent_turn.session_atom_id MUST be a non-empty string
+  //      with the 'agent-session-' prefix. This is the substrate
+  //      shape contract (mkAgentTurnAtom only ever writes that
+  //      shape); failing it means the cross-walk landed on a
+  //      synthetic / malformed atom rather than a real turn record.
+  //   6. The agent-turn atom's provenance.derived_from MUST include
+  //      the session_atom_id it claims. This is the structural
+  //      proof that the atom is genuinely a child of that session;
+  //      a forged metadata.session_atom_id without matching
+  //      provenance fails this gate.
+  //
+  // Gates 5+6 are the CR-flagged "provenance proof" per PR #387 round
+  // 3: a corrupted index event pointing at an unrelated live
+  // agent-turn (e.g. from a different pipeline's session) can no
+  // longer leak its telemetry under the current pipeline. The
+  // substrate writes index event + agent-turn atom in lockstep, so
+  // an honest substrate always passes these gates; the value is the
+  // defense against adversarial / accidentally-mutated atoms.
   //
   // Any failure surfaces the index row with null telemetry (treats
   // the cross-walk as a dangling pointer), same as a missing atom.
@@ -505,7 +517,22 @@ function agentTurnRowFromIndex(
     const atomTurnIndex = typeof atomTurnIndexRaw === 'number' && Number.isFinite(atomTurnIndexRaw)
       ? atomTurnIndexRaw
       : null;
-    if (agentTurn && atomTurnIndex === index.turn_index) {
+    const claimedSessionAtomIdRaw = agentTurn ? agentTurn['session_atom_id'] : undefined;
+    const claimedSessionAtomId = typeof claimedSessionAtomIdRaw === 'string'
+      && claimedSessionAtomIdRaw.startsWith('agent-session-')
+      && claimedSessionAtomIdRaw.length > 'agent-session-'.length
+      ? claimedSessionAtomIdRaw
+      : null;
+    const provenanceDerivedFrom = (turnAtom as { provenance?: { derived_from?: ReadonlyArray<string> } }).provenance?.derived_from;
+    const provenanceMatchesSession = claimedSessionAtomId !== null
+      && Array.isArray(provenanceDerivedFrom)
+      && provenanceDerivedFrom.includes(claimedSessionAtomId);
+    if (
+      agentTurn
+      && atomTurnIndex === index.turn_index
+      && claimedSessionAtomId !== null
+      && provenanceMatchesSession
+    ) {
       const rawLatency = agentTurn['latency_ms'];
       if (typeof rawLatency === 'number' && Number.isFinite(rawLatency)) {
         latency_ms = rawLatency;
