@@ -307,7 +307,13 @@ export function listOperatorActions(
   filteredRows.sort((a, b) => {
     const tb = parseIsoTs(b.created_at);
     const ta = parseIsoTs(a.created_at);
-    if (tb !== ta) return tb - ta;
+    const aValid = Number.isFinite(ta);
+    const bValid = Number.isFinite(tb);
+    // Both finite + distinct: timestamp ordering wins.
+    if (aValid && bValid && tb !== ta) return tb - ta;
+    // One side malformed: finite side sorts first.
+    if (aValid !== bValid) return aValid ? -1 : 1;
+    // Tie (equal timestamps OR both malformed): deterministic atom_id.
     return a.atom_id.localeCompare(b.atom_id);
   });
 

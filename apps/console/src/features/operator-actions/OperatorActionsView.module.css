@@ -179,17 +179,11 @@
 }
 
 .row {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: var(--space-2);
-  padding: var(--space-3);
   background: var(--surface-raised);
   border: var(--stroke-hairline) solid var(--border-subtle);
   border-radius: var(--radius-md);
-  cursor: pointer;
   transition: background var(--duration-fast) var(--easing-standard),
               border-color var(--duration-fast) var(--easing-standard);
-  min-height: var(--size-touch-target-min);
 }
 
 .row:hover {
@@ -197,13 +191,30 @@
   border-color: var(--border-strong);
 }
 
-.row:focus-visible {
+/*
+ * Anchor IS the click target: full row, real href so middle-click /
+ * Cmd-click / right-click "Copy link" all work natively. JS only
+ * intercepts plain left-click for SPA routing. Grid + padding live
+ * here so the anchor occupies the entire row's interactive area.
+ */
+.rowLink {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  min-height: var(--size-touch-target-min);
+  text-decoration: none;
+  color: inherit;
+  border-radius: var(--radius-md);
+}
+
+.rowLink:focus-visible {
   outline: var(--stroke-rail) solid var(--border-focus);
   outline-offset: var(--stroke-rail);
 }
 
 @media (min-width: 60rem) {
-  .row {
+  .rowLink {
     grid-template-columns: 8rem 9rem 1fr 7rem;
     align-items: center;
     gap: var(--space-3);

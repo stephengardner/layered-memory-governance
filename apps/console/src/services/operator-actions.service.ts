@@ -24,6 +24,7 @@ export type {
   OperatorActionRow,
   OperatorActionsListResponse,
 } from '../../server/operator-actions-types';
+export { isOperatorActionKind } from '../../server/operator-actions-types';
 
 import type {
   OperatorActionKind,

@@ -64,6 +64,42 @@ export type OperatorActionKind =
   | 'other';
 
 /**
+ * Runtime guard for the {@link OperatorActionKind} union. Used by the
+ * Console to validate deep-link query parameters (`?action_type=...`)
+ * before passing them into the list-API request payload — without this,
+ * a malformed URL would surface as an avoidable backend error state.
+ *
+ * Single-source-of-truth pattern: the literal list lives once here
+ * (not duplicated in the view) so adding a new kind to the union
+ * automatically widens the guard. The narrowing return type makes the
+ * call site type-safe without an additional cast.
+ */
+const OPERATOR_ACTION_KINDS: ReadonlySet<OperatorActionKind> = new Set([
+  'pr-create',
+  'pr-merge',
+  'pr-comment',
+  'pr-edit',
+  'pr-close',
+  'pr-ready',
+  'pr-review',
+  'issue-create',
+  'issue-comment',
+  'issue-edit',
+  'issue-close',
+  'review-thread-resolve',
+  'label',
+  'release',
+  'workflow',
+  'repo-mutation',
+  'api-write',
+  'other',
+]);
+
+export function isOperatorActionKind(value: unknown): value is OperatorActionKind {
+  return typeof value === 'string' && OPERATOR_ACTION_KINDS.has(value as OperatorActionKind);
+}
+
+/**
  * One row in the operator-actions list. Mirrors the
  * `metadata.operator_action` payload that `gh-as.mjs` writes plus the
  * derived `action_type` classifier output.

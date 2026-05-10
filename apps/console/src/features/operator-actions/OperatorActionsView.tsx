@@ -14,6 +14,7 @@ import {
 } from '@/state/router.store';
 import { toErrorMessage } from '@/services/errors';
 import {
+  isOperatorActionKind,
   listOperatorActions,
   type OperatorActionKind,
   type OperatorActionRow,
@@ -96,7 +97,18 @@ function actionTypeToneClass(kind: OperatorActionKind): string {
 export function OperatorActionsView() {
   const routeQuery = useRouteQuery();
   const actor = routeQuery.get(ACTOR_QUERY_KEY) ?? null;
-  const actionType = (routeQuery.get(ACTION_TYPE_QUERY_KEY) as OperatorActionKind | null) ?? null;
+  /*
+   * Guard the deep-link value against the OperatorActionKind union
+   * before threading it into the query key + request payload. A
+   * malformed URL (`?action_type=foo`) would otherwise produce an
+   * avoidable error state on first paint; here it silently falls
+   * back to "no filter" while the chip UI still lets the operator
+   * pick a real value.
+   */
+  const rawActionType = routeQuery.get(ACTION_TYPE_QUERY_KEY);
+  const actionType: OperatorActionKind | null = isOperatorActionKind(rawActionType)
+    ? rawActionType
+    : null;
 
   const query = useQuery({
     queryKey: ['operator-actions', { actor, actionType, limit: DEFAULT_LIMIT }],
@@ -410,12 +422,20 @@ function ActionRow({ row }: { readonly row: OperatorActionRow }) {
    * metadata.operator_action.args, taint, provenance, derived_from.
    */
   const targetRoute: Route = 'atom';
+  const href = routeHref(targetRoute, row.atom_id);
+  /*
+   * Primary interactive surface is a visible <a> with a real href so
+   * the OS-native affordances survive: middle-click → new tab, Cmd/Ctrl-
+   * click → background tab, right-click → "Copy link address" / "Open
+   * in new window". We intercept only plain left-click (no modifier
+   * keys, no default-prevented) for SPA routing; every other gesture
+   * falls through to the browser. The <li> is now a structural carrier
+   * for layout + data-* attrs only — no role="link" gymnastics.
+   */
   const onClick = (e: MouseEvent) => {
     if (!isPlainLeftClick(e)) return;
     const target = e.target as HTMLElement;
-    // Don't intercept clicks on nested anchors / buttons (none in this row today,
-    // but future enhancements may add them).
-    if (target.closest('a, button')) return;
+    if (target.closest('button')) return;
     e.preventDefault();
     setRoute(targetRoute, row.atom_id);
   };
@@ -427,56 +447,41 @@ function ActionRow({ row }: { readonly row: OperatorActionRow }) {
       data-atom-id={row.atom_id}
       data-actor={row.actor}
       data-action-type={row.action_type}
-      role="link"
-      tabIndex={0}
       initial={reducedMotion ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: reducedMotion ? 0 : 0.16 }}
-      onClick={onClick}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          setRoute(targetRoute, row.atom_id);
-        }
-      }}
     >
-      <span className={styles.actorBadge} data-testid="operator-actions-row-actor">
-        {row.actor}
-      </span>
-      <span
-        className={`${styles.actionType} ${actionTypeToneClass(row.action_type)}`}
-        data-testid="operator-actions-row-action-type"
-      >
-        {row.action_type}
-      </span>
-      <span
-        className={`${styles.target} ${row.target ? '' : styles.targetMissing}`}
-        data-testid="operator-actions-row-target"
-      >
-        {row.target ?? row.subcommand}
-      </span>
-      <time
-        className={styles.timestamp}
-        dateTime={row.created_at}
-        data-testid="operator-actions-row-time"
-      >
-        {formatRelative(row.created_at)}
-      </time>
-      <code className={styles.argsPreview} data-testid="operator-actions-row-args">
-        {row.args_preview}
-      </code>
-      {/*
-       * Hidden anchor preserves the right-click "open in new tab"
-       * affordance for keyboard / middle-click navigation. The visible
-       * row owns the primary click handler.
-       */}
       <a
-        href={routeHref(targetRoute, row.atom_id)}
-        style={{ display: 'none' }}
-        aria-hidden="true"
-        tabIndex={-1}
+        href={href}
+        className={styles.rowLink}
+        data-testid="operator-actions-row-link"
+        onClick={onClick}
       >
-        Open atom {row.atom_id}
+        <span className={styles.actorBadge} data-testid="operator-actions-row-actor">
+          {row.actor}
+        </span>
+        <span
+          className={`${styles.actionType} ${actionTypeToneClass(row.action_type)}`}
+          data-testid="operator-actions-row-action-type"
+        >
+          {row.action_type}
+        </span>
+        <span
+          className={`${styles.target} ${row.target ? '' : styles.targetMissing}`}
+          data-testid="operator-actions-row-target"
+        >
+          {row.target ?? row.subcommand}
+        </span>
+        <time
+          className={styles.timestamp}
+          dateTime={row.created_at}
+          data-testid="operator-actions-row-time"
+        >
+          {formatRelative(row.created_at)}
+        </time>
+        <code className={styles.argsPreview} data-testid="operator-actions-row-args">
+          {row.args_preview}
+        </code>
       </a>
     </motion.li>
   );
