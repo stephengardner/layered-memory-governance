@@ -480,7 +480,14 @@ function AgentTurnRowItem({ turn }: { turn: AgentTurnRow }) {
             {formatLatencyMs(turn.latency_ms)}
           </span>
         )}
-        {turn.tool_calls_count !== null && turn.tool_calls_count > 0 && (
+        {/*
+         * Render whenever tool_calls_count is a known number (including
+         * 0). Hiding the pill on 0 makes a real zero-tool turn
+         * indistinguishable from `null` (cross-walk unavailable); the
+         * backend preserves that distinction so the UI surfaces it
+         * too. CR finding on PR #387.
+         */}
+        {turn.tool_calls_count !== null && (
           <span className={styles.agentTurnPill} data-kind="tools">
             <Wrench size={11} strokeWidth={2} aria-hidden="true" />
             {turn.tool_calls_count} {turn.tool_calls_count === 1 ? 'tool' : 'tools'}

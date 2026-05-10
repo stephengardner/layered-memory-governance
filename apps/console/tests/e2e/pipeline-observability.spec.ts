@@ -523,9 +523,41 @@ test.describe('pipeline observability - live progress (agent_turns)', () => {
     await expect(first).toContainText('2 tools');
     await expect(first).toContainText('citation verification fence');
 
-    // Second row is the brainstorm-stage row (tool_calls=0 means no tool pill).
+    // Second row is the brainstorm-stage row. CR finding on PR #387:
+    // explicit 0 renders as "0 tools" so the operator can tell the
+    // difference between "we know the agent made no tool calls" and
+    // "telemetry unavailable". The null case is exercised below.
     const second = rows.nth(1);
     await expect(second).toHaveAttribute('data-stage-name', 'brainstorm-stage');
     await expect(second).toContainText('Survey two alternative approaches');
+    await expect(second).toContainText('0 tools');
+  });
+
+  test('null tool_calls_count hides the pill while a real 0 renders explicitly', async ({ page }) => {
+    /*
+     * Companion to the previous test: when the substrate could NOT
+     * cross-walk the agent-turn atom (missing, tainted, etc.), the
+     * projection returns tool_calls_count=null. That row must NOT
+     * render a "0 tools" pill — the absence is meaningful.
+     */
+    const fixture = buildDetailFixture({
+      agent_turns: [
+        {
+          stage_name: 'plan-stage',
+          turn_index: 3,
+          agent_turn_atom_id: 'agent-turn-unreachable',
+          created_at: '2026-05-08T01:31:30Z',
+          latency_ms: null,
+          tool_calls_count: null,
+          llm_input_preview: null,
+        },
+      ],
+    });
+    await mockDetail(page, fixture);
+    await page.goto(`/pipelines/${encodeURIComponent(FIXTURE_PIPELINE_ID)}`);
+    await expect(page.getByTestId('pipeline-detail-view')).toBeVisible({ timeout: 10_000 });
+    const row = page.getByTestId('pipeline-detail-agent-turn-row').first();
+    await expect(row).toBeVisible();
+    await expect(row).not.toContainText('tool');
   });
 });

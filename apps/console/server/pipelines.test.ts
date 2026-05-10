@@ -868,6 +868,96 @@ describe('getPipelineDetail - agent_turns projection', () => {
     expect(result!.agent_turns[29]!.turn_index).toBe(30);
   });
 
+  it('advances stage last_event_at and pipeline last_event_at as agent-turn events stream', () => {
+    /*
+     * Regression for the CR-flagged staleness bug (PR #387):
+     * pipeline-stage-event atoms with transition='agent-turn' arrive
+     * mid-stage between the enter event and the eventual exit event.
+     * Stage.last_event_at and the top-level pipeline.last_event_at MUST
+     * advance with each turn so the operator sees fresh stage age next
+     * to fresh live-progress rows. Before the fix, both fields stayed
+     * stuck on the most-recent enter/exit timestamp regardless of how
+     * many turns streamed in between.
+     */
+    const pipeline = pipelineAtom({
+      id: 'p-stage-freshness',
+      state: 'running',
+      createdAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+    });
+    const enterTs = new Date(NOW - 10 * 60 * 1000).toISOString();
+    const turn0Ts = new Date(NOW - 3 * 60 * 1000).toISOString();
+    const turn1Ts = new Date(NOW - 60_000).toISOString();
+    const events: PipelineSourceAtom[] = [
+      stageEventAtom({
+        pipelineId: 'p-stage-freshness',
+        stageName: 'plan',
+        transition: 'enter',
+        at: enterTs,
+      }),
+      agentTurnIndexEventAtom({
+        pipelineId: 'p-stage-freshness',
+        stageName: 'plan',
+        turnIndex: 0,
+        agentTurnAtomId: 'agent-turn-p-stage-freshness-0',
+        at: turn0Ts,
+      }),
+      agentTurnIndexEventAtom({
+        pipelineId: 'p-stage-freshness',
+        stageName: 'plan',
+        turnIndex: 1,
+        agentTurnAtomId: 'agent-turn-p-stage-freshness-1',
+        at: turn1Ts,
+      }),
+    ];
+    const result = getPipelineDetail([pipeline, ...events], 'p-stage-freshness');
+    expect(result).not.toBeNull();
+    // Plan stage's last_event_at should be the NEWEST turn, not the enter event.
+    expect(result!.stages).toHaveLength(1);
+    expect(result!.stages[0]!.stage_name).toBe('plan');
+    expect(result!.stages[0]!.last_event_at).toBe(turn1Ts);
+    // State collapse remains driven by lifecycle events only: no exit,
+    // so the stage is still 'running' (the enter event), NOT a state
+    // derived from the agent-turn events.
+    expect(result!.stages[0]!.state).toBe('running');
+    // Top-level last_event_at also advances with the freshest turn.
+    expect(result!.last_event_at).toBe(turn1Ts);
+  });
+
+  it('list-summary also advances last_event_at with agent-turn streaming', () => {
+    // Same regression as above but for the list projection path.
+    // Operators sort the grid by last_event_at desc; a stuck timestamp
+    // pushes an actively-streaming pipeline down the list while a
+    // recently-stopped pipeline sits at the top.
+    const pipeline = pipelineAtom({
+      id: 'p-list-freshness',
+      state: 'running',
+      createdAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+    });
+    const enterTs = new Date(NOW - 10 * 60 * 1000).toISOString();
+    const turnTs = new Date(NOW - 30_000).toISOString();
+    const result = listPipelineSummaries(
+      [
+        pipeline,
+        stageEventAtom({
+          pipelineId: 'p-list-freshness',
+          stageName: 'plan',
+          transition: 'enter',
+          at: enterTs,
+        }),
+        agentTurnIndexEventAtom({
+          pipelineId: 'p-list-freshness',
+          stageName: 'plan',
+          turnIndex: 0,
+          agentTurnAtomId: 'agent-turn-p-list-freshness-0',
+          at: turnTs,
+        }),
+      ],
+      NOW,
+    );
+    expect(result.pipelines).toHaveLength(1);
+    expect(result.pipelines[0]!.last_event_at).toBe(turnTs);
+  });
+
   it('skips tainted or superseded agent-turn atoms when cross-walking telemetry', () => {
     const pipeline = pipelineAtom({ id: 'p-taint', state: 'running' });
     const event = agentTurnIndexEventAtom({
