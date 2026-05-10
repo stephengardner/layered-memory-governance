@@ -109,36 +109,34 @@
 }
 
 /*
- * Operator-critical items (live-ops Pulse + Control). The marker
- * lives in the icon tint only; the row background stays transparent
- * so `.itemCritical` cannot be confused with `.itemActive`. Two
- * earlier passes failed this readability bar:
+ * No visual treatment for "critical" items.
  *
- *   1. The original `--status-danger` red read as alarm-state
- *      ("the system is on fire") rather than emphasis. Operator
- *      confirmed 2026-04-26 the red was scaring rather than
- *      highlighting.
+ * History: three earlier passes tried to highlight Pulse + Control
+ * (the operator-critical destinations) and each failed a different
+ * readability bar:
  *
- *   2. The follow-up accent-tinted background + border (the
- *      treatment shipped after the red revert) read as "this row
- *      is selected" -- two non-active items wore the same row
- *      chrome as the actual active item, so on a typical render
- *      three items appeared selected when only one was. Operator
- *      confirmed 2026-05-05: "menu items appear selected when
- *      they aren't."
+ *   1. `--status-danger` red (2026-04-?) read as alarm-state
+ *      ("the system is on fire") rather than emphasis.
  *
- * Selection is the active route. Criticality is icon-level
- * emphasis ("reach for these first") that does not borrow the
- * `.itemActive` chrome. The icon picks up `--accent`; the label
- * stays in the default color so the row weight matches every
- * non-active row. The active vertical bar (set by
- * `.itemActive::before`) remains the single visual signal of
- * "you are here." Hover collapses to the shared `.item:hover`
- * background; there is no critical-only hover treatment.
+ *   2. Accent-tinted background + border (2026-04-26) read as
+ *      "this row is selected" -- two non-active items wore the
+ *      same chrome as the active item, so on a typical render
+ *      three rows appeared selected when only one was.
+ *
+ *   3. Icon-tint-only (2026-05-05 -> 2026-05-10) was the last
+ *      compromise: row stayed neutral, only the icon picked up
+ *      `--accent`. Operator confirmed 2026-05-10: even icon-tint
+ *      makes the row "look different" and that is not desired --
+ *      Pulse and Control should sit visually identical to every
+ *      other nav entry. Selection (active route) is the only
+ *      signal that should ever distinguish a nav item.
+ *
+ * The `priority: 'critical'` data field on the items array stays
+ * as a non-visual marker -- it preserves the seam per canon
+ * `dev-apex-tunable-dials-future-seam` for any future use case
+ * (ordering, telemetry weighting) without baking a treatment that
+ * the operator has rejected three times.
  */
-.itemCritical svg {
-  color: var(--accent);
-}
 
 /*
  * Dual-label pattern. Items that need a shorter label on the mobile

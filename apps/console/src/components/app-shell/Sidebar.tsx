@@ -110,11 +110,9 @@ export function Sidebar({ route }: { route: Route }) {
         {items.map((item) => {
           const Icon = item.icon;
           const active = item.id === route;
-          const critical = item.priority === 'critical';
           const cls = [
             styles.item,
             active ? styles.itemActive : '',
-            critical ? styles.itemCritical : '',
           ].filter(Boolean).join(' ');
           return (
             <a
@@ -147,11 +145,9 @@ export function Sidebar({ route }: { route: Route }) {
         {mobileBarItems.map((item) => {
           const Icon = item.icon;
           const active = item.id === route;
-          const critical = item.priority === 'critical';
           const cls = [
             styles.item,
             active ? styles.itemActive : '',
-            critical ? styles.itemCritical : '',
           ].filter(Boolean).join(' ');
           return (
             <a
