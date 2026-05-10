@@ -277,3 +277,132 @@
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/*
+ * Reaped-atoms toggle. Pill-shaped button under StatsHeader; same
+ * visual vocabulary as the plans-viewer bucket-filter chips so the
+ * console's toggle surface stays consistent. Selected state lights
+ * up via the accent token; the default (off) reads as a quiet
+ * disclosure prompt.
+ */
+.reapedToggleRow {
+  display: flex;
+  align-items: center;
+}
+
+.reapedToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  /*
+   * Touch-target floor per dev-mobile-first-floor: 44x44 CSS-pixel
+   * minimum. min-height + adequate vertical padding satisfies the
+   * canon directive on iPhone 13 (390x844 viewport). The button is
+   * pill-shaped so the visual height matches the touch height.
+   */
+  min-height: 44px;
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard),
+              border-color var(--duration-fast) var(--easing-standard);
+}
+
+.reapedToggle:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.reapedToggle:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.reapedToggleOn {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.reapedToggleOn:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-hover);
+}
+
+.reapedToggleLabel {
+  letter-spacing: 0.04em;
+}
+
+.reapedToggleCount {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+  opacity: 0.75;
+}
+
+.reapedToggleOn .reapedToggleCount {
+  opacity: 1;
+}
+
+/*
+ * Per-item visual treatment when a reaped atom IS surfaced (toggle
+ * ON). Reduced opacity keeps the row scannable while signalling
+ * "this is historical, not live". The `reaped` badge in itemHead
+ * carries the explicit semantic so screen readers do not rely on
+ * opacity alone (canon dev-web-app-grade-interaction: every state is
+ * legible without color/opacity-only cues).
+ */
+.itemReaped {
+  opacity: 0.62;
+}
+
+.itemReaped:hover {
+  /*
+   * Restore full opacity on hover so the operator can read the row
+   * clearly when triaging. The base `border-color` rule already
+   * lifts on hover; this adds the opacity bump.
+   */
+  opacity: 1;
+}
+
+.reapedBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs, var(--font-size-xs));
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/*
+ * Inline action link inside the activities-filter-empty EmptyState.
+ * Mirrors the PlansView .inlineLink style so empty-state remediation
+ * actions look consistent across feature surfaces.
+ */
+.inlineLink {
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.inlineLink:hover {
+  color: var(--accent-hover);
+  border-bottom-color: var(--accent-hover);
+}

@@ -117,6 +117,7 @@ import {
   type AuditChainAtom,
   type AuditChainResponse,
 } from './audit-chain';
+import { applyReapedFilter } from './reaped-filter';
 import { resolveSkillBundle } from '../../../examples/planning-stages/lib/skill-bundle-resolver.js';
 import { pipelineStagePrincipalSkillBundle } from './pipeline-stage-skill-resolver';
 
@@ -607,8 +608,33 @@ async function handlePrincipalsTree(): Promise<PrincipalTreeResult> {
  * desc. Includes non-L3 atoms (observations, actor-messages, plans,
  * questions) because the point is to show what's HAPPENING, not
  * just live canon.
+ *
+ * Reaped-atom projection (canon `arch-atomstore-source-of-truth`): by
+ * default the activities feed hides atoms whose `metadata.reaped_at`
+ * is set so the timeline reads as live work, not historical
+ * housekeeping. The pipeline reaper (PR #377) writes that marker on
+ * stale pipeline / pipeline-stage / agent-session / agent-turn atoms
+ * without deleting them; the projection layer is where the user-facing
+ * filter lives. Single-atom reads (atoms.get, atoms.references,
+ * atoms.audit-chain) intentionally bypass this filter so a
+ * `derived_from` link still resolves to a reaped atom -- the audit
+ * chain must remain navigable per
+ * `dev-substrate-not-prescription`.
+ *
+ * Operator can flip `include_reaped: true` from the UI toggle to view
+ * reaped atoms inline; the response always returns `reaped_count` so
+ * the toggle label reads "Show reaped (N)" without a second roundtrip.
  */
-async function handleActivitiesList(params: { limit?: number; types?: string[] }): Promise<Atom[]> {
+interface ActivitiesListResponse {
+  readonly atoms: ReadonlyArray<Atom>;
+  readonly reaped_count: number;
+}
+
+async function handleActivitiesList(params: {
+  limit?: number;
+  types?: string[];
+  include_reaped?: boolean;
+}): Promise<ActivitiesListResponse> {
   const all = await readAllAtoms();
   let out = all.filter((a) => !a.superseded_by || a.superseded_by.length === 0);
   if (params.types && params.types.length > 0) {
@@ -618,7 +644,17 @@ async function handleActivitiesList(params: { limit?: number; types?: string[] }
   out.sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''));
   // Cap raised 500 → 20000 per plan-raise-activities-list-cap-from-500-to-20000-cto-actor-20260426104923; revisit when sustained 7-day avg atoms/day > 238 (heatmap-cells aggregation pivot).
   const limit = Math.max(1, Math.min(20000, params.limit ?? 100));
-  return out.slice(0, limit);
+  const sliced = out.slice(0, limit);
+  /*
+   * Reaped-filter is applied AFTER the limit so the operator's
+   * include_reaped toggle does not silently change the slice window:
+   * the same N atoms get inspected regardless. The reaped_count
+   * reflects the count INSIDE the slice, which matches what the UI
+   * is rendering -- "Show reaped (N)" labels the count of reaped
+   * atoms among the visible window, not the whole atom store.
+   */
+  const filtered = applyReapedFilter(sliced, params.include_reaped === true);
+  return { atoms: filtered.atoms, reaped_count: filtered.reaped_count };
 }
 
 /*
@@ -2471,11 +2507,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const bodyLimit = body['limit'];
     const bodyTypes = body['types'];
+    const bodyIncludeReaped = body['include_reaped'];
     const limit = typeof bodyLimit === 'number' ? bodyLimit : undefined;
     const types = Array.isArray(bodyTypes) ? (bodyTypes as string[]) : undefined;
-    const params: { limit?: number; types?: string[] } = {
+    /*
+     * include_reaped is opt-in: the default-false posture matches the
+     * UI default of hiding reaped atoms. Any non-boolean payload is
+     * coerced to false so a malformed client request fails closed
+     * (hides reaped) rather than open.
+     */
+    const includeReaped = bodyIncludeReaped === true;
+    const params: { limit?: number; types?: string[]; include_reaped?: boolean } = {
       ...(limit !== undefined ? { limit } : {}),
       ...(types !== undefined ? { types } : {}),
+      include_reaped: includeReaped,
     };
     try {
       const data = await handleActivitiesList(params);

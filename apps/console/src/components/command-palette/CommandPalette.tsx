@@ -41,8 +41,16 @@ export function CommandPalette({ open, onClose }: Props) {
   const principalsQ = useQuery({ queryKey: ['principals'], queryFn: ({ signal }) => listPrincipals(signal), enabled: open });
   const plansQ = useQuery({ queryKey: ['plans'], queryFn: ({ signal }) => listPlans(signal), enabled: open });
   const activitiesQ = useQuery({
-    queryKey: ['activities', 500],
-    queryFn: ({ signal }) => listActivities({ limit: 500 }, signal),
+    /*
+     * Command palette INCLUDES reaped atoms so an operator searching
+     * for a deep-link to a reaped pipeline still finds it. Hiding
+     * reaped here would silently break "navigate to atom by id" for
+     * reaped ancestors -- a regression the projection-layer filter
+     * is explicitly designed to avoid.
+     */
+    queryKey: ['activities', 500, 'include-reaped'],
+    queryFn: ({ signal }) =>
+      listActivities({ limit: 500, include_reaped: true }, signal),
     enabled: open,
   });
 
@@ -56,7 +64,7 @@ export function CommandPalette({ open, onClose }: Props) {
     const plans: Entry[] = (plansQ.data ?? []).map((p) => ({
       kind: 'plan', id: `plan:${p.id}`, title: extractTitle(p.content) ?? p.id, subtitle: p.id, route: 'plans', routeId: p.id,
     }));
-    const activities: Entry[] = (activitiesQ.data ?? []).map((a) => ({
+    const activities: Entry[] = (activitiesQ.data?.atoms ?? []).map((a) => ({
       kind: 'activity', id: `activity:${a.id}`, title: a.id, subtitle: `${a.type} · ${a.content.slice(0, 80)}`, route: 'activities', routeId: a.id,
     }));
     return [...NAV_ENTRIES, ...canon, ...principals, ...plans, ...activities];

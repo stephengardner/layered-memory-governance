@@ -31,11 +31,23 @@ async function fetchCanon(page: Page): Promise<ReadonlyArray<ListAtom>> {
 
 async function fetchActivities(page: Page): Promise<ReadonlyArray<ListAtom>> {
   const response = await page.request.post('/api/activities.list', {
-    data: { limit: 100 },
+    /*
+     * include_reaped:true so atom-detail discovery covers reaped
+     * pipeline atoms too -- the detail view is the canonical "render
+     * any atom" surface and must not lose discovery for reaped
+     * ancestors when the activities feed itself defaults to hiding
+     * them. Server wire shape returns `{atoms, reaped_count}` since
+     * the reaped-filter projection landed; unwrap `data.atoms` here
+     * (older `data` was a plain array; both legacy and new shapes
+     * are tolerated for back-compat with cached deployments).
+     */
+    data: { limit: 100, include_reaped: true },
   });
   if (!response.ok()) return [];
   const body = await response.json();
-  return body?.data ?? [];
+  const data = body?.data;
+  if (Array.isArray(data)) return data;
+  return data?.atoms ?? [];
 }
 
 test.describe('atom-detail viewer', () => {
