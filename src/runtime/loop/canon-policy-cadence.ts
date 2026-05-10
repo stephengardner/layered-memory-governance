@@ -114,3 +114,80 @@ export async function readNumericCanonPolicy(
   } while (cursor !== undefined);
   return options.fallback;
 }
+
+/**
+ * Inputs for `readBooleanCanonPolicy`. All three fields are required.
+ * No sentinel handling because a boolean has no "disabled / never
+ * fire" analogue of the numeric reader's `'Infinity'` opt-in.
+ */
+export interface BooleanCanonPolicyOptions {
+  /** Policy `metadata.policy.subject` discriminator value. */
+  readonly subject: string;
+  /**
+   * Canonical boolean-field name (e.g. 'enabled'). The helper also
+   * accepts the legacy `'value'` field for back-compat so a bootstrap
+   * snapshot in the older shape stays readable while the named-field
+   * shape is canonical going forward.
+   */
+  readonly fieldName: string;
+  /** Default returned when no clean, non-superseded, well-formed atom matches. */
+  readonly fallback: boolean;
+}
+
+/**
+ * Read a canon-policy boolean value with the same shape as
+ * `readNumericCanonPolicy`.
+ *
+ * Walks L3 `directive` atoms, filters taint='clean' + non-superseded,
+ * matches `metadata.policy.subject === options.subject`, reads the
+ * canonical field (with legacy `'value'` fallback), and returns the
+ * configured boolean. Falls through to `options.fallback` on any
+ * malformed payload (string, number, missing field) or absent atom.
+ *
+ * Strict typing on the read: a non-boolean is NOT coerced via
+ * `Boolean(...)`. The string `"false"` is truthy, so coercion would
+ * silently flip an explicit operator-typed `"false"` to `true` and
+ * lie about the configured posture; the fall-through-to-default is
+ * the loud-but-recoverable shape. The operator sees the symptom
+ * (default behavior) and the policy atom itself remains the audit
+ * trail.
+ */
+export async function readBooleanCanonPolicy(
+  host: Host,
+  options: BooleanCanonPolicyOptions,
+): Promise<boolean> {
+  const PAGE_SIZE = 200;
+  // Constrain policy scan to L3 (canonical layer) so a same-subject
+  // non-canon directive (L0/L1/L2) cannot impersonate authoritative
+  // canon. Bound the scan via MAX_SCAN so per-tick read cost stays
+  // O(1) as directive volume grows; mirrors readNumericCanonPolicy.
+  const MAX_SCAN = 5_000;
+  let seen = 0;
+  let cursor: string | undefined;
+  do {
+    const remaining = MAX_SCAN - seen;
+    if (remaining <= 0) break;
+    const page = await host.atoms.query(
+      { type: ['directive'], layer: ['L3'] },
+      Math.min(PAGE_SIZE, remaining),
+      cursor,
+    );
+    seen += page.atoms.length;
+    for (const atom of page.atoms) {
+      if (atom.taint !== 'clean') continue;
+      if (atom.superseded_by.length > 0) continue;
+      const meta = atom.metadata as Record<string, unknown>;
+      const policy = meta['policy'] as Record<string, unknown> | undefined;
+      if (!policy || policy['subject'] !== options.subject) continue;
+      // Named field is canonical; `'value'` is the back-compat alias.
+      const raw = policy[options.fieldName] ?? policy['value'];
+      // Strict-typed read: only `true` / `false` round-trip; any other
+      // shape (string, number, null, missing) falls through to the
+      // default. See doc-comment above for why coercion is wrong.
+      if (typeof raw !== 'boolean') continue;
+      return raw;
+    }
+    cursor = page.nextCursor === null ? undefined : page.nextCursor;
+  } while (cursor !== undefined);
+  return options.fallback;
+}
