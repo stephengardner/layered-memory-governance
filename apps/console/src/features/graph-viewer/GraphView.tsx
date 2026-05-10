@@ -65,8 +65,16 @@ export function GraphView() {
   });
   const plansQ = useQuery({ queryKey: ['plans'], queryFn: ({ signal }) => listPlans(signal) });
   const activitiesQ = useQuery({
-    queryKey: ['activities', 500],
-    queryFn: ({ signal }) => listActivities({ limit: 500 }, signal),
+    /*
+     * Graph view INCLUDES reaped atoms: the provenance graph must
+     * remain navigable to reaped ancestors per
+     * `dev-substrate-not-prescription` (filter is projection-layer,
+     * not substrate-layer). Hiding reaped from the graph would orphan
+     * any `derived_from` edge that points at a reaped pipeline.
+     */
+    queryKey: ['activities', 500, 'include-reaped'],
+    queryFn: ({ signal }) =>
+      listActivities({ limit: 500, include_reaped: true }, signal),
   });
 
   /*
@@ -78,7 +86,7 @@ export function GraphView() {
     const all = [
       ...(canonQ.data ?? []),
       ...(plansQ.data ?? []),
-      ...(activitiesQ.data ?? []),
+      ...(activitiesQ.data?.atoms ?? []),
     ];
     const seen = new Map<string, typeof all[number]>();
     for (const a of all) if (!seen.has(a.id)) seen.set(a.id, a);

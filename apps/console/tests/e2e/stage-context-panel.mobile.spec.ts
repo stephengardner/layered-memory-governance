@@ -44,11 +44,20 @@ const PIPELINE_STAGE_TYPES = new Set([
 
 async function fetchActivities(page: Page): Promise<ReadonlyArray<ListAtom>> {
   const response = await page.request.post('/api/activities.list', {
-    data: { limit: 200 },
+    /*
+     * include_reaped:true so the discovery walk over recent atoms
+     * picks up reaped pipeline-stage atoms too (the spec walks the
+     * activities slice looking for any pipeline-stage-emitting atom).
+     * Server returns `{atoms, reaped_count}` since the reaped-filter
+     * projection landed; tolerate both shapes for back-compat.
+     */
+    data: { limit: 200, include_reaped: true },
   });
   if (!response.ok()) return [];
   const body = await response.json();
-  return body?.data ?? [];
+  const data = body?.data;
+  if (Array.isArray(data)) return data;
+  return data?.atoms ?? [];
 }
 
 async function findPipelineStageAtom(page: Page): Promise<ListAtom | null> {

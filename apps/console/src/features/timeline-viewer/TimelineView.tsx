@@ -44,13 +44,22 @@ export function TimelineView() {
     queryFn: ({ signal }) => listCanonAtoms({}, signal),
   });
   const activitiesQ = useQuery({
-    // Shared cache with ActivitiesView (same queryKey + limit) so the
-    // ~12-week heatmap render and the 14-day timeline render hit one
-    // backend pull. TimelineView filters down to the last 14 days in
-    // the useMemo below (the wider 20k window pays for ActivitiesView's
-    // heatmap; here it's free under the cache).
-    queryKey: ['activities', 20000],
-    queryFn: ({ signal }) => listActivities({ limit: 20000 }, signal),
+    /*
+     * Shared cache with ActivitiesView (same queryKey + limit) so the
+     * ~12-week heatmap render and the 14-day timeline render hit one
+     * backend pull. TimelineView filters down to the last 14 days in
+     * the useMemo below (the wider 20k window pays for ActivitiesView's
+     * heatmap; here it's free under the cache).
+     *
+     * Reaped atoms ARE included here: the timeline is a historical
+     * surface and reaped pipeline atoms are exactly the historical
+     * record we want visible. The activities-feed default-hide is a
+     * UI choice for the live feed; the timeline does not share that
+     * intent.
+     */
+    queryKey: ['activities', 20000, 'include-reaped'],
+    queryFn: ({ signal }) =>
+      listActivities({ limit: 20000, include_reaped: true }, signal),
   });
   const principalsQ = useQuery({
     queryKey: ['principals'],
@@ -59,7 +68,7 @@ export function TimelineView() {
 
   const { rows, atomsByPrincipal, earliest, latest } = useMemo(() => {
     const principals = principalsQ.data ?? [];
-    const atoms = [...(canonQ.data ?? []), ...(activitiesQ.data ?? [])];
+    const atoms = [...(canonQ.data ?? []), ...(activitiesQ.data?.atoms ?? [])];
     // Dedupe by id (canon + activities overlap — canon atoms show up
     // in both lists).
     const byId = new Map<string, CanonAtom>();
