@@ -1,11 +1,11 @@
 import { useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { createPortal } from 'react-dom';
-import { listCanonAtoms, type CanonAtom } from '@/services/canon.service';
+import { getAtomById } from '@/services/atoms.service';
 import {
   AtomHoverCard,
   AtomHoverCardLoading,
-  AtomHoverCardNotInCanon,
+  AtomHoverCardNotFound,
 } from '@/components/hover-card/AtomHoverCard';
 import { useHoverCard } from '@/components/hover-card/useHoverCard';
 import { routeForAtomId, routeHref, setRoute, type Route } from '@/state/router.store';
@@ -24,12 +24,21 @@ interface Props {
  *
  * Hover-card render branches three ways so the metadata strip never
  * shows fabricated values:
- *   - resolved match  -> AtomHoverCard with real metadata
- *   - query pending   -> AtomHoverCardLoading with skeleton metadata
- *   - settled empty   -> AtomHoverCardNotInCanon (id + message only;
- *                        no metadata strip, so no placeholder principal
- *                        / confidence / created_at can be read as
- *                        ground truth)
+ *   - resolved (any layer) -> AtomHoverCard with real metadata
+ *   - query pending         -> AtomHoverCardLoading with skeleton metadata
+ *   - settled null          -> AtomHoverCardNotFound (id + message only;
+ *                              no metadata strip, so no placeholder
+ *                              principal / confidence / created_at
+ *                              can be read as ground truth)
+ *
+ * The resolver calls `getAtomById` (which hits `/api/atoms.get`) so
+ * the hover-card surfaces full envelope for ANY layer (L0 plans,
+ * observations, agent-sessions, pipeline outputs, dispatch records,
+ * etc.) -- not just L3 canon. Operators previously saw a useless
+ * 'Atom not in canon' placeholder for the majority of atoms in the
+ * substrate; this routes to the real data instead. The "not found"
+ * branch is reserved for the genuinely unreachable case where the
+ * backend cannot find the id at all (atom-not-found 404).
  */
 export function AtomRef({ id, variant = 'chip' }: Props) {
   const target: Route = routeForAtomId(id);
@@ -41,14 +50,18 @@ export function AtomRef({ id, variant = 'chip' }: Props) {
   const hover = useHoverCard<void>();
 
   // Fetch only while hovering -- TanStack caches per-id so repeat
-  // hovers are instant.
+  // hovers are instant. getAtomById hits /api/atoms.get which
+  // returns AnyAtom for any layer (not just L3 canon); the resolver
+  // returns null on the substrate's atom-not-found 404 so the
+  // not-found branch is reached only when the id genuinely does not
+  // resolve.
   const query = useQuery({
-    queryKey: ['canon.list-search', id],
-    queryFn: ({ signal }) => listCanonAtoms({ search: id }, signal),
+    queryKey: ['atoms.get', id],
+    queryFn: ({ signal }) => getAtomById(id, signal),
     enabled: hover.open,
     staleTime: 60_000,
   });
-  const match = (query.data ?? []).find((a) => a.id === id) as CanonAtom | undefined;
+  const match = query.data ?? undefined;
 
   return (
     <>
@@ -108,9 +121,9 @@ export function AtomRef({ id, variant = 'chip' }: Props) {
               onPointerLeave={hover.scheduleHide}
             />
           ) : (
-            <AtomHoverCardNotInCanon
+            <AtomHoverCardNotFound
               id={id}
-              message="Atom not in canon (may be a plan, observation, or other non-canon artifact)"
+              message="Atom not found in the substrate. It may have been reaped, never written, or the id is malformed."
               hint={`click · open in ${target}`}
               onPointerEnter={hover.cancelHide}
               onPointerLeave={hover.scheduleHide}

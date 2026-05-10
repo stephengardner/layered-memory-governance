@@ -108,33 +108,43 @@ test.describe('atom-ref hover card', () => {
     expect(loadedText, 'loaded card should render a real confidence').toMatch(/conf\s+\d\.\d{2}/);
   });
 
-  test('settled-empty card omits the metadata strip entirely', async ({ page }) => {
+  test('settled-not-found card omits the metadata strip entirely', async ({ page }) => {
     /*
-     * If the canon.list query terminates with no match, the third
-     * branch in AtomRef now renders <AtomHoverCardNotInCanon> rather
+     * If atoms.get returns null (substrate's atom-not-found 404), the
+     * third branch in AtomRef renders <AtomHoverCardNotFound> rather
      * than synthesizing a CanonAtom with hardcoded principal_id/layer/
      * confidence/created_at and feeding it through <AtomHoverCard>.
-     * Regression guard: assert the not-in-canon card carries the
-     * expected sentinel marker AND does NOT contain any of the
-     * fabricated metadata strings the old fallback would have emitted.
+     *
+     * Note 2026-05-10: AtomRef now calls atoms.get instead of
+     * canon.list. The not-in-canon placeholder is gone; the only
+     * remaining "no metadata strip" branch is the genuine-not-found
+     * case (atom does not exist in the substrate at all). Operators
+     * hovering an L0/L1/L2 atom now see the real envelope under
+     * <AtomHoverCard>.
+     *
+     * Regression guard: assert the not-found card carries the sentinel
+     * marker AND does NOT contain any fabricated metadata strings.
      */
     const canonCard = page.locator('[data-testid="canon-card"]').first();
     await page.goto('/canon');
     await expect(canonCard).toBeVisible({ timeout: 10_000 });
 
-    // Force a settled-empty hover by intercepting canon.list for a
-    // synthetic id and returning an empty match list. The id is
-    // injected via page.evaluate by mounting a transient AtomRef chip,
-    // so we don't depend on a specific repo state.
-    await page.route('**/api/canon.list', async (route) => {
+    // Force a settled-not-found hover by intercepting atoms.get for a
+    // synthetic id and returning the substrate's 404 shape so the
+    // service layer returns null and AtomRef renders the not-found
+    // branch.
+    await page.route('**/api/atoms.get', async (route) => {
       const req = route.request();
       try {
-        const body = JSON.parse(req.postData() ?? '{}') as { search?: string };
-        if (body.search === 'never-existed-test-id-aaaa-bbbb') {
+        const body = JSON.parse(req.postData() ?? '{}') as { id?: string };
+        if (body.id === 'never-existed-test-id-aaaa-bbbb') {
           await route.fulfill({
-            status: 200,
+            status: 404,
             contentType: 'application/json',
-            body: JSON.stringify({ data: [] }),
+            body: JSON.stringify({
+              ok: false,
+              error: { code: 'atom-not-found', message: 'never-existed-test-id-aaaa-bbbb' },
+            }),
           });
           return;
         }
@@ -150,38 +160,26 @@ test.describe('atom-ref hover card', () => {
       a.style.position = 'fixed';
       a.style.top = '40px';
       a.style.left = '40px';
-      a.id = '__not_in_canon_test_anchor__';
+      a.id = '__not_found_test_anchor__';
       document.body.appendChild(a);
     });
 
-    /*
-     * Drive the AtomRef hover via the production AtomRef component by
-     * navigating to the inline atom-ref the canon detail view exposes
-     * for any unknown id. We re-use the canon detail view's atom-ref
-     * chip rendering rather than mocking React internals.
-     */
-    const fakeChip = page.locator('#__not_in_canon_test_anchor__');
+    const fakeChip = page.locator('#__not_found_test_anchor__');
     await fakeChip.hover();
     /*
      * The injected anchor is a plain DOM element, not an AtomRef
      * React component, so the hover-card wouldn't actually mount from
-     * it. Instead this test asserts the type-level guarantee: the
-     * AtomHoverCardNotInCanon export exists and renders an element
-     * with `data-not-in-canon="true"` AND no metadata strip text.
-     * That's what the unit-style assertion below verifies once the
-     * export is exercised by any production caller (settled-empty
-     * path in AtomRef).
+     * it. Instead this test asserts the contract: any AtomHoverCardNotFound
+     * card on the page must carry the `data-not-found="true"` sentinel
+     * AND show no metadata strip text. Unit coverage lives in the
+     * component's render tree.
      */
-    const notInCanonCards = page.locator('[data-not-in-canon="true"]');
-    // If a real settled-empty hover is in flight elsewhere on the
-    // page (e.g. a stale ref chip in markdown), assert the contract
-    // holds; otherwise skip without failing -- the exhaustive unit
-    // coverage lives in the component's render tree.
-    if (await notInCanonCards.count() > 0) {
-      const text = await notInCanonCards.first().innerText();
-      expect(text, 'not-in-canon card must not show fabricated principal').not.toContain('by —');
-      expect(text, 'not-in-canon card must not show fabricated confidence').not.toMatch(/conf\s+\d/);
-      expect(text, 'not-in-canon card must not show fabricated layer').not.toMatch(/layer\s+L/);
+    const notFoundCards = page.locator('[data-not-found="true"]');
+    if (await notFoundCards.count() > 0) {
+      const text = await notFoundCards.first().innerText();
+      expect(text, 'not-found card must not show fabricated principal').not.toContain('by —');
+      expect(text, 'not-found card must not show fabricated confidence').not.toMatch(/conf\s+\d/);
+      expect(text, 'not-found card must not show fabricated layer').not.toMatch(/layer\s+L/);
     }
   });
 });
