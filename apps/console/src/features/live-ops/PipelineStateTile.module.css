@@ -1,0 +1,192 @@
+/*
+ * PipelineStateTile -- three-bucket pipeline-state counter for the
+ * Pulse dashboard. Mobile-first per canon `dev-mobile-first-floor`:
+ * the bucket grid starts as a single column on narrow viewports and
+ * progressively enhances to three columns on wider widths. Touch
+ * targets meet the 44x44 minimum.
+ *
+ * Tokens-only per apps/console/CLAUDE.md principle 3; no raw px or
+ * hex. All colors resolve via semantic tokens defined in
+ * src/tokens/tokens.css.
+ */
+
+.bucketGrid {
+  display: grid;
+  /*
+   * Single column on mobile. The three buckets stack vertically so the
+   * count + label + sample list each get full width and the operator
+   * can scan top-to-bottom without horizontal scroll. min-content cap
+   * prevents a long pipeline title from blowing the grid open on a
+   * 390px viewport.
+   */
+  grid-template-columns: 1fr;
+  gap: var(--space-3);
+}
+
+@media (min-width: 32rem) {
+  /*
+   * Beyond ~512px the three buckets fit comfortably in a row. The grid
+   * still uses minmax(0, 1fr) so a long sample title ellipsizes within
+   * its column rather than pushing the neighbor.
+   */
+  .bucketGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.bucket {
+  /*
+   * Each bucket is a single-column flex stack:
+   *   1. count + label header (the button's clickable hit region)
+   *   2. sample list (un-clickable; uses the rowLink hover affordance
+   *      only when the operator wants to drill into a specific pipeline)
+   *
+   * Use min-width: 0 so the column shrinks when the count is large
+   * (4-digit) without breaking the grid layout.
+   */
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.bucketHeader {
+  /*
+   * 44x44 minimum touch target per canon `dev-mobile-first-floor`.
+   * The button's padding + line-height combine to >= 44px in both
+   * dimensions; align-items:center keeps the visual weight balanced.
+   * The full button is clickable so a thumb tap on the count itself
+   * navigates -- never the small label-only strip.
+   */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-3);
+  min-height: 2.75rem;
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--duration-fast) var(--easing-standard),
+              background var(--duration-fast) var(--easing-standard);
+}
+
+.bucketHeader:hover {
+  border-color: var(--accent);
+  background: var(--surface-overlay);
+}
+
+.bucketHeader:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.bucketCount {
+  font-family: var(--font-display);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/*
+ * Per-bucket count tones. The running bucket reads in the info color
+ * to match the running statePill across the rest of the console; the
+ * dispatched-pending bucket reads in the warning tone (operator
+ * decision required); the fulfilled bucket reads in the success tone.
+ * Each pill defines border + foreground; the background stays
+ * surface-raised so the count's tabular numerals dominate the visual
+ * weight without competing with the underlying tile.
+ */
+.bucketRunning .bucketCount {
+  color: var(--status-info);
+}
+
+.bucketPendingMerge .bucketCount {
+  color: var(--status-warning);
+}
+
+.bucketFulfilled .bucketCount {
+  color: var(--status-success);
+}
+
+.bucketLabel {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.bucketSample {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sampleRow {
+  display: block;
+  /*
+   * Sample rows are smaller than the header but still 44px tall so a
+   * mobile tap reliably lands on a single row. Padding inside the
+   * anchor preserves the hit area without needing a wrapper element.
+   */
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.sampleLink {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: var(--stroke-hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color var(--duration-fast) var(--easing-standard),
+              background var(--duration-fast) var(--easing-standard);
+}
+
+.sampleLink:hover {
+  border-color: var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+.sampleLink:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.sampleTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sampleAge {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-style: italic;
+  line-height: var(--line-height-relaxed);
+}

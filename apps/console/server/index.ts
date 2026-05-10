@@ -85,6 +85,8 @@ import type {
 import { buildPipelineLifecycle } from './pipeline-lifecycle';
 import { buildIntentOutcome } from './intent-outcome';
 import type { IntentOutcome, IntentOutcomeSourceAtom } from './intent-outcome-types';
+import { buildPulsePipelineSummary } from './pulse-pipeline-summary';
+import type { PulsePipelineSummary } from './pulse-pipeline-summary-types';
 import type {
   PipelineLifecycle,
   PipelineLifecycleSourceAtom,
@@ -1839,6 +1841,22 @@ async function handleIntentOutcome(pipelineId: string): Promise<IntentOutcome | 
   return result;
 }
 
+/**
+ * /api/pulse.pipeline-summary handler. Rolls every live pipeline atom
+ * through the same intent-outcome synthesizer used on /pipelines/<id>
+ * and returns three bucket counts (running / dispatched-pending-merge
+ * / intent-fulfilled) plus a small sample per bucket. Server-side
+ * aggregation is the only sane shape per canon `dev-indie-floor-org-
+ * ceiling`: shipping every pipeline atom to every Pulse tile on a 2s
+ * tick is fine for an indie store of <50 atoms and degenerate at the
+ * 50+ concurrent-actor org-ceiling.
+ */
+async function handlePulsePipelineSummary(): Promise<PulsePipelineSummary> {
+  const all = await readAllAtoms();
+  const sourceAtoms = all as unknown as ReadonlyArray<IntentOutcomeSourceAtom>;
+  return buildPulsePipelineSummary(sourceAtoms, Date.now());
+}
+
 // ---------------------------------------------------------------------------
 // Resume audit: cross-actor projection of resume-vs-fresh-spawn telemetry.
 //
@@ -3109,6 +3127,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'pipeline-intent-outcome-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pulse.pipeline-summary' && req.method === 'POST') {
+    try {
+      const data = await handlePulsePipelineSummary();
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pulse-pipeline-summary-failed', (err as Error).message);
     }
     return;
   }
