@@ -588,3 +588,315 @@ describe('getPipelineDetail', () => {
     expect(result!.findings).toHaveLength(0);
   });
 });
+
+/*
+ * Helpers for the agent_turns projection tests below. Mirrors the
+ * pipeline-stage-event + agent-turn atom shapes the substrate writes
+ * (per src/runtime/planning-pipeline/atom-shapes.ts +
+ * src/substrate/types.ts AgentTurnMeta). Kept separate from the
+ * shared `stageEventAtom` helper above because the agent-turn
+ * transition carries a wider metadata payload (agent_turn_atom_id +
+ * turn_index) that other transitions never emit.
+ */
+function agentTurnIndexEventAtom(opts: {
+  pipelineId: string;
+  stageName: string;
+  turnIndex: number;
+  agentTurnAtomId: string | null;
+  at: string;
+}): PipelineSourceAtom {
+  const idTail = `agent-turn-${opts.turnIndex}`;
+  const meta: Record<string, unknown> = {
+    pipeline_id: opts.pipelineId,
+    stage_name: opts.stageName,
+    transition: 'agent-turn',
+    duration_ms: 0,
+    cost_usd: 0,
+    turn_index: opts.turnIndex,
+  };
+  if (opts.agentTurnAtomId !== null) {
+    meta['agent_turn_atom_id'] = opts.agentTurnAtomId;
+  }
+  return {
+    id: `pipeline-stage-event-${opts.pipelineId}-${opts.stageName}-${idTail}-corr-1`,
+    type: 'pipeline-stage-event',
+    layer: 'L0',
+    content: `${opts.stageName}:agent-turn`,
+    principal_id: 'cto-actor',
+    created_at: opts.at,
+    metadata: meta,
+  };
+}
+
+function agentTurnAtom(opts: {
+  id: string;
+  sessionAtomId: string;
+  turnIndex: number;
+  llmInputInline?: string;
+  llmInputBlob?: { ref: { hash: string; size: number } };
+  toolCallsCount?: number;
+  latencyMs?: number;
+  at: string;
+}): PipelineSourceAtom {
+  const llmInput = opts.llmInputInline !== undefined
+    ? { inline: opts.llmInputInline }
+    : opts.llmInputBlob !== undefined
+      ? { ref: opts.llmInputBlob.ref }
+      : { inline: '' };
+  const toolCalls = Array.from({ length: opts.toolCallsCount ?? 0 }, (_, i) => ({
+    tool: `tool-${i}`,
+    args: { inline: '' },
+    result: { inline: '' },
+    latency_ms: 0,
+    outcome: 'success' as const,
+  }));
+  return {
+    id: opts.id,
+    type: 'agent-turn',
+    layer: 'L0',
+    content: `turn ${opts.turnIndex}`,
+    principal_id: 'cto-actor',
+    created_at: opts.at,
+    metadata: {
+      session_id: opts.sessionAtomId,
+      agent_turn: {
+        session_atom_id: opts.sessionAtomId,
+        turn_index: opts.turnIndex,
+        llm_input: llmInput,
+        llm_output: { inline: '' },
+        tool_calls: toolCalls,
+        latency_ms: opts.latencyMs ?? 0,
+      },
+    },
+  };
+}
+
+describe('getPipelineDetail - agent_turns projection', () => {
+  it('returns an empty agent_turns array when no agent-turn events exist', () => {
+    const pipeline = pipelineAtom({ id: 'p-no-turns', state: 'running' });
+    const enterEvent = stageEventAtom({
+      pipelineId: 'p-no-turns',
+      stageName: 'plan',
+      transition: 'enter',
+      at: new Date(NOW - 10 * 60 * 1000).toISOString(),
+    });
+    const result = getPipelineDetail([pipeline, enterEvent], 'p-no-turns');
+    expect(result).not.toBeNull();
+    expect(result!.agent_turns).toEqual([]);
+  });
+
+  it('surfaces agent-turn events into agent_turns with cross-walked telemetry', () => {
+    const pipeline = pipelineAtom({ id: 'p-turns', state: 'running' });
+    const enter = stageEventAtom({
+      pipelineId: 'p-turns',
+      stageName: 'brainstorm',
+      transition: 'enter',
+      at: new Date(NOW - 10 * 60 * 1000).toISOString(),
+    });
+    const turnEvent0 = agentTurnIndexEventAtom({
+      pipelineId: 'p-turns',
+      stageName: 'brainstorm',
+      turnIndex: 0,
+      agentTurnAtomId: 'agent-turn-p-turns-0',
+      at: new Date(NOW - 9 * 60 * 1000).toISOString(),
+    });
+    const turnAtom0 = agentTurnAtom({
+      id: 'agent-turn-p-turns-0',
+      sessionAtomId: 'agent-session-p-turns',
+      turnIndex: 0,
+      llmInputInline: 'Survey alternatives for the first stage of the deep planning pipeline.',
+      toolCallsCount: 3,
+      latencyMs: 1234,
+      at: new Date(NOW - 9 * 60 * 1000).toISOString(),
+    });
+    const result = getPipelineDetail(
+      [pipeline, enter, turnEvent0, turnAtom0],
+      'p-turns',
+    );
+    expect(result).not.toBeNull();
+    expect(result!.agent_turns).toHaveLength(1);
+    const row = result!.agent_turns[0]!;
+    expect(row.stage_name).toBe('brainstorm');
+    expect(row.turn_index).toBe(0);
+    expect(row.agent_turn_atom_id).toBe('agent-turn-p-turns-0');
+    expect(row.created_at).toBe(turnEvent0.created_at);
+    expect(row.latency_ms).toBe(1234);
+    expect(row.tool_calls_count).toBe(3);
+    expect(row.llm_input_preview).toBe(
+      'Survey alternatives for the first stage of the deep planning pipeline.',
+    );
+  });
+
+  it('truncates llm_input previews longer than 200 chars with an ellipsis', () => {
+    const pipeline = pipelineAtom({ id: 'p-long', state: 'running' });
+    const longInput = 'a'.repeat(500);
+    const event = agentTurnIndexEventAtom({
+      pipelineId: 'p-long',
+      stageName: 'plan',
+      turnIndex: 0,
+      agentTurnAtomId: 'agent-turn-p-long-0',
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const turn = agentTurnAtom({
+      id: 'agent-turn-p-long-0',
+      sessionAtomId: 'agent-session-p-long',
+      turnIndex: 0,
+      llmInputInline: longInput,
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const result = getPipelineDetail([pipeline, event, turn], 'p-long');
+    const row = result!.agent_turns[0]!;
+    expect(row.llm_input_preview).not.toBeNull();
+    expect(row.llm_input_preview!.length).toBeLessThanOrEqual(201); // 200 + ellipsis char
+    expect(row.llm_input_preview!.endsWith('…')).toBe(true);
+    expect(row.llm_input_preview!.startsWith('aaaa')).toBe(true);
+  });
+
+  it('returns null fields when the agent-turn atom is missing', () => {
+    /*
+     * Defensive: the substrate could write a pipeline-stage-event with
+     * transition='agent-turn' that points at an agent_turn_atom_id which
+     * has not yet been written (or has been pruned). The projection MUST
+     * surface the index row with null telemetry rather than dropping it
+     * or throwing.
+     */
+    const pipeline = pipelineAtom({ id: 'p-missing', state: 'running' });
+    const event = agentTurnIndexEventAtom({
+      pipelineId: 'p-missing',
+      stageName: 'spec',
+      turnIndex: 0,
+      agentTurnAtomId: 'agent-turn-not-on-disk',
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const result = getPipelineDetail([pipeline, event], 'p-missing');
+    expect(result!.agent_turns).toHaveLength(1);
+    const row = result!.agent_turns[0]!;
+    expect(row.agent_turn_atom_id).toBe('agent-turn-not-on-disk');
+    expect(row.latency_ms).toBeNull();
+    expect(row.tool_calls_count).toBeNull();
+    expect(row.llm_input_preview).toBeNull();
+  });
+
+  it('returns null preview when llm_input is a blob ref (projection does not resolve blobs)', () => {
+    const pipeline = pipelineAtom({ id: 'p-blob', state: 'running' });
+    const event = agentTurnIndexEventAtom({
+      pipelineId: 'p-blob',
+      stageName: 'plan',
+      turnIndex: 0,
+      agentTurnAtomId: 'agent-turn-p-blob-0',
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const turn = agentTurnAtom({
+      id: 'agent-turn-p-blob-0',
+      sessionAtomId: 'agent-session-p-blob',
+      turnIndex: 0,
+      llmInputBlob: { ref: { hash: 'sha256-deadbeef', size: 4096 } },
+      latencyMs: 2000,
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const result = getPipelineDetail([pipeline, event, turn], 'p-blob');
+    const row = result!.agent_turns[0]!;
+    expect(row.llm_input_preview).toBeNull();
+    expect(row.latency_ms).toBe(2000);
+  });
+
+  it('sorts agent_turns newest-first across all stages with turn_index DESC tiebreaker', () => {
+    const pipeline = pipelineAtom({ id: 'p-sort', state: 'running' });
+    const earlier = new Date(NOW - 10 * 60 * 1000).toISOString();
+    const later = new Date(NOW - 5 * 60 * 1000).toISOString();
+    const sameTs = new Date(NOW - 60_000).toISOString();
+    const events = [
+      agentTurnIndexEventAtom({
+        pipelineId: 'p-sort',
+        stageName: 'brainstorm',
+        turnIndex: 0,
+        agentTurnAtomId: 'agent-turn-p-sort-bs-0',
+        at: earlier,
+      }),
+      agentTurnIndexEventAtom({
+        pipelineId: 'p-sort',
+        stageName: 'spec',
+        turnIndex: 1,
+        agentTurnAtomId: 'agent-turn-p-sort-spec-1',
+        at: later,
+      }),
+      // Same timestamp; turn_index DESC tiebreak places higher index first.
+      agentTurnIndexEventAtom({
+        pipelineId: 'p-sort',
+        stageName: 'plan',
+        turnIndex: 0,
+        agentTurnAtomId: 'agent-turn-p-sort-plan-0',
+        at: sameTs,
+      }),
+      agentTurnIndexEventAtom({
+        pipelineId: 'p-sort',
+        stageName: 'plan',
+        turnIndex: 1,
+        agentTurnAtomId: 'agent-turn-p-sort-plan-1',
+        at: sameTs,
+      }),
+    ];
+    const result = getPipelineDetail([pipeline, ...events], 'p-sort');
+    expect(result!.agent_turns).toHaveLength(4);
+    // sameTs is the newest of the three timestamps; both plan rows lead.
+    // Within sameTs, turn_index 1 > 0 -> plan-1 first.
+    expect(result!.agent_turns[0]!.stage_name).toBe('plan');
+    expect(result!.agent_turns[0]!.turn_index).toBe(1);
+    expect(result!.agent_turns[1]!.stage_name).toBe('plan');
+    expect(result!.agent_turns[1]!.turn_index).toBe(0);
+    expect(result!.agent_turns[2]!.stage_name).toBe('spec');
+    expect(result!.agent_turns[3]!.stage_name).toBe('brainstorm');
+  });
+
+  it('caps agent_turns at PIPELINE_DETAIL_MAX_TURNS', () => {
+    const pipeline = pipelineAtom({ id: 'p-cap', state: 'running' });
+    // Mint 60 turn-index events; cap at 30 should keep only the newest 30.
+    const events: PipelineSourceAtom[] = [];
+    for (let i = 0; i < 60; i++) {
+      events.push(agentTurnIndexEventAtom({
+        pipelineId: 'p-cap',
+        stageName: 'plan',
+        turnIndex: i,
+        agentTurnAtomId: `agent-turn-p-cap-${i}`,
+        at: new Date(NOW - (60 - i) * 1000).toISOString(),
+      }));
+    }
+    const result = getPipelineDetail([pipeline, ...events], 'p-cap');
+    expect(result!.agent_turns.length).toBe(30);
+    // The newest 30 have turn_index 30..59; newest-first means index 59 leads.
+    expect(result!.agent_turns[0]!.turn_index).toBe(59);
+    expect(result!.agent_turns[29]!.turn_index).toBe(30);
+  });
+
+  it('skips tainted or superseded agent-turn atoms when cross-walking telemetry', () => {
+    const pipeline = pipelineAtom({ id: 'p-taint', state: 'running' });
+    const event = agentTurnIndexEventAtom({
+      pipelineId: 'p-taint',
+      stageName: 'plan',
+      turnIndex: 0,
+      agentTurnAtomId: 'agent-turn-p-taint-0',
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const taintedTurn: PipelineSourceAtom = {
+      ...agentTurnAtom({
+        id: 'agent-turn-p-taint-0',
+        sessionAtomId: 'agent-session-p-taint',
+        turnIndex: 0,
+        llmInputInline: 'should-be-skipped',
+        toolCallsCount: 5,
+        latencyMs: 9999,
+        at: new Date(NOW - 60_000).toISOString(),
+      }),
+      taint: 'compromised',
+    };
+    const result = getPipelineDetail([pipeline, event, taintedTurn], 'p-taint');
+    // Index event still surfaces; the cross-walk to the tainted agent-turn
+    // is skipped, so telemetry fields are null (NOT inherited from the
+    // tainted atom).
+    expect(result!.agent_turns).toHaveLength(1);
+    const row = result!.agent_turns[0]!;
+    expect(row.latency_ms).toBeNull();
+    expect(row.tool_calls_count).toBeNull();
+    expect(row.llm_input_preview).toBeNull();
+  });
+});

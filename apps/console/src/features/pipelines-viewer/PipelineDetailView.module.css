@@ -668,3 +668,96 @@
   outline: var(--stroke-rail) solid var(--border-focus);
   outline-offset: var(--stroke-rail);
 }
+
+/*
+ * "Live progress" section: per-turn telemetry rows for the actively
+ * running agentic stage. Mobile-first per dev-web-mobile-first-required;
+ * the row is read-only so the 44x44 touch-target floor only applies
+ * if a future task wires an action onto it.
+ */
+.agentTurnList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.agentTurnRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.agentTurnHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.agentTurnStage {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  padding: var(--space-px) var(--space-2);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  letter-spacing: 0.04em;
+}
+
+.agentTurnIndex {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--surface-base);
+}
+
+.agentTurnTime {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.agentTurnPill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.agentTurnPreview {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Mobile-first: stays a single line; ellipsis indicates overflow.
+     The substrate truncation (200 chars) already caps the wire shape;
+     CSS overflow is a visual safety net for narrow viewports. */
+}

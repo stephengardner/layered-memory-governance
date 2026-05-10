@@ -38,6 +38,16 @@ interface StageFixture {
   readonly input_atom_ids?: ReadonlyArray<string>;
 }
 
+interface AgentTurnRowFixture {
+  readonly stage_name: string;
+  readonly turn_index: number;
+  readonly agent_turn_atom_id: string | null;
+  readonly created_at: string;
+  readonly latency_ms: number | null;
+  readonly llm_input_preview: string | null;
+  readonly tool_calls_count: number | null;
+}
+
 interface DetailFixture {
   readonly pipeline: Record<string, unknown>;
   readonly stages: ReadonlyArray<StageFixture>;
@@ -46,6 +56,7 @@ interface DetailFixture {
   readonly audit_counts: Record<string, number>;
   readonly failure: null;
   readonly resumes: ReadonlyArray<Record<string, unknown>>;
+  readonly agent_turns: ReadonlyArray<AgentTurnRowFixture>;
   readonly total_cost_usd: number;
   readonly total_duration_ms: number;
   readonly current_stage_name: string | null;
@@ -103,6 +114,7 @@ function buildDetailFixture(overrides: Partial<DetailFixture> = {}): DetailFixtu
     audit_counts: { total: 0, critical: 0, major: 0, minor: 0 },
     failure: null,
     resumes: [],
+    agent_turns: [],
     total_cost_usd: 0.02,
     total_duration_ms: 18_100,
     current_stage_name: 'spec-stage',
@@ -449,5 +461,71 @@ test.describe('pipeline observability - visual snapshots', () => {
         contentType: 'image/png',
       });
     }
+  });
+});
+
+test.describe('pipeline observability - live progress (agent_turns)', () => {
+  test('empty state renders when no agent-turn events exist', async ({ page }) => {
+    await mockDetail(page);
+    await page.goto(`/pipelines/${encodeURIComponent(FIXTURE_PIPELINE_ID)}`);
+    await expect(page.getByTestId('pipeline-detail-view')).toBeVisible({ timeout: 10_000 });
+
+    const section = page.getByTestId('pipeline-detail-agent-turns');
+    await expect(section).toBeVisible();
+    await expect(section).toHaveAttribute('data-empty', 'true');
+    await expect(section).toContainText('No agent turns recorded yet');
+    // No row markers when the section is empty.
+    await expect(page.getByTestId('pipeline-detail-agent-turn-row')).toHaveCount(0);
+  });
+
+  test('renders one row per agent_turn with telemetry pills + preview', async ({ page }) => {
+    const fixture = buildDetailFixture({
+      agent_turns: [
+        {
+          stage_name: 'plan-stage',
+          turn_index: 2,
+          agent_turn_atom_id: 'agent-turn-fixture-plan-2',
+          created_at: '2026-05-08T01:31:30Z',
+          latency_ms: 4500,
+          tool_calls_count: 2,
+          llm_input_preview: 'Draft a plan for the citation verification fence so the spec citations land before the diff.',
+        },
+        {
+          stage_name: 'brainstorm-stage',
+          turn_index: 1,
+          agent_turn_atom_id: 'agent-turn-fixture-bs-1',
+          created_at: '2026-05-08T01:30:30Z',
+          latency_ms: 1200,
+          tool_calls_count: 0,
+          llm_input_preview: 'Survey two alternative approaches.',
+        },
+      ],
+    });
+    await mockDetail(page, fixture);
+    await page.goto(`/pipelines/${encodeURIComponent(FIXTURE_PIPELINE_ID)}`);
+    await expect(page.getByTestId('pipeline-detail-view')).toBeVisible({ timeout: 10_000 });
+
+    const section = page.getByTestId('pipeline-detail-agent-turns');
+    await expect(section).toBeVisible();
+    await expect(section).toHaveAttribute('data-empty', 'false');
+
+    const rows = page.getByTestId('pipeline-detail-agent-turn-row');
+    await expect(rows).toHaveCount(2);
+
+    // First row matches the newest turn (plan-stage / turn_index=2).
+    const first = rows.first();
+    await expect(first).toHaveAttribute('data-stage-name', 'plan-stage');
+    await expect(first).toHaveAttribute('data-turn-index', '2');
+    await expect(first).toHaveAttribute('data-atom-id', 'agent-turn-fixture-plan-2');
+    await expect(first).toContainText('plan-stage');
+    await expect(first).toContainText('#2');
+    await expect(first).toContainText(/4\.5s|4500ms/);
+    await expect(first).toContainText('2 tools');
+    await expect(first).toContainText('citation verification fence');
+
+    // Second row is the brainstorm-stage row (tool_calls=0 means no tool pill).
+    const second = rows.nth(1);
+    await expect(second).toHaveAttribute('data-stage-name', 'brainstorm-stage');
+    await expect(second).toContainText('Survey two alternative approaches');
   });
 });

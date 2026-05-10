@@ -214,6 +214,37 @@ export interface PipelineResumeRecord {
 }
 
 /**
+ * One agent-turn row surfaced on the detail view's "Live progress"
+ * section. Projected from `pipeline-stage-event` atoms with
+ * `transition === 'agent-turn'` cross-walked into the matching
+ * `agent-turn` atom for telemetry.
+ *
+ * Shape constraints:
+ *   - `agent_turn_atom_id` is null when the index event lacks the
+ *     pointer (defensive: a malformed substrate write should NOT crash
+ *     the projection).
+ *   - `latency_ms` / `tool_calls_count` come from the cross-walked
+ *     `agent-turn` atom; absent or unreachable atom yields null.
+ *   - `llm_input_preview` is the first 200 chars of the inline
+ *     `llm_input` payload; blob-ref payloads skip preview (returns
+ *     null) because the projection does not resolve blobs at read
+ *     time.
+ *   - `created_at` is the ISO timestamp of the index event atom (the
+ *     pipeline-stage-event), not the agent-turn atom. The two SHOULD
+ *     match within milliseconds but the index event is the canonical
+ *     ordering signal.
+ */
+export interface AgentTurnRow {
+  readonly stage_name: string;
+  readonly turn_index: number;
+  readonly agent_turn_atom_id: string | null;
+  readonly created_at: string;
+  readonly latency_ms: number | null;
+  readonly llm_input_preview: string | null;
+  readonly tool_calls_count: number | null;
+}
+
+/**
  * Detail payload for one pipeline. Stitches the root + every event +
  * findings + (optional) failure + (optional) resume + per-stage roll
  * up. The drill-in view consumes the structured response directly.
@@ -238,6 +269,15 @@ export interface PipelineDetail {
   readonly audit_counts: PipelineAuditCounts;
   readonly failure: PipelineFailureRecord | null;
   readonly resumes: ReadonlyArray<PipelineResumeRecord>;
+  /**
+   * Per-turn telemetry surfaced from `pipeline-stage-event` atoms with
+   * `transition='agent-turn'`. Newest-first across ALL stages (so the
+   * actively-running stage's latest turn lands at the top), capped at
+   * `PIPELINE_DETAIL_MAX_TURNS`. Empty when the pipeline has no
+   * agent-turn events yet (single-shot stages, or substrate-deep stages
+   * that have not yet emitted their first turn).
+   */
+  readonly agent_turns: ReadonlyArray<AgentTurnRow>;
   readonly total_cost_usd: number;
   readonly total_duration_ms: number;
   readonly current_stage_name: string | null;
