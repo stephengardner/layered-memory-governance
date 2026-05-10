@@ -275,6 +275,36 @@ export function buildPolicies(operatorId) {
         interval_ms: 300_000,
       },
     },
+    {
+      id: 'pol-loop-pass-pr-observation-refresh-default',
+      subject: 'loop-pass-pr-observation-refresh-default',
+      reason:
+        'Whether the autonomous loop runs the pr-observation refresh pass by '
+        + 'default when no --refresh-plan-observations / '
+        + '--no-refresh-plan-observations CLI flag is passed. The CLI flag '
+        + 'always wins; this atom only controls the default-when-absent posture. '
+        + 'Default true so plans do not strand in plan_state=executing when '
+        + 'their PR merges silently. Closes the substrate gap observed '
+        + '2026-05-10 on PR #356 where the last pr-observation atom was written '
+        + 'at PR-open time with pr_state=OPEN, the PR then merged, and no '
+        + 'subsequent re-observation was ever written; the Console rendered the '
+        + 'stale OPEN observation forever because the always-on autonomous loop '
+        + 'was not started with --refresh-plan-observations. Org-ceiling '
+        + 'deployments that intentionally disable refresh (e.g. sandboxed boxes '
+        + 'that cannot spawn child processes for run-pr-landing.mjs) write a '
+        + 'higher-priority pol-loop-pass-pr-observation-refresh-default atom '
+        + 'with enabled=false; sandboxed callers can also pass '
+        + '--no-refresh-plan-observations explicitly. Indie-floor default is '
+        + 'enabled=true per dev-indie-floor-org-ceiling: a solo developer does '
+        + 'not need to know the dial exists; the default does the right thing.',
+      fields: {
+        // The default-default. The CLI flag wins when explicitly passed
+        // (either form); this value is consulted only when both
+        // --refresh-plan-observations AND --no-refresh-plan-observations
+        // are absent from argv.
+        enabled: true,
+      },
+    },
   ];
 }
 
