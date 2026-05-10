@@ -119,6 +119,15 @@ import {
   type AuditChainAtom,
   type AuditChainResponse,
 } from './audit-chain';
+import {
+  listOperatorActions,
+  clampLimit as clampOperatorActionsLimit,
+} from './operator-actions';
+import type {
+  OperatorActionKind,
+  OperatorActionSourceAtom,
+  OperatorActionsListResponse,
+} from './operator-actions-types';
 import { applyReapedFilter } from './reaped-filter';
 import { resolveSkillBundle } from '../../../examples/planning-stages/lib/skill-bundle-resolver.js';
 import { pipelineStagePrincipalSkillBundle } from './pipeline-stage-skill-resolver';
@@ -1898,6 +1907,40 @@ async function handleResumeResets(limit: number | null): Promise<ResumeAuditRese
 }
 
 // ---------------------------------------------------------------------------
+// Operator-actions audit trail (/api/operator-actions.list).
+//
+// Surfaces every `operator-action` atom (id prefix `op-action-`) the
+// substrate's gh-as.mjs / git-as.mjs / cr-trigger.mjs /
+// resolve-outdated-threads.mjs wrappers write whenever a
+// bot-identity-mediated GitHub action runs. The dashboard projects
+// the argv into a coarse `action_type` so an operator can scan
+// recent merges, PR opens, label changes, etc. without parsing
+// raw argv shapes mentally.
+//
+// Read-only contract: this surface OBSERVES; the substrate writes the
+// atoms.
+// ---------------------------------------------------------------------------
+
+async function readOperatorActionsSourceAtoms(): Promise<ReadonlyArray<OperatorActionSourceAtom>> {
+  const all = await readAllAtoms();
+  return all as unknown as ReadonlyArray<OperatorActionSourceAtom>;
+}
+
+async function handleOperatorActionsList(
+  limit: number | null,
+  actor: string | null,
+  actionType: OperatorActionKind | null,
+): Promise<OperatorActionsListResponse> {
+  const sourceAtoms = await readOperatorActionsSourceAtoms();
+  const effective = clampOperatorActionsLimit(limit);
+  return listOperatorActions(sourceAtoms, Date.now(), {
+    limit: effective,
+    actor,
+    actionType,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Plan lifecycle: end-to-end timeline of a single plan's autonomous-loop
 // chain. Stitches together the five (sometimes six) state-transition
 // atoms that a `plan` traverses from operator-intent through to merged:
@@ -3176,6 +3219,33 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'resume-resets-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/operator-actions.list' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const rawLimit = body['limit'];
+    const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? rawLimit : null;
+    const rawActor = body['actor'];
+    const actor = typeof rawActor === 'string' && rawActor.length > 0 ? rawActor : null;
+    const rawType = body['action_type'];
+    /*
+     * action_type is a runtime string from a client; cast to the
+     * dashboard-facing enum without validation here. The projection
+     * layer treats any unrecognised string as a non-matching filter
+     * (no rows pass) which is the right indie-floor behaviour: a
+     * client supplying an unknown chip value gets an empty list, not
+     * a 400. Bounded payload + clamp logic guards the surface.
+     */
+    const actionType = typeof rawType === 'string' && rawType.length > 0
+      ? (rawType as OperatorActionKind)
+      : null;
+    try {
+      const data = await handleOperatorActionsList(limit, actor, actionType);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'operator-actions-list-failed', (err as Error).message);
     }
     return;
   }

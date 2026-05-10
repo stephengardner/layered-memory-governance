@@ -81,6 +81,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Atom',
     subtitle: 'Detail view for any atom in the substrate (every type, with type-specific renderers)',
   },
+  'operator-actions': {
+    title: 'Operator actions',
+    subtitle: 'Audit trail of every bot-identity-mediated GitHub action: PR opens, merges, CR triggers, thread resolutions',
+  },
 };
 
 /**
