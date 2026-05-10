@@ -76,6 +76,42 @@ async function findPipelineWithStageOutput(page: Page): Promise<{
   return null;
 }
 
+/*
+ * Find two distinct pipelines that share a stage name with a recorded
+ * output_atom_id, so the cross-pipeline reuse test below has a concrete
+ * navigation target. substrate-deep runs all carry the same five stage
+ * names (brainstorm-stage, spec-stage, plan-stage, review-stage,
+ * dispatch-stage) so the overlap is typical; the test skips when the
+ * dev's store happens to have zero or one matching pipeline.
+ */
+async function findTwoPipelinesSharingStage(page: Page): Promise<{
+  readonly stageName: string;
+  readonly first: string;
+  readonly second: string;
+} | null> {
+  const pipelines = await fetchPipelines(page);
+  const byStage = new Map<string, string[]>();
+  for (const p of pipelines) {
+    const detail = await fetchDetail(page, p.pipeline_id);
+    for (const stage of detail.stages) {
+      if (stage.output_atom_id === null) continue;
+      const list = byStage.get(stage.stage_name) ?? [];
+      list.push(p.pipeline_id);
+      byStage.set(stage.stage_name, list);
+    }
+  }
+  for (const [stageName, pipelineIds] of byStage.entries()) {
+    if (pipelineIds.length >= 2) {
+      return {
+        stageName,
+        first: pipelineIds[0]!,
+        second: pipelineIds[1]!,
+      };
+    }
+  }
+  return null;
+}
+
 test.describe('inline-expand stage cards', () => {
   test('cards default to collapsed; Expand toggle present only on stages with output_atom_id', async ({ page }) => {
     const target = await findPipelineWithStageOutput(page);
@@ -176,6 +212,55 @@ test.describe('inline-expand stage cards', () => {
       .and(page.locator(`[data-stage-name="${target.stageWithOutput.stage_name}"]`))
       .first();
     await expect(expandButtonAfterCollapseReload).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByTestId('pipeline-stage-output')).toHaveCount(0);
+  });
+
+  test('expansion state on one pipeline does not leak to a sibling pipeline with the same stage name', async ({ page }) => {
+    /*
+     * Regression for the React-reconciler key bug CR flagged: when the
+     * StageCard list key was just `stage.stage_name`, navigating from
+     * /pipelines/A to /pipelines/B (both substrate-deep, both with a
+     * `brainstorm-stage`) made React reuse the StageCard instance.
+     * The `expanded` useState initializer (which reads pipeline-scoped
+     * storage) only runs on mount, so the expansion flag from A
+     * persisted into B's render. The fix is to include pipeline.id in
+     * the key so the two cards are distinct instances.
+     *
+     * This test pins the contract: expanding stage X on pipeline A
+     * MUST NOT leave stage X on pipeline B expanded. Skip when the
+     * dev's store has fewer than two pipelines that share a stage
+     * name with an output_atom_id (the realistic empty case).
+     */
+    const targets = await findTwoPipelinesSharingStage(page);
+    test.skip(targets === null, 'fewer than two pipelines share a stage name; cannot exercise cross-pipeline leak');
+    if (!targets) return;
+
+    // Expand the named stage on pipeline A.
+    await page.goto(`/pipelines/${encodeURIComponent(targets.first)}`);
+    await expect(page.getByTestId('pipeline-detail-view')).toBeVisible({ timeout: 10_000 });
+    const expandA = page
+      .getByTestId('pipeline-stage-expand')
+      .and(page.locator(`[data-stage-name="${targets.stageName}"]`))
+      .first();
+    await expect(expandA).toBeVisible({ timeout: 10_000 });
+    await expandA.click();
+    await expect(expandA).toHaveAttribute('aria-expanded', 'true');
+
+    // Navigate to pipeline B (same stage name). The card MUST default
+    // back to collapsed because B has its own per-pipeline storage
+    // entry. Without the pipeline-id-in-key fix, this would inherit
+    // A's expanded state through React-instance reuse.
+    await page.goto(`/pipelines/${encodeURIComponent(targets.second)}`);
+    await expect(page.getByTestId('pipeline-detail-view')).toBeVisible({ timeout: 10_000 });
+    const expandB = page
+      .getByTestId('pipeline-stage-expand')
+      .and(page.locator(`[data-stage-name="${targets.stageName}"]`))
+      .first();
+    await expect(expandB).toBeVisible({ timeout: 10_000 });
+    await expect(expandB).toHaveAttribute('aria-expanded', 'false');
+
+    // No inline-output panel exists on B until the operator clicks
+    // Expand on B specifically.
     await expect(page.getByTestId('pipeline-stage-output')).toHaveCount(0);
   });
 

@@ -290,7 +290,17 @@ function PipelineDetailBody({
         <ol className={styles.stageList}>
           {stages.map((stage, idx) => (
             <StageCard
-              key={stage.stage_name}
+              /*
+               * Key includes pipeline.id so React's reconciler does not
+               * reuse a StageCard instance across two pipelines that
+               * happen to share a stage name (every substrate-deep run
+               * has the same five stages: brainstorm/spec/plan/review/
+               * dispatch). Without the pipeline id in the key, the
+               * useState initializer (which reads pipeline-scoped
+               * storage) never re-runs on navigation, so expansion
+               * state from pipeline A would leak into pipeline B.
+               */
+              key={`${pipeline.id}:${stage.stage_name}`}
               pipelineId={pipeline.id}
               stage={stage}
               events={events.filter((e) => e.stage_name === stage.stage_name)}
