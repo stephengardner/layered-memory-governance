@@ -234,8 +234,23 @@ function newStage(index: number): MutableStage {
  * Keeps the projection deterministic regardless of the input array's
  * order: events are sorted by timestamp first, ties broken by atom
  * id ascending so two events at the same instant fold deterministically.
+ *
+ * Optional `agentTurnTimestamps`: a list of `AgentTurnIndexEvent`
+ * derived from pipeline-stage-event atoms with transition='agent-turn'.
+ * These DO NOT contribute to the visible event strip (`ordered`) and
+ * MUST NOT change a stage's state (state collapse is driven by the
+ * lifecycle enter/exit/pause/resume transitions only — agent turns are
+ * mid-stage progress signals, not lifecycle transitions). They DO
+ * advance the stage's `last_event_ts/iso` so that
+ * PipelineStageSummary.last_event_at and the top-level
+ * pipeline.last_event_at reflect the freshest activity, even while a
+ * running stage has not yet emitted an exit event. See CR review on
+ * PR #387 for the regression this closes.
  */
-function foldStageEvents(events: ReadonlyArray<PipelineStageEvent>): {
+function foldStageEvents(
+  events: ReadonlyArray<PipelineStageEvent>,
+  agentTurnTimestamps: ReadonlyArray<AgentTurnIndexEvent> = [],
+): {
   fold: StageFold;
   ordered: ReadonlyArray<PipelineStageEvent>;
 } {
@@ -287,6 +302,37 @@ function foldStageEvents(events: ReadonlyArray<PipelineStageEvent>): {
       }
     }
     if (event.output_atom_id) entry.output_atom_id = event.output_atom_id;
+  }
+
+  // Second pass: advance per-stage `last_event_ts/iso` with agent-turn
+  // event timestamps. Sort by (ts, atom_id) so equal-timestamp turns
+  // fold deterministically — same tiebreak shape the lifecycle loop
+  // uses above. Agent-turn timestamps NEVER mutate `state`,
+  // `duration_ms`, `cost_usd`, or `output_atom_id` — those remain
+  // owned by lifecycle events. We do auto-create a stage entry when an
+  // agent-turn arrives for a stage that has not yet emitted an
+  // `enter` event (extremely rare; defensive against substrate
+  // misordering on out-of-order disk reads).
+  if (agentTurnTimestamps.length > 0) {
+    const sortedTurns = [...agentTurnTimestamps].sort((a, b) => {
+      const aTs = parseIsoTs(a.created_at);
+      const bTs = parseIsoTs(b.created_at);
+      if (aTs !== bTs) return aTs - bTs;
+      return a.atom_id.localeCompare(b.atom_id);
+    });
+    for (const turn of sortedTurns) {
+      const ts = parseIsoTs(turn.created_at);
+      if (!Number.isFinite(ts)) continue;
+      let entry = fold.byName.get(turn.stage_name);
+      if (!entry) {
+        entry = newStage(fold.byName.size);
+        fold.byName.set(turn.stage_name, entry);
+      }
+      if (ts >= entry.last_event_ts) {
+        entry.last_event_ts = ts;
+        entry.last_event_iso = turn.created_at;
+      }
+    }
   }
 
   return { fold, ordered };
@@ -627,6 +673,17 @@ function buildPipelineIndex(atoms: ReadonlyArray<PipelineSourceAtom>): PipelineI
       }
       const turnEvent = agentTurnIndexEventFromAtom(atom);
       if (turnEvent) {
+        // Note: agent-turn atoms land ONLY in agentTurnEventsByPipeline
+        // here, but they are NOT lost to lifecycle aggregation. The
+        // detail + list paths below pass agentTurnEventsByPipeline as
+        // the `agentTurnTimestamps` parameter to foldStageEvents
+        // (search for `turnEvents` ~ line 740 and ~ line 912), which
+        // advances per-stage `last_event_ts/iso` and (via the
+        // stage-roll-up below) top-level pipeline `last_event_at`.
+        // Tests covering this contract: `advances stage last_event_at
+        // and pipeline last_event_at as agent-turn events stream`
+        // and `list-summary also advances last_event_at with
+        // agent-turn streaming` in pipelines.test.ts.
         const turnList = agentTurnEventsByPipeline.get(pipelineId);
         if (turnList) turnList.push(turnEvent);
         else agentTurnEventsByPipeline.set(pipelineId, [turnEvent]);
@@ -688,7 +745,11 @@ function summarizePipeline(
   const meta = readMeta(pipeline);
   const events = index.eventsByPipeline.get(pipeline.id) ?? [];
   const findings = index.findingsByPipeline.get(pipeline.id) ?? [];
-  const { fold } = foldStageEvents(events);
+  // Pass agent-turn timestamps into the fold so a stage that is still
+  // emitting mid-session turns has a fresh last_event_at even before
+  // its exit event lands. Mirrors the detail-path pattern below.
+  const turnEvents = index.agentTurnEventsByPipeline.get(pipeline.id) ?? [];
+  const { fold } = foldStageEvents(events, turnEvents);
   const stages = stageSummariesFromFold(fold);
 
   let totalCost = 0;
@@ -853,7 +914,13 @@ export function getPipelineDetail(
     return bTs - aTs;
   });
 
-  const { fold, ordered } = foldStageEvents(allEvents);
+  // Feed agent-turn timestamps into the fold so per-stage
+  // last_event_at and the top-level last_event_at advance while a
+  // running stage streams turns. State + duration + cost remain
+  // owned by lifecycle events only; see foldStageEvents for the
+  // contract.
+  const allTurnEvents = index.agentTurnEventsByPipeline.get(pipelineId) ?? [];
+  const { fold, ordered } = foldStageEvents(allEvents, allTurnEvents);
   const stages = stageSummariesFromFold(fold);
   const current = currentStageFromSummaries(stages);
 
@@ -886,8 +953,7 @@ export function getPipelineDetail(
   // opens the detail view, which is the substrate's primary use-case
   // for this surface. Capped at PIPELINE_DETAIL_MAX_TURNS so a
   // long-running session does not blow the wire shape on every 5s
-  // poll.
-  const allTurnEvents = index.agentTurnEventsByPipeline.get(pipelineId) ?? [];
+  // poll. Reuses `allTurnEvents` from the foldStageEvents call above.
   const turnRows: AgentTurnRow[] = allTurnEvents.map((evt) =>
     agentTurnRowFromIndex(evt, index.atomById),
   );
