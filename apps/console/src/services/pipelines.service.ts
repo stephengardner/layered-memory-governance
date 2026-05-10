@@ -21,6 +21,7 @@
 import { transport } from './transport';
 
 export type {
+  AgentTurnRow,
   PipelineAuditCounts,
   PipelineAuditFinding,
   PipelineAuditSeverity,

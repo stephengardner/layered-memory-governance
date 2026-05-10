@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Workflow, XCircle } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Wrench, Workflow, XCircle, Zap } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { FreshnessPill } from '@/components/freshness-pill/FreshnessPill';
@@ -9,6 +9,7 @@ import { Tooltip } from '@/components/tooltip/Tooltip';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import {
   getPipelineDetail,
+  type AgentTurnRow,
   type PipelineAuditFinding,
   type PipelineDetail,
   type PipelineStageEvent,
@@ -280,6 +281,8 @@ function PipelineDetailBody({
         </Section>
       )}
 
+      <AgentTurnsSection turns={data.agent_turns} />
+
       <Section
         icon={<Workflow size={14} strokeWidth={2} aria-hidden="true" />}
         title="Stages"
@@ -387,6 +390,124 @@ function PipelineDetailBody({
       )}
     </section>
   );
+}
+
+/**
+ * "Live progress" section: surfaces per-turn telemetry from any agentic
+ * stage that has emitted pipeline-stage-event atoms with
+ * `transition='agent-turn'`. Newest-first ordering means the actively
+ * running stage's most-recent turn always sits at the top, so the
+ * operator sees "what is the agent doing right now" the moment they
+ * open the detail view.
+ *
+ * Read-only display. The detail-view parent already polls every 5s
+ * while a pipeline is running/paused (see refetchInterval above); this
+ * section inherits that cadence with zero additional state and no
+ * extra fetch. Empty-state copy explicitly names the substrate
+ * pre-condition (substrate-deep mode + agentic stage) so an operator
+ * running single-pass mode does not interpret the empty list as a bug.
+ *
+ * Test seam (`data-testid` + `data-*` attrs):
+ *   - pipeline-detail-agent-turns         : section container
+ *   - pipeline-detail-agent-turn-row      : each row
+ *   - data-stage-name / data-turn-index / data-atom-id on each row
+ */
+function AgentTurnsSection({ turns }: { turns: ReadonlyArray<AgentTurnRow> }) {
+  if (turns.length === 0) {
+    return (
+      <section
+        className={styles.section}
+        data-testid="pipeline-detail-agent-turns"
+        data-empty="true"
+      >
+        <header className={styles.sectionHead}>
+          <span className={styles.sectionIcon}>
+            <Activity size={14} strokeWidth={2} aria-hidden="true" />
+          </span>
+          <h3 className={styles.sectionTitle}>Live progress</h3>
+          <span className={styles.sectionCount}>0</span>
+        </header>
+        <p className={styles.sectionEmpty}>
+          No agent turns recorded yet. Agentic stages (substrate-deep mode) write per-turn telemetry that appears here as they execute.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section
+      className={styles.section}
+      data-testid="pipeline-detail-agent-turns"
+      data-empty="false"
+    >
+      <header className={styles.sectionHead}>
+        <span className={styles.sectionIcon}>
+          <Activity size={14} strokeWidth={2} aria-hidden="true" />
+        </span>
+        <h3 className={styles.sectionTitle}>Live progress</h3>
+        <span className={styles.sectionCount}>{turns.length}</span>
+      </header>
+      <ul className={styles.agentTurnList}>
+        {turns.map((turn) => (
+          <AgentTurnRowItem key={`${turn.stage_name}:${turn.turn_index}:${turn.created_at}`} turn={turn} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function AgentTurnRowItem({ turn }: { turn: AgentTurnRow }) {
+  return (
+    <li
+      className={styles.agentTurnRow}
+      data-testid="pipeline-detail-agent-turn-row"
+      data-stage-name={turn.stage_name}
+      data-turn-index={turn.turn_index}
+      {...(turn.agent_turn_atom_id ? { 'data-atom-id': turn.agent_turn_atom_id } : {})}
+    >
+      <div className={styles.agentTurnHead}>
+        <span className={styles.agentTurnStage}>{turn.stage_name}</span>
+        <span className={styles.agentTurnIndex} aria-label={`turn ${turn.turn_index}`}>
+          #{turn.turn_index}
+        </span>
+        <span className={styles.agentTurnTime}>
+          <Clock size={11} strokeWidth={2} aria-hidden="true" />
+          <time dateTime={turn.created_at}>{formatRelative(turn.created_at)}</time>
+        </span>
+        {turn.latency_ms !== null && (
+          <span className={styles.agentTurnPill} data-kind="latency">
+            <Zap size={11} strokeWidth={2} aria-hidden="true" />
+            {formatLatencyMs(turn.latency_ms)}
+          </span>
+        )}
+        {/*
+         * Render whenever tool_calls_count is a known number (including
+         * 0). Hiding the pill on 0 makes a real zero-tool turn
+         * indistinguishable from `null` (cross-walk unavailable); the
+         * backend preserves that distinction so the UI surfaces it
+         * too. CR finding on PR #387.
+         */}
+        {turn.tool_calls_count !== null && (
+          <span className={styles.agentTurnPill} data-kind="tools">
+            <Wrench size={11} strokeWidth={2} aria-hidden="true" />
+            {turn.tool_calls_count} {turn.tool_calls_count === 1 ? 'tool' : 'tools'}
+          </span>
+        )}
+      </div>
+      {turn.llm_input_preview !== null && turn.llm_input_preview.length > 0 && (
+        <code className={styles.agentTurnPreview} data-testid="pipeline-detail-agent-turn-preview">
+          {turn.llm_input_preview}
+        </code>
+      )}
+    </li>
+  );
+}
+
+function formatLatencyMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return '0ms';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 1000)}s`;
 }
 
 function StageCard({

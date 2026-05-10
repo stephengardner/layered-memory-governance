@@ -25,6 +25,7 @@
  * the projection knowing the canon stage list.
  */
 import type {
+  AgentTurnRow,
   PipelineAuditCounts,
   PipelineAuditFinding,
   PipelineAuditSeverity,
@@ -41,7 +42,7 @@ import type {
   PipelineStageSummary,
   PipelineSummary,
 } from './pipelines-types.js';
-import { readString } from './projection-helpers.js';
+import { readObject, readString } from './projection-helpers.js';
 
 /**
  * Hard cap on summaries returned in a single list response. Pipelines
@@ -72,6 +73,27 @@ export const MAX_DETAIL_EVENTS = 500;
  * findings.
  */
 export const MAX_DETAIL_FINDINGS = 500;
+
+/**
+ * Cap on the per-pipeline `agent_turns` array surfaced in the detail
+ * payload. Agentic stages can produce many turns inside a single
+ * session; the "live progress" surface only needs the newest few to
+ * answer "what is the active stage doing right now". The cap keeps
+ * the wire shape small even when a long-running session has minted
+ * 100+ turns. Tunable as a canon edit if the org-ceiling deployment
+ * needs more headroom; the indie-floor default keeps the payload
+ * bounded.
+ */
+export const PIPELINE_DETAIL_MAX_TURNS = 30;
+
+/**
+ * llm_input preview cap (in characters). Beyond this the projection
+ * truncates and appends an ellipsis. Single-line code-block render in
+ * the UI; 200 chars is enough to read the gist of a prompt without
+ * shipping the whole conversation back over the wire on every 5s
+ * poll.
+ */
+const LLM_INPUT_PREVIEW_LIMIT = 200;
 
 /**
  * Severity weight for audit-finding ordering. Larger = more severe.
@@ -212,8 +234,23 @@ function newStage(index: number): MutableStage {
  * Keeps the projection deterministic regardless of the input array's
  * order: events are sorted by timestamp first, ties broken by atom
  * id ascending so two events at the same instant fold deterministically.
+ *
+ * Optional `agentTurnTimestamps`: a list of `AgentTurnIndexEvent`
+ * derived from pipeline-stage-event atoms with transition='agent-turn'.
+ * These DO NOT contribute to the visible event strip (`ordered`) and
+ * MUST NOT change a stage's state (state collapse is driven by the
+ * lifecycle enter/exit/pause/resume transitions only — agent turns are
+ * mid-stage progress signals, not lifecycle transitions). They DO
+ * advance the stage's `last_event_ts/iso` so that
+ * PipelineStageSummary.last_event_at and the top-level
+ * pipeline.last_event_at reflect the freshest activity, even while a
+ * running stage has not yet emitted an exit event. See CR review on
+ * PR #387 for the regression this closes.
  */
-function foldStageEvents(events: ReadonlyArray<PipelineStageEvent>): {
+function foldStageEvents(
+  events: ReadonlyArray<PipelineStageEvent>,
+  agentTurnTimestamps: ReadonlyArray<AgentTurnIndexEvent> = [],
+): {
   fold: StageFold;
   ordered: ReadonlyArray<PipelineStageEvent>;
 } {
@@ -267,6 +304,37 @@ function foldStageEvents(events: ReadonlyArray<PipelineStageEvent>): {
     if (event.output_atom_id) entry.output_atom_id = event.output_atom_id;
   }
 
+  // Second pass: advance per-stage `last_event_ts/iso` with agent-turn
+  // event timestamps. Sort by (ts, atom_id) so equal-timestamp turns
+  // fold deterministically — same tiebreak shape the lifecycle loop
+  // uses above. Agent-turn timestamps NEVER mutate `state`,
+  // `duration_ms`, `cost_usd`, or `output_atom_id` — those remain
+  // owned by lifecycle events. We do auto-create a stage entry when an
+  // agent-turn arrives for a stage that has not yet emitted an
+  // `enter` event (extremely rare; defensive against substrate
+  // misordering on out-of-order disk reads).
+  if (agentTurnTimestamps.length > 0) {
+    const sortedTurns = [...agentTurnTimestamps].sort((a, b) => {
+      const aTs = parseIsoTs(a.created_at);
+      const bTs = parseIsoTs(b.created_at);
+      if (aTs !== bTs) return aTs - bTs;
+      return a.atom_id.localeCompare(b.atom_id);
+    });
+    for (const turn of sortedTurns) {
+      const ts = parseIsoTs(turn.created_at);
+      if (!Number.isFinite(ts)) continue;
+      let entry = fold.byName.get(turn.stage_name);
+      if (!entry) {
+        entry = newStage(fold.byName.size);
+        fold.byName.set(turn.stage_name, entry);
+      }
+      if (ts >= entry.last_event_ts) {
+        entry.last_event_ts = ts;
+        entry.last_event_iso = turn.created_at;
+      }
+    }
+  }
+
   return { fold, ordered };
 }
 
@@ -307,6 +375,13 @@ function currentStageFromSummaries(
 
 /**
  * Materialize a pipeline-stage-event atom into its wire shape.
+ *
+ * Returns null for the `agent-turn` transition (and any other
+ * transition the wire shape does not surface today). agent-turn index
+ * events are collected separately by `agentTurnIndexEventFromAtom`
+ * and projected into the `agent_turns` array on the detail payload;
+ * they DO NOT belong on the per-stage `events` strip (which models
+ * the canonical enter/exit/pause/resume lifecycle).
  */
 function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
   const meta = readMeta(atom);
@@ -331,6 +406,161 @@ function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
     cost_usd: readNumber(meta, 'cost_usd'),
     output_atom_id: readString(meta, 'output_atom_id'),
     principal_id: atom.principal_id,
+  };
+}
+
+/**
+ * Internal shape for an agent-turn index event: a `pipeline-stage-event`
+ * atom whose transition is `'agent-turn'`. Carries the index pointer
+ * (agent_turn_atom_id + turn_index) plus the event ordering signal
+ * (atom_id + created_at). Telemetry is resolved lazily by cross-walking
+ * to the agent-turn atom; this struct holds only the index-side shape.
+ */
+interface AgentTurnIndexEvent {
+  readonly atom_id: string;
+  readonly stage_name: string;
+  readonly agent_turn_atom_id: string | null;
+  readonly turn_index: number;
+  readonly created_at: string;
+}
+
+/**
+ * Materialize a `pipeline-stage-event` atom with `transition='agent-turn'`
+ * into the lightweight index shape `AgentTurnIndexEvent`. Returns null
+ * for every non-`agent-turn` transition (the lifecycle events flow
+ * through `eventFromAtom` instead).
+ *
+ * Defensive on `agent_turn_atom_id`: substrate writes always include
+ * it (the mint helper throws when absent), but the projection accepts
+ * a missing pointer as `null` rather than dropping the row, so a
+ * malformed atom still surfaces as an index marker for the operator
+ * to inspect.
+ */
+function agentTurnIndexEventFromAtom(atom: PipelineSourceAtom): AgentTurnIndexEvent | null {
+  const meta = readMeta(atom);
+  const stageName = readString(meta, 'stage_name');
+  const transitionRaw = readString(meta, 'transition');
+  if (!stageName || transitionRaw !== 'agent-turn') return null;
+  const turnIndexRaw = meta['turn_index'];
+  const turnIndex = typeof turnIndexRaw === 'number' && Number.isFinite(turnIndexRaw)
+    ? turnIndexRaw
+    : 0;
+  return {
+    atom_id: atom.id,
+    stage_name: stageName,
+    agent_turn_atom_id: readString(meta, 'agent_turn_atom_id'),
+    turn_index: turnIndex,
+    created_at: atom.created_at,
+  };
+}
+
+/**
+ * Project an agent-turn index event + the cross-walked agent-turn atom
+ * (when reachable AND live) into the wire `AgentTurnRow` shape.
+ *
+ * The cross-walk is best-effort: a missing, tainted, or superseded
+ * agent-turn atom yields null telemetry rather than dropping the row,
+ * so the operator still sees the index marker. This is the same
+ * defensive posture the projection uses elsewhere when an atom-chain
+ * pointer dangles.
+ *
+ * llm_input_preview rules:
+ *   - inline payload: truncate at LLM_INPUT_PREVIEW_LIMIT and append
+ *     a single-character ellipsis when truncated.
+ *   - ref payload (blob-content-addressed): null (the projection does
+ *     not resolve blob refs at read time).
+ *   - any other shape (substrate-violating atom): null.
+ */
+function agentTurnRowFromIndex(
+  index: AgentTurnIndexEvent,
+  byId: ReadonlyMap<string, PipelineSourceAtom>,
+): AgentTurnRow {
+  let latency_ms: number | null = null;
+  let tool_calls_count: number | null = null;
+  let llm_input_preview: string | null = null;
+
+  const turnAtomId = index.agent_turn_atom_id;
+  const turnAtom = turnAtomId ? byId.get(turnAtomId) : undefined;
+  // Cross-walk integrity gates, applied in order:
+  //   1. The atom must exist on disk.
+  //   2. Its type must be 'agent-turn' (a corrupted pointer could land
+  //      on a different atom type with the same id).
+  //   3. It must be live (taint='clean' AND not superseded). A
+  //      tainted atom is by definition NOT a trustworthy data source.
+  //   4. Its agent_turn.turn_index MUST equal the index event's
+  //      turn_index.
+  //   5. Its agent_turn.session_atom_id MUST be a non-empty string
+  //      with the 'agent-session-' prefix. This is the substrate
+  //      shape contract (mkAgentTurnAtom only ever writes that
+  //      shape); failing it means the cross-walk landed on a
+  //      synthetic / malformed atom rather than a real turn record.
+  //   6. The agent-turn atom's provenance.derived_from MUST include
+  //      the session_atom_id it claims. This is the structural
+  //      proof that the atom is genuinely a child of that session;
+  //      a forged metadata.session_atom_id without matching
+  //      provenance fails this gate.
+  //
+  // Gates 5+6 are the CR-flagged "provenance proof" per PR #387 round
+  // 3: a corrupted index event pointing at an unrelated live
+  // agent-turn (e.g. from a different pipeline's session) can no
+  // longer leak its telemetry under the current pipeline. The
+  // substrate writes index event + agent-turn atom in lockstep, so
+  // an honest substrate always passes these gates; the value is the
+  // defense against adversarial / accidentally-mutated atoms.
+  //
+  // Any failure surfaces the index row with null telemetry (treats
+  // the cross-walk as a dangling pointer), same as a missing atom.
+  if (turnAtom && turnAtom.type === 'agent-turn' && isCleanLive(turnAtom)) {
+    const meta = readMeta(turnAtom);
+    const agentTurn = readObject(meta, 'agent_turn');
+    const atomTurnIndexRaw = agentTurn ? agentTurn['turn_index'] : undefined;
+    const atomTurnIndex = typeof atomTurnIndexRaw === 'number' && Number.isFinite(atomTurnIndexRaw)
+      ? atomTurnIndexRaw
+      : null;
+    const claimedSessionAtomIdRaw = agentTurn ? agentTurn['session_atom_id'] : undefined;
+    const claimedSessionAtomId = typeof claimedSessionAtomIdRaw === 'string'
+      && claimedSessionAtomIdRaw.startsWith('agent-session-')
+      && claimedSessionAtomIdRaw.length > 'agent-session-'.length
+      ? claimedSessionAtomIdRaw
+      : null;
+    const provenanceDerivedFrom = (turnAtom as { provenance?: { derived_from?: ReadonlyArray<string> } }).provenance?.derived_from;
+    const provenanceMatchesSession = claimedSessionAtomId !== null
+      && Array.isArray(provenanceDerivedFrom)
+      && provenanceDerivedFrom.includes(claimedSessionAtomId);
+    if (
+      agentTurn
+      && atomTurnIndex === index.turn_index
+      && claimedSessionAtomId !== null
+      && provenanceMatchesSession
+    ) {
+      const rawLatency = agentTurn['latency_ms'];
+      if (typeof rawLatency === 'number' && Number.isFinite(rawLatency)) {
+        latency_ms = rawLatency;
+      }
+      const rawToolCalls = agentTurn['tool_calls'];
+      if (Array.isArray(rawToolCalls)) {
+        tool_calls_count = rawToolCalls.length;
+      }
+      const rawLlmInput = agentTurn['llm_input'];
+      if (rawLlmInput && typeof rawLlmInput === 'object' && !Array.isArray(rawLlmInput)) {
+        const inline = (rawLlmInput as Record<string, unknown>)['inline'];
+        if (typeof inline === 'string') {
+          llm_input_preview = inline.length > LLM_INPUT_PREVIEW_LIMIT
+            ? `${inline.slice(0, LLM_INPUT_PREVIEW_LIMIT)}…`
+            : inline;
+        }
+      }
+    }
+  }
+
+  return {
+    stage_name: index.stage_name,
+    turn_index: index.turn_index,
+    agent_turn_atom_id: index.agent_turn_atom_id,
+    created_at: index.created_at,
+    latency_ms,
+    llm_input_preview,
+    tool_calls_count,
   };
 }
 
@@ -413,6 +643,15 @@ interface PipelineIndex {
    * the atom set or stitching through the lifecycle envelope.
    */
   readonly dispatchByPipeline: Map<string, PipelineDispatchSummary>;
+  /*
+   * pipeline-stage-event atoms with `transition='agent-turn'` grouped
+   * by pipeline id. These index events point at the matching agent-turn
+   * atom via `agent_turn_atom_id`; the detail projection cross-walks
+   * each one through `atomById` to resolve telemetry. Kept separate
+   * from `eventsByPipeline` so the existing stages strip is unaffected
+   * by the new live-progress surface.
+   */
+  readonly agentTurnEventsByPipeline: Map<string, AgentTurnIndexEvent[]>;
   readonly atomById: Map<string, PipelineSourceAtom>;
 }
 
@@ -423,6 +662,7 @@ function buildPipelineIndex(atoms: ReadonlyArray<PipelineSourceAtom>): PipelineI
   const failureByPipeline = new Map<string, PipelineFailureRecord>();
   const resumesByPipeline = new Map<string, PipelineResumeRecord[]>();
   const dispatchByPipeline = new Map<string, PipelineDispatchSummary>();
+  const agentTurnEventsByPipeline = new Map<string, AgentTurnIndexEvent[]>();
   const atomById = new Map<string, PipelineSourceAtom>();
 
   for (const atom of atoms) {
@@ -461,11 +701,38 @@ function buildPipelineIndex(atoms: ReadonlyArray<PipelineSourceAtom>): PipelineI
     const pipelineId = readString(meta, 'pipeline_id');
     if (!pipelineId) continue;
     if (atom.type === 'pipeline-stage-event') {
+      // Two surfaces consume pipeline-stage-event atoms:
+      //   1. The canonical enter/exit/pause/resume lifecycle strip
+      //      (via eventFromAtom, which filters non-lifecycle
+      //      transitions out).
+      //   2. The agent-turn index surface (via
+      //      agentTurnIndexEventFromAtom). One atom can only land on
+      //      ONE surface; the helpers are mutually exclusive by
+      //      transition type.
       const event = eventFromAtom(atom);
-      if (!event) continue;
-      const list = eventsByPipeline.get(pipelineId);
-      if (list) list.push(event);
-      else eventsByPipeline.set(pipelineId, [event]);
+      if (event) {
+        const list = eventsByPipeline.get(pipelineId);
+        if (list) list.push(event);
+        else eventsByPipeline.set(pipelineId, [event]);
+        continue;
+      }
+      const turnEvent = agentTurnIndexEventFromAtom(atom);
+      if (turnEvent) {
+        // Note: agent-turn atoms land ONLY in agentTurnEventsByPipeline
+        // here, but they are NOT lost to lifecycle aggregation. The
+        // detail + list paths below pass agentTurnEventsByPipeline as
+        // the `agentTurnTimestamps` parameter to foldStageEvents
+        // (search for `turnEvents` ~ line 740 and ~ line 912), which
+        // advances per-stage `last_event_ts/iso` and (via the
+        // stage-roll-up below) top-level pipeline `last_event_at`.
+        // Tests covering this contract: `advances stage last_event_at
+        // and pipeline last_event_at as agent-turn events stream`
+        // and `list-summary also advances last_event_at with
+        // agent-turn streaming` in pipelines.test.ts.
+        const turnList = agentTurnEventsByPipeline.get(pipelineId);
+        if (turnList) turnList.push(turnEvent);
+        else agentTurnEventsByPipeline.set(pipelineId, [turnEvent]);
+      }
     } else if (atom.type === 'pipeline-audit-finding') {
       const finding = findingFromAtom(atom);
       if (!finding) continue;
@@ -497,6 +764,7 @@ function buildPipelineIndex(atoms: ReadonlyArray<PipelineSourceAtom>): PipelineI
     failureByPipeline,
     resumesByPipeline,
     dispatchByPipeline,
+    agentTurnEventsByPipeline,
     atomById,
   };
 }
@@ -522,7 +790,11 @@ function summarizePipeline(
   const meta = readMeta(pipeline);
   const events = index.eventsByPipeline.get(pipeline.id) ?? [];
   const findings = index.findingsByPipeline.get(pipeline.id) ?? [];
-  const { fold } = foldStageEvents(events);
+  // Pass agent-turn timestamps into the fold so a stage that is still
+  // emitting mid-session turns has a fresh last_event_at even before
+  // its exit event lands. Mirrors the detail-path pattern below.
+  const turnEvents = index.agentTurnEventsByPipeline.get(pipeline.id) ?? [];
+  const { fold } = foldStageEvents(events, turnEvents);
   const stages = stageSummariesFromFold(fold);
 
   let totalCost = 0;
@@ -687,7 +959,13 @@ export function getPipelineDetail(
     return bTs - aTs;
   });
 
-  const { fold, ordered } = foldStageEvents(allEvents);
+  // Feed agent-turn timestamps into the fold so per-stage
+  // last_event_at and the top-level last_event_at advance while a
+  // running stage streams turns. State + duration + cost remain
+  // owned by lifecycle events only; see foldStageEvents for the
+  // contract.
+  const allTurnEvents = index.agentTurnEventsByPipeline.get(pipelineId) ?? [];
+  const { fold, ordered } = foldStageEvents(allEvents, allTurnEvents);
   const stages = stageSummariesFromFold(fold);
   const current = currentStageFromSummaries(stages);
 
@@ -712,6 +990,25 @@ export function getPipelineDetail(
     if (wDiff !== 0) return wDiff;
     return parseIsoTs(b.created_at) - parseIsoTs(a.created_at);
   });
+
+  // Project agent-turn index events into the wire row shape, sorted
+  // newest-first with `turn_index DESC` as the equal-timestamp
+  // tiebreaker. Newest-first across ALL stages means the actively
+  // running stage's most recent turn always leads when the operator
+  // opens the detail view, which is the substrate's primary use-case
+  // for this surface. Capped at PIPELINE_DETAIL_MAX_TURNS so a
+  // long-running session does not blow the wire shape on every 5s
+  // poll. Reuses `allTurnEvents` from the foldStageEvents call above.
+  const turnRows: AgentTurnRow[] = allTurnEvents.map((evt) =>
+    agentTurnRowFromIndex(evt, index.atomById),
+  );
+  turnRows.sort((a, b) => {
+    const aTs = parseIsoTs(a.created_at);
+    const bTs = parseIsoTs(b.created_at);
+    if (aTs !== bTs) return bTs - aTs;
+    return b.turn_index - a.turn_index;
+  });
+  const agentTurns = turnRows.slice(0, PIPELINE_DETAIL_MAX_TURNS);
 
   const seedAtomIds = readStringArray(meta, 'seed_atom_ids');
   // Fallback: if seed_atom_ids isn't on metadata (older atom?), use
@@ -752,6 +1049,7 @@ export function getPipelineDetail(
     audit_counts: countAuditSeverities(findingsSorted),
     failure,
     resumes,
+    agent_turns: agentTurns,
     total_cost_usd: round6(totalCost),
     total_duration_ms: totalDuration,
     current_stage_name: current.name,
