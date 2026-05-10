@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronRight, Clock, Coins, Cpu, ListChecks, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Workflow, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Workflow, XCircle } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { FreshnessPill } from '@/components/freshness-pill/FreshnessPill';
@@ -27,6 +28,8 @@ import { formatDurationMs, formatRelative, formatUsd } from './PipelinesView';
 import { IntentOutcomeCard } from './IntentOutcomeCard';
 import { PipelineLifecycle } from './PipelineLifecycle';
 import { StageInputs } from './StageInputs';
+import { InlineStageOutput } from './InlineStageOutput';
+import { readStageExpanded, writeStageExpanded } from './stageExpansion';
 import styles from './PipelineDetailView.module.css';
 
 /**
@@ -288,6 +291,7 @@ function PipelineDetailBody({
           {stages.map((stage, idx) => (
             <StageCard
               key={stage.stage_name}
+              pipelineId={pipeline.id}
               stage={stage}
               events={events.filter((e) => e.stage_name === stage.stage_name)}
               isLast={idx === stages.length - 1}
@@ -376,22 +380,45 @@ function PipelineDetailBody({
 }
 
 function StageCard({
+  pipelineId,
   stage,
   events,
   isLast,
 }: {
+  pipelineId: string;
   stage: PipelineStageSummary;
   events: ReadonlyArray<PipelineStageEvent>;
   isLast: boolean;
 }) {
   const tone = stageStateTone(stage.state);
   const stateIcon = stageIcon(stage.state);
+  /*
+   * Inline-expansion state. Default collapsed; persisted per-pipeline +
+   * per-stage via storage.service so a reload restores what the
+   * operator was reading. Initial value reads storage synchronously
+   * (no useEffect) so the first paint already shows expanded panels
+   * without a flash-of-collapsed -- canon dev-web-interaction-quality
+   * forbids that visible-jank pattern.
+   */
+  const [expanded, setExpanded] = useState<boolean>(() =>
+    readStageExpanded(pipelineId, stage.stage_name),
+  );
+  const canExpand = Boolean(stage.output_atom_id);
+  const toggleExpand = () => {
+    setExpanded((prev) => {
+      const next = !prev;
+      writeStageExpanded(pipelineId, stage.stage_name, next);
+      return next;
+    });
+  };
+  const panelId = `pipeline-stage-output-${pipelineId}-${stage.stage_name}`;
   return (
     <motion.li
       className={styles.stageCard}
       data-testid="pipeline-stage-card"
       data-stage-name={stage.stage_name}
       data-stage-state={stage.state}
+      data-stage-expanded={canExpand && expanded ? 'true' : 'false'}
       initial={{ opacity: 0, x: -6 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.18 }}
@@ -450,10 +477,29 @@ function StageCard({
             </li>
           )}
         </ul>
-        {stage.output_atom_id && (
+        {canExpand && stage.output_atom_id && (
           <div className={styles.stageOutput}>
             <span className={styles.stageMetaLabel}>Output</span>
             <AtomRef id={stage.output_atom_id} variant="chip" />
+            <button
+              type="button"
+              className={styles.expandButton}
+              data-testid="pipeline-stage-expand"
+              data-stage-name={stage.stage_name}
+              aria-expanded={expanded}
+              aria-controls={panelId}
+              onClick={toggleExpand}
+            >
+              {expanded
+                ? <ChevronDown size={12} strokeWidth={2} aria-hidden="true" />
+                : <ChevronRight size={12} strokeWidth={2} aria-hidden="true" />}
+              {expanded ? 'Collapse' : 'Expand'}
+            </button>
+          </div>
+        )}
+        {canExpand && expanded && stage.output_atom_id && (
+          <div id={panelId}>
+            <InlineStageOutput atomId={stage.output_atom_id} />
           </div>
         )}
         <ol className={styles.eventList} data-testid="pipeline-stage-events">
