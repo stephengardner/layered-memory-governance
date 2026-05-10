@@ -32,11 +32,37 @@ export type {
   LiveOpsSnapshot,
 } from '../../server/live-ops-types';
 
+export type {
+  PulsePipelineSummary,
+  PulsePipelineSummaryRow,
+} from '../../server/pulse-pipeline-summary-types';
+
 import type { LiveOpsSnapshot } from '../../server/live-ops-types';
+import type { PulsePipelineSummary } from '../../server/pulse-pipeline-summary-types';
 
 export async function getLiveOpsSnapshot(signal?: AbortSignal): Promise<LiveOpsSnapshot> {
   return transport.call<LiveOpsSnapshot>(
     'live-ops.snapshot',
+    undefined,
+    signal ? { signal } : undefined,
+  );
+}
+
+/**
+ * Fetch the Pulse pipeline-state summary: three bucket counts plus a
+ * small sample per bucket. The aggregator on the server reads the same
+ * intent-outcome synthesizer the /pipelines/<id> detail view uses, so
+ * "intent-fulfilled" carries identical semantics across surfaces.
+ *
+ * Used by the PipelineStateTile on the Pulse dashboard. Refreshes on
+ * the same 2s cadence as the rest of the dashboard so the counts feel
+ * coherent with the surrounding tiles.
+ */
+export async function getPulsePipelineSummary(
+  signal?: AbortSignal,
+): Promise<PulsePipelineSummary> {
+  return transport.call<PulsePipelineSummary>(
+    'pulse.pipeline-summary',
     undefined,
     signal ? { signal } : undefined,
   );

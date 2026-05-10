@@ -30,6 +30,7 @@ import { toErrorMessage } from '@/services/errors';
 import { isOperatorTrackingDisabled } from './pulseTrackingDisabled';
 import styles from './LiveOpsView.module.css';
 import { LiveOpsStatusBadge } from './LiveOpsStatusBadge';
+import { PipelineStateTile } from './PipelineStateTile';
 
 /**
  * LiveOpsView - the "everything happening right now" dashboard.
@@ -155,6 +156,7 @@ function Body({ data }: { data: LiveOpsSnapshot }) {
       />
       <div className={styles.grid}>
         <HeartbeatTile heartbeat={data.heartbeat} />
+        <PipelineStateTile />
         <DaemonPostureTile posture={data.daemon_posture} />
         <ActiveSessionsTile sessions={data.active_sessions} />
         <LiveDeliberationsTile plans={data.live_deliberations} />
