@@ -1,0 +1,323 @@
+/*
+ * Operator-actions audit-trail dashboard.
+ *
+ * Mobile-first: single-column at every viewport so the row table reads
+ * naturally on a 390x844 mobile width. Filter chips wrap into multiple
+ * rows on narrow widths. All values resolve to design tokens per
+ * `dev-web-no-hardcoded-values`.
+ */
+
+.view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+}
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+@media (min-width: 60rem) {
+  .intro {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+}
+
+.introText {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.heroTitle {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+.heroSubtitle {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  margin: 0;
+  max-width: 60ch;
+  line-height: var(--line-height-relaxed);
+}
+
+/* ---------------------------------------------------------------------------
+ * Filter group: actor + action-type chips. Two rows on mobile, side-by-
+ * side groups on desktop. Each chip carries a count facet (e.g.
+ * "lag-ceo (1396)") so the operator scans counts and dial-in narrowing
+ * without parsing the unfiltered universe mentally.
+ * ------------------------------------------------------------------------- */
+
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.filterGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.filterGroupLabel {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  min-height: var(--size-touch-target-min);
+  transition: background var(--duration-fast) var(--easing-standard),
+              color var(--duration-fast) var(--easing-standard),
+              border-color var(--duration-fast) var(--easing-standard);
+}
+
+.chip:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.chip:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.chipSelected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.chipSelected:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-hover);
+}
+
+.chipCount {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.chipSelected .chipCount {
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+.clearAll {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  min-height: var(--size-touch-target-min);
+}
+
+.clearAll:hover {
+  color: var(--text-primary);
+}
+
+.clearAll:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+  border-radius: var(--radius-sm);
+}
+
+/* ---------------------------------------------------------------------------
+ * Row list: each operator-action atom renders as a row with
+ * actor badge / action-type chip / target / timestamp.
+ *
+ * On mobile, rows are stacked-card shaped (each row is its own visual
+ * block, no fake-table). On desktop ≥60rem, the row becomes a
+ * tabular layout via CSS grid so the operator can scan columns.
+ * ------------------------------------------------------------------------- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--easing-standard),
+              border-color var(--duration-fast) var(--easing-standard);
+  min-height: var(--size-touch-target-min);
+}
+
+.row:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.row:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+@media (min-width: 60rem) {
+  .row {
+    grid-template-columns: 8rem 9rem 1fr 7rem;
+    align-items: center;
+    gap: var(--space-3);
+  }
+}
+
+.actorBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--accent);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  width: max-content;
+}
+
+.actionType {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  width: max-content;
+}
+
+/*
+ * Tone variants for the action-type chip. Borrows the same palette
+ * approach as `atom-type-tones`: write actions read warm, read-shaped
+ * actions read neutral, label/release reads cooler. Subtle so the
+ * dashboard stays scannable rather than flashy.
+ */
+.toneWarm {
+  background: color-mix(in srgb, var(--accent-warm, var(--accent)) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent-warm, var(--accent)) 35%, transparent);
+  color: var(--accent-warm, var(--accent));
+}
+
+.toneCool {
+  background: color-mix(in srgb, var(--accent-cool, var(--accent)) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent-cool, var(--accent)) 30%, transparent);
+  color: var(--accent-cool, var(--accent));
+}
+
+.target {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  min-width: 0;
+  word-break: break-word;
+}
+
+.targetMissing {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.argsPreview {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  word-break: break-all;
+  /* Compact single-line preview on desktop tabular layout; wrap on mobile. */
+}
+
+@media (min-width: 60rem) {
+  .argsPreview {
+    grid-column: 3 / 4;
+    grid-row: 2 / 3;
+  }
+}
+
+.timestamp {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+ * Refresh group (mirrors resume-audit).
+ * ------------------------------------------------------------------------- */
+
+.refreshGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.lastRefreshed {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.summaryLine {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.summaryLineStrong {
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+}

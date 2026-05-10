@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb, ShieldAlert, Radio, GitFork, Brain, Zap, MoreHorizontal, GitMerge, RotateCcw } from 'lucide-react';
+import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb, ShieldAlert, Radio, GitFork, Brain, Zap, MoreHorizontal, GitMerge, RotateCcw, ClipboardList } from 'lucide-react';
 import { routeHref, setRoute, type Route } from '@/state/router.store';
 import logoUrl from '@/assets/lag-logo.png';
 import styles from './Sidebar.module.css';
@@ -62,6 +62,7 @@ const items: ReadonlyArray<NavItem> = [
   { id: 'deliberation', label: 'Deliberation', icon: Brain },
   { id: 'timeline', label: 'Timeline', icon: LineChart },
   { id: 'graph', label: 'Graph', icon: Network },
+  { id: 'operator-actions', label: 'Audit', icon: ClipboardList },
 ];
 
 export function Sidebar({ route }: { route: Route }) {
