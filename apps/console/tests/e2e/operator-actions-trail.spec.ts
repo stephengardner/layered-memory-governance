@@ -166,8 +166,36 @@ test.describe('operator-actions audit trail', () => {
       const box = await refresh.boundingBox();
       expect(box, 'refresh button box').not.toBeNull();
       if (box) {
+        // 44×44 floor per dev-web-mobile-first-required — both dims.
         expect(box.height, 'refresh height >= 44').toBeGreaterThanOrEqual(44);
+        expect(box.width, 'refresh width >= 44').toBeGreaterThanOrEqual(44);
       }
+    }
+  });
+
+  test('clicking an action-type filter chip narrows the list and toggles aria-pressed', async ({ page }) => {
+    const data = await fetchList(page);
+    test.skip(data.total === 0 || data.action_type_facets.length === 0, 'no operator-action atoms; cannot verify filter');
+
+    await gotoOperatorActionsView(page);
+
+    const firstActionType = data.action_type_facets[0].action_type;
+    const chip = page.getByTestId(`operator-actions-type-chip-${firstActionType}`);
+    await expect(chip).toBeVisible();
+    await expect(chip).toHaveAttribute('aria-pressed', 'false');
+
+    await chip.click();
+    await expect(chip).toHaveAttribute('aria-pressed', 'true');
+
+    // URL reflects the filter (canon dev-web-routing-state-not-component-state-for-filters).
+    await expect(page).toHaveURL(/[?&]action_type=/);
+
+    // Every visible row now matches the action type.
+    const rows = page.getByTestId('operator-actions-row');
+    const rowCount = await rows.count();
+    for (let i = 0; i < rowCount; i += 1) {
+      const rowActionType = await rows.nth(i).getAttribute('data-action-type');
+      expect(rowActionType).toBe(firstActionType);
     }
   });
 });
