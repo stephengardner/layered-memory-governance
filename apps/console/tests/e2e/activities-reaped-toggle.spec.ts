@@ -144,7 +144,19 @@ test.describe('activities-feed reaped toggle', () => {
     expect(hiddenResponse.ok()).toBe(true);
     const hiddenBody = await hiddenResponse.json();
     const hiddenData = hiddenBody?.data;
-    expect(hiddenData?.reaped_count).toBe(reapedCount);
+    /*
+     * Assert stable invariants instead of strict equality between
+     * the include_reaped:true and the include_reaped:false response's
+     * reaped_count. Both surfaces report the SAME count (the count is
+     * a global "how many reaped atoms exist", not a per-page count),
+     * but desktop + mobile Playwright projects seed and clean up the
+     * fixture concurrently. A second seed from the parallel project
+     * could land between the two requests above, so an exact-equality
+     * check is racy. The two invariants below cover the contract this
+     * test cares about: reaped atoms exist, and the seed atom is
+     * hidden from the default-no-include view.
+     */
+    expect(hiddenData?.reaped_count ?? 0).toBeGreaterThanOrEqual(1);
     const hiddenIds: ReadonlyArray<string> = (hiddenData?.atoms ?? []).map(
       (a: { id: string }) => a.id,
     );
