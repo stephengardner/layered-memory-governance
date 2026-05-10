@@ -3,14 +3,17 @@ import { test, expect, type Page } from '@playwright/test';
 /**
  * Sidebar active-vs-critical separation.
  *
- * Regression context: the `.itemCritical` treatment (Pulse + Control)
- * shipped on 2026-04-26 with an accent-tinted background + border.
- * Operator confirmed 2026-05-05 that this read as "menu items appear
- * selected when they aren't" -- two non-active items wore the same
- * row chrome as the actual active item, so on every render at least
- * three rows looked selected when only one was. The fix collapses
- * `.itemCritical` to icon-tint emphasis only; the row background +
- * border are gone.
+ * Regression context: three earlier treatments of the "critical"
+ * destinations (Pulse + Control) all read as visual noise:
+ *   - 2026-04-?: --status-danger red read as alarm-state
+ *   - 2026-04-26: accent-tinted background + border read as "selected"
+ *   - 2026-05-05 -> 2026-05-10: icon-tint only still read as "different"
+ *
+ * Operator confirmed 2026-05-10: Pulse and Control must sit visually
+ * identical to every other nav entry. Selection (active route) is
+ * the only signal that distinguishes a nav item. The `priority:
+ * 'critical'` data field remains as a non-visual marker for any
+ * future ordering / telemetry use case but applies NO chrome today.
  *
  * What this spec guards (single source of truth for the contract):
  *
@@ -19,14 +22,10 @@ import { test, expect, type Page } from '@playwright/test';
  *      with the `.itemActive` styling (`::before` left bar +
  *      non-transparent background).
  *
- *   2. `.itemCritical` items NEVER carry the visual "row is selected"
- *      treatment when they are not the current route. Specifically:
- *      transparent background, no `::before` bar, no border that
- *      could be mistaken for selection.
- *
- *   3. The icon on a critical item paints `--accent` so the
- *      "reach for these first" affordance survives without
- *      borrowing active chrome.
+ *   2. Critical items (data-priority="critical") look identical to
+ *      non-critical items when inactive: same background, same
+ *      icon color, no `::before` bar. They are visually
+ *      indistinguishable from any other inactive nav entry.
  *
  * Why a custom helper to read the ::before content: jsdom-shaped
  * Playwright environments sometimes return the literal string
@@ -141,13 +140,13 @@ test.describe('sidebar active-vs-critical separation', () => {
     });
   }
 
-  test('critical items do not paint a selected-looking row when inactive', async ({ page }) => {
+  test('critical items look identical to non-critical items when inactive', async ({ page }) => {
     /*
      * Pick a route that is NOT a critical item (Canon) so both Pulse
      * (`live-ops`) and Control are critical-and-inactive at once.
-     * That is the exact configuration the operator-reported bug
-     * showed: three rows appearing selected on a Canon/Dashboard
-     * render.
+     * The contract: critical items render with the same chrome as
+     * any other inactive nav row -- no background, no ::before bar,
+     * and the icon color matches the non-critical baseline.
      */
     await page.goto('/canon');
     await expect(page.getByTestId('nav-canon').first()).toHaveAttribute(
@@ -162,24 +161,29 @@ test.describe('sidebar active-vs-critical separation', () => {
     expect(pulse, 'live-ops nav item exists').toBeTruthy();
     expect(control, 'control nav item exists').toBeTruthy();
 
+    // Pick a comparable non-critical inactive item (Dashboard is always
+    // present and is not the current route on /canon) as the baseline
+    // for "this is what every regular row looks like."
+    const baseline = snap.find((n) => n.id === 'nav-dashboard');
+    expect(baseline, 'dashboard nav item exists').toBeTruthy();
+
     for (const critical of [pulse!, control!]) {
-      // The row itself does not paint a background that looks
-      // selected.
       expect(
         isTransparent(critical.background),
         `${critical.id} background should be transparent (got ${critical.background})`,
       ).toBe(true);
-      // No active-bar pseudo-element. Selection is reserved for
-      // the real `aria-current="page"` row.
       expect(
         hasBeforeBar(critical.beforeContent),
         `${critical.id} should not render the active ::before bar`,
       ).toBe(false);
-      // The marker survives in the icon tint -- non-empty,
-      // non-default text color so the canon comment in
-      // Sidebar.module.css is enforced.
-      expect(critical.iconColor).not.toBe('');
-      expect(critical.iconColor).not.toBe('rgb(0, 0, 0)');
+      // The icon color matches a non-critical inactive item; no
+      // accent treatment leaks through. This is the contract the
+      // operator stated 2026-05-10: critical entries look identical
+      // to every other nav row.
+      expect(
+        critical.iconColor,
+        `${critical.id} icon color should match the non-critical baseline (${baseline!.iconColor})`,
+      ).toBe(baseline!.iconColor);
     }
   });
 });
