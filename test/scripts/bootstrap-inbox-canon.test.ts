@@ -49,10 +49,27 @@ describe('bootstrap-inbox-canon POLICIES', () => {
       'pol-inbox-ordering',
       'pol-inbox-poll-cadence',
       'pol-judgment-fallback-ladder',
+      'pol-loop-pass-pr-observation-refresh-default',
       'pol-plan-auto-approve-low-stakes',
       'pol-plan-multi-reviewer-approval',
       'pol-pr-observation-freshness-threshold-ms',
     ]);
+  });
+
+  it('pol-loop-pass-pr-observation-refresh-default ships enabled=true', () => {
+    // Indie-floor default per dev-indie-floor-org-ceiling: a solo
+    // developer does not need to know the dial exists; the default
+    // does the right thing. Org-ceiling deployments that want refresh
+    // off write a higher-priority canon atom with enabled=false.
+    // Drift guard: edits to the seed payload that flip the
+    // indie-floor default must update this assertion intentionally.
+    const policies = buildPolicies(OP);
+    const spec = policies.find(
+      (p) => p.id === 'pol-loop-pass-pr-observation-refresh-default',
+    );
+    expect(spec).toBeDefined();
+    expect(spec!.subject).toBe('loop-pass-pr-observation-refresh-default');
+    expect(spec!.fields.enabled).toBe(true);
   });
 
   it('pol-plan-multi-reviewer-approval fields match FALLBACK_PLAN_APPROVAL exactly', () => {

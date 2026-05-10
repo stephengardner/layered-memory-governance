@@ -29,6 +29,7 @@ import type {
   OpenPrSource,
   OrphanPrDispatcher,
 } from '../runtime/plans/pr-orphan-reconcile.js';
+import { readBooleanCanonPolicy } from '../runtime/loop/canon-policy-cadence.js';
 
 /**
  * Optional injection point: a deployment-side factory that builds the
@@ -146,12 +147,18 @@ interface CliArgs {
    */
   readonly reconcilePlanState: boolean;
   /**
-   * Run the pr-observation refresh pass on every loop tick. Default
-   * `true`. Disable via `--no-refresh-plan-observations`. Requires
-   * the bin entrypoint to inject a refresher factory; absent, the
-   * pass silent-skips per the LoopRunner contract.
+   * Run the pr-observation refresh pass on every loop tick. Three-state:
+   *   - `true`   -> --refresh-plan-observations passed explicitly
+   *   - `false`  -> --no-refresh-plan-observations passed explicitly
+   *   - `null`   -> neither flag passed; defer to canon policy
+   *                 `pol-loop-pass-pr-observation-refresh-default`
+   *                 (default true) at runtime
+   *
+   * Requires the bin entrypoint to inject a refresher factory when
+   * resolved to true; absent, the pass silent-skips per the LoopRunner
+   * contract.
    */
-  readonly refreshPlanObservations: boolean;
+  readonly refreshPlanObservations: boolean | null;
   /**
    * Run the plan-proposal notify pass on every loop tick. Default
    * `true`. Disable via `--no-notify-proposed-plans`. Requires the
@@ -182,6 +189,70 @@ interface CliArgs {
   readonly prOrphanMaxDispatchPerTick: number | null;
 }
 
+/**
+ * Three-state CLI flag resolution.
+ *
+ * Returns `true` when the positive flag is in argv, `false` when the
+ * negative flag is in argv, `null` when neither is present (defer to
+ * canon at runtime). Both flags present: the negative wins (mirrors
+ * the `--embed-cache` / `--no-embed-cache` pattern already in this
+ * CLI).
+ *
+ * Exact-token match only: a flag like `--refresh-plan-observations`
+ * matches argv entry `'--refresh-plan-observations'` but NOT a
+ * `'--refresh-plan-observations=true'` form. Node's `parseArgs`
+ * accepts the `=value` form for `type: 'boolean'` options as an
+ * error, so the exact-token check is consistent with the rest of the
+ * CLI's argv handling.
+ *
+ * Exported (alongside `resolveRefreshPlanObservations`) so unit tests
+ * exercise the three flag states without spawning a subprocess. The
+ * shared shape across both helpers means a single resolution path
+ * runs in both test and prod.
+ */
+export function resolveCliFlagState(
+  argv: ReadonlyArray<string>,
+  positiveFlag: string,
+  negativeFlag: string,
+): boolean | null {
+  const sawPositive = argv.includes(positiveFlag);
+  const sawNegative = argv.includes(negativeFlag);
+  if (sawNegative) return false;
+  if (sawPositive) return true;
+  return null;
+}
+
+/**
+ * Resolve the effective refresh-plan-observations boolean from the
+ * three-state CLI flag value, falling back to canon when the flag
+ * was not passed.
+ *
+ * Resolution order (highest to lowest precedence):
+ *   1. Explicit `--no-refresh-plan-observations` -> false
+ *   2. Explicit `--refresh-plan-observations`    -> true
+ *   3. Canon `pol-loop-pass-pr-observation-refresh-default` (read at
+ *      runtime via `readBooleanCanonPolicy`)
+ *   4. Hardcoded fallback `true` (matches the indie-floor canon seed
+ *      in `scripts/lib/inbox-canon-policies.mjs`; ships when the
+ *      bootstrap-inbox-canon.mjs script has not been run yet)
+ *
+ * The hardcoded fallback in (4) is intentional and minimal: it
+ * mirrors what `enabled=true` would have been in canon if seeded. A
+ * deployment that wants refresh off either seeds the policy atom
+ * with enabled=false or passes --no-refresh-plan-observations.
+ */
+export async function resolveRefreshPlanObservations(
+  host: Host,
+  cliState: boolean | null,
+): Promise<boolean> {
+  if (cliState !== null) return cliState;
+  return readBooleanCanonPolicy(host, {
+    subject: 'loop-pass-pr-observation-refresh-default',
+    fieldName: 'enabled',
+    fallback: true,
+  });
+}
+
 function parseCliArgs(): CliArgs | null {
   try {
     const { values } = parseArgs({
@@ -204,7 +275,15 @@ function parseCliArgs(): CliArgs | null {
         // negated flags are the explicit opt-out.
         'reconcile-plan-state': { type: 'boolean', default: true },
         'no-reconcile-plan-state': { type: 'boolean', default: false },
-        'refresh-plan-observations': { type: 'boolean', default: true },
+        // refresh-plan-observations is three-state: presence in argv
+        // resolves explicit on/off via `resolveCliFlagState`. The
+        // parseArgs options still need to LIST the flags so a
+        // `--refresh-plan-observations` token does not get rejected
+        // as unknown; the default value here is unused because the
+        // resolution helper scans argv directly. See
+        // `resolveRefreshPlanObservations` for the canon-fallback
+        // path.
+        'refresh-plan-observations': { type: 'boolean', default: false },
         'no-refresh-plan-observations': { type: 'boolean', default: false },
         // Plan-proposal notify pass defaults ON; a deployment without
         // env config (TELEGRAM_BOT_TOKEN/CHAT_ID) silent-skips per the
@@ -309,9 +388,19 @@ function parseCliArgs(): CliArgs | null {
     const reconcilePlanState = Boolean(values['no-reconcile-plan-state'])
       ? false
       : Boolean(values['reconcile-plan-state']);
-    const refreshPlanObservations = Boolean(values['no-refresh-plan-observations'])
-      ? false
-      : Boolean(values['refresh-plan-observations']);
+    // --refresh-plan-observations / --no-refresh-plan-observations are
+    // three-state: explicit-on (true), explicit-off (false), absent
+    // (null -> defer to canon at runtime). `parseArgs` with
+    // `default: true` cannot distinguish presence from default, so we
+    // scan argv directly for the flag tokens. Explicit `--no-*` wins
+    // over `--refresh-*` when both are passed (mirrors the embed-cache
+    // pattern). The canon read happens in `resolveRefreshPlanObservations`
+    // after the host is built.
+    const refreshPlanObservations = resolveCliFlagState(
+      process.argv,
+      '--refresh-plan-observations',
+      '--no-refresh-plan-observations',
+    );
     const notifyProposedPlans = Boolean(values['no-notify-proposed-plans'])
       ? false
       : Boolean(values['notify-proposed-plans']);
@@ -395,15 +484,23 @@ function printUsage(): void {
       '                                 pr-observation atoms carry a terminal pr_state from',
       '                                 executing/approved to succeeded/abandoned.',
       '  --no-reconcile-plan-state      Disable the reconcile pass.',
-      '  --refresh-plan-observations    Run the pr-observation refresh pass on every tick',
-      '                                 (default on). Re-observes stale OPEN observations',
-      '                                 whose linked plan is still executing so the',
-      '                                 reconcile pass sees terminal state on PRs that',
-      '                                 merged or closed since the last observation.',
-      '                                 Spawns scripts/run-pr-landing.mjs --observe-only',
-      '                                 per refresh; bounded by an in-tick refresh cap.',
+      '  --refresh-plan-observations    Run the pr-observation refresh pass on every tick.',
+      '                                 Re-observes stale OPEN observations whose linked plan',
+      '                                 is still executing so the reconcile pass sees terminal',
+      '                                 state on PRs that merged or closed since the last',
+      '                                 observation. Spawns scripts/run-pr-landing.mjs',
+      '                                 --observe-only per refresh; bounded by an in-tick',
+      '                                 refresh cap. Explicit form -- always wins when passed.',
       '  --no-refresh-plan-observations Disable the refresh pass (e.g. for sandboxed',
       '                                 deployments that cannot spawn child processes).',
+      '                                 Explicit form -- always wins when passed.',
+      '  (default when neither flag is passed) Read from canon policy atom',
+      '                                 pol-loop-pass-pr-observation-refresh-default; the',
+      '                                 indie-floor seed ships enabled=true so plans do not',
+      '                                 strand in plan_state=executing when their PR merges',
+      '                                 silently. An org-ceiling deployment that wants the',
+      '                                 refresh pass off by default writes a higher-priority',
+      '                                 atom with enabled=false; the CLI flag still overrides.',
       '  --notify-proposed-plans        Run the plan-proposal notify pass on every tick',
       '                                 (default on). Auto-pushes newly-proposed plan',
       '                                 atoms whose principal is in the canon-defined',
@@ -556,12 +653,23 @@ export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number
         (args.reaperAbandonMs !== null ? `  abandon=${args.reaperAbandonMs}ms` : ''),
     );
   }
+  // Resolve the three-state refresh flag against canon. When neither
+  // --refresh-plan-observations nor --no-refresh-plan-observations was
+  // passed (cliState === null), the value comes from
+  // pol-loop-pass-pr-observation-refresh-default with fallback true.
+  // The CLI flag always wins when explicitly passed (either form).
+  const refreshPlanObservationsResolved = await resolveRefreshPlanObservations(
+    host,
+    args.refreshPlanObservations,
+  );
+  const refreshFlagSource: 'cli' | 'canon' =
+    args.refreshPlanObservations === null ? 'canon' : 'cli';
   // Build the refresher only when the refresh pass is enabled and a
   // factory was injected. Without a factory, the pass silently skips
   // per the LoopRunner contract; framework code stays mechanism-only
   // because the concrete adapter is constructed entirely outside src/.
   let refresher: PrObservationRefresher | null = null;
-  if (args.refreshPlanObservations && opts.prObservationRefresherFactory !== undefined) {
+  if (refreshPlanObservationsResolved && opts.prObservationRefresherFactory !== undefined) {
     try {
       refresher = await opts.prObservationRefresherFactory();
     } catch (err) {
@@ -611,7 +719,11 @@ export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number
   );
   console.log(
     `[boot] refresh-plan-observations: ${
-      args.refreshPlanObservations ? (refresher !== null ? 'ENABLED' : 'ENABLED (refresher unresolved; will silent-skip)') : 'DISABLED'
+      refreshPlanObservationsResolved
+        ? refresher !== null
+          ? `ENABLED (source=${refreshFlagSource})`
+          : `ENABLED (source=${refreshFlagSource}; refresher unresolved; will silent-skip)`
+        : `DISABLED (source=${refreshFlagSource})`
     }`,
   );
   // Build the plan-proposal notifier only when the notify pass is
@@ -664,7 +776,7 @@ export async function runLoopMain(opts: RunLoopMainOptions = {}): Promise<number
     ...(args.reaperWarnMs !== null ? { reaperWarnMs: args.reaperWarnMs } : {}),
     ...(args.reaperAbandonMs !== null ? { reaperAbandonMs: args.reaperAbandonMs } : {}),
     runPlanReconcilePass: args.reconcilePlanState,
-    runPlanObservationRefreshPass: args.refreshPlanObservations,
+    runPlanObservationRefreshPass: refreshPlanObservationsResolved,
     ...(refresher !== null ? { prObservationRefresher: refresher } : {}),
     runPlanProposalNotifyPass: args.notifyProposedPlans,
     ...(planProposalNotifier !== null ? { planProposalNotifier } : {}),
