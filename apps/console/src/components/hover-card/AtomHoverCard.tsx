@@ -101,15 +101,18 @@ export function AtomHoverCardLoading({
 }
 
 /*
- * Not-in-canon variant: rendered only after the canon-search query has
- * settled with no match, signalling that the atom-id resolves to a
- * non-canon artifact (a plan, observation, agent-session, etc.) rather
- * than a canon atom. Drops the metadata strip entirely so we never
- * paint placeholder principal / confidence / layer / created_at values
- * the user could read as ground truth. The id chip and explanatory
- * content carry all the information that's actually available.
+ * Not-found variant: rendered only when the resolver settles with no
+ * atom for the id (the substrate's atom-not-found 404). The id is
+ * legitimately unresolvable in this case -- not just non-canon (the
+ * previous code only checked canon and treated every non-L3 id as
+ * "not in canon", which was wrong; operator flagged 2026-05-10).
+ *
+ * Drops the metadata strip entirely so we never paint placeholder
+ * principal / confidence / layer / created_at values the user could
+ * read as ground truth. The id chip and explanatory content carry
+ * all the information that's actually available.
  */
-export function AtomHoverCardNotInCanon({
+export function AtomHoverCardNotFound({
   id,
   message,
   hint,
@@ -128,12 +131,12 @@ export function AtomHoverCardNotInCanon({
       role="tooltip"
       data-testid="atom-hover-card"
       data-loading="false"
-      data-not-in-canon="true"
+      data-not-found="true"
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
     >
       <div className={styles.head}>
-        <span className={styles.type} data-type="non-canon">non-canon</span>
+        <span className={styles.type} data-type="not-found">not found</span>
         <code className={styles.id}>{id}</code>
       </div>
       <p className={styles.content}>{truncate(message, 240)}</p>
