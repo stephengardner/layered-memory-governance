@@ -73,31 +73,54 @@ interface BucketedRow {
 }
 
 /**
- * Derive a `last_event_at` ISO string for a pipeline. Walks the
- * stage-event atoms tied to this pipeline and picks the latest, with
- * the pipeline atom's own created_at as a floor when no events have
- * landed yet. Pure: takes the source atom array and the pipeline atom
- * directly. Defensive: skips malformed timestamps without throwing.
+ * Pre-index the latest stage event by pipeline_id with a single pass
+ * over the atom set. The summary builder calls this once per request
+ * and then resolves per-pipeline last-event in O(1) via the returned
+ * Map. Earlier shape (a full-store rescan inside the per-pipeline
+ * loop) was O(P x N) per request; under the Pulse poll cadence at
+ * the 50-actor org ceiling, that path degrades sharply. Index-once
+ * stays O(N) regardless of P. Defensive: skips malformed timestamps
+ * and atoms without a pipeline_id so a single bad write does not
+ * throw or skew the index.
  */
-function pipelineLastEventAt(
+function latestStageEventByPipeline(
   atoms: ReadonlyArray<IntentOutcomeSourceAtom>,
-  pipeline: IntentOutcomeSourceAtom,
-): string {
-  let bestTs = parseIsoTs(pipeline.created_at);
-  let bestIso = pipeline.created_at;
+): ReadonlyMap<string, { ts: number; iso: string }> {
+  const best = new Map<string, { ts: number; iso: string }>();
   for (const atom of atoms) {
     if (atom.type !== 'pipeline-stage-event') continue;
     if (!isCleanLive(atom)) continue;
     const meta = (atom.metadata ?? {}) as Record<string, unknown>;
-    if (readString(meta, 'pipeline_id') !== pipeline.id) continue;
+    const pipelineId = readString(meta, 'pipeline_id');
+    if (pipelineId === null) continue;
     const ts = parseIsoTs(atom.created_at);
     if (!Number.isFinite(ts)) continue;
-    if (ts > bestTs) {
-      bestTs = ts;
-      bestIso = atom.created_at;
+    const prior = best.get(pipelineId);
+    if (prior === undefined || ts > prior.ts) {
+      best.set(pipelineId, { ts, iso: atom.created_at });
     }
   }
-  return bestIso;
+  return best;
+}
+
+/**
+ * Derive a `last_event_at` ISO string for a pipeline. Reads the
+ * pre-indexed latest-stage-event map (see `latestStageEventByPipeline`)
+ * and falls back to the pipeline atom's own created_at when no event
+ * has landed yet OR when the pipeline atom is itself the latest
+ * timestamp.
+ */
+function pipelineLastEventAt(
+  index: ReadonlyMap<string, { ts: number; iso: string }>,
+  pipeline: IntentOutcomeSourceAtom,
+): string {
+  const fromIndex = index.get(pipeline.id);
+  if (fromIndex === undefined) return pipeline.created_at;
+  const pipelineTs = parseIsoTs(pipeline.created_at);
+  if (Number.isFinite(pipelineTs) && pipelineTs >= fromIndex.ts) {
+    return pipeline.created_at;
+  }
+  return fromIndex.iso;
 }
 
 /**
@@ -168,12 +191,16 @@ export function buildPulsePipelineSummary(
   const fulfilled: BucketedRow[] = [];
   let total = 0;
 
+  // Pre-index ONCE so the per-pipeline lookup below is O(1). See
+  // latestStageEventByPipeline for the O(P x N) -> O(N) rationale.
+  const lastEventIndex = latestStageEventByPipeline(atoms);
+
   for (const atom of atoms) {
     if (atom.type !== 'pipeline') continue;
     if (!isCleanLive(atom)) continue;
     total += 1;
     const outcome = buildIntentOutcome(atoms, atom.id, now);
-    const lastEventAt = pipelineLastEventAt(atoms, atom);
+    const lastEventAt = pipelineLastEventAt(lastEventIndex, atom);
 
     // Running bucket reads the pipeline atom's own pipeline_state to
     // catch the earliest signal: the intent-outcome's `intent-running`
