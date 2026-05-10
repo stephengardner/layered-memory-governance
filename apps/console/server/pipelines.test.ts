@@ -958,6 +958,57 @@ describe('getPipelineDetail - agent_turns projection', () => {
     expect(result.pipelines[0]!.last_event_at).toBe(turnTs);
   });
 
+  it('treats a turn_index mismatch as a dangling pointer (CR PR #387)', () => {
+    /*
+     * Regression for CR finding 3215589639 on PR #387:
+     * if an index event has been corrupted to point at the wrong
+     * agent-turn atom (e.g. one belonging to a different
+     * pipeline/session), the projection must NOT surface that other
+     * turn's telemetry under the current pipeline. The simplest
+     * pointer-integrity proof is turn_index equality: the index event
+     * and the agent-turn atom both carry it; if they disagree, the
+     * cross-walk is treated as a dangling pointer and telemetry
+     * fields are null.
+     *
+     * Same defensive posture as a missing atom: the index row still
+     * surfaces (so the operator sees the marker), but telemetry is
+     * null (so wrong-pipeline data never leaks).
+     */
+    const pipeline = pipelineAtom({ id: 'p-mismatch', state: 'running' });
+    const event = agentTurnIndexEventAtom({
+      pipelineId: 'p-mismatch',
+      stageName: 'plan',
+      turnIndex: 0,
+      agentTurnAtomId: 'agent-turn-corrupted-pointer',
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    // agent-turn atom exists on disk and is clean, but its turn_index
+    // is 7 — does NOT match the index event's turn_index=0. This
+    // shape models a corrupted pointer (or a hand-mutated atom) where
+    // the index event points at the wrong agent-turn.
+    const wrongTurn = agentTurnAtom({
+      id: 'agent-turn-corrupted-pointer',
+      sessionAtomId: 'agent-session-other-pipeline',
+      turnIndex: 7,
+      llmInputInline: 'leaked-from-another-pipeline',
+      toolCallsCount: 99,
+      latencyMs: 12345,
+      at: new Date(NOW - 60_000).toISOString(),
+    });
+    const result = getPipelineDetail([pipeline, event, wrongTurn], 'p-mismatch');
+    expect(result!.agent_turns).toHaveLength(1);
+    const row = result!.agent_turns[0]!;
+    // Row surfaces; index data preserved.
+    expect(row.turn_index).toBe(0);
+    expect(row.agent_turn_atom_id).toBe('agent-turn-corrupted-pointer');
+    // Telemetry from the wrong-pipeline agent-turn atom is NOT
+    // surfaced — the projection treats the cross-walk as a dangling
+    // pointer.
+    expect(row.latency_ms).toBeNull();
+    expect(row.tool_calls_count).toBeNull();
+    expect(row.llm_input_preview).toBeNull();
+  });
+
   it('skips tainted or superseded agent-turn atoms when cross-walking telemetry', () => {
     const pipeline = pipelineAtom({ id: 'p-taint', state: 'running' });
     const event = agentTurnIndexEventAtom({

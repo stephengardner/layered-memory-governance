@@ -481,13 +481,31 @@ function agentTurnRowFromIndex(
 
   const turnAtomId = index.agent_turn_atom_id;
   const turnAtom = turnAtomId ? byId.get(turnAtomId) : undefined;
-  // Skip the cross-walk for atoms that are NOT live (taint other than
-  // 'clean', or carrying a superseded_by pointer). The index marker
-  // still surfaces but its telemetry is treated as unavailable.
+  // Cross-walk integrity gates, applied in order:
+  //   1. The atom must exist on disk.
+  //   2. Its type must be 'agent-turn' (a corrupted pointer could land
+  //      on a different atom type with the same id).
+  //   3. It must be live (taint='clean' AND not superseded). A
+  //      tainted atom is by definition NOT a trustworthy data source.
+  //   4. Its agent_turn.turn_index MUST equal the index event's
+  //      turn_index. This is the pointer-integrity proof per CR
+  //      review on PR #387: if a corrupted index event points at
+  //      the wrong agent-turn atom (e.g. one belonging to a
+  //      DIFFERENT pipeline or session), the turn_index will not
+  //      match. Without this check the projection would surface that
+  //      other pipeline's prompt + telemetry under the current
+  //      pipeline -- a data-leak across pipelines.
+  //
+  // Any failure surfaces the index row with null telemetry (treats
+  // the cross-walk as a dangling pointer), same as a missing atom.
   if (turnAtom && turnAtom.type === 'agent-turn' && isCleanLive(turnAtom)) {
     const meta = readMeta(turnAtom);
     const agentTurn = readObject(meta, 'agent_turn');
-    if (agentTurn) {
+    const atomTurnIndexRaw = agentTurn ? agentTurn['turn_index'] : undefined;
+    const atomTurnIndex = typeof atomTurnIndexRaw === 'number' && Number.isFinite(atomTurnIndexRaw)
+      ? atomTurnIndexRaw
+      : null;
+    if (agentTurn && atomTurnIndex === index.turn_index) {
       const rawLatency = agentTurn['latency_ms'];
       if (typeof rawLatency === 'number' && Number.isFinite(rawLatency)) {
         latency_ms = rawLatency;
