@@ -37,10 +37,19 @@
  * `IntentOutcomeSourceAtom` and `PipelineSourceAtom` so the synthesizer
  * stays decoupled from the substrate's full Atom shape. Type-only:
  * the caller injects the atom array and the helpers walk it.
+ *
+ * The `layer` field is load-bearing for the canon-only authorization
+ * gate (`resolveAllowedResumers` filters on `layer === 'L3'` so an
+ * L0/L1 proposal cannot supply `allowed_resumers` data that satisfies
+ * the resume gate). Without the field, a proposer with write access
+ * to the atom store could mint a directive at L0 with matching
+ * `metadata.policy.subject` and `stage_name` and impersonate the
+ * canon entry.
  */
 export interface PipelineResumeSourceAtom {
   readonly id: string;
   readonly type: string;
+  readonly layer?: string;
   readonly content: string;
   readonly principal_id: string;
   readonly created_at: string;
@@ -168,6 +177,17 @@ export function resolveAllowedResumers(
 ): ReadonlyArray<string> | null {
   for (const atom of atoms) {
     if (atom.type !== 'directive') continue;
+    /*
+     * Layer floor: only L3 (canon) atoms can satisfy the resume gate.
+     * Without the layer filter, an L0 proposal or L1 working-set atom
+     * with a matching `metadata.policy.subject === 'pipeline-stage-hil'`
+     * + `stage_name` would seed `allowed_resumers` and authorize a
+     * resume even though canon never promoted it. The substrate's
+     * `iteratePolicyAtoms` in `src/runtime/planning-pipeline/policy.ts`
+     * applies the same `layer: ['L3']` filter; we mirror it here so
+     * the Console mirror stays in lock-step with the runner-side gate.
+     */
+    if (atom.layer !== 'L3') continue;
     if (!isCleanLive(atom)) continue;
     const meta = (atom.metadata ?? {}) as Record<string, unknown>;
     const policy = meta['policy'];

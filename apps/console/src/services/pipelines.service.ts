@@ -156,15 +156,22 @@ export interface PipelineResumeResult {
  *   - 404 pipeline-not-found        : id does not match a pipeline atom
  *   - 409 pipeline-not-paused       : already running, completed, or failed
  *   - 409 pipeline-resume-no-stage  : substrate invariant violated
+ *   - 409 pipeline-resume-conflict  : pipeline moved out of hil-paused
+ *                                     between validation and write
  *   - 403 pipeline-resume-no-policy : canon entry missing for stage
  *   - 403 pipeline-resume-forbidden : caller not in allowed_resumers
+ *   - 500 server-actor-unset        : LAG_CONSOLE_ACTOR_ID not configured
  *
- * Caller responsibility: supply the operator principal id via
- * `actor_id`. The session.service helper `requireActorId` is the
- * canonical pre-mutation guard; see KillSwitchPill for the pattern.
+ * Identity binding: the resumer principal is derived server-side from
+ * `LAG_CONSOLE_ACTOR_ID`; the client does NOT supply an `actor_id`.
+ * Trusting a client-supplied identity for a canon-gated write would
+ * let any caller who reaches the origin-allowed endpoint impersonate
+ * any principal in `allowed_resumers` (CR PR #396 critical finding).
+ * If a future deployment wants per-user resume gating, the substrate
+ * must surface auth tokens upstream of the backend handler.
  */
 export async function resumePipeline(
-  params: { pipeline_id: string; actor_id: string; reason?: string },
+  params: { pipeline_id: string; reason?: string },
   signal?: AbortSignal,
 ): Promise<PipelineResumeResult> {
   return transport.call<PipelineResumeResult>(

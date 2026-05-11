@@ -248,13 +248,13 @@ test.describe('pipeline detail HIL resume button', () => {
     /*
      * Touch-target floor per canon dev-web-mobile-first-required. The
      * resumeButton CSS sets min-height to var(--size-touch-target-min)
-     * which resolves to 44px in the live token bundle. The bound here
-     * is conservative (>=40px) to avoid brittle exact-pixel asserts
-     * across the desktop + mobile project matrix.
+     * which resolves to 44px in the live token bundle. The assertion
+     * MUST enforce the actual 44px floor (CR PR #396 minor finding:
+     * a 40-43px regression must fail this test, not pass).
      */
     const box = await resume.boundingBox();
     expect(box).not.toBeNull();
-    if (box) expect(box.height).toBeGreaterThanOrEqual(40);
+    if (box) expect(box.height).toBeGreaterThanOrEqual(44);
   });
 
   test('clicking Resume posts to the resume endpoint and refetches detail', async ({ page }) => {
@@ -306,15 +306,23 @@ test.describe('pipeline detail HIL resume button', () => {
     await resume.click();
 
     /*
-     * The endpoint MUST receive the resolved operator id and the
-     * pipeline id. The reason field is an optional Console-supplied
-     * string; presence is fine, exact copy is not load-bearing.
+     * The endpoint MUST receive the pipeline id. The client does NOT
+     * send an actor_id (the server derives the resumer from
+     * LAG_CONSOLE_ACTOR_ID per CR PR #396 critical finding). A reason
+     * string is optional Console-supplied; presence is fine, exact
+     * copy is not load-bearing.
      */
     await expect.poll(() => resumeCallCount, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
     expect(resumeRequestBody).toMatchObject({
       pipeline_id: PIPELINE_ID,
-      actor_id: OPERATOR_ID,
     });
+    /*
+     * Negative assertion: the client must NOT smuggle an actor_id in
+     * the request body. Without this guard, a future code path that
+     * adds actor_id back would re-open the impersonation vector CR
+     * flagged on this PR.
+     */
+    expect(resumeRequestBody).not.toHaveProperty('actor_id');
 
     /*
      * Resume row shows up in the HIL resumes section once the

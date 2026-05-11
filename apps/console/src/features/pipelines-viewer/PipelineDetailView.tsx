@@ -549,28 +549,40 @@ function StageCard({
 
   /*
    * Resume mutation: lifts an HIL-paused pipeline back to running.
-   * Pattern mirrors KillSwitchPill's transition mutation -- every
-   * write through the Console attributes to the server-resolved
-   * operator identity, and `requireActorId` fails closed at click
-   * time if `LAG_CONSOLE_ACTOR_ID` is unset (a governance write
-   * with no known operator is a red flag, not a sentinel-fallback
-   * case).
+   *
+   * The resumer principal is derived SERVER-SIDE from
+   * `LAG_CONSOLE_ACTOR_ID`. Unlike KillSwitchPill's transition mutation
+   * (which passes the client-resolved actor_id to the server), this
+   * route is gated by a canon `allowed_resumers` list and trusting a
+   * client-supplied identity would let any origin-allowed caller
+   * impersonate a principal in that list (CR PR #396 critical
+   * finding). The client never sends an actor_id; the server-side
+   * `LAG_CONSOLE_ACTOR_ID` is the only authoritative source.
+   *
+   * The client-side `useCurrentActorId` hook still drives a defensive
+   * pre-mutation check: if the server has no actor configured, the
+   * mutation surfaces an actionable error at click time instead of a
+   * server-side 500. This is a UX guard, not an authorization check.
    *
    * On success, invalidate the pipeline-detail query so the strip
    * re-fetches and the resume atom shows up in the "HIL resumes"
-   * section. The substrate writes the same resume atom on disk;
-   * the file-watcher picks it up and the next poll reflects the
-   * new state.
+   * section. The substrate writes the same resume atom on disk; the
+   * file-watcher picks it up and the next poll reflects the new state.
    */
   const actorId = useCurrentActorId();
   const qc = useQueryClient();
   const resumeMutation = useMutation({
-    mutationFn: () =>
-      resumePipeline({
+    mutationFn: () => {
+      // Pre-mutation UX guard: fail at click time when the server has
+      // no actor configured. The server-side check is the authoritative
+      // gate (500 server-actor-unset); this is just to surface the
+      // error before the network round-trip.
+      requireActorId(actorId);
+      return resumePipeline({
         pipeline_id: pipelineId,
-        actor_id: requireActorId(actorId),
         reason: `Console resume of ${stage.stage_name}`,
-      }),
+      });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['pipeline', pipelineId] });
     },

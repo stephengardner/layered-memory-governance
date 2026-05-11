@@ -74,12 +74,20 @@ function pauseEvent(opts: {
 function hilPolicy(opts: {
   stageName: string;
   allowed: ReadonlyArray<string>;
+  layer?: string;
   superseded_by?: ReadonlyArray<string>;
   taint?: string;
 }): PipelineResumeSourceAtom {
   return atom({
     id: `pol-pipeline-stage-hil-${opts.stageName}`,
     type: 'directive',
+    /*
+     * Default layer to L3 so the common-case fixture matches canon's
+     * shape. Tests that exercise the layer-floor regression (an L0/L1
+     * directive must NOT satisfy the resume gate) override this
+     * explicitly.
+     */
+    layer: opts.layer ?? 'L3',
     created_at: '2026-04-28T12:00:00.000Z',
     ...(opts.superseded_by !== undefined ? { superseded_by: opts.superseded_by } : {}),
     ...(opts.taint !== undefined ? { taint: opts.taint } : {}),
@@ -153,6 +161,7 @@ describe('resolveAllowedResumers', () => {
     const malformed = atom({
       id: 'pol-pipeline-stage-hil-spec-stage',
       type: 'directive',
+      layer: 'L3',
       created_at: '2026-04-28T12:00:00.000Z',
       metadata: {
         policy: {
@@ -189,6 +198,57 @@ describe('resolveAllowedResumers', () => {
       hilPolicy({ stageName: 'plan-stage', allowed: ['apex-agent', 'review-bot'] }),
     ];
     expect(resolveAllowedResumers(atoms, 'plan-stage')).toEqual(['apex-agent', 'review-bot']);
+  });
+
+  /*
+   * Layer-floor regression: only L3 canon atoms can authorize a
+   * resume. An L0 proposal or L1 working-set directive with a
+   * matching `metadata.policy.subject === 'pipeline-stage-hil'` and
+   * `stage_name` MUST be ignored, regardless of how convincing the
+   * shape looks. Without this floor, any principal with write access
+   * to the atom store could mint a directive at L0 that adds itself
+   * to `allowed_resumers` and bypass canon governance entirely.
+   * Cited by CR PR #396 as a critical finding.
+   */
+  it('ignores directives below L3 (L0 proposal cannot satisfy the gate)', () => {
+    const atoms = [
+      hilPolicy({ stageName: 'spec-stage', allowed: ['rogue-bot'], layer: 'L0' }),
+    ];
+    expect(resolveAllowedResumers(atoms, 'spec-stage')).toBeNull();
+  });
+
+  it('ignores directives below L3 (L1 working set cannot satisfy the gate)', () => {
+    const atoms = [
+      hilPolicy({ stageName: 'spec-stage', allowed: ['rogue-bot'], layer: 'L1' }),
+    ];
+    expect(resolveAllowedResumers(atoms, 'spec-stage')).toBeNull();
+  });
+
+  it('ignores directives without a layer field (defensive fail-closed)', () => {
+    // Build a directive atom with no layer at all -- legacy fixtures or
+    // a forward-compat schema migration could surface this shape; the
+    // resolver must fail closed rather than treat undefined as L3.
+    const atomWithoutLayer = atom({
+      id: 'pol-pipeline-stage-hil-spec-stage',
+      type: 'directive',
+      created_at: '2026-04-28T12:00:00.000Z',
+      metadata: {
+        policy: {
+          subject: 'pipeline-stage-hil',
+          stage_name: 'spec-stage',
+          allowed_resumers: ['rogue-bot'],
+        },
+      },
+    });
+    expect(resolveAllowedResumers([atomWithoutLayer], 'spec-stage')).toBeNull();
+  });
+
+  it('picks the L3 policy when both L3 and L1 exist for the same stage', () => {
+    const atoms = [
+      hilPolicy({ stageName: 'spec-stage', allowed: ['rogue-bot'], layer: 'L1' }),
+      hilPolicy({ stageName: 'spec-stage', allowed: ['apex-agent'], layer: 'L3' }),
+    ];
+    expect(resolveAllowedResumers(atoms, 'spec-stage')).toEqual(['apex-agent']);
   });
 });
 

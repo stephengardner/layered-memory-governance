@@ -1373,16 +1373,33 @@ async function handleResumePipeline(params: {
   );
 
   /*
-   * Flip the pipeline atom's pipeline_state from 'hil-paused' to
-   * 'running'. Mirrors the runner's atom.update shape: shallow-merge
-   * a metadata patch + update the top-level field. The handler
-   * re-reads the atom from disk (not the index) to avoid a torn read
-   * where the index was primed before a concurrent write landed.
+   * On-disk compare-and-set before flipping pipeline_state. The
+   * validateResumeRequest call above ran against the in-memory atom
+   * index; a concurrent runner tick or another operator's
+   * resume/cancel between the index read and our write could have
+   * moved the pipeline out of hil-paused. We re-read the pipeline
+   * file directly from disk (NOT the index) and re-verify the same
+   * invariants validateResumeRequest checked:
    *
-   * The substrate-side runner re-reads pipeline_state on its next
-   * tick per the runner's claim-before-mutate contract; a Console
-   * flip that races a substrate read sees the runner halt rather
-   * than double-advance.
+   *   - pipeline_state IS STILL 'hil-paused'
+   *
+   * (Stage-name match is implicit because the pipeline atom does not
+   * carry the paused stage; the latest hil-pause event does. A
+   * concurrent runner that resumed our stage AND paused on a later
+   * stage would surface here as pipeline_state moving through
+   * 'running' before landing on the next 'hil-paused' -- both states
+   * fail our check below.)
+   *
+   * On invariant violation we UNLINK the resume atom we just wrote
+   * so an aborted resume does not leave a dangling audit row that
+   * implies the pipeline advanced when it did not. The caller gets a
+   * 409 'pipeline-resume-conflict' so the UI surfaces the race
+   * loudly rather than silently retrying.
+   *
+   * Mirrors the runner's own claim-before-mutate posture from
+   * src/runtime/planning-pipeline/runner.ts: every state transition
+   * re-reads the pipeline atom and aborts if the atom moved out from
+   * under the caller.
    */
   const pipelineFilename = atomFilenameFromId(params.pipeline_id);
   const pipelineRaw = await readFile(join(ATOMS_DIR, pipelineFilename), 'utf8');
@@ -1390,6 +1407,34 @@ async function handleResumePipeline(params: {
     pipeline_state?: string;
     metadata?: Record<string, unknown>;
   };
+  if (pipelineAtomOnDisk.pipeline_state !== 'hil-paused') {
+    // Race lost: another writer moved the pipeline out of hil-paused
+    // between our index read and our re-read. Unlink the freshly-
+    // minted resume atom so the audit trail does not falsely imply
+    // we authorized the flip. Best-effort unlink; a failure here is
+    // logged but does not prevent surfacing the conflict to the
+    // caller (the resume atom IS still a valid record of the
+    // attempted operator action; the conflict simply means the flip
+    // did not take effect).
+    try {
+      await fsWriteModule.unlink(join(ATOMS_DIR, resumeAtomFilename));
+    } catch (unlinkErr) {
+      console.warn(
+        `[backend] resume race: pipeline ${params.pipeline_id} `
+        + `pipeline_state moved to ${pipelineAtomOnDisk.pipeline_state} between `
+        + `validation and re-check; resume atom ${resumeAtomId} unlink failed: `
+        + `${(unlinkErr as Error).message}`,
+      );
+    }
+    const err = Object.assign(
+      new Error(
+        `pipeline ${params.pipeline_id} moved out of hil-paused (now ${pipelineAtomOnDisk.pipeline_state}) `
+        + `between validation and write; resume atom unlinked`,
+      ),
+      { code: 'pipeline-resume-conflict' },
+    );
+    throw err;
+  }
   pipelineAtomOnDisk.pipeline_state = 'running';
   pipelineAtomOnDisk.metadata = {
     ...(pipelineAtomOnDisk.metadata ?? {}),
@@ -2934,32 +2979,49 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (path === '/api/pipeline.resume' && req.method === 'POST') {
     /*
      * HIL-resume route: lifts an `hil-paused` pipeline back to running.
-     * Like /api/kill-switch.transition, this is a substrate-mediated
-     * write that the operator MUST be able to perform from the
-     * dashboard. The route mints a `pipeline-resume` audit atom and
-     * flips the pipeline atom's `pipeline_state` from `hil-paused` to
-     * `running`; the substrate's runner re-validates on its next tick
-     * per `runtime/planning-pipeline/runner.ts` so this endpoint
-     * cannot bypass the underlying authority gate. Origin-allowlist
-     * applies; gated by canon `pol-pipeline-stage-hil-<stage>` whose
+     * The route mints a `pipeline-resume` audit atom and flips the
+     * pipeline atom's `pipeline_state` from `hil-paused` to `running`;
+     * the substrate's runner re-validates on its next tick per
+     * `runtime/planning-pipeline/runner.ts` so this endpoint cannot
+     * bypass the underlying authority gate. Origin-allowlist applies;
+     * gated by canon `pol-pipeline-stage-hil-<stage>` whose
      * `allowed_resumers` list determines who can sign a resume.
+     *
+     * Identity binding: the resumer is the SERVER-derived
+     * `LAG_CONSOLE_ACTOR_ID` env var, NOT a client-supplied actor_id.
+     * Trusting client JSON for the principal id would let any caller
+     * who reaches the origin-allowed endpoint impersonate any
+     * principal in `allowed_resumers` (CR PR #396 critical finding;
+     * mirrors the canon `dev-framework-mechanism-only` rule that the
+     * console must NOT ship hardcoded instance identities AND must
+     * NOT trust client identities for governance writes). A client
+     * `actor_id` in the body is ignored; if a future deployment wants
+     * a per-user resume gate, the substrate must surface auth tokens
+     * upstream of this handler.
      */
     const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
     const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
-    const actorId = typeof body['actor_id'] === 'string' ? (body['actor_id'] as string) : '';
     const reason = typeof body['reason'] === 'string' ? (body['reason'] as string) : undefined;
     if (!pipelineId) {
       sendErr(req, res, 400, 'missing-pipeline-id', 'pipeline.resume requires { pipeline_id: string }');
       return;
     }
-    if (!actorId) {
-      sendErr(req, res, 400, 'missing-actor', 'pipeline.resume requires { actor_id: string }');
+    const serverActorId = process.env['LAG_CONSOLE_ACTOR_ID'] ?? '';
+    if (!serverActorId) {
+      sendErr(
+        req,
+        res,
+        500,
+        'server-actor-unset',
+        'pipeline.resume requires LAG_CONSOLE_ACTOR_ID to be configured on the backend; '
+        + 'set the env var to the principal id the console should attribute resumes to and restart npm run dev:server.',
+      );
       return;
     }
     try {
       const data = await handleResumePipeline({
         pipeline_id: pipelineId,
-        actor_id: actorId,
+        actor_id: serverActorId,
         ...(reason !== undefined ? { reason } : {}),
       });
       sendOk(req, res, data);
@@ -2980,6 +3042,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
           return;
         case 'pipeline-resume-forbidden':
           sendErr(req, res, 403, 'pipeline-resume-forbidden', e.message);
+          return;
+        case 'pipeline-resume-conflict':
+          /*
+           * On-disk re-check failed: another writer moved the
+           * pipeline between validation and write. 409 mirrors the
+           * not-paused rung; the audit atom we wrote was unlinked so
+           * the caller is safe to retry once the conflicting writer
+           * settles.
+           */
+          sendErr(req, res, 409, 'pipeline-resume-conflict', e.message);
           return;
         case 'invalid-atom-id':
           sendErr(req, res, 400, 'invalid-atom-id', e.message);
