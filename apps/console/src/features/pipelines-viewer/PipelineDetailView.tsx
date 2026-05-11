@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { Activity, AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Wrench, Workflow, XCircle, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, Loader2, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Wrench, Workflow, XCircle, Zap } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { FreshnessPill } from '@/components/freshness-pill/FreshnessPill';
@@ -9,12 +9,15 @@ import { Tooltip } from '@/components/tooltip/Tooltip';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import {
   getPipelineDetail,
+  resumePipeline,
   type AgentTurnRow,
   type PipelineAuditFinding,
   type PipelineDetail,
   type PipelineStageEvent,
   type PipelineStageSummary,
 } from '@/services/pipelines.service';
+import { requireActorId } from '@/services/session.service';
+import { useCurrentActorId } from '@/hooks/useCurrentActorId';
 import { setRoute } from '@/state/router.store';
 import {
   findingSeverityTone,
@@ -543,6 +546,36 @@ function StageCard({
     });
   };
   const panelId = `pipeline-stage-output-${pipelineId}-${stage.stage_name}`;
+
+  /*
+   * Resume mutation: lifts an HIL-paused pipeline back to running.
+   * Pattern mirrors KillSwitchPill's transition mutation -- every
+   * write through the Console attributes to the server-resolved
+   * operator identity, and `requireActorId` fails closed at click
+   * time if `LAG_CONSOLE_ACTOR_ID` is unset (a governance write
+   * with no known operator is a red flag, not a sentinel-fallback
+   * case).
+   *
+   * On success, invalidate the pipeline-detail query so the strip
+   * re-fetches and the resume atom shows up in the "HIL resumes"
+   * section. The substrate writes the same resume atom on disk;
+   * the file-watcher picks it up and the next poll reflects the
+   * new state.
+   */
+  const actorId = useCurrentActorId();
+  const qc = useQueryClient();
+  const resumeMutation = useMutation({
+    mutationFn: () =>
+      resumePipeline({
+        pipeline_id: pipelineId,
+        actor_id: requireActorId(actorId),
+        reason: `Console resume of ${stage.stage_name}`,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pipeline', pipelineId] });
+    },
+  });
+
   return (
     <motion.li
       className={styles.stageCard}
@@ -573,7 +606,11 @@ function StageCard({
           </span>
           {stage.state === 'paused' && (
             <Tooltip
-              content="Resume not yet supported - wires through the operator CLI; UI affordance pending substrate gate"
+              content={
+                resumeMutation.isError
+                  ? `Resume failed: ${(resumeMutation.error as Error).message}`
+                  : 'Resume this paused stage. The pipeline state flips to running; the substrate runner picks up the unpause on its next tick.'
+              }
               testId="pipeline-stage-resume-tooltip"
             >
               <button
@@ -581,10 +618,22 @@ function StageCard({
                 className={styles.resumeButton}
                 data-testid="pipeline-stage-resume"
                 data-stage-name={stage.stage_name}
-                disabled
+                data-resume-status={
+                  resumeMutation.isPending
+                    ? 'pending'
+                    : resumeMutation.isError
+                      ? 'error'
+                      : 'idle'
+                }
+                disabled={resumeMutation.isPending}
+                onClick={() => resumeMutation.mutate()}
               >
-                <PlayCircle size={12} strokeWidth={2} aria-hidden="true" />
-                Resume
+                {resumeMutation.isPending ? (
+                  <Loader2 size={12} strokeWidth={2} aria-hidden="true" className={styles.resumeSpinner} />
+                ) : (
+                  <PlayCircle size={12} strokeWidth={2} aria-hidden="true" />
+                )}
+                {resumeMutation.isPending ? 'Resuming...' : 'Resume'}
               </button>
             </Tooltip>
           )}

@@ -131,6 +131,11 @@ import type {
 import { applyReapedFilter } from './reaped-filter';
 import { resolveSkillBundle } from '../../../examples/planning-stages/lib/skill-bundle-resolver.js';
 import { pipelineStagePrincipalSkillBundle } from './pipeline-stage-skill-resolver';
+import {
+  buildResumeAtomId,
+  validateResumeRequest,
+  type PipelineResumeSourceAtom,
+} from './pipeline-resume';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -1211,6 +1216,201 @@ async function handleAtomPropose(params: {
   // The file-watcher will pick up the new file and update the index
   // + broadcast atom.created on its own cycle.
   return { id, path: filename };
+}
+
+/**
+ * Lift an HIL-paused pipeline back to running.
+ *
+ * The validation half (pipeline-resume.ts::validateResumeRequest) re-walks
+ * the in-memory atom index per canon `dec-console-atom-index-projection`
+ * and returns a tagged-union verdict the route maps to HTTP status codes.
+ * This wrapper does the disk I/O for the two writes the validated-ok rung
+ * authorizes:
+ *
+ *   1. Mint a `pipeline-resume` atom matching the substrate's
+ *      `mkPipelineResumeAtom` shape (so a runner-side audit walk does not
+ *      branch on Console-vs-runner origin). The atom is the audit-trail
+ *      entry; the substrate keys off it for "this is who signed the
+ *      resume and when".
+ *
+ *   2. Flip the pipeline atom's top-level `pipeline_state` field from
+ *      `hil-paused` to `running` so the next runner tick (a fresh
+ *      `node scripts/run-cto-actor.mjs --resume-pipeline <id>` invocation
+ *      or any future Scheduler-driven resume tick) finds the atom in a
+ *      resumable state. The runner's claim-before-mutate check at
+ *      runtime/planning-pipeline/runner.ts re-validates substrate-side
+ *      so the Console mirror cannot bypass the gate; if a substrate
+ *      check fails after the Console flip, the runner returns `halted`
+ *      and the failure shows up in the audit chain.
+ *
+ * Authority contract: the canon HIL policy atom's `allowed_resumers`
+ * list is the authoritative gate. validateResumeRequest re-resolves
+ * the canon entry on every call (no caching) so a canon edit that
+ * removes a resumer takes effect on the next click. The substrate's
+ * `readPipelineStageHilPolicy` reader walks the same field at runtime;
+ * the Console mirror is a UI-side defense-in-depth, not a substitute.
+ *
+ * Idempotency: the resume atom id is keyed by {pipelineId, stageName,
+ * correlationId}. A double-click that produces two requests with the
+ * same correlationId yields one atom on disk (the `wx` flag below
+ * fails the second write loudly so the operator sees the duplicate).
+ * Two clicks with distinct correlationIds (typical real-world replay
+ * after a transient error) produce two atoms -- both rows belong in
+ * the audit trail.
+ *
+ * Writes route through direct fs writes; the in-memory atom index
+ * picks them up on the next file-watcher event per canon
+ * `dec-console-atom-index-projection` (the watcher is the
+ * cache-invalidation signal). The handler does NOT touch the index
+ * directly so the read/write halves of the projection stay
+ * symmetric.
+ */
+async function handleResumePipeline(params: {
+  pipeline_id: string;
+  actor_id: string;
+  reason?: string;
+}): Promise<{
+  pipeline_id: string;
+  stage_name: string;
+  resumer_principal_id: string;
+  resume_atom_id: string;
+  resumed_at: string;
+}> {
+  const atoms = await readAllAtoms();
+  const verdict = validateResumeRequest(atoms as ReadonlyArray<PipelineResumeSourceAtom>, {
+    pipelineId: params.pipeline_id,
+    resumerPrincipalId: params.actor_id,
+  });
+  if (verdict.kind === 'not-found') {
+    const err = Object.assign(new Error(`no pipeline atom with id ${params.pipeline_id}`), { code: 'pipeline-not-found' });
+    throw err;
+  }
+  if (verdict.kind === 'not-paused') {
+    const err = Object.assign(
+      new Error(`pipeline is not currently paused (state=${verdict.pipelineState ?? 'unknown'})`),
+      { code: 'pipeline-not-paused' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'no-stage') {
+    const err = Object.assign(
+      new Error('pipeline is hil-paused but no hil-pause event resolves the paused stage; substrate invariant violated upstream'),
+      { code: 'pipeline-resume-no-stage' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'no-policy') {
+    const err = Object.assign(
+      new Error(`no canon HIL policy atom found for stage '${verdict.stageName}'; cannot authorize resume`),
+      { code: 'pipeline-resume-no-policy' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'forbidden') {
+    const err = Object.assign(
+      new Error(
+        `caller '${params.actor_id}' is not in allowed_resumers for stage '${verdict.stageName}' `
+        + `(allowed: ${verdict.allowedResumers.join(', ') || '<empty>'})`,
+      ),
+      { code: 'pipeline-resume-forbidden' },
+    );
+    throw err;
+  }
+
+  // verdict.kind === 'ok'. Mint the audit atom + flip the pipeline state.
+  const now = new Date().toISOString();
+  /*
+   * correlationId is a per-request nonce so two distinct resume clicks
+   * (real-world: operator clicks, transient error, operator clicks
+   * again) produce two distinct audit atoms. A `wx` flag write rejects
+   * the second attempt loudly if the correlationId collides; that
+   * keeps the idempotency contract intact without a silent overwrite.
+   */
+  const { randomBytes } = await import('node:crypto');
+  const correlationId = `console-resume-${randomBytes(6).toString('hex')}`;
+  const resumeAtomId = buildResumeAtomId({
+    pipelineId: params.pipeline_id,
+    stageName: verdict.stageName,
+    correlationId,
+  });
+  const resumeAtom: Atom = {
+    id: resumeAtomId,
+    type: 'pipeline-resume',
+    layer: 'L0',
+    content: `resume:${verdict.stageName}`,
+    principal_id: params.actor_id,
+    confidence: 1.0,
+    created_at: now,
+    provenance: {
+      /*
+       * `user-directive` is the canonical ProvenanceKind for an
+       * operator-initiated write through a live UI session per
+       * substrate/types.ts. The operator clicked Resume; the atom
+       * carries that intent through the audit trail. Tool +
+       * agent_id + session_id together identify the surface and the
+       * specific click instance.
+       */
+      kind: 'user-directive',
+      source: { tool: 'lag-console', agent_id: params.actor_id, session_id: correlationId },
+      derived_from: [params.pipeline_id],
+    },
+    supersedes: [],
+    superseded_by: [],
+    taint: 'clean',
+    metadata: {
+      pipeline_id: params.pipeline_id,
+      stage_name: verdict.stageName,
+      resumer_principal_id: params.actor_id,
+      ...(params.reason !== undefined ? { reason: params.reason } : {}),
+    },
+  };
+  const resumeAtomFilename = atomFilenameFromId(resumeAtomId);
+  const fsWriteModule = await import('node:fs/promises');
+  await fsWriteModule.writeFile(
+    join(ATOMS_DIR, resumeAtomFilename),
+    JSON.stringify(resumeAtom, null, 2),
+    { encoding: 'utf8', flag: 'wx' },
+  );
+
+  /*
+   * Flip the pipeline atom's pipeline_state from 'hil-paused' to
+   * 'running'. Mirrors the runner's atom.update shape: shallow-merge
+   * a metadata patch + update the top-level field. The handler
+   * re-reads the atom from disk (not the index) to avoid a torn read
+   * where the index was primed before a concurrent write landed.
+   *
+   * The substrate-side runner re-reads pipeline_state on its next
+   * tick per the runner's claim-before-mutate contract; a Console
+   * flip that races a substrate read sees the runner halt rather
+   * than double-advance.
+   */
+  const pipelineFilename = atomFilenameFromId(params.pipeline_id);
+  const pipelineRaw = await readFile(join(ATOMS_DIR, pipelineFilename), 'utf8');
+  const pipelineAtomOnDisk = JSON.parse(pipelineRaw) as Atom & {
+    pipeline_state?: string;
+    metadata?: Record<string, unknown>;
+  };
+  pipelineAtomOnDisk.pipeline_state = 'running';
+  pipelineAtomOnDisk.metadata = {
+    ...(pipelineAtomOnDisk.metadata ?? {}),
+    last_resumed_at: now,
+    last_resumed_by: params.actor_id,
+    last_resumed_stage: verdict.stageName,
+    last_resume_atom_id: resumeAtomId,
+  };
+  await fsWriteModule.writeFile(
+    join(ATOMS_DIR, pipelineFilename),
+    JSON.stringify(pipelineAtomOnDisk, null, 2),
+    'utf8',
+  );
+
+  return {
+    pipeline_id: params.pipeline_id,
+    stage_name: verdict.stageName,
+    resumer_principal_id: params.actor_id,
+    resume_atom_id: resumeAtomId,
+    resumed_at: now,
+  };
 }
 
 async function handleArbitrationCompare(aId: string, bId: string): Promise<{
@@ -2727,6 +2927,67 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 403, 'kill-switch-transition-refused', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipeline.resume' && req.method === 'POST') {
+    /*
+     * HIL-resume route: lifts an `hil-paused` pipeline back to running.
+     * Like /api/kill-switch.transition, this is a substrate-mediated
+     * write that the operator MUST be able to perform from the
+     * dashboard. The route mints a `pipeline-resume` audit atom and
+     * flips the pipeline atom's `pipeline_state` from `hil-paused` to
+     * `running`; the substrate's runner re-validates on its next tick
+     * per `runtime/planning-pipeline/runner.ts` so this endpoint
+     * cannot bypass the underlying authority gate. Origin-allowlist
+     * applies; gated by canon `pol-pipeline-stage-hil-<stage>` whose
+     * `allowed_resumers` list determines who can sign a resume.
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
+    const actorId = typeof body['actor_id'] === 'string' ? (body['actor_id'] as string) : '';
+    const reason = typeof body['reason'] === 'string' ? (body['reason'] as string) : undefined;
+    if (!pipelineId) {
+      sendErr(req, res, 400, 'missing-pipeline-id', 'pipeline.resume requires { pipeline_id: string }');
+      return;
+    }
+    if (!actorId) {
+      sendErr(req, res, 400, 'missing-actor', 'pipeline.resume requires { actor_id: string }');
+      return;
+    }
+    try {
+      const data = await handleResumePipeline({
+        pipeline_id: pipelineId,
+        actor_id: actorId,
+        ...(reason !== undefined ? { reason } : {}),
+      });
+      sendOk(req, res, data);
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      switch (e.code) {
+        case 'pipeline-not-found':
+          sendErr(req, res, 404, 'pipeline-not-found', e.message);
+          return;
+        case 'pipeline-not-paused':
+          sendErr(req, res, 409, 'pipeline-not-paused', e.message);
+          return;
+        case 'pipeline-resume-no-stage':
+          sendErr(req, res, 409, 'pipeline-resume-no-stage', e.message);
+          return;
+        case 'pipeline-resume-no-policy':
+          sendErr(req, res, 403, 'pipeline-resume-no-policy', e.message);
+          return;
+        case 'pipeline-resume-forbidden':
+          sendErr(req, res, 403, 'pipeline-resume-forbidden', e.message);
+          return;
+        case 'invalid-atom-id':
+          sendErr(req, res, 400, 'invalid-atom-id', e.message);
+          return;
+        default:
+          sendErr(req, res, 500, 'pipeline-resume-failed', e.message);
+          return;
+      }
     }
     return;
   }

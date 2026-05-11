@@ -128,3 +128,48 @@ export async function getIntentOutcome(
     signal ? { signal } : undefined,
   );
 }
+
+/**
+ * Wire shape returned by `/api/pipeline.resume`. Mirrors the backend
+ * `handleResumePipeline` return shape so a client deserializes
+ * without an additional type layer.
+ *
+ * The substrate's runner picks up the unpause on its next tick per
+ * `runtime/planning-pipeline/runner.ts`; the Console's role here is
+ * (a) verify authority via the canon `pol-pipeline-stage-hil-<stage>`
+ * gate and (b) write the audit atom + flip the pipeline_state so the
+ * substrate sees a resumable atom. The response echoes the resolved
+ * stage + minted atom id so the UI can confirm the substrate observed
+ * the flip on the next poll cycle (the `resumes` list on
+ * `/api/pipelines.detail` walks the same atom).
+ */
+export interface PipelineResumeResult {
+  readonly pipeline_id: string;
+  readonly stage_name: string;
+  readonly resumer_principal_id: string;
+  readonly resume_atom_id: string;
+  readonly resumed_at: string;
+}
+
+/**
+ * Lift an HIL-paused pipeline back to running. Server-side checks:
+ *   - 404 pipeline-not-found        : id does not match a pipeline atom
+ *   - 409 pipeline-not-paused       : already running, completed, or failed
+ *   - 409 pipeline-resume-no-stage  : substrate invariant violated
+ *   - 403 pipeline-resume-no-policy : canon entry missing for stage
+ *   - 403 pipeline-resume-forbidden : caller not in allowed_resumers
+ *
+ * Caller responsibility: supply the operator principal id via
+ * `actor_id`. The session.service helper `requireActorId` is the
+ * canonical pre-mutation guard; see KillSwitchPill for the pattern.
+ */
+export async function resumePipeline(
+  params: { pipeline_id: string; actor_id: string; reason?: string },
+  signal?: AbortSignal,
+): Promise<PipelineResumeResult> {
+  return transport.call<PipelineResumeResult>(
+    'pipeline.resume',
+    params as unknown as Record<string, unknown>,
+    signal ? { signal } : undefined,
+  );
+}
