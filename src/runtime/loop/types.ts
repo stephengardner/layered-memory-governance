@@ -400,6 +400,29 @@ export interface LoopOptions {
    * integer when supplied.
    */
   readonly prOrphanMaxDispatchPerTick?: number;
+  /**
+   * Run the claim-reaper pass on every tick. Default `false` so
+   * existing callers observe no behavior change (indie-floor opt-in
+   * per the zero-failure-sub-agent-substrate spec Section 13). When
+   * enabled, each tick invokes `runClaimReaperTick(host)` which
+   * detects stalled work-claim atoms (Phase A) and drives them
+   * through the bounded recovery ladder (Phase B).
+   *
+   * Resolution chain (highest to lowest precedence):
+   *   1. canon `pol-loop-pass-claim-reaper-default` policy atom
+   *      (re-read every tick so an operator edit takes effect on the
+   *      next pass without a daemon restart)
+   *   2. `LoopOptions.runClaimReaperPass` (this field; CLI / env)
+   *   3. hardcoded default `false`
+   *
+   * The pass is mechanism-only at this layer: the claim-reaper module
+   * already reads its own canon policies (cadence, grace windows,
+   * recovery cap, deadline extension, budget tier ladder). A pass
+   * failure logs to `errors` but does NOT fail the tick: the claim
+   * reaper is best-effort cleanup and one aborted sweep should not
+   * stall the rest of the loop's responsibilities.
+   */
+  readonly runClaimReaperPass?: boolean;
 }
 
 /**
@@ -561,6 +584,31 @@ export interface LoopTickReport {
         readonly reaped: number;
         readonly skipped: number;
         readonly truncated: boolean;
+      }
+    | null;
+  /**
+   * Per-tick claim-reaper summary. `null` when the claim-reaper pass
+   * is disabled (the default) OR when the claim reaper itself
+   * fails (its error logs to `errors[]` and the field stays null --
+   * the field is the positive signal of a successful claim-reaper
+   * pass, not a status flag).
+   *
+   * `detected` is the count of work-claim atoms the Phase A scan
+   * transitioned to `stalled` this tick, `recovered` is the count of
+   * stalled claims the Phase B drain successfully recovered
+   * (state -> executing), and `escalated` is the count of stalled
+   * claims that exceeded the recovery cap and were abandoned with a
+   * `claim-stuck` Event telegraphed. `halted` is set true when the
+   * reaper exited at its own STOP-sentinel check (`.lag/STOP` armed
+   * during the tick); set to `undefined` otherwise so the JSON
+   * output is one-line cleaner on the common case.
+   */
+  readonly claimReaperReport:
+    | {
+        readonly detected: number;
+        readonly recovered: number;
+        readonly escalated: number;
+        readonly halted?: boolean;
       }
     | null;
 }
