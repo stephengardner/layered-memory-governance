@@ -128,6 +128,7 @@
     "human-in-the-loop"
   ],
   "scripts": {
+    "prepare": "node scripts/setup-local-git-config.mjs",
     "build": "tsc -b tsconfig.examples.json",
     "build:src": "tsc -b tsconfig.json",
     "build:examples": "tsc -b tsconfig.examples.json",
