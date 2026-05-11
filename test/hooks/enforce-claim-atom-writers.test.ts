@@ -64,7 +64,16 @@ async function runHook(payload: unknown): Promise<HookResult> {
   if (stdout.length === 0) {
     return { decision: 'allow', reason: null, stderr, exitCode };
   }
-  const parsed = JSON.parse(stdout) as { decision?: string; reason?: string };
+  // Wrap JSON.parse in try/catch so a malformed stdout matches the
+  // hook's documented fail-open contract: any parse failure surfaces
+  // as an allow rather than crashing the harness with an SyntaxError
+  // that masks the real test signal.
+  let parsed: { decision?: string; reason?: string };
+  try {
+    parsed = JSON.parse(stdout) as { decision?: string; reason?: string };
+  } catch {
+    return { decision: 'allow', reason: null, stderr, exitCode };
+  }
   return {
     decision: parsed.decision === 'block' ? 'block' : 'allow',
     reason: parsed.reason ?? null,

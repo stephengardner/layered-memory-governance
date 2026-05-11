@@ -1,26 +1,20 @@
 /**
  * PR terminal-state verifier.
  *
- * Queries GitHub's PR REST endpoint as the authoritative source of truth
- * for whether a work-claim against a PR has reached one of its declared
- * terminal states (typically `MERGED`). Substrate must NOT trust a
- * sub-agent's attestation that "I merged PR #999"; the agent could be
- * lying, broken, or compromised. The verifier resolves the question
- * against GitHub itself so a falsified attestation cannot flip a claim
- * to `complete`.
+ * Queries GitHub's PR REST endpoint as the authoritative source of
+ * truth for whether a work-claim against a PR has reached one of its
+ * declared terminal states (typically `MERGED`). The verifier MUST NOT
+ * trust the sub-agent's attestation that "I merged PR #999"; the
+ * resolved state comes from GitHub itself so a falsified attestation
+ * cannot flip a claim to `complete`.
  *
- * The handler is shape-compatible with `ClaimVerifier` from `./types.ts`
- * via the extended `PrVerifierContext` (adds an injectable `fetchImpl`
- * so tests can stub the HTTP boundary). Callers that already have a
- * `VerifierContext` pass it through with an optional `fetchImpl`
- * override; absent override, the default real fetcher is used.
- *
- * Identity + auth posture: this module accepts a `fetchImpl` so the
- * substrate stays adapter-agnostic. Production wiring uses the
- * `gh-as.mjs lag-ceo api ...` wrapper (per `dev-bot-identity-attribution`
- * canon) at the orchestration layer; the wrapper produces a fetch-like
- * function that mints a short-lived installation token per call. The
- * verifier itself never touches credentials.
+ * Seam shape: the handler is structurally assignable to `ClaimVerifier`
+ * from `./types.ts` via the extended `PrVerifierContext` (adds an
+ * optional `fetchImpl` so callers and tests can supply a fetch-like
+ * function instead of `globalThis.fetch`). The verifier itself is
+ * adapter-agnostic and never touches credentials; any auth, token
+ * minting, or identity attribution happens in whatever `fetchImpl` the
+ * caller passes.
  */
 
 import type { VerifierContext, VerifierResult } from './types.js';
@@ -57,27 +51,19 @@ export interface PrVerifierContext extends VerifierContext {
 const DEFAULT_API_BASE = 'https://api.github.com';
 
 /**
- * Sentinel coordinates used when no repo is configured. The HTTP call
- * still goes out (so a test stub or mock fetcher gets invoked), but
- * the URL is obviously bogus -- if it ever escapes to real GitHub the
- * resulting 404 surfaces as NOT_FOUND rather than a silent success
- * against the wrong repository. Production callers MUST set
- * `process.env.GITHUB_REPOSITORY` or pass `ctx.repo`; the sentinel
- * exists only to keep tests + the type signature ergonomic.
- */
-const SENTINEL_REPO = { owner: 'unknown', repo: 'unknown' } as const;
-
-/**
  * Resolve owner+repo coordinates. Order of precedence:
  *   1. `ctx.repo` (explicit caller override).
  *   2. `process.env.GITHUB_REPOSITORY` in the form `owner/repo`
  *      (matches the GitHub Actions convention so the substrate
  *      runs without extra wiring inside an action).
- *   3. SENTINEL_REPO (`unknown/unknown`) as the test-friendly
- *      fallback. Production callers should not hit this rung; a
- *      real call against the sentinel URL returns 404 from GitHub,
- *      which the verifier surfaces as NOT_FOUND -- not silent
- *      success against the wrong repo.
+ *
+ * If neither rung yields a valid `owner/repo` pair, the verifier throws.
+ * A silent fallback (sentinel coordinates that produce a 404) would
+ * mask a deployment misconfiguration as "PR not found", which the
+ * caller's markClaimComplete would treat as a ground-truth mismatch
+ * (premature attestation) rather than a verifier-error. The
+ * verifier-error path is the correct surface for a missing config;
+ * the claim stays pending and the operator escalation surfaces loud.
  */
 function resolveRepo(ctx: PrVerifierContext): { owner: string; repo: string } {
   if (ctx.repo !== undefined) {
@@ -86,7 +72,7 @@ function resolveRepo(ctx: PrVerifierContext): { owner: string; repo: string } {
   const env = process.env.GITHUB_REPOSITORY;
   if (typeof env === 'string' && env.length > 0) {
     // GitHub Actions convention: 'owner/repo'. Anything else is malformed
-    // and we fall through to the sentinel.
+    // and falls through to the throw below.
     const parts = env.split('/');
     if (parts.length === 2) {
       const [owner, repo] = parts;
@@ -99,8 +85,16 @@ function resolveRepo(ctx: PrVerifierContext): { owner: string; repo: string } {
         return { owner, repo };
       }
     }
+    throw new Error(
+      `verifyPrTerminal: GITHUB_REPOSITORY env var is set but malformed (` +
+        `expected 'owner/repo', got ${JSON.stringify(env)}). Set GITHUB_REPOSITORY ` +
+        `or pass ctx.repo to verifyPrTerminal.`,
+    );
   }
-  return { owner: SENTINEL_REPO.owner, repo: SENTINEL_REPO.repo };
+  throw new Error(
+    `verifyPrTerminal: missing repo coordinates. Set GITHUB_REPOSITORY env var ` +
+      `(e.g. 'owner/repo') or pass ctx.repo to verifyPrTerminal.`,
+  );
 }
 
 /**

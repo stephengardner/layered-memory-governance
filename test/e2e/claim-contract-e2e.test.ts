@@ -243,12 +243,24 @@ describe('claim-contract end-to-end (real PR verifier + mocked fetch)', () => {
   // cannot bleed across cases. `vi.stubGlobal` would do the same, but
   // an explicit save+restore is more obvious to a future reader.
   let originalFetch: typeof globalThis.fetch | undefined;
+  // Save + restore GITHUB_REPOSITORY around every test. The PR verifier
+  // throws when neither ctx.repo nor GITHUB_REPOSITORY is set; we
+  // supply a fixture value so the verifier's URL-building path runs
+  // through to the mocked fetch instead of failing at resolveRepo.
+  let originalGithubRepo: string | undefined;
   beforeEach(() => {
     originalFetch = globalThis.fetch;
+    originalGithubRepo = process.env.GITHUB_REPOSITORY;
+    process.env.GITHUB_REPOSITORY = 'fixture-owner/fixture-repo';
   });
   afterEach(() => {
     if (originalFetch !== undefined) {
       globalThis.fetch = originalFetch;
+    }
+    if (originalGithubRepo === undefined) {
+      delete process.env.GITHUB_REPOSITORY;
+    } else {
+      process.env.GITHUB_REPOSITORY = originalGithubRepo;
     }
     vi.restoreAllMocks();
   });

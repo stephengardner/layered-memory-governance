@@ -312,12 +312,23 @@ export async function detectStalledClaims(host: Host): Promise<ReadonlyArray<Ato
   const stalled: Atom[] = [];
   for (const atom of openClaims) {
     const meta = atom.metadata.work_claim as WorkClaimMeta;
-    const reason = evaluateStallPredicates(atom, meta, nowMs, {
+    let reason = evaluateStallPredicates(atom, meta, nowMs, {
       pendingGrace,
       sessionGrace,
       attestingGrace,
       verifierCap,
     });
+    // Predicate #3 (executing-session-finalized-stale) needs to verify
+    // that EVERY tracked session in `claim.session_atom_ids` has actually
+    // finalized -- not just that the latest one did. If any tracked
+    // session is still in-flight, we cannot stall the claim yet;
+    // demote the reason to null and skip.
+    if (reason === 'executing-session-finalized-stale') {
+      const allFinalized = await areAllTrackedSessionsTerminal(host, meta);
+      if (!allFinalized) {
+        reason = null;
+      }
+    }
     if (reason === null) continue;
     // Re-read at flip time to avoid a race with the contract module
     // (e.g. a markClaimComplete that landed between the scan and the
@@ -342,6 +353,41 @@ export async function detectStalledClaims(host: Host): Promise<ReadonlyArray<Ato
     stalled.push(fresh);
   }
   return stalled;
+}
+
+/**
+ * Return true iff every session atom listed in `meta.session_atom_ids`
+ * carries a non-null `terminal_state` (i.e. the session has finalized).
+ * Used to guard predicate #3 so a claim with an in-flight session is
+ * never stalled even when `latest_session_finalized_at` is past the
+ * grace window (that field reflects ONE session's finalization, not
+ * the whole set's).
+ *
+ * Missing-atom defensiveness: when a session_atom_id resolves to no
+ * atom, we treat it as terminal (the atom was reaped or never written;
+ * either way the substrate cannot wait on a session it cannot observe).
+ * Atoms without an `agent_session` metadata block fall through the
+ * same path.
+ */
+async function areAllTrackedSessionsTerminal(
+  host: Host,
+  meta: WorkClaimMeta,
+): Promise<boolean> {
+  if (meta.session_atom_ids.length === 0) return true;
+  for (const sessionId of meta.session_atom_ids) {
+    const atom = await host.atoms.get(sessionId as AtomId);
+    if (atom === null) continue; // missing atom -> treat as terminal
+    const sessionMeta = atom.metadata.agent_session as
+      | { terminal_state?: string | null }
+      | undefined;
+    if (sessionMeta === undefined) continue;
+    // Spec contract: `terminal_state` is set iff the session finalized.
+    // An absent / null value means in-flight.
+    if (sessionMeta.terminal_state === undefined || sessionMeta.terminal_state === null) {
+      return false;
+    }
+  }
+  return true;
 }
 
 interface StallPolicies {
@@ -596,6 +642,19 @@ export async function recoverStalledClaim(
   // surface to drainStalledQueue's loop. The recovery transition is
   // already durably written; an adapter throw leaves the claim in
   // 'executing' until the next Phase A sweep evaluates it again.
+  //
+  // STOP recheck: the recovery-step write may have landed before the
+  // STOP sentinel tripped, but the adapter dispatch is a fresh
+  // side-effect we should not introduce after the kill-switch fires.
+  // The claim is durably in 'executing' with the new token; the next
+  // tick (post-STOP-clear) will re-evaluate it via Phase A and
+  // dispatch the recovery adapter if still needed. Skip dispatch
+  // here and return 'recovered' so the orchestrator's tick stats
+  // reflect that the transition landed even though no adapter ran.
+  const stopCheck = options?.stopSentinel ?? defaultStopSentinel;
+  if (stopCheck()) {
+    return 'recovered';
+  }
   let newSessionId: AtomId | null = null;
   try {
     newSessionId = await dispatchRecovery({

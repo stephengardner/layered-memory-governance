@@ -982,9 +982,10 @@ import { redactDefault, redactAgentTurnAtom } from '../../src/redactors/default-
 
 describe('CLAIM_SECRET_TOKEN_PATTERN', () => {
   it('strips labeled tokens', () => {
-    const input = 'before claim_secret_token: A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2W after';
+    const token = 'A'.repeat(43);
+    const input = `before claim_secret_token: ${token} after`;
     expect(redactDefault(input)).toContain('[REDACTED:CLAIM_TOKEN]');
-    expect(redactDefault(input)).not.toContain('A1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6Q7R8S9T0U1V2W');
+    expect(redactDefault(input)).not.toContain(token);
   });
   it('strips standalone 43+ char base64url strings', () => {
     const token = 'A'.repeat(43);
@@ -1060,7 +1061,7 @@ import { execSync } from 'child_process';
 import { existsSync } from 'fs';
 
 describe('bootstrap-claim-contract-canon', () => {
-  it('writes 12 policy atoms with expected defaults', () => {
+  it('writes 11 policy atoms with expected defaults', () => {
     execSync('node bootstrap/bootstrap-claim-contract-canon.mjs --dry-run', { stdio: 'inherit' });
     const expected = [
       'bootstrap/canon/pol-claim-budget-tier-default.json',

@@ -202,14 +202,19 @@ export interface ClaimHandle {
    */
   read(): Promise<WorkClaimMeta>;
   /**
-   * Resolve once the claim reaches a terminal state (`complete` or
-   * `abandoned`). Today the handle resolves the moment the substrate
-   * sees a terminal-state observation in the atom store; a future
-   * implementation MAY wire push-wake via the AtomStore's subscribe
-   * capability. The settled-state's `final_state` mirrors the persisted
-   * `claim_state` so callers can branch without re-reading.
+   * Snapshot of the claim's current settlement state. Today the call
+   * does a single-shot read of the atom store; a future implementation
+   * MAY wire push-wake via the AtomStore subscribe capability. The
+   * returned `final_state` mirrors the persisted `claim_state`:
+   *   - `complete` / `abandoned` are terminal (claim is done).
+   *   - `pending` is the V0 single-shot signal that the claim has
+   *     NOT reached a terminal state yet; callers receive the current
+   *     non-terminal state name in `reason` (`not-yet-terminal:<state>`)
+   *     so they can decide whether to wait or retry. Treating
+   *     non-terminal as abandoned would misreport a running claim as
+   *     a failure.
    */
-  settled(): Promise<{ readonly final_state: 'complete' | 'abandoned'; readonly reason?: string }>;
+  settled(): Promise<{ readonly final_state: 'complete' | 'abandoned' | 'pending'; readonly reason?: string }>;
 }
 
 /**
@@ -416,13 +421,18 @@ export async function dispatchSubAgent(
     input.caller_principal_id,
     brief,
   );
-  // We do not wait for the adapter to finish before transitioning the
-  // claim to `executing` in semantic terms (the claim IS executing the
-  // moment the adapter is invoked). The transition write happens after
-  // the call returns so a synchronous adapter throw surfaces here
-  // without leaving an `executing` orphan; an asynchronous long-running
-  // adapter completes the transition on its first await suspension if
-  // the caller awaits this function.
+  // Fire-and-forget dispatch per spec section 6.2: the adapter run is
+  // started but NOT awaited so the dispatch function returns promptly
+  // and the caller can observe `claim_state === 'executing'` without
+  // waiting for the agent loop to finish. The reaper's session-finalize
+  // debounce + the attest cycle handle terminal-state observation; the
+  // dispatch contract only guarantees "the adapter has been entered".
+  //
+  // Rejection containment: an unhandled rejection from the agent loop
+  // would crash the host. We attach a no-op catch so the promise is
+  // observed; the actual error path is the reaper's stall detection
+  // (post-finalize-grace + missing terminal session) plus the optional
+  // adapter's own audit-event emission via host.auditor.
   const adapterPromise = input.agent_loop_adapter.run({
     host,
     principal: input.caller_principal_id as PrincipalId,
@@ -445,15 +455,17 @@ export async function dispatchSubAgent(
     blobThreshold: PROMPT_SPILL_THRESHOLD,
     correlationId: claimId,
   });
+  // Observe the promise to avoid unhandled-rejection crashes. The
+  // reaper picks up adapter failures via the session-finalize-stale
+  // and verifier-failure-cap stall conditions; we do not need to
+  // re-throw here.
+  void adapterPromise.catch(() => {});
 
-  // Wait for the adapter to start (its first await) before transitioning.
-  // The adapter MAY return synchronously (test stubs) or asynchronously
-  // (real loops); either way we want the transition to land after the
-  // adapter has been entered.
-  await adapterPromise;
-
-  // Transition to `executing`. The atom store's `update` preserves
-  // immutable fields (content, type, principal_id) and merges metadata.
+  // Transition to `executing` immediately after dispatch. The atom
+  // store's `update` preserves immutable fields (content, type,
+  // principal_id) and merges metadata. The transition write lands
+  // before this function returns so the caller observes `executing`
+  // by the time the returned handle is usable.
   await host.atoms.update(claimId as AtomId, {
     metadata: {
       work_claim: { ...meta, claim_state: 'executing' },
@@ -488,12 +500,14 @@ function buildClaimHandle(claimId: string, host: Host): ClaimHandle {
       if (meta.claim_state === 'abandoned') {
         return { final_state: 'abandoned' };
       }
-      // Non-terminal state: surface the current state via reason so the
-      // caller can decide whether to keep waiting. Treat it as
-      // abandoned-with-reason for the V0 single-shot contract; a future
-      // wake-aware implementation will block instead.
+      // Non-terminal state (pending / executing / attesting / stalled):
+      // surface `final_state='pending'` so callers can distinguish
+      // running claims from terminal failures. The persisted state
+      // name rides through `reason` so callers that care about the
+      // exact phase (e.g. polling the reaper) get the signal without
+      // a second atom read.
       return {
-        final_state: 'abandoned',
+        final_state: 'pending',
         reason: `not-yet-terminal:${meta.claim_state}`,
       };
     },
@@ -800,10 +814,15 @@ export async function markClaimComplete(
       taint: 'clean',
       metadata: { claim_attestation: acceptedMeta },
     });
+    // Re-read the latest claim meta and merge our transition over it so
+    // any concurrent writer (the reaper, a parallel attest) has its
+    // fields preserved. The stale `meta` snapshot from gate 4 would
+    // clobber a reaper's recovery_attempts bump that landed mid-verify.
+    const latestMeta = await readLatestClaimMeta(host, input.claim_id);
     await host.atoms.update(input.claim_id as AtomId, {
       metadata: {
         work_claim: {
-          ...meta,
+          ...latestMeta,
           claim_state: 'complete',
           verifier_failure_count: 0,
         },
@@ -822,10 +841,11 @@ export async function markClaimComplete(
     'ground-truth-mismatch',
     raceOutcome.observed_state,
   );
+  const latestMismatch = await readLatestClaimMeta(host, input.claim_id);
   await host.atoms.update(input.claim_id as AtomId, {
     metadata: {
       work_claim: {
-        ...meta,
+        ...latestMismatch,
         claim_state: 'attesting',
         last_attestation_rejected_at: host.clock.now(),
       },
@@ -836,6 +856,23 @@ export async function markClaimComplete(
     reason: 'ground-truth-mismatch',
     observed_state: raceOutcome.observed_state,
   };
+}
+
+/**
+ * Re-read the latest persisted `WorkClaimMeta` for `claimId`. Used as
+ * the merge base for post-verifier updates so concurrent writers
+ * (claim-reaper recovery, parallel attestation cycles) do not get
+ * their fields clobbered by a stale snapshot taken at gate-time.
+ */
+async function readLatestClaimMeta(
+  host: Host,
+  claimId: string,
+): Promise<WorkClaimMeta> {
+  const atom = await host.atoms.get(claimId as AtomId);
+  if (atom === null) {
+    throw new Error(`claim-disappeared-mid-verify: ${claimId}`);
+  }
+  return atom.metadata.work_claim as WorkClaimMeta;
 }
 
 /**
@@ -866,16 +903,62 @@ async function finalizeVerifierInfraFailure(
   // straight to `stalled` so the reaper does not wait for another
   // attestation cycle to detect a wedged verifier.
   const nextState: WorkClaimMeta['claim_state'] = nextCount >= failureCap ? 'stalled' : 'attesting';
+  // Re-read latest meta and merge so a concurrent reaper write does
+  // not get clobbered by the stale gate-time snapshot.
+  const latestMeta = await readLatestClaimMeta(host, input.claim_id);
   await host.atoms.update(input.claim_id as AtomId, {
     metadata: {
       work_claim: {
-        ...meta,
+        ...latestMeta,
         claim_state: nextState,
         verifier_failure_count: nextCount,
         last_attestation_rejected_at: host.clock.now(),
       },
     },
   });
+  // Emit a claim-stalled lifecycle atom when the failure cap trips
+  // the claim straight to stalled. Without this, the state transition
+  // is invisible to downstream projections/audits that watch for the
+  // claim-stalled atom rather than polling the claim atom itself.
+  if (nextState === 'stalled') {
+    const now = host.clock.now();
+    await host.atoms.put({
+      schema_version: 1,
+      id: `claim-stalled-${input.claim_id}-${now.replace(/[^0-9]/g, '')}` as AtomId,
+      content: `claim stalled ${input.claim_id} verifier-failure-cap`,
+      type: 'claim-stalled',
+      layer: 'L0',
+      provenance: {
+        kind: 'agent-inferred',
+        source: { agent_id: input.caller_principal_id },
+        derived_from: [input.claim_id as AtomId],
+      },
+      confidence: 1,
+      created_at: now,
+      last_reinforced_at: now,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'verified',
+        last_validated_at: now,
+      },
+      principal_id: input.caller_principal_id as PrincipalId,
+      taint: 'clean',
+      metadata: {
+        claim_stalled: {
+          claim_id: input.claim_id,
+          previous_state: meta.claim_state,
+          reason: 'verifier-failure-cap',
+          verifier_failure_count: nextCount,
+          stalled_at: now,
+        },
+      },
+    });
+  }
   return { accepted: false, reason };
 }
 
