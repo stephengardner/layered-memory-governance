@@ -111,6 +111,24 @@ export interface CodeAuthorExecutorSuccess {
   readonly modelUsed: string;
   readonly confidence: number;
   readonly touchedPaths: ReadonlyArray<string>;
+  /**
+   * Optional non-blocking findings from the post-commit validator
+   * pass. Populated when one or more validators returned
+   * `severity: 'major'` or `severity: 'minor'`; absent when no
+   * validators ran OR every validator returned ok. The invoker
+   * uses this list to mint code-author-warning audit atoms after
+   * the PR opens. Empty list and absent field both mean
+   * "no warnings" -- callers MUST NOT distinguish the two.
+   *
+   * Critical findings never appear here; a critical validator
+   * aborts the dispatch via `CodeAuthorExecutorFailure` with stage
+   * `post-commit-validator/<name>` instead.
+   */
+  readonly postCommitFindings?: ReadonlyArray<{
+    readonly validatorName: string;
+    readonly severity: 'major' | 'minor';
+    readonly reason: string;
+  }>;
 }
 
 export interface CodeAuthorExecutorFailure {
@@ -521,6 +539,12 @@ function renderInvokedContent(
     lines.push(`  Cost (USD): ${executorResult.totalCostUsd.toFixed(4)}`);
     lines.push(`  Touched paths (${executorResult.touchedPaths.length}):`);
     for (const p of executorResult.touchedPaths) lines.push(`    - ${p}`);
+    if (Array.isArray(executorResult.postCommitFindings) && executorResult.postCommitFindings.length > 0) {
+      lines.push(`  Post-commit findings (${executorResult.postCommitFindings.length}):`);
+      for (const f of executorResult.postCommitFindings) {
+        lines.push(`    - [${f.severity}] ${f.validatorName}: ${f.reason}`);
+      }
+    }
   } else if (executorResult.kind === 'noop') {
     lines.push('Executor terminated as a silent-skip no-op:');
     lines.push(`  Reason:     ${executorResult.reason}`);
@@ -585,5 +609,23 @@ function renderExecutorMetadata(
     confidence: result.confidence,
     total_cost_usd: result.totalCostUsd,
     touched_paths: result.touchedPaths.slice(),
+    // Persist non-blocking post-commit validator findings into the
+    // observation metadata so audit / warning consumers see them at
+    // the atom boundary. Critical findings never reach this branch
+    // (the executor returns kind=error before this point); only
+    // major / minor entries flow through. Omit the field entirely
+    // when no findings were produced so downstream readers can
+    // distinguish "no validators ran" from "validators ran clean"
+    // by absence (both render the same; this is intentional --
+    // future readers MUST NOT branch on the distinction).
+    ...(Array.isArray(result.postCommitFindings) && result.postCommitFindings.length > 0
+      ? {
+          post_commit_findings: result.postCommitFindings.map((f) => ({
+            validator_name: f.validatorName,
+            severity: f.severity,
+            reason: f.reason,
+          })),
+        }
+      : {}),
   };
 }

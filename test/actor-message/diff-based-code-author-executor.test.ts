@@ -1626,6 +1626,152 @@ describe('buildDiffBasedCodeAuthorExecutor', () => {
     if (result.kind !== 'error') throw new Error('unreachable');
     expect(result.stage).toBe('apply-branch/dirty-worktree');
   });
+
+  // ------------------------------------------------------------------
+  // Post-commit validator integration
+  // ------------------------------------------------------------------
+
+  it('post-commit validator (critical) aborts dispatch BEFORE PR opens; branchName surfaced', async () => {
+    // A critical validator finding short-circuits the executor at
+    // the post-commit boundary: the branch is already pushed, so
+    // branchName must surface so the dispatch wrapper can clean
+    // up the orphaned remote. createDraftPr must NOT have been
+    // called.
+    const plan = mkPlan('plan-pcv-critical', '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+      title: 'Bump README title',
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    });
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    // The post-commit pass spawns two `git show` calls; stub them
+    // with canned output so the helper produces a deterministic
+    // diff + touchedPaths for the validator chain.
+    const { impl: postCommitExec } = stubGitExeca([
+      { exitCode: 0, stdout: VALID_DIFF },
+      { exitCode: 0, stdout: 'README.md\n' },
+    ]);
+    let prCreateCalled = false;
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => {
+        prCreateCalled = true;
+        return { number: 1, html_url: '', url: '', node_id: '', state: 'open' };
+      }) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      nonce: () => 'abc123',
+      execImpl,
+      postCommitExec,
+      postCommitValidators: [
+        {
+          name: 'always-critical',
+          async validate() {
+            return { ok: false, severity: 'critical', reason: 'simulated fence breach' };
+          },
+        },
+      ],
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-pcv' as AtomId });
+    expect(result.kind).toBe('error');
+    if (result.kind !== 'error') throw new Error('unreachable');
+    expect(result.stage).toBe('post-commit-validator/always-critical');
+    expect(result.reason).toMatch(/simulated fence breach/);
+    expect(result.branchName).toBe('code-author/plan-pcv-critical-abc123');
+    expect(prCreateCalled).toBe(false);
+  });
+
+  it('post-commit validator (major) lets the PR open and surfaces findings on the success result', async () => {
+    // A major finding is non-blocking; the PR opens and the
+    // findings list is surfaced on the success result so the
+    // invoker can mint warning audit atoms.
+    const plan = mkPlan('plan-pcv-major', '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+      title: 'Bump README title',
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    });
+    const { impl: execImpl } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const { impl: postCommitExec } = stubGitExeca([
+      { exitCode: 0, stdout: VALID_DIFF },
+      { exitCode: 0, stdout: 'README.md\n' },
+    ]);
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 202, html_url: 'https://github.com/o/r/pull/202', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+      postCommitExec,
+      postCommitValidators: [
+        {
+          name: 'warning-only',
+          async validate() {
+            return { ok: false, severity: 'major', reason: 'title is fine but body is short' };
+          },
+        },
+      ],
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-pcv2' as AtomId });
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') throw new Error('unreachable');
+    expect(result.prNumber).toBe(202);
+    expect(result.postCommitFindings).toEqual([
+      {
+        validatorName: 'warning-only',
+        severity: 'major',
+        reason: 'title is fine but body is short',
+      },
+    ]);
+  });
+
+  it('post-commit validators absent (default config): no behaviour change; PR opens, no findings', async () => {
+    // Back-compat: a config that does not set postCommitValidators
+    // sees the same flow as before this seam landed. No extra git
+    // calls are made (the helper short-circuits when the validator
+    // list is empty).
+    const plan = mkPlan('plan-pcv-absent', '# plan\n\ncontent', {
+      target_paths: ['README.md'],
+      title: 'Bump README title',
+    });
+    registerDrafterResponse(host, plan, ['README.md'], {
+      diff: VALID_DIFF,
+      notes: 'ok',
+      confidence: 0.9,
+    });
+    const { impl: execImpl, calls: gitCalls } = stubGitExeca(GIT_HAPPY_REPLIES);
+    const executor = buildDiffBasedCodeAuthorExecutor({
+      host,
+      ghClient: ghClientStub((async () => ({
+        number: 303, html_url: 'https://github.com/o/r/pull/303', url: '', node_id: '', state: 'open',
+      })) as GhClient['rest']),
+      owner: 'o', repo: 'r', repoDir: '/tmp/x',
+      gitIdentity: { name: 'n', email: 'e@x' },
+      model: 'claude-opus-4-7',
+      execImpl,
+    });
+    const result = await executor.execute({ plan, fence: mkFence(), correlationId: 'c', observationAtomId: 'obs-pcv3' as AtomId });
+    expect(result.kind).toBe('dispatched');
+    if (result.kind !== 'dispatched') throw new Error('unreachable');
+    expect(result.prNumber).toBe(303);
+    // The default-config path must not add validator git calls.
+    // GIT_HAPPY_REPLIES has 9 calls (status, fetch, checkout,
+    // apply --check, apply, add, commit, rev-parse, push); the
+    // executor consumed exactly that count.
+    expect(gitCalls).toHaveLength(9);
+    // No findings surface when no validators ran.
+    expect(result.postCommitFindings).toBeUndefined();
+  });
 });
 
 describe('buildSelfCorrectingPrompt', () => {

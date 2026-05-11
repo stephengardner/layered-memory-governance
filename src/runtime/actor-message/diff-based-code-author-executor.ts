@@ -23,11 +23,17 @@
 import { randomBytes } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve, sep } from 'node:path';
-import type { execa } from 'execa';
+import { execa } from 'execa';
 import type { Atom, PrincipalId } from '../../types.js';
 import type { Host } from '../../interface.js';
 import type { GhClient } from '../../external/github/index.js';
 import type { Workspace, WorkspaceProvider } from '../../substrate/workspace-provider.js';
+import {
+  runPostCommitValidators,
+  type PostCommitValidator,
+  type PostCommitValidatorFinding,
+  type PostCommitValidatorInput,
+} from '../../substrate/post-commit-validator.js';
 import { extractFsShapedTokens } from '../planning-pipeline/extract-body-paths.js';
 import { buildConventionalCommitsPrTitle } from './code-author-pr-title.js';
 import {
@@ -149,6 +155,49 @@ export interface DiffBasedExecutorConfig {
    * exercise multi-retry recovery.
    */
   readonly maxDraftAttempts?: number;
+  /**
+   * Optional post-commit validator chain. After `applyDraftBranch`
+   * returns and BEFORE PR creation, the executor runs these
+   * validators against the resulting commit. Default `[]` is a
+   * no-op back-compat: existing callers see the same behaviour as
+   * before this seam landed.
+   *
+   * Semantics
+   * ---------
+   * - A `critical` validator finding aborts the dispatch and surfaces
+   *   as a `post-commit-validator/<name>` stage failure; the PR is
+   *   NOT opened. The caller's downstream observation atom carries
+   *   the reason for audit.
+   * - `major` and `minor` findings are accumulated and forwarded on
+   *   the dispatched-success result via `postCommitFindings` so the
+   *   invoker can mint warning audit atoms; the PR is opened.
+   * - Validators that throw or return malformed shapes are treated
+   *   as critical (the sequencer's fail-closed default).
+   *
+   * Why this is config-supplied rather than canon-resolved
+   * ------------------------------------------------------
+   * The validator interface stays mechanism-only in `src/substrate/`.
+   * Concrete validators (target-paths, conventional-commit-title,
+   * author-identity) live in `examples/post-commit-validators/` so
+   * an operator picks a deployment-specific subset; the executor
+   * does not silently embed a hard-coded chain. The operator's
+   * canon resolver wires the chain at executor-construction time.
+   */
+  readonly postCommitValidators?: ReadonlyArray<PostCommitValidator>;
+  /**
+   * Optional execa override for the diff-capture spawn inside the
+   * post-commit validator pass. The executor reads the unified diff
+   * via `git show --format= <sha>` and the touched paths via `git
+   * show --name-only --format= <sha>`; tests inject a stub that
+   * returns canned output without spawning real git. Defaults to the
+   * real execa.
+   *
+   * Note: the existing `config.execImpl` field is forwarded ONLY to
+   * `applyDraftBranch`; the validator-side capture takes its own
+   * override so callers can stub validator-only behaviour without
+   * touching the apply-branch path.
+   */
+  readonly postCommitExec?: typeof execa;
 }
 
 export function buildDiffBasedCodeAuthorExecutor(
@@ -512,6 +561,44 @@ export function buildDiffBasedCodeAuthorExecutor(
         };
       }
 
+      // Post-commit validator pass. Runs against the commit
+      // produced by applyDraftBranch BEFORE the PR opens; a
+      // `critical` finding aborts the dispatch and propagates a
+      // `post-commit-validator/<name>` stage failure. `major` and
+      // `minor` findings are collected and surfaced on the success
+      // result so the invoker can mint warning audit atoms.
+      // Default is an empty validator array (`[]`); deployments
+      // that did not configure a chain see no behavioural change.
+      const postCommitFindings: PostCommitValidatorFinding[] = [];
+      if ((config.postCommitValidators ?? []).length > 0) {
+        const validatorInput = await buildPostCommitValidatorInput({
+          gitResult,
+          repoDir: repoDirArg,
+          plan,
+          targetPaths,
+          authorIdentity: config.gitIdentity,
+          execImpl: config.postCommitExec,
+          signal,
+        });
+        const seqResult = await runPostCommitValidators(
+          config.postCommitValidators ?? [],
+          validatorInput,
+        );
+        if (!seqResult.ok) {
+          // Abort dispatch on a critical finding. The branch is
+          // already pushed (applyDraftBranch reached push step) so
+          // surface `branchName` so a downstream consumer can clean
+          // up the orphaned remote branch.
+          return {
+            kind: 'error',
+            stage: `post-commit-validator/${seqResult.criticalValidatorName}`,
+            reason: seqResult.reason,
+            branchName: gitResult.branchName,
+          };
+        }
+        for (const f of seqResult.findings) postCommitFindings.push(f);
+      }
+
       // Embed plan + provenance ancestor atom snapshots in the
       // body so a downstream consumer that cannot reach this
       // host's atom store can still resolve the atoms via the
@@ -575,6 +662,15 @@ export function buildDiffBasedCodeAuthorExecutor(
       // consume it.
       void correlationId;
 
+      // Filter findings down to the non-critical severities the
+      // success result surfaces. Critical findings short-circuited
+      // above; they never appear here. The filter is defensive --
+      // if the sequencer's contract is ever loosened, the success
+      // result must still reject critical-severity entries.
+      const surfacedFindings = postCommitFindings.filter(
+        (f): f is { validatorName: string; severity: 'major' | 'minor'; reason: string } =>
+          f.severity === 'major' || f.severity === 'minor',
+      );
       return {
         kind: 'dispatched',
         prNumber: prResult.number,
@@ -585,6 +681,7 @@ export function buildDiffBasedCodeAuthorExecutor(
         modelUsed: draftResult.modelUsed,
         confidence: draftResult.confidence,
         touchedPaths: draftResult.touchedPaths,
+        ...(surfacedFindings.length > 0 ? { postCommitFindings: surfacedFindings } : {}),
       };
   }
 }
@@ -897,4 +994,105 @@ function sanitizeGitRefComponent(s: string): string {
   while (start < end && (buf[start] === '.' || buf[start] === '-' || buf[start] === '/')) start++;
   while (end > start && (buf[end - 1] === '.' || buf[end - 1] === '-' || buf[end - 1] === '/')) end--;
   return start < end ? buf.slice(start, end).join('') : 'unnamed';
+}
+
+/**
+ * Build the input the post-commit validator chain consumes. Spawns
+ * `git show --format= --name-only` to enumerate touched paths and
+ * `git show --format= <sha>` for the unified diff. The two
+ * subprocesses run sequentially because the typical commit is
+ * sub-KB and the overhead of paralleling them is not worth the
+ * complexity.
+ *
+ * The signal is forwarded so a kill-switch trip aborts the
+ * post-commit pass alongside the rest of the executor. Both spawns
+ * use `reject: false` so a non-zero exit produces an empty string
+ * the validators decide how to handle, rather than a thrown
+ * exception that would short-circuit before validators see the
+ * commit shape they can inspect.
+ */
+// Helper shape we cast execa results to; the upstream type carries
+// generic narrowings that complicate inline access. Mirrors the
+// pattern in `src/runtime/actors/code-author/git-ops.ts`.
+interface PostCommitExecResult {
+  readonly stdout: string | Buffer | undefined;
+}
+
+function toStdoutString(v: string | Buffer | undefined): string {
+  if (v === undefined) return '';
+  if (typeof v === 'string') return v;
+  return v.toString('utf8');
+}
+
+async function buildPostCommitValidatorInput(args: {
+  readonly gitResult: {
+    readonly commitSha: string;
+    readonly branchName: string;
+    readonly committedPaths: ReadonlyArray<string>;
+  };
+  readonly repoDir: string;
+  readonly plan: Atom;
+  readonly targetPaths: ReadonlyArray<string>;
+  readonly authorIdentity: GitIdentity;
+  readonly execImpl: typeof execa | undefined;
+  readonly signal: AbortSignal | undefined;
+}): Promise<PostCommitValidatorInput> {
+  const exec = args.execImpl ?? execa;
+  const commitSha = args.gitResult.commitSha;
+  const runOpts = {
+    cwd: args.repoDir,
+    reject: false as const,
+    ...(args.signal !== undefined ? { cancelSignal: args.signal } : {}),
+  };
+  let diff = '';
+  let touchedPaths: ReadonlyArray<string> = args.gitResult.committedPaths;
+  try {
+    const diffResult = (await exec(
+      'git',
+      ['show', '--format=', commitSha],
+      runOpts,
+    )) as unknown as PostCommitExecResult;
+    diff = toStdoutString(diffResult.stdout);
+  } catch {
+    // Defensive: a failure to capture the diff means validators
+    // that depend on it (empty-diff, etc.) see an empty diff. The
+    // validators decide their own response; the executor does not
+    // pre-judge.
+    diff = '';
+  }
+  try {
+    const nameOnly = (await exec(
+      'git',
+      ['show', '--name-only', '--format=', commitSha],
+      runOpts,
+    )) as unknown as PostCommitExecResult;
+    const stdout = toStdoutString(nameOnly.stdout);
+    const parsed = stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (parsed.length > 0) touchedPaths = Object.freeze(parsed);
+  } catch {
+    // Fall back to the committedPaths the executor already knows
+    // about. Same defensive posture as the diff capture.
+  }
+  return Object.freeze({
+    commitSha,
+    branchName: args.gitResult.branchName,
+    repoDir: args.repoDir,
+    diff,
+    touchedPaths,
+    plan: Object.freeze({
+      id: String(args.plan.id),
+      target_paths: Object.freeze(args.targetPaths.slice()),
+      // Pass the plan's delegation block through opaquely so
+      // adapters can inspect it if they need to; the substrate
+      // does not pre-shape it.
+      delegation: (args.plan.metadata as Record<string, unknown>)['delegation'] ?? null,
+    }),
+    authorIdentity: Object.freeze({
+      name: args.authorIdentity.name,
+      email: args.authorIdentity.email,
+    }),
+  });
 }
