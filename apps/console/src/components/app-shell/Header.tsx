@@ -85,6 +85,10 @@ const ROUTE_META: Record<Route, RouteMeta> = {
     title: 'Operator actions',
     subtitle: 'Audit trail of every bot-identity-mediated GitHub action: PR opens, merges, CR triggers, thread resolutions',
   },
+  'file-intent': {
+    title: 'File Intent',
+    subtitle: 'Declare an operator-intent atom that drives the autonomous pipeline -- replaces the terminal-only intend.mjs flow',
+  },
 };
 
 /**
