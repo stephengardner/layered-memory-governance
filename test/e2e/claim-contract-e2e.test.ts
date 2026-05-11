@@ -136,7 +136,9 @@ async function seedPolicies(host: ReturnType<typeof createMemoryHost>): Promise<
     schema_version: 1,
     id: 'pol-claim-budget-tier-default' as AtomId,
     content: 'budget-tier default',
-    type: 'preference',
+    // Canonical seed shape: type='directive' + provenance.kind='operator-seeded'.
+    // The resolver gates on both as a forgery-containment surface.
+    type: 'directive',
     layer: 'L3',
     provenance: {
       kind: 'operator-seeded',

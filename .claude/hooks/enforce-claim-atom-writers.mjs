@@ -22,6 +22,19 @@
  *   - In-process forgery from a compromised contract module:
  *     out-of-scope for this hook; mitigated by STOP sentinel +
  *     medium-tier kill switch.
+ *   - Self-attributed forgery (a sub-agent setting
+ *     `atom.principal_id = 'apex-agent'` on its own write): the
+ *     PreToolUse hook payload exposes ONLY `tool_input`, which the
+ *     calling agent controls. There is no authenticated caller
+ *     channel at the hook layer today. The hook is one defence
+ *     layer; the authoritative gate is the claim-contract module
+ *     itself (`markClaimComplete` validates the
+ *     `claim_secret_token` constant-time so a forged write that
+ *     lacks the token cannot legitimately enter the lifecycle).
+ *     The substrate's PROVENANCE chain (every claim-lifecycle atom
+ *     is derived_from the claim atom written through `dispatchSubAgent`)
+ *     surfaces the bypass to audit projections even if the hook is
+ *     defeated.
  *
  * Allowlist: ONLY `apex-agent` may write the four claim-lifecycle
  * atom types. Any other principal (cto-actor, code-author,
@@ -98,11 +111,26 @@ async function main() {
   const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '';
   if (!isAtomStoreWriteTool(toolName)) process.exit(0);
 
-  const atom = payload.tool_input?.atom;
-  if (atom === undefined || atom === null || typeof atom !== 'object') {
-    // tool_input absent or atom field absent: shape we cannot
-    // interpret; allow and let downstream validation handle it.
+  // Two-step decode so we can distinguish "no tool_input at all"
+  // (the call is shape-ambiguous; allow and let downstream validation
+  // handle it) from "tool_input present but atom field missing"
+  // (definite atom-store write surface with no payload; deny because
+  // that is the alternate-write-shape bypass surface CR flagged).
+  const toolInput = payload.tool_input;
+  if (toolInput === undefined || toolInput === null) {
+    // The toolName matched isAtomStoreWriteTool but the payload has
+    // no tool_input. We have no surface to inspect; fall open and
+    // let downstream validation handle the shape error. Tightening
+    // this rung further is a future change once the substrate's
+    // hook payload exposes an authenticated caller channel.
     process.exit(0);
+  }
+  const atom = toolInput.atom;
+  if (atom === undefined || atom === null || typeof atom !== 'object') {
+    // tool_input is present but `atom` is absent or non-object. This
+    // is the alternate-write-shape vector the hook must close; deny.
+    blockMalformed('atom payload missing or not an object');
+    return;
   }
 
   const atomType = typeof atom.type === 'string' ? atom.type : '';
@@ -115,12 +143,13 @@ async function main() {
   // principal is the substrate principal.
   const principalId = typeof atom.principal_id === 'string' ? atom.principal_id : '';
   if (principalId === '') {
-    // Malformed atom missing principal_id: do NOT block on shape we
-    // cannot interpret. The substrate writer always sets
-    // principal_id; any path reaching the hook without one is a
-    // shape error caught by downstream validation, not the bypass
-    // surface this hook guards.
-    process.exit(0);
+    // Claim-lifecycle write with no principal_id is unauthorizable.
+    // Deny rather than fail-open; the substrate writer ALWAYS sets
+    // principal_id, so a missing value is a shape error AND a bypass
+    // vector. Letting it through would mint a claim-lifecycle atom
+    // outside the allowlist semantics.
+    blockMalformed('claim-lifecycle atom missing principal_id');
+    return;
   }
 
   if (principalId === SUBSTRATE_PRINCIPAL) {
@@ -156,6 +185,31 @@ async function main() {
     `medium-tier kill switch).`,
   ].join('\n');
 
+  process.stderr.write(`${reason}\n`);
+  process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+  process.exit(0);
+}
+
+/**
+ * Emit a block decision with a short malformed-shape reason and exit.
+ * Used when the hook matched an atom-store write surface but cannot
+ * authenticate the payload. Deny is the correct posture: the alternative
+ * (fail-open) leaves an escape hatch for malformed lifecycle writes to
+ * bypass the gate entirely.
+ */
+function blockMalformed(why) {
+  const reason = [
+    `claim-lifecycle atom write blocked by .claude/hooks/enforce-claim-atom-writers.mjs.`,
+    ``,
+    `Reason: ${why}.`,
+    ``,
+    `The substrate's claim-contract module ALWAYS sends a typed atom`,
+    `payload with a principal_id field. A write that reaches this hook`,
+    `without those fields is either a malformed sub-agent attempt or an`,
+    `alternate write shape that the hook cannot authenticate. Deny is`,
+    `the correct posture; allow would leave the gate open for the exact`,
+    `bypass it exists to close.`,
+  ].join('\n');
   process.stderr.write(`${reason}\n`);
   process.stdout.write(JSON.stringify({ decision: 'block', reason }));
   process.exit(0);

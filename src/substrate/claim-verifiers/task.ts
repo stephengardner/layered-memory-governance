@@ -1,26 +1,18 @@
 /**
  * Task terminal-state verifier.
  *
- * Queries the substrate's task surface as the authoritative source of
- * truth for whether a work-claim against a task has reached one of its
- * declared terminal states (typically `completed`). Substrate must NOT
- * trust a sub-agent's attestation that "I completed task #999"; the
- * agent could be lying, broken, or compromised. The verifier resolves
- * the question against the task surface itself so a falsified
- * attestation cannot flip a claim to `complete`.
+ * Reads a task atom from the AtomStore and reports whether the atom's
+ * declared lifecycle status matches one of the work-claim's expected
+ * terminal states. The verifier resolves the question against the
+ * substrate task surface rather than trusting the sub-agent's attest
+ * claim; a falsified attestation that says "task done" cannot flip a
+ * claim to `complete` when the underlying atom says otherwise.
  *
- * Host seam posture: the implementation plan calls for a
- * `host.taskList.get(id)` lookup against a dedicated TaskList Host
- * sub-interface. As of the PR1 substrate landing, no `TaskList` field
- * is declared on the Host bundle (see `src/substrate/interface.ts`
- * `interface Host`). Per the plan's risk register, the fallback is the
- * existing AtomStore: tasks land as atoms at id `task-<identifier>`
- * with `metadata.task.status` carrying the lifecycle field. This
- * keeps the verifier substrate-agnostic and unblocks the work-claim
- * core without forcing a parallel Host-interface change. When a
- * dedicated TaskList seam ships, this module gains a thin preference
- * for `host.taskList?.get(...)` before falling through to the atom
- * lookup; the change is additive and does not break existing callers.
+ * Atom-id convention: tasks live at id `task-<identifier>` with
+ * `metadata.task.status` carrying the lifecycle field. The verifier
+ * also gates on `atom.type === 'task'` so a non-task atom that
+ * accidentally carries `metadata.task.status` cannot satisfy
+ * completion.
  *
  * The handler is shape-compatible with `ClaimVerifier` from `./types.ts`.
  */
@@ -123,6 +115,16 @@ export async function verifyTaskTerminal(
   if (atom === null) {
     return { ok: false, observed_state: NOT_FOUND };
   }
+  // Type-gate: only honor atoms whose runtime `type` field is the
+  // string `'task'`. An atom prefixed `task-` but typed otherwise
+  // (e.g. an audit record that happens to carry a task-shaped
+  // metadata block) MUST NOT satisfy completion. The substrate's
+  // AtomType union is open at the string-literal layer for this
+  // exact reason; the cast acknowledges that the verifier is
+  // string-matching the runtime type vocabulary.
+  if ((atom.type as string) !== 'task') {
+    return { ok: false, observed_state: NOT_FOUND };
+  }
   const status = readTaskStatus(atom);
   if (status === null) {
     // Atom exists but lacks the canonical status field. We cannot
@@ -131,10 +133,9 @@ export async function verifyTaskTerminal(
     // legitimately list as terminal.
     return { ok: false, observed_state: NOT_FOUND };
   }
-  // Case-sensitive comparison matches the plan directive
-  // ("Compare ... case-sensitive"). A caller that passes
-  // mismatched-case `expectedStates` gets a loud mismatch rather
-  // than a silent coercion.
+  // Case-sensitive comparison: a caller that passes mismatched-case
+  // `expectedStates` gets a loud mismatch rather than a silent
+  // coercion. Substrate claim vocabulary is string-literal-typed.
   const matches = expectedStates.includes(status);
   return { ok: matches, observed_state: status };
 }

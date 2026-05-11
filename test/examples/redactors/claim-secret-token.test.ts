@@ -44,6 +44,30 @@ describe('CLAIM_SECRET_TOKEN_PATTERN', () => {
     expect(redactDefault(short)).toBe(short);
   });
 
+  it('strips a base64url token starting with `-`', () => {
+    // Base64url alphabet legally includes `-`, which is NOT a regex
+    // word char. A naive \b-anchored pattern would miss tokens whose
+    // first character is `-`; the alphabet-based lookbehind catches them.
+    const token = '-' + 'A'.repeat(42);
+    const out = redactDefault(`stray ${token} loose`);
+    expect(out).toContain('[REDACTED:CLAIM_TOKEN]');
+    expect(out).not.toContain(token);
+  });
+
+  it('strips a base64url token ending with `-`', () => {
+    const token = 'A'.repeat(42) + '-';
+    const out = redactDefault(`stray ${token} loose`);
+    expect(out).toContain('[REDACTED:CLAIM_TOKEN]');
+    expect(out).not.toContain(token);
+  });
+
+  it('strips a base64url token starting and ending with `-`', () => {
+    const token = '-' + 'A'.repeat(41) + '-';
+    const out = redactDefault(`stray ${token} loose`);
+    expect(out).toContain('[REDACTED:CLAIM_TOKEN]');
+    expect(out).not.toContain(token);
+  });
+
   it('strips token from agent-turn atom llm_input / llm_output / tool_calls', () => {
     const token = 'B'.repeat(43);
     const atom = {

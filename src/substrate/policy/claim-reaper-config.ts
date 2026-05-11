@@ -51,10 +51,13 @@ export class ClaimReaperConfigPolicyError extends Error {
 }
 
 // Defence against unbounded atom stores: cap the pagination walk at a
-// large-but-finite number of L3 atoms. Matches the implicit cap used by
-// checkToolPolicy and resolveBudgetTier; same pageSize loop + nextCursor
-// stop semantics.
+// large-but-finite number of pages. Without PAGE_LIMIT, a buggy adapter
+// that returns a non-advancing cursor would hang every reaper tick (the
+// reaper calls eight of these readers in sequence each tick). The cap
+// matches src/runtime/loop/claim-reaper.ts:PAGE_LIMIT so both readers
+// give up at the same scale.
 const PAGE_SIZE = 200;
+const PAGE_LIMIT = 200;
 
 /**
  * Resolve a numeric reaper-config policy by its policy kind.
@@ -67,8 +70,8 @@ const PAGE_SIZE = 200;
  * Exported (not just file-local) because the 8 named readers below
  * delegate to it and a follow-up reaper-config family could add a 9th
  * reader without re-implementing the resolution + validation contract.
- * Per canon `dev-code-duplication-extract-at-n-2`, the shared shape
- * lives here once.
+ * The shared resolution + validation shape lives in exactly one place
+ * so a contract change touches one edit rather than eight.
  *
  * @param host - the LAG Host bundle. Only `host.atoms` is consulted.
  * @param kind - the policy kind string (e.g. 'claim-reaper-cadence-ms').
@@ -85,7 +88,7 @@ export async function readNumericClaimPolicyByKind(host: Host, kind: string): Pr
   // operator believed they had overridden it.
   let cursor: string | undefined = undefined;
   let best: { atom: Atom; createdAt: string } | null = null;
-  while (true) {
+  for (let i = 0; i < PAGE_LIMIT; i++) {
     const page = await host.atoms.query({ layer: ['L3'] }, PAGE_SIZE, cursor);
     for (const atom of page.atoms) {
       // In-code taint + superseded guards: a compromised or superseded
@@ -93,6 +96,16 @@ export async function readNumericClaimPolicyByKind(host: Host, kind: string): Pr
       // on AtomFilter predicates; enforcement varies across adapters.
       if (atom.taint !== 'clean') continue;
       if (atom.superseded_by.length > 0) continue;
+      // Canonical-shape filter: a reaper-config policy MUST carry both
+      // `type='directive'` AND `provenance.kind='operator-seeded'`. The
+      // bootstrap emits exactly this shape (see scripts/lib/claim-
+      // contract-canon-policies.mjs policyAtom); without these gates a
+      // sub-agent could write an agent-inferred non-directive atom with
+      // a matching metadata.policy.kind and silently widen a grace
+      // window or reset cadence. Defence-in-depth alongside the taint
+      // and superseded_by guards.
+      if (atom.type !== 'directive') continue;
+      if (atom.provenance.kind !== 'operator-seeded') continue;
       const policy = (atom.metadata as Record<string, unknown>)['policy'];
       if (!policy || typeof policy !== 'object') continue;
       const p = policy as Record<string, unknown>;

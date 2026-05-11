@@ -48,11 +48,12 @@ export class ClaimBudgetTierPolicyError extends Error {
 }
 
 // Defence against unbounded atom stores: cap the pagination walk at a
-// large-but-finite number of L3 atoms. Matches the implicit cap in
-// checkToolPolicy (no explicit max there either; this resolver follows
-// the same shape with a pageSize loop and a hard stop only on
-// nextCursor === null).
+// large-but-finite number of pages. Without PAGE_LIMIT a buggy adapter
+// that returns a non-advancing cursor would hang the resolver. Matches
+// claim-reaper-config and src/runtime/loop/claim-reaper.ts so all
+// readers give up at the same scale.
 const PAGE_SIZE = 200;
+const PAGE_LIMIT = 200;
 
 /**
  * Resolve a budget tier name to its canon-policy `max_budget_usd`.
@@ -75,7 +76,7 @@ export async function resolveBudgetTier(tier: string, host: Host): Promise<numbe
   // actually has canon backing.
   let cursor: string | undefined = undefined;
   let best: { atom: Atom; createdAt: string } | null = null;
-  while (true) {
+  for (let i = 0; i < PAGE_LIMIT; i++) {
     const page = await host.atoms.query({ layer: ['L3'] }, PAGE_SIZE, cursor);
     for (const atom of page.atoms) {
       // In-code taint + superseded guards: a compromised or superseded
@@ -83,6 +84,20 @@ export async function resolveBudgetTier(tier: string, host: Host): Promise<numbe
       // on AtomFilter predicates; enforcement varies across adapters.
       if (atom.taint !== 'clean') continue;
       if (atom.superseded_by.length > 0) continue;
+      // Canonical-shape filter: a budget-tier policy MUST carry both
+      // `type='directive'` AND `provenance.kind='operator-seeded'`.
+      // Without these gates, any sub-agent that writes a
+      // non-directive `agent-inferred` atom with the matching
+      // metadata.policy.kind + tier could override the
+      // operator-seeded ceiling at L3. The seed shape produced by
+      // bootstrap-claim-contract-canon.mjs uses type='directive' +
+      // provenance.kind='operator-seeded'; either field changing in
+      // the seeder must be mirrored here so the resolver and the
+      // bootstrap stay in lockstep. Defence-in-depth: the type gate
+      // closes a class of forgery where a preference- or decision-
+      // shaped atom carries the same metadata.policy.kind/tier values.
+      if (atom.type !== 'directive') continue;
+      if (atom.provenance.kind !== 'operator-seeded') continue;
       const policy = (atom.metadata as Record<string, unknown>)['policy'];
       if (!policy || typeof policy !== 'object') continue;
       const p = policy as Record<string, unknown>;

@@ -34,11 +34,12 @@ describe('verifyResearchAtomTerminal', () => {
     expect(result).toEqual({ ok: true, observed_state: 'published' });
   });
 
-  it('falls back to atom.metadata.status when research block is absent', async () => {
-    // Some research-shaped atoms keep the status at metadata.status rather
-    // than nesting under metadata.research; the verifier accepts either
-    // shape so a deployment can pick the convention that fits its atom
-    // schema without forking the verifier.
+  it('does NOT fall back to atom.metadata.status (canonical path is the contract)', async () => {
+    // A flat metadata.status field is NOT honored. Widening to a
+    // generic fallback would false-accept any atom carrying a
+    // status-like field; the verifier kind is pinned to the
+    // research-atom schema. Deployments using a different layout
+    // register a different verifier kind.
     const host = makeHost(async () => ({
       id: 'atom-2',
       metadata: { status: 'published' },
@@ -46,7 +47,7 @@ describe('verifyResearchAtomTerminal', () => {
     const result = await verifyResearchAtomTerminal('atom-2', ['published'], {
       host,
     });
-    expect(result).toEqual({ ok: true, observed_state: 'published' });
+    expect(result).toEqual({ ok: false, observed_state: 'NOT_FOUND' });
   });
 
   it('returns ok=false with observed_state when status is not in expected', async () => {

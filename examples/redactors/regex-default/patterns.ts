@@ -69,7 +69,16 @@ export const CLAIM_SECRET_TOKEN_PATTERN: RedactionPattern = {
   // strips both `claim_secret_token:` and the trailing token in one
   // go (rather than leaving a naked `claim_secret_token:` next to
   // a `[REDACTED:CLAIM_TOKEN]` marker, which would surface in logs).
-  pattern: /(?:claim_secret_token:\s*)?\b[A-Za-z0-9_-]{43,}\b/g,
+  //
+  // Alphabet-based boundaries (lookbehind/lookahead) rather than \b:
+  // base64url tokens can legally start or end with `-` or `_`, neither
+  // of which is a regex word character. Using \b would miss any token
+  // whose edge is a non-word char, leaking it past the redactor. The
+  // explicit (?<![A-Za-z0-9_-]) lookbehind asserts the previous char
+  // is NOT in the alphabet; the matching lookahead asserts the same on
+  // the right edge. Together they anchor the match to a maximal
+  // base64url-alphabet run without depending on \b.
+  pattern: /(?:claim_secret_token:\s*)?(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43,}(?![A-Za-z0-9_-])/g,
   replacement: '[REDACTED:CLAIM_TOKEN]',
 };
 

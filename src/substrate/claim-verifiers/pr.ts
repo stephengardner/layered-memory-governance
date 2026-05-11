@@ -222,11 +222,9 @@ export async function verifyPrTerminal(
     );
   }
   const observed = normalizeState(json);
-  // Case-sensitive comparison matches the plan directive
-  // ("Compare GitHub's state field exactly; case-sensitive"). Substrate
-  // vocabulary is uppercase by convention; a caller that passes
-  // lowercase expected_states gets a loud mismatch rather than a
-  // silent coercion.
+  // Case-sensitive comparison: substrate vocabulary is uppercase by
+  // convention; a caller that passes lowercase expected_states gets a
+  // loud mismatch rather than a silent coercion.
   const matches = expectedStates.includes(observed);
   return { ok: matches, observed_state: observed };
 }

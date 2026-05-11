@@ -12,7 +12,7 @@
  * deadline, mis-named budget tier) never produces a half-formed claim
  * the reaper would have to clean up.
  *
- * Gate order (per plan Task 11 / spec Section 6)
+ * Gate order
  * ----------------------------------------------
  * The six gates fire in this exact order. Reordering them is a contract
  * violation: a downstream gate (verifier lookup, budget resolution) is
@@ -96,6 +96,7 @@ import type {
   AttestationRejectionReason,
   ClaimAttestationAcceptedMeta,
   ClaimAttestationRejectedMeta,
+  ClaimStalledMeta,
   Event,
   PrincipalId,
   Time,
@@ -180,6 +181,18 @@ export interface DispatchSubAgentInput {
    * need to provision a blob store on day one.
    */
   readonly blobStore?: BlobStore;
+  /**
+   * Optional adapter-budget override threaded into `AgentLoopInput.budget`.
+   * When omitted, dispatch falls back to a generous default
+   * (`max_turns: 50, max_wall_clock_ms: 1_800_000` = 30 minutes) so an
+   * agent-loop adapter exercised before a full LoopRunner wiring lands
+   * is not capped at one turn. Callers that already know the budget
+   * envelope (LoopRunner threading the per-tier ladder) pass it
+   * through here; the contract itself is mechanism-only and does not
+   * synthesize a per-tier mapping (that mapping is a policy concern
+   * read by the caller).
+   */
+  readonly budget?: { readonly max_turns: number; readonly max_wall_clock_ms: number };
 }
 
 export interface DispatchSubAgentOutput {
@@ -421,12 +434,12 @@ export async function dispatchSubAgent(
     input.caller_principal_id,
     brief,
   );
-  // Fire-and-forget dispatch per spec section 6.2: the adapter run is
-  // started but NOT awaited so the dispatch function returns promptly
-  // and the caller can observe `claim_state === 'executing'` without
-  // waiting for the agent loop to finish. The reaper's session-finalize
-  // debounce + the attest cycle handle terminal-state observation; the
-  // dispatch contract only guarantees "the adapter has been entered".
+  // Fire-and-forget dispatch: the adapter run is started but NOT
+  // awaited so the dispatch function returns promptly and the caller
+  // can observe `claim_state === 'executing'` without waiting for the
+  // agent loop to finish. The reaper's session-finalize debounce + the
+  // attest cycle handle terminal-state observation; the dispatch
+  // contract only guarantees "the adapter has been entered".
   //
   // Rejection containment: an unhandled rejection from the agent loop
   // would crash the host. We attach a no-op catch so the promise is
@@ -447,7 +460,7 @@ export async function dispatchSubAgent(
       planAtomId: claimId as AtomId,
       questionPrompt: preambleAndPrompt,
     },
-    budget: { max_turns: 1, max_wall_clock_ms: 60_000 } as never,
+    budget: (input.budget ?? { max_turns: 50, max_wall_clock_ms: 1_800_000 }) as never,
     toolPolicy: { disallowedTools: [] },
     redactor: { redact: (s: string) => s } as never,
     blobStore: input.blobStore ?? ({} as never),
@@ -542,7 +555,7 @@ export type { AgentLoopAdapter } from './agent-loop.js';
 export type { BlobStore } from './blob-store.js';
 
 // ---------------------------------------------------------------------------
-// markClaimComplete (plan Task 12 + spec Section 6 step 9)
+// markClaimComplete
 // ---------------------------------------------------------------------------
 
 /**
@@ -601,10 +614,9 @@ export interface MarkClaimCompleteOptions {
 
 /**
  * Close a work-claim by attesting its terminal state. Runs nine
- * validation gates in the exact order specified by plan Task 12 + spec
- * Section 6 step 9; each rejection writes a `claim-attestation-rejected`
- * atom chained back to the claim (so the audit trail records every
- * attempt, including denied ones).
+ * validation gates in the exact order documented below; each rejection
+ * writes a `claim-attestation-rejected` atom chained back to the claim
+ * (so the audit trail records every attempt, including denied ones).
  *
  * Gate order (do NOT reorder):
  *   1. STOP sentinel        -> `stop-sentinel`
@@ -640,8 +652,9 @@ export async function markClaimComplete(
   }
 
   // Gate 2: claim lookup. No claim atom means there is no parent to
-  // chain a rejection-atom provenance against; skip the write per the
-  // plan Task 12 contract (see spec Section 6 step 9 Gate 2).
+  // chain a rejection-atom provenance against; skip the rejection-atom
+  // write rather than minting a dangling record. The result still
+  // surfaces the failure to the caller.
   const claimAtom = await host.atoms.get(input.claim_id as AtomId);
   if (claimAtom === null) {
     return { accepted: false, reason: 'claim-not-found' };
@@ -717,12 +730,15 @@ export async function markClaimComplete(
 
   // Gate 8: transition to `attesting`. The flip happens BEFORE the
   // verifier runs because a slow verifier should not leave the claim
-  // visibly in `executing` while the substrate is mid-verify. The
-  // memory atom-store update is unconditional; future stores with
-  // explicit version checks pass the prior version through here.
+  // visibly in `executing` while the substrate is mid-verify. Re-read
+  // the latest claim meta and merge over it so a concurrent reaper
+  // recovery-step (bumping recovery_attempts, rotating
+  // claim_secret_token, etc.) is preserved across the attesting flip.
+  // Splatting the stale Gate-2 snapshot would clobber those fields.
+  const gate8Meta = await readLatestClaimMeta(host, input.claim_id);
   await host.atoms.update(input.claim_id as AtomId, {
     metadata: {
-      work_claim: { ...meta, claim_state: 'attesting' },
+      work_claim: { ...gate8Meta, claim_state: 'attesting' },
     },
   });
 
@@ -749,6 +765,12 @@ export async function markClaimComplete(
       [...meta.brief.expected_terminal.terminal_states],
       { host },
     ).then(r => ({ kind: 'ok' as const, ok: r.ok, observed_state: r.observed_state }));
+    // Defence against unhandled-rejection crash: if the timeout wins
+    // the race and the verifier promise later rejects, the rejection
+    // would land on a promise nobody awaits. Attach a no-op observer
+    // so Node does not log an unhandled-rejection / crash under
+    // --unhandled-rejections=strict.
+    void verifierPromise.catch(() => {});
 
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<RaceOutcome>(resolveOuter => {
@@ -878,8 +900,8 @@ async function readLatestClaimMeta(
 /**
  * Handle the two infrastructure-failure reasons (verifier-error,
  * verifier-timeout) with shared rejection + counter-increment + cap
- * logic. Extracted at N=2 per the dev-code-duplication-extract-at-n-2
- * canon directive.
+ * logic. Shared between both reasons to avoid drifted duplicate
+ * implementations of the same finalize sequence.
  */
 async function finalizeVerifierInfraFailure(
   host: Host,
@@ -922,6 +944,14 @@ async function finalizeVerifierInfraFailure(
   // claim-stalled atom rather than polling the claim atom itself.
   if (nextState === 'stalled') {
     const now = host.clock.now();
+    const stallMeta: ClaimStalledMeta = {
+      claim_id: input.claim_id,
+      reason: 'verifier-failure-cap',
+      recovery_attempts_at_stall: meta.recovery_attempts,
+      verifier_failure_count_at_stall: nextCount,
+    };
+    // Schema MUST match the reaper's writer (metadata.claim_stall +
+    // ClaimStalledMeta) so any consumer reads one canonical shape.
     await host.atoms.put({
       schema_version: 1,
       id: `claim-stalled-${input.claim_id}-${now.replace(/[^0-9]/g, '')}` as AtomId,
@@ -948,15 +978,7 @@ async function finalizeVerifierInfraFailure(
       },
       principal_id: input.caller_principal_id as PrincipalId,
       taint: 'clean',
-      metadata: {
-        claim_stalled: {
-          claim_id: input.claim_id,
-          previous_state: meta.claim_state,
-          reason: 'verifier-failure-cap',
-          verifier_failure_count: nextCount,
-          stalled_at: now,
-        },
-      },
+      metadata: { claim_stall: stallMeta },
     });
   }
   return { accepted: false, reason };
@@ -964,10 +986,9 @@ async function finalizeVerifierInfraFailure(
 
 /**
  * Write a `claim-attestation-rejected` atom carrying the standard
- * rejection-metadata shape. Centralized so every rejection path in
- * `markClaimComplete` shares one writer; per `dev-code-duplication-
- * extract-at-n-2`, we extracted at N=2 (the 8 rejection reasons that
- * each need a rejection-atom write).
+ * rejection-metadata shape. Centralised so every rejection path in
+ * `markClaimComplete` shares one writer; the 8 rejection reasons would
+ * otherwise need 8 near-identical writes drifting independently.
  *
  * `observed_state` is set only on `ground-truth-mismatch`. `error` is
  * set only on `verifier-error` / `verifier-timeout` (when the underlying

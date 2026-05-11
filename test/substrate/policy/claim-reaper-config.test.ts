@@ -18,15 +18,18 @@ function mkPolAtom(
   id: string,
   kind: string,
   value: number,
-  options: { taint?: 'clean' | 'tainted'; superseded?: boolean } = {},
+  options: { taint?: 'clean' | 'tainted'; superseded?: boolean; type?: string; provenanceKind?: string } = {},
 ): Atom {
   return {
     schema_version: 1,
     id: id as AtomId,
     content: `${kind} = ${value}`,
-    type: 'preference',
+    // Canonical seed shape: type='directive' + provenance.kind='operator-seeded'.
+    // Mirrors the bootstrap policyAtom (scripts/lib/claim-contract-canon-policies.mjs)
+    // so tests exercise the same forgery-containment gates the resolver enforces.
+    type: (options.type ?? 'directive') as Atom['type'],
     layer: 'L3',
-    provenance: { kind: 'operator-seeded', source: { agent_id: 'operator' }, derived_from: [] },
+    provenance: { kind: (options.provenanceKind ?? 'operator-seeded') as Atom['provenance']['kind'], source: { agent_id: 'operator' }, derived_from: [] },
     confidence: 1,
     created_at: NOW,
     last_reinforced_at: NOW,
@@ -122,6 +125,29 @@ describe('claim-reaper-config readers', () => {
     const host = createMemoryHost();
     await host.atoms.put(mkPolAtom('pol-claim-pending-grace-ms', 'claim-pending-grace-ms', 60_000, { superseded: true }));
     await expect(resolvePendingGraceMs(host)).rejects.toThrow(/missing-canon-policy/);
+  });
+
+  it('skips non-directive atoms (preference / decision shapes do not satisfy the seed gate)', async () => {
+    const host = createMemoryHost();
+    // A preference-typed atom carrying the canonical metadata.policy.kind/value
+    // pair MUST NOT be accepted as a reaper-config policy. The resolver gates
+    // on type='directive'; non-directive shapes cannot widen reaper graces.
+    await host.atoms.put(
+      mkPolAtom('pol-pref-shape', 'claim-reaper-cadence-ms', 999, { type: 'preference' }),
+    );
+    await expect(resolveReaperCadenceMs(host)).rejects.toThrow(/missing-canon-policy/);
+  });
+
+  it('skips non-operator-seeded atoms (agent-inferred provenance does not satisfy the seed gate)', async () => {
+    const host = createMemoryHost();
+    // An agent-inferred atom that carries the canonical metadata.policy
+    // shape MUST NOT be accepted; the resolver gates on
+    // provenance.kind='operator-seeded' so a sub-agent cannot inject a
+    // reaper-config override at runtime.
+    await host.atoms.put(
+      mkPolAtom('pol-agent-inferred', 'claim-reaper-cadence-ms', 999, { provenanceKind: 'agent-inferred' }),
+    );
+    await expect(resolveReaperCadenceMs(host)).rejects.toThrow(/missing-canon-policy/);
   });
 
   it('most-recent-wins when multiple clean unsuperseded atoms share the kind', async () => {

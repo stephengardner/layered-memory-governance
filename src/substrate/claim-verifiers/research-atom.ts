@@ -3,9 +3,10 @@
  *
  * Queries the substrate's own AtomStore for an atom by id and reports
  * whether its declared status matches one of the work-claim's expected
- * terminal states (typically `['published']`). Generic enough to verify
- * any atom kind that carries a status field; the name "research-atom"
- * reflects the canonical caller, not a hard schema restriction.
+ * terminal states (typically `['published']`). The verifier kind is
+ * pinned to the research-atom schema; deployments that need to verify
+ * a different shape register a different verifier kind rather than
+ * overloading this one.
  *
  * Substrate-purity note: a verifier that reads atom-store state at first
  * glance violates the "do not trust internal claims" guidance baked into
@@ -13,33 +14,29 @@
  * a claim that the SUB-AGENT writes against an EXTERNAL source of truth
  * (GitHub), so a lying sub-agent cannot falsify completion. For an atom
  * whose lifecycle is fully owned by the substrate (status transitions
- * are gated by the existing atom-write hooks + principal policy), the
- * atom IS the source of truth; the verifier just looks it up. If a
- * future deployment moves the status to an external system, that
- * deployment registers a different verifier kind rather than overloading
- * this one.
+ * are gated by atom-write hooks + principal policy), the atom IS the
+ * source of truth; the verifier just looks it up.
  *
- * Field-path policy: status lookup tries `metadata.research.status`
- * first (nested per the plan directive), then falls back to
- * `metadata.status` (flat). Either shape is accepted because no existing
- * research-atom schema is established in the codebase at task-time and
- * pinning to a single path would break the first deployment that picks
- * the other one. A future schema decision (an atom or canon directive
- * fixing the field path) can remove the fallback.
+ * Field-path policy: status lookup is pinned to
+ * `metadata.research.status`. A generic `metadata.status` fallback
+ * would widen the verifier to ANY atom that happens to carry a
+ * status-like field, producing false-accepts on non-research atom
+ * shapes. The canonical path is the contract; deployments using a
+ * different layout register a different verifier kind.
  */
 
 import type { Atom, AtomId } from '../types.js';
 import type { VerifierContext, VerifierResult } from './types.js';
 
 /**
- * Read the status string from an atom in a research-shaped layout.
- * Returns null when the atom carries no status under either supported
- * path so the caller can return a NOT_FOUND result.
+ * Read the status string from `metadata.research.status`. Returns
+ * null when the atom does not carry that exact path so the caller
+ * can return a NOT_FOUND result.
  *
- * Permissive on input shape: any non-string status (number, object,
- * undefined) is treated as missing because the substrate's claim
- * vocabulary is string-typed. A misshapen atom surfaces as NOT_FOUND
- * rather than silently coercing.
+ * Permissive on type: a non-string status (number, object, undefined)
+ * is treated as missing because the substrate's claim vocabulary is
+ * string-typed. A misshapen atom surfaces as NOT_FOUND rather than
+ * silently coercing.
  */
 function readStatus(atom: Atom): string | null {
   // The Atom interface narrows `metadata` to a known set of keys but
@@ -56,10 +53,6 @@ function readStatus(atom: Atom): string | null {
     if (typeof nested === 'string') {
       return nested;
     }
-  }
-  const flat = meta['status'];
-  if (typeof flat === 'string') {
-    return flat;
   }
   return null;
 }

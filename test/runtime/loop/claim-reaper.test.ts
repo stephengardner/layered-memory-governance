@@ -100,7 +100,9 @@ function mkBudgetTierAtom(tier: string, maxUsd: number): Atom {
     schema_version: 1,
     id: `pol-claim-budget-tier-${tier}` as AtomId,
     content: `budget-tier ${tier}`,
-    type: 'preference',
+    // Canonical seed shape: type='directive' so the budget-tier resolver's
+    // forgery-containment gate accepts it. Mirrors bootstrap policyAtom.
+    type: 'directive',
     layer: 'L3',
     provenance: {
       kind: 'operator-seeded',

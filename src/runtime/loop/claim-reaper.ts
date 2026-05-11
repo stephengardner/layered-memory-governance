@@ -26,10 +26,10 @@
  * ---------------
  * Phase A is read-mostly: it queries open claims (state in
  * `{pending, executing, attesting}`), evaluates the five stall
- * predicates in spec Section 7, and writes a `claim-stalled` audit atom
- * plus an atomic state transition for each. No adapter dispatch. The
- * phase holds no locks across an external call -- every stall
- * transition is a single AtomStore put-then-update.
+ * predicates, and writes a `claim-stalled` audit atom plus an atomic
+ * state transition for each. No adapter dispatch. The phase holds no
+ * locks across an external call -- every stall transition is a single
+ * AtomStore put-then-update.
  *
  * Phase B drains the stalled queue: it queries `state='stalled'` claims,
  * checks the recovery cap, and either escalates (write
@@ -47,11 +47,11 @@
  * policy atoms (cadence + grace windows + verifier-failure cap) via
  * the `resolveX` readers in `claim-reaper-config`; the recovery cap +
  * deadline extension flow through the same readers. The budget tier
- * ladder is a hardcoded mapping `default -> raised -> max -> max`,
- * mirroring spec Section 9; an org-ceiling deployment that seeds a
- * `pol-claim-budget-tier-emergency` atom can extend the tier set
- * without touching this file (the new tier is registered via canon;
- * the ladder reads existing tier names off the claim and bumps within
+ * ladder is a mapping `default -> raised -> max -> max`; an org-ceiling
+ * deployment that seeds a `pol-claim-budget-tier-emergency` atom can
+ * extend the tier set without touching this file (the new tier is
+ * registered via canon; the ladder reads existing tier names off the
+ * claim and bumps within
  * the substrate-known sequence).
  *
  * Concurrency model
@@ -115,8 +115,9 @@ const PAGE_SIZE = 500;
 const PAGE_LIMIT = 200;
 
 // Recovery brief inline size cap (16 KiB). When the composed brief
-// exceeds this we truncate the diff section; spilling to BlobStore is
-// reserved for the resume-strategy seam (PR6) and is out of scope here.
+// exceeds this we truncate the diff section; spilling to a content-
+// addressed BlobStore is reserved for a future resume-strategy seam
+// and is out of scope here.
 const RECOVERY_BRIEF_INLINE_CAP = 16_384;
 
 // Path for the default STOP sentinel file. Tests inject a predicate
@@ -174,8 +175,8 @@ function buildRecoveryBrief(
 /**
  * Optional injection points for the reaper's tick. Tests inject
  * predicates + adapter builders to drive deterministic recovery paths;
- * production callers (LoopRunner in PR2) inject the real STOP sentinel,
- * the principal-specific adapter factory, and the resume adapter.
+ * production callers inject the real STOP sentinel, the principal-
+ * specific adapter factory, and the resume adapter.
  */
 export interface RunClaimReaperTickOptions {
   /** Predicate consulted at tick entry. Default checks `.lag/STOP`. */
@@ -189,11 +190,10 @@ export interface RunClaimReaperTickOptions {
    */
   readonly buildAdapter?: () => AgentLoopAdapter;
   /**
-   * Optional resume-aware adapter (PR6 `ResumeAuthorAgentLoopAdapter`)
-   * consulted on first-recovery paths when the claim has a prior
-   * session atom. Reaper takes the resume path only when this is
-   * supplied AND `recovery_attempts === 1` (post-increment) AND
-   * `session_atom_ids.length > 0`.
+   * Optional resume-aware adapter consulted on first-recovery paths
+   * when the claim has a prior session atom. Reaper takes the resume
+   * path only when this is supplied AND `recovery_attempts === 1`
+   * (post-increment) AND `session_atom_ids.length > 0`.
    */
   readonly resumeAdapter?: AgentLoopAdapter;
 }
@@ -249,10 +249,10 @@ export async function runClaimReaperTick(
 
 /**
  * Walk all open work-claim atoms (state in `pending | executing |
- * attesting`), evaluate the five stall predicates from spec Section 7,
- * and atomically flip each stalled claim to `stalled` while writing a
- * `claim-stalled` audit atom carrying the snapshot of recovery_attempts
- * + verifier_failure_count.
+ * attesting`), evaluate the five stall predicates, and atomically flip
+ * each stalled claim to `stalled` while writing a `claim-stalled`
+ * audit atom carrying the snapshot of recovery_attempts +
+ * verifier_failure_count.
  *
  * Returns the list of claim atoms that were transitioned in this pass.
  * Idempotent: a claim already in a terminal state (or already stalled)
@@ -399,9 +399,9 @@ interface StallPolicies {
 
 /**
  * Evaluate the five predicates against a claim's metadata. Returns the
- * first triggered reason, or null when the claim is healthy. The order
- * mirrors spec Section 7; deadline-passed is checked first because it
- * is the cheapest predicate and fires across all open states.
+ * first triggered reason, or null when the claim is healthy.
+ * Deadline-passed is checked first because it is the cheapest
+ * predicate and fires across all open states.
  */
 function evaluateStallPredicates(
   atom: Atom,
@@ -707,21 +707,40 @@ function computeExtendedDeadline(now: Time, currentDeadline: Time, extensionMs: 
 }
 
 /**
- * Bump the budget tier per the substrate ladder. Reads the current
- * tier off the claim and returns the next tier in the canonical
- * sequence. The ladder saturates at `max` so an org-ceiling deployment
- * that wants a different ceiling adds a new tier (e.g. `emergency`)
- * via canon and adjusts the ladder mapping; in this PR the indie-floor
- * sequence is the canonical one.
+ * Indie-floor budget-tier ladder, ordered from cheapest to most
+ * expensive. Authored as an array (rather than an if-cascade) so a
+ * future canon-policy reader can supply the sequence without touching
+ * `bumpBudgetTier`: the function consults the array, locates the
+ * current tier, and advances by one index. The terminal element is
+ * the saturation ceiling for unknown tiers.
  *
- * Unknown tiers (custom canon-added tiers) saturate at `max` too --
- * the reaper does not invent new tier names.
+ * Adding a custom tier today is an edit to this constant. The
+ * canon-policy reader path (a `pol-claim-budget-tier-ladder` atom
+ * carrying the ordered list) is a reserved seam; the substrate does
+ * not synthesize it until a second use case requests it, per the
+ * apex-tunable-dials canon: preserve the seam, do not pre-build the
+ * dial infrastructure.
+ */
+const BUDGET_TIER_LADDER: readonly string[] = ['default', 'raised', 'max'];
+
+/**
+ * Bump the budget tier per the substrate ladder. Locates the current
+ * tier in `BUDGET_TIER_LADDER` and returns the next entry; saturates
+ * at the terminal ceiling for unknown tiers (the reaper never invents
+ * a tier name not in the ladder).
  */
 function bumpBudgetTier(current: string): string {
-  if (current === 'default') return 'raised';
-  if (current === 'raised') return 'max';
-  // max + any custom tier saturates at max.
-  return 'max';
+  const idx = BUDGET_TIER_LADDER.indexOf(current);
+  if (idx === -1) {
+    // Unknown tier: saturate at the terminal ceiling. A canon-added
+    // tier that is not yet in the ladder gets the most-conservative
+    // outcome (no silent uncapped escalation) until the array is
+    // updated.
+    return BUDGET_TIER_LADDER[BUDGET_TIER_LADDER.length - 1] ?? 'max';
+  }
+  // Saturate at the terminal element when already at the top.
+  const next = BUDGET_TIER_LADDER[idx + 1];
+  return next ?? BUDGET_TIER_LADDER[BUDGET_TIER_LADDER.length - 1] ?? 'max';
 }
 
 /**
@@ -864,11 +883,13 @@ function resultToSessionId(result: AgentLoopResult): AtomId | null {
 /**
  * Build the `AgentLoopInput` we pass to the recovery dispatch. The
  * substrate is mechanism-only here -- we do not synthesize a real
- * workspace, redactor, blob store, or budget cap; the caller (PR2's
- * LoopRunner wiring + the per-principal recovery driver in PR3+)
- * composes those properly. For PR1 the inputs that matter are the
- * principal + the prompt; everything else is a stub kept structurally
- * valid so the test adapters can record what was seen.
+ * workspace, redactor, blob store, or per-tier budget; the LoopRunner
+ * wiring composes those properly when it owns the adapter selection.
+ * For the reaper-internal placeholder we use a generous default
+ * (`max_turns: 50, max_wall_clock_ms: 30 min`) so a recovery dispatched
+ * before the full wiring is not silently capped at one turn. The
+ * per-tier budget ladder is read from canon policy by the caller, NOT
+ * encoded here; this function is mechanism-only by design.
  */
 function buildAdapterInput(host: Host, meta: WorkClaimMeta, prompt: string): AgentLoopInput {
   return {
@@ -879,7 +900,7 @@ function buildAdapterInput(host: Host, meta: WorkClaimMeta, prompt: string): Age
       planAtomId: meta.claim_id as AtomId,
       questionPrompt: prompt,
     },
-    budget: { max_turns: 1, max_wall_clock_ms: 60_000 } as never,
+    budget: { max_turns: 50, max_wall_clock_ms: 1_800_000 } as never,
     toolPolicy: { disallowedTools: [] },
     redactor: { redact: (s: string) => s } as never,
     blobStore: ({} as never),

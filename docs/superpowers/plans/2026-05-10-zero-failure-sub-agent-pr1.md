@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task includes a `canon-audit` step per canon `dev-implementation-canon-audit-loop`.
 
-**Goal:** Land the foundational substrate primitives of the zero-failure sub-agent system: a `work-claim` atom type, a token-and-principal-bound `dispatchSubAgent` / `markClaimComplete` contract, four reference verifier handlers, a two-phase claim reaper with bounded tiered recovery, nine canon policy atoms, and PreToolUse + redactor hardening. No principal-side wiring lands in PR1; legacy direct-dispatch paths continue to work unchanged.
+**Goal:** Land the foundational substrate primitives of the zero-failure sub-agent system: a `work-claim` atom type, a token-and-principal-bound `dispatchSubAgent` / `markClaimComplete` contract, four reference verifier handlers, a two-phase claim reaper with bounded tiered recovery, eleven canon policy atoms (the twelfth, `pol-loop-pass-claim-reaper-default`, is deferred), and PreToolUse + redactor hardening. No principal-side wiring lands in PR1; legacy direct-dispatch paths continue to work unchanged.
 
 **Architecture:** All new code is additive under `src/substrate/claim-contract.ts`, `src/substrate/claim-verifiers/`, and `src/runtime/loop/claim-reaper.ts`. Atoms persist via existing `AtomStore.put` with optimistic version checks (PR #197). Canon policies resolve via existing `kind`+`scope` arbitration (never by atom id). PR1 ships the mechanism only; PR2 wires it into `LoopRunner`; PR3-7 migrate the 5 LAG principals one at a time.
 
@@ -29,7 +29,7 @@
 | `.claude/hooks/enforce-claim-atom-writers.mjs` (new, ~80 LOC) | PreToolUse hook rejecting sub-agent principal writes of claim-lifecycle atoms. |
 | `src/redactors/default-patterns.ts` (modify) | Add `CLAIM_SECRET_TOKEN_PATTERN` to default redactor set. |
 | `bootstrap/canon/pol-claim-*.json` (new, 11 files for PR1) | 3 budget-tier atoms (default/raised/max) + 8 numeric-config atoms (cadence, recovery-max, deadline-extension, attesting-grace, pending-grace, verifier-timeout, verifier-failure-cap, session-post-finalize-grace). The `pol-loop-pass-claim-reaper-default.json` is deferred to PR2 per spec Section 13. |
-| `bootstrap/bootstrap-claim-contract-canon.mjs` (new, ~60 LOC) | One-shot script to seed the 9 atoms. |
+| `bootstrap/bootstrap-claim-contract-canon.mjs` (new, ~60 LOC) | One-shot script to seed the 11 atoms. |
 | `test/substrate/claim-contract.test.ts` (new, ~600 LOC) | Lifecycle, attestation, token, principal, deadline tests. |
 | `test/substrate/claim-verifiers.test.ts` (new, ~200 LOC) | Each verifier handler accept + ground-truth-mismatch paths. |
 | `test/runtime/loop/claim-reaper.test.ts` (new, ~400 LOC) | Phase A, Phase B, recovery ladder, STOP, concurrent locks. |

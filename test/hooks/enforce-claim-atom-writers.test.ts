@@ -262,8 +262,14 @@ describe('enforce-claim-atom-writers hook (tool-name variants)', () => {
   });
 });
 
-describe('enforce-claim-atom-writers hook (malformed payloads fail open)', () => {
-  it('fails open on malformed JSON payload', async () => {
+describe('enforce-claim-atom-writers hook (malformed payloads)', () => {
+  it('fails open on malformed JSON payload (parse error before tool-name match)', async () => {
+    /*
+     * A garbled stdin cannot be tied to a specific tool name, so the
+     * hook fails open at parse time per the original contract. The
+     * deny-on-malformed posture activates only AFTER the tool name
+     * has been identified as an atom-store write.
+     */
     const child = spawn('node', [HOOK_PATH], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -276,20 +282,42 @@ describe('enforce-claim-atom-writers hook (malformed payloads fail open)', () =>
     expect(exitCode).toBe(0);
   });
 
-  it('allows missing tool_input', async () => {
+  it('allows missing tool_input on atom-store call (no atom to inspect; downstream catches the shape error)', async () => {
+    /*
+     * tool_input absent is functionally indistinguishable from an
+     * AtomStore call that the harness invoked without payload (e.g.
+     * a different verb). The hook narrows itself to AtomStore.put-
+     * shaped invocations; an empty tool_input does not look like a
+     * lifecycle write and the hook lets downstream validation handle
+     * it. This is the LAST remaining fail-open path; once the call
+     * has tool_input.atom set, ambiguity becomes denial.
+     */
     const result = await runHook({ tool_name: 'mcp__atomstore__put' });
     expect(result.decision).toBe('allow');
   });
 
-  it('allows tool_input without atom', async () => {
+  it('blocks atom-store call with present tool_input but missing atom field', async () => {
+    /*
+     * Once tool_input is set, the hook treats it as a definite write
+     * surface. A present tool_input that does NOT carry an `atom`
+     * key is exactly the alternate-write-shape vector CR flagged;
+     * deny is the correct posture.
+     */
     const result = await runHook({
       tool_name: 'mcp__atomstore__put',
       tool_input: { other: 'thing' },
     });
-    expect(result.decision).toBe('allow');
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/missing or not an object/i);
   });
 
-  it('allows atom without a type', async () => {
+  it('allows atom without a type (out of scope; not a claim-lifecycle write)', async () => {
+    /*
+     * The hook is narrowly scoped to the four claim-lifecycle types.
+     * A typed atom without the type field reaches downstream
+     * validation; the hook does not synthesize denials for shapes
+     * outside its scope.
+     */
     const result = await runHook({
       tool_name: 'mcp__atomstore__put',
       tool_input: { atom: { principal_id: 'code-author' } },
@@ -297,19 +325,19 @@ describe('enforce-claim-atom-writers hook (malformed payloads fail open)', () =>
     expect(result.decision).toBe('allow');
   });
 
-  it('allows atom without a principal_id (defensive; missing field is not a sub-agent bypass)', async () => {
+  it('blocks claim-lifecycle atom missing principal_id (no authorization signal available)', async () => {
     /*
-     * If a payload reaches the hook with no principal_id, the call is
-     * malformed and downstream validation will reject it; the hook
-     * stays out of the way rather than risk false-positive blocks on
-     * shape it cannot interpret. The substrate writer mints
-     * principal_id deterministically, so any path reaching the hook
-     * without one is not the bypass surface this hook guards.
+     * Once the atom is identified as a claim-lifecycle write, a
+     * missing principal_id is unauthorizable; the hook cannot rule
+     * the write either way and the deny-by-default posture engages.
+     * Letting it through would mint a claim-lifecycle atom outside
+     * the allowlist semantics.
      */
     const result = await runHook({
       tool_name: 'mcp__atomstore__put',
       tool_input: { atom: { type: 'claim-stalled' } },
     });
-    expect(result.decision).toBe('allow');
+    expect(result.decision).toBe('block');
+    expect(result.reason).toMatch(/missing principal_id/i);
   });
 });

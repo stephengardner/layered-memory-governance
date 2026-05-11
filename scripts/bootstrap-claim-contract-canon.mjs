@@ -83,6 +83,27 @@ function diffPolicyAtom(existing, expected) {
         + `expected=${JSON.stringify(expected.principal_id)}`,
     );
   }
+  // Reader-eligibility fields. The runtime resolvers
+  // (resolveBudgetTier, readNumericClaimPolicyByKind) SKIP atoms whose
+  // taint != 'clean' or superseded_by is non-empty. A stored atom that
+  // looks shape-identical but is tainted/superseded would make the
+  // bootstrap log "already in sync" while runtime resolution still
+  // fails closed. Diff these so the drift surface matches the read
+  // eligibility surface.
+  if ((existing.taint ?? 'clean') !== (expected.taint ?? 'clean')) {
+    diffs.push(
+      `taint: stored=${JSON.stringify(existing.taint)} `
+        + `expected=${JSON.stringify(expected.taint)}`,
+    );
+  }
+  const eSup = existing.superseded_by ?? [];
+  const xSup = expected.superseded_by ?? [];
+  if (JSON.stringify(eSup) !== JSON.stringify(xSup)) {
+    diffs.push(
+      `superseded_by: stored=${JSON.stringify(eSup)} `
+        + `expected=${JSON.stringify(xSup)}`,
+    );
+  }
   const ev = existing.provenance ?? {};
   const xv = expected.provenance;
   if (ev.kind !== xv.kind) {
