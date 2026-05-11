@@ -348,8 +348,28 @@ export async function runPipeline(
     });
     await host.atoms.put(pipelineAtom);
   } else if (options.resumeFromStage === undefined) {
-    // No resume requested but the atom already exists: a fresh-run
-    // collision. Halt rather than overwrite history.
+    /*
+     * No resume requested but the atom already exists: a fresh-run
+     * collision. Halt rather than overwrite history.
+     *
+     * Special case: if the existing pipeline is already in
+     * pipeline_state='abandoned', preserve the operator-scoped
+     * terminal reason in the return value so callers and audit
+     * consumers can distinguish the abandon-detected branch from a
+     * generic fresh-run collision (CR PR #402 outside-diff finding).
+     * Mirrors the race-backstop in the main loop below.
+     */
+    if (existingPipelineAtom.pipeline_state === 'abandoned') {
+      const meta = (existingPipelineAtom.metadata as Record<string, unknown>) ?? {};
+      const abandonAtomIdRaw = meta.abandon_atom_id;
+      if (typeof abandonAtomIdRaw === 'string' && abandonAtomIdRaw.length > 0) {
+        return {
+          kind: 'abandoned',
+          pipelineId,
+          abandonAtomId: abandonAtomIdRaw as AtomId,
+        };
+      }
+    }
     return { kind: 'halted', pipelineId };
   }
 
@@ -527,6 +547,32 @@ export async function runPipeline(
       && currentState !== 'running'
       && currentState !== 'hil-paused'
     ) {
+      /*
+       * Race-backstop branch: another writer flipped pipeline_state
+       * into a terminal value between the abandon-poll above and this
+       * re-read. If the new state is 'abandoned', preserve the
+       * operator-scoped terminal reason in the return value rather
+       * than collapsing into 'halted' (which is reserved for the
+       * global kill-switch path). Downstream callers and audit
+       * consumers can then distinguish operator abandon from STOP
+       * even when the abandon atom did not appear in our poll window
+       * (CR PR #402 outside-diff finding).
+       */
+      if (currentState === 'abandoned') {
+        const freshMeta = (fresh.metadata as Record<string, unknown>) ?? {};
+        const abandonAtomIdRaw = freshMeta.abandon_atom_id;
+        if (typeof abandonAtomIdRaw === 'string' && abandonAtomIdRaw.length > 0) {
+          return {
+            kind: 'abandoned',
+            pipelineId,
+            abandonAtomId: abandonAtomIdRaw as AtomId,
+          };
+        }
+        // No abandon_atom_id in metadata (unusual: writer side stamps
+        // it on every flip). Fall through to halted as the safe
+        // default; audit consumers can still observe the
+        // pipeline_state='abandoned' on the atom itself.
+      }
       return { kind: 'halted', pipelineId };
     }
     // Stage-level claim: a peer tick that already advanced past index

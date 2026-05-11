@@ -417,6 +417,19 @@ test.describe('pipeline detail abandon control', () => {
      * after the refetch.
      */
     await expect(page.getByTestId('pipeline-detail-abandon-modal')).toHaveCount(0, { timeout: 10_000 });
+
+    /*
+     * Verify the post-submit refetch actually happened (CR PR #402
+     * nitpick). The success handler invalidates the pipeline-detail
+     * query; without a refetch the UI would still show 'running' and
+     * the operator would not see the state flip the substrate just
+     * recorded. Asserts on the wire (detailFetches >= 2) AND the
+     * rendered state pill so a broken invalidate path fails this
+     * test loudly rather than passing on modal-close alone.
+     */
+    await expect.poll(() => detailFetches, { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
+    const statePill = page.getByTestId('pipeline-detail-state');
+    await expect(statePill).toHaveAttribute('data-pipeline-state', 'abandoned', { timeout: 5_000 });
   });
 
   test('a forbidden response surfaces inline error without closing the modal', async ({ page }) => {

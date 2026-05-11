@@ -2645,6 +2645,136 @@ describe('runPipeline', () => {
       expect(result.kind).toBe('completed');
     });
 
+    it('returns kind="abandoned" via the race backstop when pipeline_state is already abandoned', async () => {
+      /*
+       * Race-backstop path: a concurrent writer flipped the pipeline
+       * atom to pipeline_state='abandoned' between the abandon-poll
+       * and the claim-before-mutate re-read AFTER our findPipelineAbandonAtom
+       * walk failed (e.g., the atom landed in a paginated section past
+       * our walk cap). The runner's claim-check path observes the
+       * terminal state and must preserve the 'abandoned' return kind
+       * rather than collapsing into 'halted' (which is the global
+       * kill-switch reason).
+       *
+       * Fixture: a memory host whose pipeline atom is already at
+       * pipeline_state='abandoned' from a prior writer; no
+       * pipeline-abandoned atom is added (forces the
+       * findPipelineAbandonAtom poll to miss + the claim-before-mutate
+       * re-read to catch). Tests the CR PR #402 outside-diff finding.
+       */
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['stage-a']);
+      const pipelineId = 'pipeline-corr-abandon-backstop';
+      // Seed the pipeline atom directly in abandoned state with the
+      // metadata.abandon_atom_id set, simulating a writer-side flip
+      // that the abandon-atom poll missed.
+      await host.atoms.put({
+        schema_version: 1,
+        id: pipelineId as AtomId,
+        content: '',
+        type: 'pipeline',
+        layer: 'L0',
+        provenance: {
+          kind: 'observation',
+          source: { tool: 'test-fixture' },
+          derived_from: [],
+        },
+        confidence: 1,
+        created_at: NOW,
+        last_reinforced_at: NOW,
+        expires_at: null,
+        supersedes: [],
+        superseded_by: [],
+        scope: 'project',
+        signals: {
+          agrees_with: [],
+          conflicts_with: [],
+          validation_status: 'unchecked',
+          last_validated_at: null,
+        },
+        principal_id: 'cto-actor' as PrincipalId,
+        taint: 'clean',
+        pipeline_state: 'abandoned',
+        metadata: {
+          abandon_atom_id: 'pipeline-abandoned-prior-1',
+        },
+      });
+      const stages = [
+        mkStage<unknown, { a: number }>('stage-a', () => ({ a: 1 })),
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-abandon-backstop',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      // The race-backstop must surface 'abandoned' kind, NOT 'halted',
+      // and carry the abandon_atom_id from the pipeline metadata.
+      expect(result.kind).toBe('abandoned');
+      if (result.kind === 'abandoned') {
+        expect(result.abandonAtomId).toBe('pipeline-abandoned-prior-1');
+      }
+    });
+
+    it('falls through to halted when pipeline_state is abandoned but abandon_atom_id is missing', async () => {
+      /*
+       * Defensive fallback: if for any reason the pipeline atom is in
+       * pipeline_state='abandoned' but metadata.abandon_atom_id is
+       * absent (unusual: writer side stamps it on every flip), the
+       * race-backstop falls through to halted rather than fabricating
+       * an atom id. The pipeline_state='abandoned' is still observable
+       * on disk for audit consumers.
+       */
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['stage-a']);
+      const pipelineId = 'pipeline-corr-abandon-no-id';
+      await host.atoms.put({
+        schema_version: 1,
+        id: pipelineId as AtomId,
+        content: '',
+        type: 'pipeline',
+        layer: 'L0',
+        provenance: {
+          kind: 'observation',
+          source: { tool: 'test-fixture' },
+          derived_from: [],
+        },
+        confidence: 1,
+        created_at: NOW,
+        last_reinforced_at: NOW,
+        expires_at: null,
+        supersedes: [],
+        superseded_by: [],
+        scope: 'project',
+        signals: {
+          agrees_with: [],
+          conflicts_with: [],
+          validation_status: 'unchecked',
+          last_validated_at: null,
+        },
+        principal_id: 'cto-actor' as PrincipalId,
+        taint: 'clean',
+        pipeline_state: 'abandoned',
+        // No abandon_atom_id in metadata.
+        metadata: {},
+      });
+      const stages = [
+        mkStage<unknown, { a: number }>('stage-a', () => ({ a: 1 })),
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-abandon-no-id',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      // No abandon_atom_id -> fall through to halted.
+      expect(result.kind).toBe('halted');
+    });
+
     it('ignores abandon atoms targeting a different pipeline', async () => {
       const host = createMemoryHost();
       await seedPauseNeverPolicies(host, ['stage-a']);
