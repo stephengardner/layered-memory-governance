@@ -166,7 +166,7 @@ function PipelineDetailBody({
     ? pipelineStateTone(pipeline.pipeline_state)
     : trueOutcomeTone(trueOutcome);
   // Use trueOutcome as the label whenever it diverges from the raw
-  // pipeline_state — both for noop (succeeded but produced 0 PRs) and
+  // pipeline_state -- both for noop (succeeded but produced 0 PRs) and
   // for failed (completed pipeline whose dispatch_summary.failed > 0).
   // Without the failed branch the pill renders a RED tone with the
   // text "completed", which is a visual lie: red + completed reads as
