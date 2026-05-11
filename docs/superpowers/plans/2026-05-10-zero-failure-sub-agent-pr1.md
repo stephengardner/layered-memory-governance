@@ -1,4 +1,4 @@
-# Zero-Failure Sub-Agent Substrate — PR1 Implementation Plan
+# Zero-Failure Sub-Agent Substrate -- PR1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task includes a `canon-audit` step per canon `dev-implementation-canon-audit-loop`.
 
@@ -28,7 +28,7 @@
 | `src/runtime/loop/claim-reaper.ts` (new, ~250 LOC) | `runClaimReaperTick`, `detectStalledClaims`, `drainStalledQueue`, `recoverStalledClaim`. |
 | `.claude/hooks/enforce-claim-atom-writers.mjs` (new, ~80 LOC) | PreToolUse hook rejecting sub-agent principal writes of claim-lifecycle atoms. |
 | `src/redactors/default-patterns.ts` (modify) | Add `CLAIM_SECRET_TOKEN_PATTERN` to default redactor set. |
-| `bootstrap/canon/pol-claim-*.json` (new, 9 files) | The nine policy atoms with spec-mandated defaults. |
+| `bootstrap/canon/pol-claim-*.json` (new, 11 files for PR1) | 3 budget-tier atoms (default/raised/max) + 8 numeric-config atoms (cadence, recovery-max, deadline-extension, attesting-grace, pending-grace, verifier-timeout, verifier-failure-cap, session-post-finalize-grace). The `pol-loop-pass-claim-reaper-default.json` is deferred to PR2 per spec Section 13. |
 | `bootstrap/bootstrap-claim-contract-canon.mjs` (new, ~60 LOC) | One-shot script to seed the 9 atoms. |
 | `test/substrate/claim-contract.test.ts` (new, ~600 LOC) | Lifecycle, attestation, token, principal, deadline tests. |
 | `test/substrate/claim-verifiers.test.ts` (new, ~200 LOC) | Each verifier handler accept + ground-truth-mismatch paths. |
@@ -456,7 +456,7 @@ describe('claim-reaper-config readers', () => {
 
 - [ ] **Step 2: Run test to verify it fails.** Expected: `Cannot find module`.
 
-- [ ] **Step 3: Implement** — eight `resolveX` functions following the same pattern (find policy by kind, validate numeric, fail-closed). Extract a small `readNumericKind(host, kind)` private helper to avoid duplication (per canon `dev-code-duplication-extract-at-n-2`).
+- [ ] **Step 3: Implement** -- eight `resolveX` functions following the same pattern (find policy by kind, validate numeric, fail-closed). Extract a small `readNumericKind(host, kind)` private helper to avoid duplication (per canon `dev-code-duplication-extract-at-n-2`).
 
 - [ ] **Step 4: Run test, pass.**
 
@@ -477,7 +477,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(substrate): add claim-reap
 
 **Security + correctness considerations:**
 - `VerifierResult.ok=true` means the verifier observed the work-item in an expected terminal state; this is the load-bearing claim that flips a claim to `complete`. Wrong implementations risk a false-accept (substrate honors a false attestation).
-- Verifier handlers MUST be pure with respect to the substrate's AtomStore — they query ground truth from external/authoritative sources, NOT from atoms whose write could be forged.
+- Verifier handlers MUST be pure with respect to the substrate's AtomStore -- they query ground truth from external/authoritative sources, NOT from atoms whose write could be forged.
 
 - [ ] **Step 1: Write failing test** for the type shape (compile-time, plus an example implementation conforming).
 
@@ -587,7 +587,7 @@ describe('verifyPrTerminal', () => {
 
 - [ ] **Step 4: Pass.**
 
-- [ ] **Step 5: Canon-audit** (with spec Section 11 threat model: "Compromised sub-agent attests 'complete' with falsified observed state — verifier MUST query authoritative source").
+- [ ] **Step 5: Canon-audit** (with spec Section 11 threat model: "Compromised sub-agent attests 'complete' with falsified observed state -- verifier MUST query authoritative source").
 
 - [ ] **Step 6: Commit.**
 
@@ -699,7 +699,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(substrate): add verifier r
 - Test: `test/substrate/claim-token.test.ts`
 
 **Security + correctness considerations:**
-- Token generation: `crypto.randomBytes(32).toString('base64url')` — 256 bits, URL-safe encoding, no padding.
+- Token generation: `crypto.randomBytes(32).toString('base64url')` -- 256 bits, URL-safe encoding, no padding.
 - Constant-time comparison: use `crypto.timingSafeEqual` after converting strings to Buffers of equal length; reject lengths-mismatch FIRST with `false`.
 - Token rotation is a separate `rotateToken` helper that returns a fresh 32-byte token; same generator.
 
@@ -739,8 +739,8 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(substrate): add claim-secr
 ## Task 11: dispatchSubAgent (validation gates + atom write + adapter invoke)
 
 **Files:**
-- Create: `src/substrate/claim-contract.ts` (initial — only `dispatchSubAgent` in this task; `markClaimComplete` in Task 12)
-- Test: `test/substrate/claim-contract.test.ts` (initial — `describe('dispatchSubAgent')`)
+- Create: `src/substrate/claim-contract.ts` (initial -- only `dispatchSubAgent` in this task; `markClaimComplete` in Task 12)
+- Test: `test/substrate/claim-contract.test.ts` (initial -- `describe('dispatchSubAgent')`)
 
 **Security + correctness considerations:**
 - STOP check at top of function (per spec Section 10): if `.lag/STOP` active, throw `stop-sentinel-active`. No atom write.
@@ -749,7 +749,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(substrate): add claim-secr
 - Deadline future-dated: `parseISO(brief.deadline_ts) > host.clock.now()`. Throw `deadline-already-past`.
 - Budget tier resolution: via Task 2's `resolveBudgetTier`. Throw `unknown-budget-tier` on miss.
 - Prompt size: `> 16_384` chars spills to BlobStore via `host.blobStore.put`. Token is generated via Task 10 helpers. The work-claim atom is written first (state=`pending`), then the adapter is invoked, then claim_state is flipped to `executing` via atomic-version-checked `put`.
-- All atom writes use `provenance.kind: 'machine-dispatched'` and chain `derived_from` to the parent intent.
+- All atom writes use `provenance.kind: 'machine-dispatched'`. The work-claim atom's `provenance.derived_from` is `[parent_claim_id ?? caller_seed_intent_id]` (caller passes a `seed_intent_id` via DispatchSubAgentInput; defaults to the caller's last operator-intent atom in the call site). `provenance.source_chain` is inherited from the caller per existing atom-write pattern. Every subsequent attestation atom carries `provenance.derived_from: [claim_id]`.
 
 - [ ] **Step 1: Write the failing test** covering all 6 pre-dispatch gates + the happy path.
 
@@ -789,15 +789,52 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(substrate): add dispatchSu
 - Test: `test/substrate/claim-contract.test.ts` (add `describe('markClaimComplete')`)
 
 **Security + correctness considerations:**
-- 9 validation gates in order per spec Section 6 (STOP, claim-lookup, state-guard, token-match constant-time, principal-match, identifier-match, kind-match, transition-to-attesting, verifier-dispatch).
-- Verifier dispatch wrapped in `Promise.race` against `pol-claim-verifier-timeout-ms` (default 30s). Timeout returns `verifier-timeout`; throw returns `verifier-error`.
+
+9 validation gates in this exact order per spec Section 6 step 9 (subagent MUST NOT reorder or skip):
+
+1. **STOP check.** `.lag/STOP` active? Write `claim-attestation-rejected` with reason `stop-sentinel`; return `{ accepted: false, reason: "stop-sentinel" }`. Audit trail captures attempts during STOP.
+2. **Claim lookup.** AtomStore.get(claim_id) returns null? `claim-not-found`.
+3. **State guard.** `claim.metadata.work_claim.claim_state` not in `{executing, attesting}`? If `complete` or `abandoned` → write `claim-attestation-rejected` with reason `claim-already-terminal` AND send `principal-misbehavior` actor-message via `host.notifier.telegraph`.
+4. **Token match.** Use `crypto.timingSafeEqual` after converting both tokens to Buffers of equal length; reject length-mismatch FIRST with `false` (no throw). Mismatch → `claim-attestation-rejected` reason `token-mismatch`.
+5. **Principal match.** `caller_principal_id !== claim.metadata.work_claim.dispatched_principal_id`? `claim-attestation-rejected` reason `principal-mismatch`.
+6. **Identifier match.** `attestation.terminal_identifier !== claim.metadata.work_claim.brief.expected_terminal.identifier`? `claim-attestation-rejected` reason `identifier-mismatch`.
+7. **Kind match.** `attestation.terminal_kind !== claim.metadata.work_claim.brief.expected_terminal.kind`? `claim-attestation-rejected` reason `kind-mismatch`.
+8. **Transition to attesting.** Atomic-version-checked put: claim_state -> `attesting`.
+9. **Verifier dispatch.** `Promise.race(verifier(...), timeout(pol-claim-verifier-timeout-ms))`:
+   - ok=true: `claim-attestation-accepted` + flip state `complete` + reset `verifier_failure_count` to 0 in same atomic put.
+   - ok=false: `claim-attestation-rejected` reason `ground-truth-mismatch`; state stays `attesting`; set `last_attestation_rejected_at`; `verifier_failure_count` NOT incremented.
+   - throw: `claim-attestation-rejected` reason `verifier-error`; `verifier_failure_count++`; if `>= pol-claim-verifier-failure-cap` flip state to `stalled` directly.
+   - timeout: same as throw but reason `verifier-timeout`.
+
+Every rejection writes a `claim-attestation-rejected` atom with `provenance.derived_from: [claim_id]`.
 - On `ok: true`, the same atomic put writes `claim-attestation-accepted`, flips state to `complete`, AND resets `verifier_failure_count` to 0 (per spec v4 fix).
 - On `ok: false` (ground-truth-mismatch), state stays `attesting`, `last_attestation_rejected_at` is set, `verifier_failure_count` is NOT incremented (mismatch is signal, not infrastructure failure).
 - On throw/timeout, state stays `attesting`, `last_attestation_rejected_at` is set, `verifier_failure_count++`. If count >= cap, flip state straight to `stalled`.
 - Every rejection writes a `claim-attestation-rejected` atom with `provenance.derived_from: [claim_id]`.
 - Post-terminal attest writes `claim-attestation-rejected` AND sends `principal-misbehavior` actor-message via `host.notifier`.
 
-- [ ] **Step 1: Write failing tests** covering each of the 10 rejection reasons + happy path + post-terminal misbehavior path.
+- [ ] **Step 1: Write failing tests** covering each of the 10 rejection reasons + happy path + post-terminal misbehavior path. Include the explicit Notifier assertion:
+
+```ts
+it('rejects post-terminal attest AND fires principal-misbehavior actor-message', async () => {
+  // ... setup: claim already complete
+  const notifierSpy = vi.spyOn(host.notifier, 'telegraph');
+  const result = await markClaimComplete({ claim_id, claim_secret_token, caller_principal_id, attestation }, host);
+  expect(result).toEqual({ accepted: false, reason: 'claim-already-terminal' });
+  expect(notifierSpy).toHaveBeenCalledWith(expect.objectContaining({
+    kind: 'principal-misbehavior',
+    payload: expect.objectContaining({ claim_id, caller_principal_id }),
+  }));
+});
+
+it('writes claim-attestation-rejected with provenance.derived_from=[claim_id] on every rejection path', async () => {
+  // ... run each of the 10 rejection paths, assert atom written with chain
+  const rejections = await host.atomStore.find({ type: 'claim-attestation-rejected' });
+  for (const atom of rejections) {
+    expect(atom.provenance.derived_from).toContain(claim_id);
+  }
+});
+```
 
 - [ ] **Steps 2-6:** TDD cycle + canon-audit with full spec Section 11 threat model + commit.
 
@@ -828,7 +865,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(substrate): add buildWorkC
 ## Task 14: detectStalledClaims (Phase A of reaper)
 
 **Files:**
-- Create: `src/runtime/loop/claim-reaper.ts` (initial — only `detectStalledClaims` in this task)
+- Create: `src/runtime/loop/claim-reaper.ts` (initial -- only `detectStalledClaims` in this task)
 - Test: `test/runtime/loop/claim-reaper.test.ts`
 
 **Security + correctness considerations:**
@@ -836,7 +873,15 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(substrate): add buildWorkC
 - Stall conditions are the 5 enumerated in spec Section 7 Phase A. Each is a pure predicate against the claim's metadata + canon-policy.
 - Atomic-version-check failure on `put` is a no-op (another reaper handled it); not an error.
 
-- [ ] **Step 1: Failing test** covering each of the 5 stall conditions + the session-finalize debounce + deadline-passed + verifier-failure-cap.
+- [ ] **Step 1: Failing test** covering each of the 5 stall conditions + the session-finalize debounce + deadline-passed + verifier-failure-cap. Explicit edge cases for the debounce:
+
+```ts
+it('does NOT flag executing claim stalled when latest_session_finalized_at is null (no session has finalized yet)', async () => {
+  // claim with all sessions still in-flight -> not stalled
+});
+it('does NOT flag executing claim stalled when latest_session_finalized_at is 10s ago (within 30s grace)', async () => { });
+it('DOES flag executing claim stalled when latest_session_finalized_at is 60s ago (past grace)', async () => { });
+```
 
 - [ ] **Steps 2-6:** TDD + canon-audit + commit.
 
@@ -933,7 +978,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(hooks): enforce substrate-
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { redactDefault } from '../../src/redactors/default-patterns.js';
+import { redactDefault, redactAgentTurnAtom } from '../../src/redactors/default-patterns.js';
 
 describe('CLAIM_SECRET_TOKEN_PATTERN', () => {
   it('strips labeled tokens', () => {
@@ -949,6 +994,28 @@ describe('CLAIM_SECRET_TOKEN_PATTERN', () => {
     const short = 'A'.repeat(42);
     expect(redactDefault(short)).toBe(short);
   });
+  it('strips token from agent-turn atom llm_input/llm_output/tool_calls', () => {
+    const token = 'B'.repeat(43);
+    const atom = {
+      type: 'agent-turn',
+      metadata: {
+        agent_turn: {
+          llm_input: `here is the token ${token}`,
+          llm_output: `received claim_secret_token: ${token}`,
+          tool_calls: [{ name: 'echo', args: { msg: token } }],
+        },
+      },
+    };
+    const redacted = redactAgentTurnAtom(atom);
+    expect(redacted.metadata.agent_turn.llm_input).not.toContain(token);
+    expect(redacted.metadata.agent_turn.llm_output).not.toContain(token);
+    expect(JSON.stringify(redacted.metadata.agent_turn.tool_calls)).not.toContain(token);
+  });
+  it('documents the false-positive trade: SHA-256 hex (64 chars) and JWT signatures are redacted', () => {
+    const sha256 = 'a'.repeat(64);
+    expect(redactDefault(sha256)).toContain('[REDACTED:CLAIM_TOKEN]');
+    // acceptable trade per spec Section 11; this test exists to document the choice, not to celebrate it.
+  });
 });
 ```
 
@@ -960,7 +1027,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(redactors): add claim_secr
 
 ---
 
-## Task 19: Nine canon policy atoms + bootstrap script
+## Task 19: Eleven canon policy atoms + bootstrap script (PR1 set; pol-loop-pass-claim-reaper-default deferred to PR2)
 
 **Files:**
 - Create: `bootstrap/canon/pol-claim-budget-tier-default.json`
@@ -977,7 +1044,7 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(redactors): add claim_secr
 - Create: `bootstrap/bootstrap-claim-contract-canon.mjs`
 - Test: `test/bootstrap/claim-contract-canon.test.mjs`
 
-Note: 9 numeric policies + 3 budget tier policies = 12 atom files total. Plan brief listed 9; the three budget tiers count as a sub-group in the spec.
+Note: PR1 ships 11 atoms total = 3 budget-tier atoms + 8 numeric-config atoms. The 12th atom (`pol-loop-pass-claim-reaper-default.json`) is deferred to PR2 per spec Section 13 because it gates LoopRunner wiring which is not part of PR1.
 
 **Security + correctness considerations:**
 - Each atom's `principal_id: 'apex-agent'`, `layer: 'L3'`, `confidence: 1.0`.
@@ -1015,7 +1082,17 @@ describe('bootstrap-claim-contract-canon', () => {
 });
 ```
 
-- [ ] **Steps 2-6:** Write atoms with the exact spec defaults. Bootstrap script. Test passes. Canon-audit + commit.
+- [ ] **Steps 2-6:** Write atoms with the exact spec defaults. Bootstrap script. Test passes. Canon-audit + commit. Add idempotency test:
+
+```ts
+it('is idempotent: running bootstrap twice produces no version bump on second run', async () => {
+  await execSync('node bootstrap/bootstrap-claim-contract-canon.mjs');
+  const firstVersions = await readAtomVersions();
+  await execSync('node bootstrap/bootstrap-claim-contract-canon.mjs');
+  const secondVersions = await readAtomVersions();
+  expect(secondVersions).toEqual(firstVersions);
+});
+```
 
 ```bash
 node ../../scripts/git-as.mjs lag-ceo add bootstrap/canon/pol-claim-*.json bootstrap/bootstrap-claim-contract-canon.mjs test/bootstrap/claim-contract-canon.test.mjs
@@ -1035,7 +1112,21 @@ node ../../scripts/git-as.mjs lag-ceo commit -m "feat(canon): seed 12 claim-cont
 - Also covers the ground-truth-mismatch path: fixture returns `OPEN`, attestation rejected with `ground-truth-mismatch`, claim stays `attesting`.
 - Validates the full atom chain landed: work-claim + claim-attestation-accepted (or -rejected) + provenance.derived_from linked.
 
-- [ ] **Step 1: Failing test** with the e2e scenarios.
+- [ ] **Step 1: Failing test** with the e2e scenarios; assert full atom chain landed:
+
+```ts
+it('end-to-end: dispatch -> attest accept -> complete', async () => {
+  const { claim_id, claim_secret_token } = await dispatchSubAgent(...);
+  await markClaimComplete({ claim_id, claim_secret_token, caller_principal_id: 'code-author', attestation: { terminal_kind: 'pr', terminal_identifier: '999', observed_state: 'MERGED' } }, host);
+  const claim = await host.atomStore.get(claim_id);
+  expect(claim.metadata.work_claim.claim_state).toBe('complete');
+  const acceptedAtom = (await host.atomStore.find({ type: 'claim-attestation-accepted' }))[0];
+  expect(acceptedAtom.provenance.derived_from).toContain(claim_id);
+});
+it('end-to-end: dispatch -> attest mismatch -> stays attesting', async () => {
+  // fixture returns OPEN; assert rejected atom + claim still attesting
+});
+```
 
 - [ ] **Steps 2-6:** TDD (test exists; just runs against the now-complete substrate from tasks 1-19). Canon-audit + commit.
 
