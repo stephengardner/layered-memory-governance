@@ -49,6 +49,11 @@ import {
 } from '../plans/pipeline-reaper.js';
 import { readReaperTtlsFromCanon } from './reaper-ttls.js';
 import { readPipelineReaperTtlsFromCanon } from './pipeline-reaper-ttls.js';
+import { readLoopPassClaimReaperFromCanon } from './loop-pass-claim-reaper.js';
+import {
+  runClaimReaperTick,
+  type RunClaimReaperTickResult,
+} from './claim-reaper.js';
 import {
   runPlanStateReconcileTick,
   type PlanReconcileTickResult,
@@ -99,6 +104,7 @@ export class LoopRunner {
       | 'runPlanObservationRefreshPass'
       | 'runPlanProposalNotifyPass'
       | 'runPrOrphanReconcilePass'
+      | 'runClaimReaperPass'
     >
   >;
   private readonly l2Engine: PromotionEngine;
@@ -240,6 +246,7 @@ export class LoopRunner {
       runPlanObservationRefreshPass: options.runPlanObservationRefreshPass ?? false,
       runPlanProposalNotifyPass: options.runPlanProposalNotifyPass ?? false,
       runPrOrphanReconcilePass: options.runPrOrphanReconcilePass ?? false,
+      runClaimReaperPass: options.runClaimReaperPass ?? false,
     };
     // Capture the refresher seam at construction time. Storing here
     // (vs. reading off `options` per tick) keeps the per-tick path
@@ -441,6 +448,7 @@ export class LoopRunner {
     let planObservationRefreshReport: LoopTickReport['planObservationRefreshReport'] = null;
     let planProposalNotifyReport: LoopTickReport['planProposalNotifyReport'] = null;
     let prOrphanReconcileReport: LoopTickReport['prOrphanReconcileReport'] = null;
+    let claimReaperReport: LoopTickReport['claimReaperReport'] = null;
 
     if (this.host.scheduler.killswitchCheck()) {
       killSwitchTriggered = true;
@@ -463,6 +471,7 @@ export class LoopRunner {
         planObservationRefreshReport,
         planProposalNotifyReport,
         prOrphanReconcileReport,
+        claimReaperReport,
       };
       this.lastReport = report;
       return report;
@@ -586,6 +595,36 @@ export class LoopRunner {
         this.errorCounter += 1;
         errors.push(
           `pipeline-reaper-pass: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    // --- Claim-reaper pass --------------------------------------------------
+    // Sequenced AFTER the pipeline-reaper pass. The claim-reaper
+    // operates on work-claim atoms (an orthogonal subgraph to plans
+    // and pipelines) so its ordering relative to the plan / pipeline
+    // reapers is independent in principle; placing it AFTER keeps
+    // tick output ordering consistent with the reaper family above.
+    //
+    // The pass is gated by canon `pol-loop-pass-claim-reaper-default`
+    // (re-read every tick), falling through to the constructor option
+    // `runClaimReaperPass`, falling through to a hardcoded `false`
+    // (indie-floor opt-in per the zero-failure-sub-agent-substrate
+    // spec). The claim-reaper module has its own STOP-sentinel gate
+    // inside `runClaimReaperTick` so a `.lag/STOP` arming during the
+    // tick produces a `halted: true` report rather than partial work.
+    //
+    // Independent try/catch so a claim-reaper throw does NOT
+    // short-circuit any later pass (plan-obs-refresh, reconcile,
+    // notify, pr-orphan). Mirrors the plan-reaper / pipeline-reaper
+    // catch shape above.
+    if (await this.shouldRunClaimReaperPass()) {
+      try {
+        claimReaperReport = await this.claimReaperPass();
+      } catch (err) {
+        this.errorCounter += 1;
+        errors.push(
+          `claim-reaper-pass: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
@@ -741,6 +780,7 @@ export class LoopRunner {
       planObservationRefreshReport,
       planProposalNotifyReport,
       prOrphanReconcileReport,
+      claimReaperReport,
     };
     this.lastReport = report;
 
@@ -812,6 +852,20 @@ export class LoopRunner {
         prOrphanReconcileReport.rateLimited,
       );
     }
+    if (claimReaperReport !== null) {
+      this.host.auditor.metric(
+        'loop.claim_reaper_detected',
+        claimReaperReport.detected,
+      );
+      this.host.auditor.metric(
+        'loop.claim_reaper_recovered',
+        claimReaperReport.recovered,
+      );
+      this.host.auditor.metric(
+        'loop.claim_reaper_escalated',
+        claimReaperReport.escalated,
+      );
+    }
 
     await this.host.auditor.log({
       kind: 'loop.tick',
@@ -869,6 +923,16 @@ export class LoopRunner {
               pr_orphan_failed: prOrphanReconcileReport.failedDispatches,
               pr_orphan_rate_limited: prOrphanReconcileReport.rateLimited,
               pr_orphan_idempotent_skips: prOrphanReconcileReport.idempotentSkips,
+            }
+          : {}),
+        ...(claimReaperReport !== null
+          ? {
+              claim_reaper_detected: claimReaperReport.detected,
+              claim_reaper_recovered: claimReaperReport.recovered,
+              claim_reaper_escalated: claimReaperReport.escalated,
+              ...(claimReaperReport.halted === true
+                ? { claim_reaper_halted: true }
+                : {}),
             }
           : {}),
       },
@@ -1241,6 +1305,85 @@ export class LoopRunner {
       failedDispatches: result.failedDispatches,
       rateLimited: result.rateLimited,
       skipped: result.skipped,
+    };
+  }
+
+  /**
+   * Resolve whether the claim-reaper pass should fire on this tick.
+   * Re-reads canon every tick so an operator edit to
+   * `pol-loop-pass-claim-reaper-default` takes effect on the NEXT
+   * pass without a daemon restart. Resolution order, highest first:
+   *
+   *   1. canon `pol-loop-pass-claim-reaper-default` (clean +
+   *      non-superseded directive atom). A malformed payload emits
+   *      a stderr warning from the reader and falls through.
+   *   2. `LoopOptions.runClaimReaperPass` constructor override
+   *      (CLI / env)
+   *   3. hardcoded `false` (indie-floor opt-in per the spec)
+   *
+   * Loud-at-boundaries: one line per pass naming the source so an
+   * operator scanning the log can see which path the loop chose.
+   * Goes to stderr so it does not pollute the structured tick stdout
+   * stream. Skip the log when the canon-or-option resolution is
+   * `false` (every tick: would flood stderr on the disabled path);
+   * log only when the pass actually runs.
+   */
+  private async shouldRunClaimReaperPass(): Promise<boolean> {
+    const fromCanon = await readLoopPassClaimReaperFromCanon(this.host);
+    let enabled: boolean;
+    let source: 'canon-policy' | 'options' | 'defaults';
+    if (fromCanon !== null) {
+      enabled = fromCanon.enabled;
+      source = 'canon-policy';
+    } else if (this.options.runClaimReaperPass) {
+      enabled = true;
+      source = 'options';
+    } else {
+      enabled = false;
+      source = 'defaults';
+    }
+    if (enabled) {
+      // eslint-disable-next-line no-console
+      console.error(`[claim-reaper] pass enabled via ${source}`);
+    }
+    return enabled;
+  }
+
+  /**
+   * Run one claim-reaper tick and shape the result into the per-tick
+   * report struct. Pure delegate to `runClaimReaperTick` in
+   * `./claim-reaper.ts`; LoopRunner adds scheduling + audit only. The
+   * reaper module reads its own canon policies for cadence + grace +
+   * recovery cap + budget tier ladder, so this method does not
+   * thread additional configuration -- mirrors the
+   * `planReconcilePass` / `planObservationRefreshPass` delegation
+   * shape.
+   *
+   * The reaper's own STOP-sentinel check inside `runClaimReaperTick`
+   * surfaces as `halted: true` in the returned struct; the tick
+   * report carries it through unchanged so an operator scanning
+   * tick output can see the kill-switch trip without inspecting the
+   * `.lag/STOP` file.
+   */
+  private async claimReaperPass(): Promise<
+    NonNullable<LoopTickReport['claimReaperReport']>
+  > {
+    const result: RunClaimReaperTickResult = await runClaimReaperTick(this.host);
+    // Only surface `halted` when actually true so the JSON tick
+    // report stays one-line cleaner on the common case (every
+    // non-STOP tick).
+    if (result.halted === true) {
+      return {
+        detected: result.detected,
+        recovered: result.recovered,
+        escalated: result.escalated,
+        halted: true,
+      };
+    }
+    return {
+      detected: result.detected,
+      recovered: result.recovered,
+      escalated: result.escalated,
     };
   }
 }
