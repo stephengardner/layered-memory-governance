@@ -67,6 +67,23 @@ interface ExecResult {
   readonly exitCode: number | null | undefined;
 }
 
+// No-prompt env override applied to every git spawn inside
+// applyDraftBranch. Forces git to skip its terminal prompt, the
+// platform credential-helper, and any inherited askpass shim so a
+// missing token fails fast (clean push-failed error) instead of
+// stalling on a GUI dialog. Mirrors the env shape that
+// scripts/lib/git-as-push-auth.mjs uses for the push path; kept
+// inline here because substrate code under src/ does not import
+// from scripts/.
+const NO_PROMPT_GIT_ENV: Readonly<NodeJS.ProcessEnv> = Object.freeze({
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_ASKPASS: '',
+  SSH_ASKPASS: '',
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'credential.helper',
+  GIT_CONFIG_VALUE_0: '',
+});
+
 // Coerce a possibly-undefined string-or-Buffer to a clean string.
 // Using `String(undefined)` here would yield the literal
 // 'undefined', which would flow into GitOpsError.stdout/stderr and
@@ -144,9 +161,17 @@ export interface ApplyDraftBranchInputs {
   readonly remote?: string;
   /**
    * Environment passed to git invocations. Primary use: setting
-   * GH_TOKEN or GIT_ASKPASS-backed credentials for the remote push
-   * under an App installation token. Inherits the parent env by
-   * default so operator-configured git tools continue to work.
+   * GH_TOKEN / token-bearing variables for the remote push under an
+   * App installation token. Inherits the parent env by default so
+   * operator-configured git tools continue to work.
+   *
+   * Note: GIT_TERMINAL_PROMPT, GIT_ASKPASS, SSH_ASKPASS, and the
+   * GIT_CONFIG_* slot-0 trio are always overridden to neutralize
+   * platform credential-manager dialogs (see the safeEnv override
+   * inside applyDraftBranch). Pass tokens via http.extraHeader,
+   * GH_TOKEN, or url.*.insteadOf instead of askpass shims; an
+   * askpass helper wired through this field will be silently
+   * cleared so the substrate's fail-fast posture holds.
    */
   readonly env?: NodeJS.ProcessEnv;
   /** Abort signal for kill-switch propagation. */
@@ -183,13 +208,23 @@ export async function applyDraftBranch(
   const baseBranch = inputs.baseBranch ?? 'main';
   const env = inputs.env ?? process.env;
 
+  // Force no-prompt fields onto the spawn env regardless of what caller
+  // passed. Caller's env is preserved for credential tokens, but the
+  // NO_PROMPT_GIT_ENV trio must always neutralize the platform
+  // credential helper so a missing token fails fast (clean
+  // push-failed error) instead of stalling on a GUI askpass dialog.
+  // Observed on Cursor-managed Windows hosts: bare git push silently
+  // hung ~30s waiting on the askpass helper, then surfaced as
+  // push-failed with no diagnostic stderr.
+  const safeEnv = { ...env, ...NO_PROMPT_GIT_ENV };
+
   const run = async (
     args: ReadonlyArray<string>,
     opts: { readonly input?: string } = {},
   ): Promise<ExecResult> => {
     return (await exec('git', ['-c', `user.name=${inputs.authorIdentity.name}`, '-c', `user.email=${inputs.authorIdentity.email}`, ...args], {
       cwd: inputs.repoDir,
-      env,
+      env: safeEnv,
       reject: false,
       ...(opts.input !== undefined ? { input: opts.input } : {}),
       ...(inputs.signal ? { cancelSignal: inputs.signal } : {}),
