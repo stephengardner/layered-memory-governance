@@ -1644,65 +1644,106 @@ async function handleAbandonPipeline(params: {
    *   - pipeline_state is NOT already terminal (abandoned, completed,
    *     failed)
    *
-   * On invariant violation we UNLINK the abandon atom we just wrote
-   * so an aborted abandon does not leave a dangling audit row that
-   * implies the pipeline transitioned when it did not. The caller
-   * gets a 409 'pipeline-abandon-conflict' so the UI surfaces the
-   * race loudly rather than silently retrying.
+   * On invariant violation OR any error in the re-read or final
+   * write, we UNLINK the abandon atom so an aborted abandon does not
+   * leave a dangling audit row that implies the pipeline transitioned
+   * when it did not. The substrate's runner re-walks the abandon
+   * atom on its next tick and would observe the orphaned write,
+   * halt the pipeline anyway, and report a successful abandon for
+   * what the operator saw as a failure -- the rollback wrapper here
+   * keeps that case from happening (CR finding on PR #402).
+   *
+   * The caller gets a 409 'pipeline-abandon-conflict' on the race
+   * case so the UI surfaces it loudly; for any other failure mode
+   * (file system error, JSON parse failure, etc.) the original error
+   * bubbles up after rollback so the operator sees the real cause.
    *
    * Mirrors the runner's claim-before-mutate posture from
    * src/runtime/planning-pipeline/runner.ts and the symmetric pattern
-   * in handleResumePipeline above.
+   * in handleResumePipeline above. handleResumePipeline can leak a
+   * resume atom on a post-write failure too -- a follow-up PR can
+   * apply the same rollback wrapper there for symmetry.
    */
   const pipelineFilename = atomFilenameFromId(params.pipeline_id);
-  const pipelineRaw = await readFile(join(ATOMS_DIR, pipelineFilename), 'utf8');
-  const pipelineAtomOnDisk = JSON.parse(pipelineRaw) as Atom & {
-    pipeline_state?: string;
-    metadata?: Record<string, unknown>;
-  };
-  if (
-    pipelineAtomOnDisk.pipeline_state === 'abandoned'
-    || pipelineAtomOnDisk.pipeline_state === 'completed'
-    || pipelineAtomOnDisk.pipeline_state === 'failed'
-  ) {
-    // Race lost: another writer moved the pipeline into a terminal
-    // state between our index read and our re-read. Unlink the
-    // freshly-minted abandon atom so the audit trail does not falsely
-    // imply we authorized the flip. Best-effort unlink; a failure
-    // here is logged but does not prevent surfacing the conflict to
-    // the caller.
-    try {
-      await fsWriteModule.unlink(join(ATOMS_DIR, abandonAtomFilename));
-    } catch (unlinkErr) {
-      console.warn(
-        `[backend] abandon race: pipeline ${params.pipeline_id} `
-        + `pipeline_state moved to ${pipelineAtomOnDisk.pipeline_state} between `
-        + `validation and re-check; abandon atom ${abandonAtomId} unlink failed: `
-        + `${(unlinkErr as Error).message}`,
+  try {
+    const pipelineRaw = await readFile(join(ATOMS_DIR, pipelineFilename), 'utf8');
+    const pipelineAtomOnDisk = JSON.parse(pipelineRaw) as Atom & {
+      pipeline_state?: string;
+      metadata?: Record<string, unknown>;
+    };
+    if (
+      pipelineAtomOnDisk.pipeline_state === 'abandoned'
+      || pipelineAtomOnDisk.pipeline_state === 'completed'
+      || pipelineAtomOnDisk.pipeline_state === 'failed'
+    ) {
+      // Race lost: another writer moved the pipeline into a terminal
+      // state between our index read and our re-read. Unlink the
+      // freshly-minted abandon atom so the audit trail does not
+      // falsely imply we authorized the flip. Best-effort unlink; a
+      // failure here is logged but does not prevent surfacing the
+      // conflict to the caller.
+      try {
+        await fsWriteModule.unlink(join(ATOMS_DIR, abandonAtomFilename));
+      } catch (unlinkErr) {
+        console.warn(
+          `[backend] abandon race: pipeline ${params.pipeline_id} `
+          + `pipeline_state moved to ${pipelineAtomOnDisk.pipeline_state} between `
+          + `validation and re-check; abandon atom ${abandonAtomId} unlink failed: `
+          + `${(unlinkErr as Error).message}`,
+        );
+      }
+      const err = Object.assign(
+        new Error(
+          `pipeline ${params.pipeline_id} moved into terminal state '${pipelineAtomOnDisk.pipeline_state}' `
+          + 'between validation and write; abandon atom unlinked',
+        ),
+        { code: 'pipeline-abandon-conflict' },
       );
+      throw err;
     }
-    const err = Object.assign(
-      new Error(
-        `pipeline ${params.pipeline_id} moved into terminal state '${pipelineAtomOnDisk.pipeline_state}' `
-        + 'between validation and write; abandon atom unlinked',
-      ),
-      { code: 'pipeline-abandon-conflict' },
+    pipelineAtomOnDisk.pipeline_state = 'abandoned';
+    pipelineAtomOnDisk.metadata = {
+      ...(pipelineAtomOnDisk.metadata ?? {}),
+      abandoned_at: now,
+      abandoned_by: params.actor_id,
+      abandon_reason: trimmedReason,
+      abandon_atom_id: abandonAtomId,
+    };
+    await fsWriteModule.writeFile(
+      join(ATOMS_DIR, pipelineFilename),
+      JSON.stringify(pipelineAtomOnDisk, null, 2),
+      'utf8',
     );
+  } catch (err) {
+    /*
+     * Post-write failure rollback: any error after the abandon atom
+     * was written but before the pipeline state was successfully
+     * flipped MUST unlink the abandon atom. Without this, the
+     * substrate runner's abandon-poll would observe the orphan atom
+     * and halt the pipeline on its next tick -- the operator saw a
+     * 500 error response but the pipeline actually got killed. That
+     * report-vs-reality mismatch is the failure mode CR flagged.
+     *
+     * The conflict-rung above already unlinks before throwing, so a
+     * 'pipeline-abandon-conflict' error here is benign (the unlink
+     * is a no-op). Best-effort: a failure to unlink is logged but
+     * does not mask the original error.
+     */
+    const e = err as Error & { code?: string };
+    if (e.code !== 'pipeline-abandon-conflict') {
+      try {
+        await fsWriteModule.unlink(join(ATOMS_DIR, abandonAtomFilename));
+      } catch (unlinkErr) {
+        console.warn(
+          `[backend] abandon rollback: pipeline ${params.pipeline_id} `
+          + `post-write failure '${(err as Error).message}'; `
+          + `abandon atom ${abandonAtomId} unlink failed: `
+          + `${(unlinkErr as Error).message}`,
+        );
+      }
+    }
     throw err;
   }
-  pipelineAtomOnDisk.pipeline_state = 'abandoned';
-  pipelineAtomOnDisk.metadata = {
-    ...(pipelineAtomOnDisk.metadata ?? {}),
-    abandoned_at: now,
-    abandoned_by: params.actor_id,
-    abandon_reason: trimmedReason,
-    abandon_atom_id: abandonAtomId,
-  };
-  await fsWriteModule.writeFile(
-    join(ATOMS_DIR, pipelineFilename),
-    JSON.stringify(pipelineAtomOnDisk, null, 2),
-    'utf8',
-  );
 
   // Silence unused-import warnings for length-floor / cap constants;
   // they ship as part of the public API so consumers (e.g. the future

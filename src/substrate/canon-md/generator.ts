@@ -69,6 +69,12 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'pipeline-audit-finding',
   'pipeline-failed',
   'pipeline-resume',
+  // Operator-initiated terminal record; positioned alongside the
+  // other pipeline lifecycle atoms so the deterministic-ordering
+  // guarantee covers it when a debug tooling path explicitly dumps
+  // non-L3 atoms (the canon applier filters to L3 so the rendered
+  // canon target never includes a pipeline-abandoned entry).
+  'pipeline-abandoned',
   // PR-orphan reconciler atoms (operational records, never L3 canon).
   // Listed here for deterministic ordering when a debug tool dumps
   // non-L3 atoms; the canon applier filters to L3 and these never

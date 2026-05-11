@@ -238,6 +238,30 @@ test.describe('pipeline detail abandon control', () => {
     await expect(abandonBtn).toBeEnabled();
   });
 
+  test('renders the Abandon button on a pending pipeline', async ({ page }) => {
+    /*
+     * The backend's pipeline-abandon validator accepts pending as an
+     * abandonable state (pending pipelines have not yet started; an
+     * early operator decision saves the cost). The UI predicate must
+     * mirror that contract; cited as a CR PR #402 finding -- locking
+     * pending in the test guarantees the predicate stays in sync.
+     */
+    await page.route('**/api/pipelines.detail', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(pipelineDetailBody({ state: 'running' })).replace(
+          /"pipeline_state":"running"/,
+          '"pipeline_state":"pending"',
+        ),
+      });
+    });
+    await page.goto(`/pipelines/${PIPELINE_ID}`);
+    const abandonBtn = page.getByTestId('pipeline-detail-abandon');
+    await expect(abandonBtn).toBeVisible({ timeout: 10_000 });
+    await expect(abandonBtn).toBeEnabled();
+  });
+
   test('hides the Abandon button when pipeline is already abandoned', async ({ page }) => {
     await stubPipelineDetail(page, 'abandoned');
     await page.goto(`/pipelines/${PIPELINE_ID}`);

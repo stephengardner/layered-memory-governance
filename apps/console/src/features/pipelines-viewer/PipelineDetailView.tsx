@@ -212,7 +212,11 @@ function PipelineDetailBody({
             lastSuccessAt={lastSuccessAt}
             testId="pipeline-detail-freshness"
           />
-          {(pipeline.pipeline_state === 'running' || pipeline.pipeline_state === 'hil-paused') && (
+          {(
+            pipeline.pipeline_state === 'pending'
+            || pipeline.pipeline_state === 'running'
+            || pipeline.pipeline_state === 'hil-paused'
+          ) && (
             <AbandonControl pipelineId={pipeline.id} />
           )}
         </div>
@@ -933,20 +937,45 @@ const ABANDON_REASON_MAX_LENGTH = 500;
  */
 function AbandonControl({ pipelineId }: { pipelineId: string }) {
   const qc = useQueryClient();
+  const actorId = useCurrentActorId();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [touched, setTouched] = useState(false);
 
   const abandonMutation = useMutation({
-    mutationFn: (params: { reason: string }) =>
-      abandonPipeline({ pipeline_id: pipelineId, reason: params.reason }),
+    mutationFn: (params: { reason: string }) => {
+      /*
+       * Client-side actor preflight. Mirrors the resume mutation
+       * pattern in StageCard: every console write surface that calls
+       * a canon-gated endpoint MUST run requireActorId(actorId)
+       * inside mutationFn so the UI fails closed when
+       * LAG_CONSOLE_ACTOR_ID is unset on the backend. The server-side
+       * 500 server-actor-unset is the authoritative gate; this
+       * pre-check surfaces the misconfiguration at click time instead
+       * of after the network round-trip (CR PR #402 finding).
+       */
+      requireActorId(actorId);
+      return abandonPipeline({ pipeline_id: pipelineId, reason: params.reason });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['pipeline', pipelineId] });
-      setOpen(false);
-      setReason('');
-      setTouched(false);
+      closeModal();
     },
   });
+
+  /*
+   * Shared close helper: reset both the local form state AND the
+   * TanStack Query mutation state so re-opening the modal after a
+   * 403/409 does not show the stale server error. Every close path
+   * (Escape, backdrop click, Cancel button, success handler) routes
+   * through this helper for symmetry (CR PR #402 finding).
+   */
+  const closeModal = () => {
+    setOpen(false);
+    setReason('');
+    setTouched(false);
+    abandonMutation.reset();
+  };
 
   const trimmedLength = reason.trim().length;
   const reasonValid =
@@ -962,11 +991,16 @@ function AbandonControl({ pipelineId }: { pipelineId: string }) {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !abandonMutation.isPending) {
-        setOpen(false);
+        closeModal();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+    // closeModal is a stable closure (only uses setters + the
+    // mutation, both already in deps via abandonMutation.isPending);
+    // we intentionally exclude it from the dep array so a stale
+    // closure does not race the mutation state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, abandonMutation.isPending]);
 
   /*
@@ -1012,7 +1046,7 @@ function AbandonControl({ pipelineId }: { pipelineId: string }) {
              * the backdrop itself, not a descendant of the dialog.
              */
             if (e.target === e.currentTarget && !abandonMutation.isPending) {
-              setOpen(false);
+              closeModal();
             }
           }}
         >
@@ -1099,11 +1133,7 @@ function AbandonControl({ pipelineId }: { pipelineId: string }) {
                 className={styles.abandonDialogCancel}
                 data-testid="pipeline-detail-abandon-cancel"
                 disabled={abandonMutation.isPending}
-                onClick={() => {
-                  setOpen(false);
-                  setReason('');
-                  setTouched(false);
-                }}
+                onClick={closeModal}
               >
                 Cancel
               </button>

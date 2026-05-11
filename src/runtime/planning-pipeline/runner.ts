@@ -490,10 +490,19 @@ export async function runPipeline(
       // is the substrate-side idempotent re-assert). Honors the
       // existing pattern in failPipeline where the runner stamps
       // pipeline_state on terminal transitions.
+      //
+      // abandoned_at carries the abandon atom's created_at -- the
+      // operator-action timestamp -- NOT the runner's observation
+      // time. The observation runs on a poll cadence (one per stage
+      // transition), so now() would drift forward of the actual
+      // abandon moment by up to one stage's duration. Concurrent
+      // ticks observing the same abandon atom would each rewrite the
+      // stamp; pinning to abandonAtom.created_at keeps the value
+      // stable across all observers (CR PR #402 finding).
       await host.atoms.update(pipelineId, {
         pipeline_state: 'abandoned',
         metadata: {
-          abandoned_at: now(),
+          abandoned_at: String(abandonAtom.created_at),
           abandon_atom_id: String(abandonAtom.id),
         },
       });
