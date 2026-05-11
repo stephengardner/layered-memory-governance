@@ -355,6 +355,7 @@ describe('buildPipelineErrorState', () => {
     expect(result.category).toBe('plan-author-confabulation');
     expect(result.suggested_action).toContain('dev-drafter-citation-verification-required');
     const canon = result.actions.find((a) => a.kind === 'view-canon');
+    expect(canon).toBeDefined();
     expect(canon!.canon_id).toBe('dev-drafter-citation-verification-required');
   });
 

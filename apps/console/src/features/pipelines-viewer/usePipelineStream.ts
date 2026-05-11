@@ -99,24 +99,28 @@ export function usePipelineStream(
           onAtomChange: (ev: PipelineStreamAtomChange) => {
             /*
              * Invalidate every pipeline-scoped query that reads
-             * disk-backed state for this pipeline. The cache
-             * invalidation re-fetches the relevant projection; a
-             * single atom event might affect cost rollup, stage
-             * timeline, intent-outcome card, AND the error-state
-             * block simultaneously. Patching each surface independently
-             * is a follow-up optimization (DECISION: keep the surface
-             * simple in v1, optimize once the network cost shows up
-             * in real metrics).
+             * disk-backed state for this pipeline. Two calls cover
+             * all the readers because TanStack Query's
+             * invalidateQueries does prefix-matching on the queryKey
+             * array by default:
              *
-             * Key shapes MUST match the readers exactly:
-             *   - PipelineDetailView: ['pipeline', pipelineId]
-             *   - PipelineLifecycle:  ['pipeline', pipelineId, 'lifecycle']
-             *   - IntentOutcomeCard:  ['pipeline', pipelineId, 'intent-outcome']
-             *   - PipelineErrorBlock: ['pipeline-error-state', pipelineId]
+             *   - `['pipeline', pipelineId]`            <- root detail
+             *   - `['pipeline', pipelineId, 'lifecycle']`   <- prefix match
+             *   - `['pipeline', pipelineId, 'intent-outcome']` <- prefix match
+             *   - `['pipeline-error-state', pipelineId]` <- separate root
+             *
+             * The single `['pipeline', pipelineId]` call fans out to
+             * lifecycle + intent-outcome via prefix-match without
+             * cancelling-and-restarting each child query individually
+             * (default `cancelRefetch: true` means listing every
+             * subtree key would restart the same in-flight fetch
+             * repeatedly on a high-frequency SSE event). CR PR #404
+             * finding.
+             *
+             * PipelineErrorBlock uses a distinct root (`pipeline-
+             * error-state`) so it needs its own invalidate call.
              */
             void queryClient.invalidateQueries({ queryKey: ['pipeline', ev.pipeline_id] });
-            void queryClient.invalidateQueries({ queryKey: ['pipeline', ev.pipeline_id, 'lifecycle'] });
-            void queryClient.invalidateQueries({ queryKey: ['pipeline', ev.pipeline_id, 'intent-outcome'] });
             void queryClient.invalidateQueries({ queryKey: ['pipeline-error-state', ev.pipeline_id] });
           },
           onPipelineStateChange: (ev: PipelineStreamPipelineStateChange) => {
