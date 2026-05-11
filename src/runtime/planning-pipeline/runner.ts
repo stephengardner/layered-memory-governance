@@ -56,6 +56,7 @@ import {
   mkReviewReportAtom,
   mkSpecOutputAtom,
   projectStageOutputForMetadata,
+  safeAttemptIndexSuffix,
   serializeStageOutput,
 } from './atom-shapes.js';
 import {
@@ -66,6 +67,14 @@ import {
   readPipelineStageTimeoutPolicy,
 } from './policy.js';
 import { runPipelinePlanAutoApproval } from './auto-approve.js';
+import {
+  decideRePromptAction,
+  type AuditorFeedbackRePromptConfig,
+} from './auditor-feedback-reprompt.js';
+import {
+  HARDCODED_DEFAULT as AUDITOR_FEEDBACK_REPROMPT_HARDCODED_DEFAULT,
+  readAuditorFeedbackRePromptPolicy,
+} from './auditor-feedback-reprompt-config.js';
 
 /**
  * Bound on the number of stages a single pipeline run may walk.
@@ -337,6 +346,19 @@ export async function runPipeline(
   // cost.
   const pipelineCostCapUsd = (await readPipelineCostCapPolicy(host)).cap_usd;
 
+  // Resolve the auditor-feedback re-prompt config ONCE per pipeline
+  // run. The canon policy atom (pol-auditor-feedback-reprompt-default)
+  // gates the max_attempts + severities_to_reprompt dial; a null read
+  // (no atom OR malformed payload) falls through to the hardcoded
+  // floor at AUDITOR_FEEDBACK_REPROMPT_HARDCODED_DEFAULT. The pure
+  // decision function `decideRePromptAction` consumes this struct
+  // inside the per-stage audit block below; reading once per pipeline
+  // (not per stage, not per attempt) keeps the canon-walk cost O(1)
+  // per run.
+  const auditorFeedbackConfig: AuditorFeedbackRePromptConfig =
+    (await readAuditorFeedbackRePromptPolicy(host))
+    ?? AUDITOR_FEEDBACK_REPROMPT_HARDCODED_DEFAULT;
+
   for (let i = startIdx; i < stages.length; i++) {
     const stage = stages[i]!;
 
@@ -425,57 +447,142 @@ export async function runPipeline(
         };
       }
     }
-    let output: StageOutput<unknown>;
-    try {
-      const stageInput: StageInput<unknown> = {
-        host,
-        principal: options.principal,
-        correlationId: options.correlationId,
-        priorOutput,
-        pipelineId,
-        seedAtomIds: options.seedAtomIds,
-        verifiedCitedAtomIds,
-        verifiedSubActorPrincipalIds,
-        operatorIntentContent,
-      };
-      output = await runStageWithRetry(
-        () =>
-          timeoutMs !== null
-            ? raceStageWithTimeout(stage.run(stageInput), timeoutMs, stage.name)
-            : stage.run(stageInput),
-        effectiveRetry,
-        stage.name,
-        () => host.scheduler.killswitchCheck(),
-      );
-    } catch (err) {
-      const cause = err instanceof Error ? err.message : String(err);
-      // Even when the stage threw, re-check the kill switch before
-      // post-run writes: if STOP flipped while the promise was in
-      // flight, we honour the absolute-priority guarantee from the
-      // file header and halt without writing the failure event /
-      // pipeline-failed atom.
+    // Auditor-feedback re-prompt loop. The inner attempt loop reruns
+    // run + schema + budget + persist + audit when the just-completed
+    // attempt produced findings the runner is configured to teach
+    // back (default: critical). Attempt 1 always runs; the loop stops
+    // when (a) findings are empty / non-actionable, (b) the attempt
+    // cap is reached, or (c) the stage's run/schema/budget path
+    // returns early (which short-circuits via the existing return).
+    //
+    // priorAuditFindings starts empty on attempt 1; on subsequent
+    // attempts it carries the LAST attempt's findings only. Stage
+    // adapters fold these into their LLM prompt under
+    // `StageInput.priorAuditFindings`. A stage that does not read the
+    // field continues to work; the field is additive.
+    //
+    // The attempt loop is bounded by config.max_attempts (default 2)
+    // so a runaway loop is impossible by construction. The per-stage
+    // `budget_cap_usd` fence is enforced CUMULATIVELY across attempts
+    // via stageAttemptCostUsd: a re-prompt storm hits the cap and
+    // halts even when each attempt's individual cost would have
+    // passed a per-attempt check. Two $0.60 attempts under a $1.00
+    // cap together exceed the cap on the second attempt and halt
+    // via the existing budget-overflow path. The single-attempt
+    // check is still useful as a fast-fail backstop for a one-shot
+    // overrun.
+    let priorAuditFindings: ReadonlyArray<AuditFinding> = [];
+    let output: StageOutput<unknown> | undefined;
+    let stageOutputAtomId: AtomId | undefined;
+    let persistedPlanAtomIds: ReadonlyArray<AtomId> = [];
+    let findings: ReadonlyArray<AuditFinding> = [];
+    let durationMs = 0;
+    // Cumulative cost across all attempts at THIS stage. Reset to 0
+    // at the start of every outer-loop iteration (one entry per
+    // stage). The cap check at the top of the inner loop subtracts
+    // attempt cost from this counter before committing the attempt
+    // so a re-prompt that would push the running total over the cap
+    // halts before the cost is "spent" on the wrong side of the gate.
+    let stageAttemptCostUsd = 0;
+    const maxAttempts = Math.max(1, auditorFeedbackConfig.max_attempts);
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      attempt++;
+      // Per-attempt kill-switch poll. A STOP between attempts (e.g.
+      // operator armed the sentinel during attempt 1's stage run) must
+      // halt before the next stage invocation. Mirrors the per-stage
+      // kill-switch poll at the top of the outer loop.
       if (host.scheduler.killswitchCheck()) {
         return { kind: 'halted', pipelineId };
       }
-      await emitStageEvent(stage.name, 'exit-failure', Date.now() - t0, 0);
-      return await failPipeline(host, pipelineId, options, now, stage.name, cause, i);
-    }
-    // Re-check the kill switch on the success path before any post-run
-    // writes. Without this, a STOP that flipped while stage.run was
-    // in flight still produces schema-failure atoms, audit findings,
-    // exit-success events, and pipeline_state='completed' downstream;
-    // that would break the absolute-priority guarantee.
-    if (host.scheduler.killswitchCheck()) {
-      return { kind: 'halted', pipelineId };
-    }
-    const durationMs = Date.now() - t0;
+      const tAttempt = Date.now();
+      try {
+        const stageInput: StageInput<unknown> = {
+          host,
+          principal: options.principal,
+          correlationId: options.correlationId,
+          priorOutput,
+          pipelineId,
+          seedAtomIds: options.seedAtomIds,
+          verifiedCitedAtomIds,
+          verifiedSubActorPrincipalIds,
+          operatorIntentContent,
+          priorAuditFindings,
+        };
+        output = await runStageWithRetry(
+          () =>
+            timeoutMs !== null
+              ? raceStageWithTimeout(stage.run(stageInput), timeoutMs, stage.name)
+              : stage.run(stageInput),
+          effectiveRetry,
+          stage.name,
+          () => host.scheduler.killswitchCheck(),
+        );
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        // Even when the stage threw, re-check the kill switch before
+        // post-run writes: if STOP flipped while the promise was in
+        // flight, we honour the absolute-priority guarantee from the
+        // file header and halt without writing the failure event /
+        // pipeline-failed atom.
+        if (host.scheduler.killswitchCheck()) {
+          return { kind: 'halted', pipelineId };
+        }
+        await emitStageEvent(stage.name, 'exit-failure', Date.now() - tAttempt, 0);
+        return await failPipeline(host, pipelineId, options, now, stage.name, cause, i);
+      }
+      // Re-check the kill switch on the success path before any post-run
+      // writes. Without this, a STOP that flipped while stage.run was
+      // in flight still produces schema-failure atoms, audit findings,
+      // exit-success events, and pipeline_state='completed' downstream;
+      // that would break the absolute-priority guarantee.
+      if (host.scheduler.killswitchCheck()) {
+        return { kind: 'halted', pipelineId };
+      }
+      durationMs = Date.now() - tAttempt;
 
-    // Schema validation. Run before persistence so an LLM-emitted
-    // payload outside the schema NEVER becomes the priorOutput of a
-    // downstream stage.
-    if (stage.outputSchema !== undefined) {
-      const parsed = stage.outputSchema.safeParse(output.value);
-      if (!parsed.success) {
+      // Schema validation. Run before persistence so an LLM-emitted
+      // payload outside the schema NEVER becomes the priorOutput of a
+      // downstream stage.
+      if (stage.outputSchema !== undefined) {
+        const parsed = stage.outputSchema.safeParse(output.value);
+        if (!parsed.success) {
+          await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+          return await failPipeline(
+            host,
+            pipelineId,
+            options,
+            now,
+            stage.name,
+            `schema-validation-failed: ${parsed.error.message}`,
+            i,
+          );
+        }
+      }
+
+      // Per-stage budget enforcement. Stage-supplied cap takes precedence;
+      // canon policy is the fallback. A null cap means "no limit at this
+      // layer" -- the per-pipeline total is a forward-compat fence.
+      //
+      // The cap is enforced CUMULATIVELY across attempts at this stage
+      // (stageAttemptCostUsd), not per-attempt. Without this, two
+      // $0.60 attempts under a $1.00 cap would both pass the per-attempt
+      // check and together spend $1.20 -- the re-prompt loop would
+      // overshoot the stage budget the cap is meant to fence. Tally
+      // this attempt's cost into the cumulative tracker first, then
+      // compare the running total against the cap. A failed attempt
+      // still spent its tokens; the runner accounts for them rather
+      // than discounting on the post-hoc audit-halt.
+      const stageCap =
+        stage.budget_cap_usd
+        ?? (await readPipelineStageCostCapPolicy(host, stage.name)).cap_usd;
+      stageAttemptCostUsd += output.cost_usd;
+      if (
+        stageCap !== null
+        && stageCap !== undefined
+        && toUsdMicros(stageAttemptCostUsd) > toUsdMicros(stageCap)
+      ) {
         await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
         return await failPipeline(
           host,
@@ -483,143 +590,221 @@ export async function runPipeline(
           options,
           now,
           stage.name,
-          `schema-validation-failed: ${parsed.error.message}`,
+          `budget-overflow: cumulative-attempt-cost ${stageAttemptCostUsd} > cap ${stageCap}`,
           i,
         );
       }
-    }
+      totalCostUsd += output.cost_usd;
 
-    // Per-stage budget enforcement. Stage-supplied cap takes precedence;
-    // canon policy is the fallback. A null cap means "no limit at this
-    // layer" -- the per-pipeline total is a forward-compat fence.
-    const stageCap =
-      stage.budget_cap_usd
-      ?? (await readPipelineStageCostCapPolicy(host, stage.name)).cap_usd;
-    if (
-      stageCap !== null
-      && stageCap !== undefined
-      && toUsdMicros(output.cost_usd) > toUsdMicros(stageCap)
-    ) {
-      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
-      return await failPipeline(
-        host,
-        pipelineId,
-        options,
-        now,
-        stage.name,
-        `budget-overflow: cost ${output.cost_usd} > cap ${stageCap}`,
-        i,
-      );
-    }
-    totalCostUsd += output.cost_usd;
-
-    if (
-      pipelineCostCapUsd !== null &&
-      toUsdMicros(totalCostUsd) > toUsdMicros(pipelineCostCapUsd)
-    ) {
-      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
-      return await failPipeline(
-        host,
-        pipelineId,
-        options,
-        now,
-        stage.name,
-        `pipeline-cost-overflow: total ${totalCostUsd} > cap ${pipelineCostCapUsd}`,
-        i,
-      );
-    }
-
-    // Persist the stage's StageOutput.value as a typed queryable atom
-    // BEFORE audit runs. The atom serves two consumers regardless of
-    // outcome: (a) on critical-audit-halt the operator inspects the
-    // persisted output to understand what triggered the finding;
-    // (b) on HIL pause the operator reviews the persisted output
-    // before deciding whether to resume; (c) on exit-success the
-    // downstream stage receives the priorOutput value plus the new
-    // atom id is appended to priorOutputAtomIds for the next stage's
-    // derived_from chain. Schema validation already ran above so the
-    // value is guaranteed to match the stage's declared shape.
-    //
-    // Persistence is best-effort within the runner's threat model: a
-    // failed put rejects the pipeline tick into the existing failure
-    // path so the operator sees an explicit error rather than a
-    // silently-missing atom downstream. Atom-mint helpers themselves
-    // are pure (no I/O; pure shape validation), so a put failure here
-    // is an AtomStore-side problem the substrate already routes
-    // through failPipeline.
-    let stageOutputAtomId: AtomId | undefined;
-    let persistedPlanAtomIds: ReadonlyArray<AtomId> = [];
-    try {
-      // Forward stage-runner-supplied extraMetadata (e.g.
-      // canon_directives_applied + tool_policy_principal_id from
-      // runStageAgentLoop) into the typed mint helpers. The runner
-      // stays canon-agnostic: it propagates the bag without inspecting
-      // contents, so the substrate does not need to know what stage
-      // runners chose to stamp. The runner-supplied keys (pipeline_id,
-      // stage_name, stage_output) still win on shallow-merge collision
-      // inside the mint helpers, so a misbehaving stage cannot shadow
-      // load-bearing routing keys.
-      const extraMetadata = output.extraMetadata;
-      const persisted = await persistStageOutput(
-        host,
-        stage.name,
-        output.atom_type,
-        output.value,
-        {
+      if (
+        pipelineCostCapUsd !== null &&
+        toUsdMicros(totalCostUsd) > toUsdMicros(pipelineCostCapUsd)
+      ) {
+        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+        return await failPipeline(
+          host,
           pipelineId,
-          principalId: options.principal,
-          correlationId: options.correlationId,
-          now: now(),
-          derivedFrom: [pipelineId, ...priorOutputAtomIds],
-          ...(extraMetadata !== undefined ? { extraMetadata } : {}),
-        },
-      );
-      stageOutputAtomId = persisted.anchorId;
-      persistedPlanAtomIds = persisted.planAtomIds;
-    } catch (err) {
-      const cause = err instanceof Error ? err.message : String(err);
-      await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
-      return await failPipeline(
-        host,
-        pipelineId,
-        options,
-        now,
-        stage.name,
-        `stage-output-persist-failed: ${cause}`,
-        i,
-      );
-    }
+          options,
+          now,
+          stage.name,
+          `pipeline-cost-overflow: total ${totalCostUsd} > cap ${pipelineCostCapUsd}`,
+          i,
+        );
+      }
 
-    // Auditor wiring. Each finding produces a pipeline-audit-finding
-    // atom; a 'critical' finding halts the stage.
-    let findings: ReadonlyArray<AuditFinding> = [];
-    if (stage.audit !== undefined) {
-      findings = await stage.audit(output.value, {
-        host,
-        principal: options.principal,
-        correlationId: options.correlationId,
-        pipelineId,
-        stageName: stage.name,
-        verifiedCitedAtomIds,
-        verifiedSubActorPrincipalIds,
-        operatorIntentContent,
-      });
-      for (const finding of findings) {
+      // Persist the stage's StageOutput.value as a typed queryable atom
+      // BEFORE audit runs. The atom serves two consumers regardless of
+      // outcome: (a) on critical-audit-halt the operator inspects the
+      // persisted output to understand what triggered the finding;
+      // (b) on HIL pause the operator reviews the persisted output
+      // before deciding whether to resume; (c) on exit-success the
+      // downstream stage receives the priorOutput value plus the new
+      // atom id is appended to priorOutputAtomIds for the next stage's
+      // derived_from chain. Schema validation already ran above so the
+      // value is guaranteed to match the stage's declared shape.
+      //
+      // Persistence is best-effort within the runner's threat model: a
+      // failed put rejects the pipeline tick into the existing failure
+      // path so the operator sees an explicit error rather than a
+      // silently-missing atom downstream. Atom-mint helpers themselves
+      // are pure (no I/O; pure shape validation), so a put failure here
+      // is an AtomStore-side problem the substrate already routes
+      // through failPipeline.
+      try {
+        // Forward stage-runner-supplied extraMetadata (e.g.
+        // canon_directives_applied + tool_policy_principal_id from
+        // runStageAgentLoop) into the typed mint helpers. The runner
+        // stays canon-agnostic: it propagates the bag without inspecting
+        // contents, so the substrate does not need to know what stage
+        // runners chose to stamp. The runner-supplied keys (pipeline_id,
+        // stage_name, stage_output) still win on shallow-merge collision
+        // inside the mint helpers, so a misbehaving stage cannot shadow
+        // load-bearing routing keys.
+        const extraMetadata = output.extraMetadata;
+        const persisted = await persistStageOutput(
+          host,
+          stage.name,
+          output.atom_type,
+          output.value,
+          {
+            pipelineId,
+            principalId: options.principal,
+            correlationId: options.correlationId,
+            now: now(),
+            derivedFrom: [pipelineId, ...priorOutputAtomIds],
+            ...(extraMetadata !== undefined ? { extraMetadata } : {}),
+            // attemptIndex propagates the re-prompt loop's current
+            // attempt counter through to the mint helpers so a stage
+            // that re-prompts produces distinct per-attempt atoms
+            // rather than colliding on the canonical id shape.
+            attemptIndex: attempt,
+          },
+        );
+        stageOutputAtomId = persisted.anchorId;
+        persistedPlanAtomIds = persisted.planAtomIds;
+      } catch (err) {
+        const cause = err instanceof Error ? err.message : String(err);
+        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+        return await failPipeline(
+          host,
+          pipelineId,
+          options,
+          now,
+          stage.name,
+          `stage-output-persist-failed: ${cause}`,
+          i,
+        );
+      }
+
+      // Auditor wiring. Each finding produces a pipeline-audit-finding
+      // atom; a 'critical' finding either re-prompts the stage (when
+      // the auditor-feedback policy allows) or halts the pipeline.
+      findings = [];
+      if (stage.audit !== undefined) {
+        findings = await stage.audit(output.value, {
+          host,
+          principal: options.principal,
+          correlationId: options.correlationId,
+          pipelineId,
+          stageName: stage.name,
+          verifiedCitedAtomIds,
+          verifiedSubActorPrincipalIds,
+          operatorIntentContent,
+        });
+        // Re-check the kill switch after stage.audit() returns BEFORE
+        // we write any pipeline-audit-finding atoms or the
+        // retry-after-findings event below. stage.audit can await
+        // arbitrary async work (atom-store reads, cite-verification
+        // walks); if STOP flips during that window the file-header
+        // contract requires we halt without subsequent writes. The
+        // findings are dropped on halt -- the operator can re-run the
+        // stage if they want the audit signal preserved; that is a
+        // conscious trade for STOP's absolute-priority guarantee.
+        if (host.scheduler.killswitchCheck()) {
+          return { kind: 'halted', pipelineId };
+        }
+        for (const finding of findings) {
+          await host.atoms.put(
+            mkPipelineAuditFindingAtom({
+              pipelineId,
+              stageName: stage.name,
+              principalId: options.principal,
+              correlationId: options.correlationId,
+              now: now(),
+              severity: finding.severity,
+              category: finding.category,
+              message: finding.message,
+              citedAtomIds: finding.cited_atom_ids,
+              citedPaths: finding.cited_paths,
+              // Stamp the attempt index so a recurring finding across
+              // re-prompt attempts produces distinct atoms rather than
+              // colliding on the canonical id. Attempt 1 omits the
+              // suffix; attempt 2+ appends `-attempt-<n>`.
+              attemptIndex: attempt,
+            }),
+          );
+        }
+      }
+
+      // Auditor-feedback re-prompt decision. The pure decision helper
+      // returns 'reprompt' when (a) at least one actionable finding
+      // (severity in config.severities_to_reprompt) was produced AND
+      // (b) the attempt cap has not been reached. Otherwise 'halt'
+      // and the runner falls through to the existing post-audit path
+      // (HIL gate, plan auto-approve, exit-success / exit-failure).
+      //
+      // When a re-prompt fires the runner emits a retry-after-findings
+      // event carrying attempt_index = next attempt + severity buckets
+      // so an audit walk renders the teaching seam without reading the
+      // per-finding atoms. The next attempt's stage input carries the
+      // findings as priorAuditFindings; the stage adapter is the
+      // consumer of that prompt-shape signal.
+      const decision = decideRePromptAction(findings, attempt, auditorFeedbackConfig);
+      if (decision.action === 'reprompt') {
+        // Final kill-switch check before the retry-after-findings emit.
+        // A STOP that flipped between the audit-findings writes and
+        // here must NOT produce a retry event; mirrors the absolute-
+        // priority guarantee in the file header for every write site.
+        if (host.scheduler.killswitchCheck()) {
+          return { kind: 'halted', pipelineId };
+        }
+        const summary = {
+          critical: findings.filter((f) => f.severity === 'critical').length,
+          major: findings.filter((f) => f.severity === 'major').length,
+          minor: findings.filter((f) => f.severity === 'minor').length,
+        };
         await host.atoms.put(
-          mkPipelineAuditFindingAtom({
+          mkPipelineStageEventAtom({
             pipelineId,
             stageName: stage.name,
             principalId: options.principal,
             correlationId: options.correlationId,
             now: now(),
-            severity: finding.severity,
-            category: finding.category,
-            message: finding.message,
-            citedAtomIds: finding.cited_atom_ids,
-            citedPaths: finding.cited_paths,
+            transition: 'retry-after-findings',
+            durationMs,
+            costUsd: output.cost_usd,
+            ...(stageOutputAtomId !== undefined ? { outputAtomId: stageOutputAtomId } : {}),
+            attemptIndex: attempt + 1,
+            findingsSummary: summary,
           }),
         );
+        // Seed the next attempt's findings. The pure decision helper
+        // already filtered by configured severities; we forward the
+        // actionable subset so the stage's prompt is bounded to
+        // severities the operator cares to teach back. Stage adapters
+        // that want the full finding list still query
+        // host.atoms by metadata.pipeline_id.
+        priorAuditFindings = findings.filter((f) =>
+          auditorFeedbackConfig.severities_to_reprompt.includes(f.severity),
+        );
+        if (attempt >= maxAttempts) {
+          // Defense in depth: decideRePromptAction should not return
+          // 'reprompt' when previousAttempts >= max_attempts, but if
+          // the config / decision drifted, the runner enforces the
+          // cap mechanically rather than looping further.
+          break;
+        }
+        continue;
       }
+      // decision.action === 'halt': exit the attempt loop and fall
+      // through to the post-audit path (HIL gate, plan auto-approve,
+      // exit-success / exit-failure event).
+      break;
+    }
+    // From here on, `output` / `stageOutputAtomId` / `findings` /
+    // `durationMs` reflect the LAST attempt's results (which is the
+    // attempt the runner accepted, either because findings were empty
+    // / non-actionable, OR because the attempt cap was reached and
+    // the runner must halt on the critical finding via the existing
+    // path below). The TypeScript narrowing requires asserting the
+    // outer-scoped output is non-undefined: every code path through
+    // the while loop assigns to it before breaking or continuing, and
+    // an early return short-circuits the rest of the per-stage body.
+    if (output === undefined) {
+      throw new Error(
+        `runPipeline: attempt loop for stage '${stage.name}' completed without an output; `
+          + 'invariant violation. The loop should either assign output or return early.',
+      );
     }
 
     const hasCritical = findings.some((f) => f.severity === 'critical');
@@ -813,6 +998,15 @@ async function persistStageOutput(
     now: Time;
     derivedFrom: ReadonlyArray<AtomId>;
     extraMetadata?: Readonly<Record<string, unknown>>;
+    /**
+     * 1-based attempt index from the auditor-feedback re-prompt loop.
+     * Forwarded into every mint helper so the attempt suffix is
+     * applied uniformly to typed AND generic stage-output atoms; >= 2
+     * appends `-attempt-<index>` to the atom id and stamps the
+     * metadata. Omitted (or 1) preserves the historical id shape so
+     * pre-loop pipelines stay round-trippable.
+     */
+    attemptIndex?: number;
   },
 ): Promise<PersistStageOutputResult> {
   // Build baseInput with extraMetadata only when present so the typed
@@ -821,7 +1015,8 @@ async function persistStageOutput(
   // The extraMetadata bag is forwarded verbatim into
   // buildStageOutputMetadata's shallow merge; the runner-supplied
   // routing keys (pipeline_id, stage_name, stage_output) remain
-  // load-bearing and win on collision.
+  // load-bearing and win on collision. attemptIndex is threaded under
+  // the same exactOptionalPropertyTypes posture (omit when undefined).
   const baseInput = {
     pipelineId: ctx.pipelineId,
     stageName,
@@ -831,6 +1026,7 @@ async function persistStageOutput(
     derivedFrom: ctx.derivedFrom,
     value,
     ...(ctx.extraMetadata !== undefined ? { extraMetadata: ctx.extraMetadata } : {}),
+    ...(ctx.attemptIndex !== undefined ? { attemptIndex: ctx.attemptIndex } : {}),
   };
   switch (atomType) {
     case 'brainstorm-output': {
@@ -859,6 +1055,7 @@ async function persistStageOutput(
         derivedFrom: ctx.derivedFrom,
         value,
         ...(ctx.extraMetadata !== undefined ? { extraMetadata: ctx.extraMetadata } : {}),
+        ...(ctx.attemptIndex !== undefined ? { attemptIndex: ctx.attemptIndex } : {}),
       });
       if (planAtoms.length === 0) {
         // Plan-stage schema rejects empty plans arrays, so reaching
@@ -935,6 +1132,13 @@ function mkGenericStageOutputAtom(input: {
   readonly derivedFrom: ReadonlyArray<AtomId>;
   readonly value: unknown;
   readonly extraMetadata?: Readonly<Record<string, unknown>>;
+  /**
+   * 1-based attempt index from the auditor-feedback re-prompt loop;
+   * appended to the atom id when >= 2 so a re-prompt does not collide
+   * with the prior attempt's atom. Mirrors the typed helpers' suffix
+   * policy via `MkStageOutputAtomBaseInput.attemptIndex`.
+   */
+  readonly attemptIndex?: number;
 }): Atom {
   // Build a minimal Atom inline to avoid threading a fifth mint
   // helper through atom-shapes.ts for the generic case. Mirrors the
@@ -942,8 +1146,15 @@ function mkGenericStageOutputAtom(input: {
   // consistent envelope; the type field is 'observation' (the catch-
   // all atom type for any read-only artifact in the substrate). The
   // load-bearing routing key is metadata.stage_name + the
-  // metadata.pipeline_id pair.
-  const id = `stage-output-${input.stageName}-${input.pipelineId}-${input.correlationId}` as AtomId;
+  // metadata.pipeline_id pair. Attempt suffix applies only on a
+  // validated attemptIndex >= 2 (via safeAttemptIndexSuffix) so
+  // existing single-attempt atoms keep the historical id shape and
+  // malformed inputs fail closed to the first-attempt id.
+  const validatedAttempt = safeAttemptIndexSuffix(input.attemptIndex);
+  const attemptSuffix = validatedAttempt !== undefined
+    ? `-attempt-${validatedAttempt}`
+    : '';
+  const id = `stage-output-${input.stageName}-${input.pipelineId}-${input.correlationId}${attemptSuffix}` as AtomId;
   return {
     schema_version: 1,
     id,
@@ -988,6 +1199,14 @@ function mkGenericStageOutputAtom(input: {
       // would bypass the cap for custom-stage atoms.
       stage_output: projectStageOutputForMetadata(input.value),
       generic_stage_output: true,
+      // Stamp attempt_index on metadata for a validated attemptIndex
+      // >= 2 so an audit walk can sort multiple per-attempt generic
+      // outputs the same way it sorts typed outputs (mirrors
+      // buildStageOutputMetadata's same posture; uses
+      // safeAttemptIndexSuffix for fail-closed validation).
+      ...(validatedAttempt !== undefined
+        ? { attempt_index: validatedAttempt }
+        : {}),
     },
   };
 }

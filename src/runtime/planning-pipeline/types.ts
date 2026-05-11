@@ -75,6 +75,26 @@ export interface StageInput<T> {
    * invocations rely on the empty-default).
    */
   readonly operatorIntentContent: string;
+  /**
+   * Audit findings from the PRIOR attempt at this stage (when the
+   * runner is re-invoking the stage after a re-prompt-eligible audit
+   * finding). Absent / empty on the first attempt. Stage adapters fold
+   * these into their LLM prompt under a stable data-block key so the
+   * next attempt sees the auditor's feedback and self-corrects.
+   *
+   * The runner only re-invokes the stage when the configured
+   * auditor-feedback re-prompt policy says so
+   * (pol-auditor-feedback-reprompt-default; default-deny floor of
+   * `max_attempts=2, severities=['critical']`). Stages that do not
+   * read this field continue to work; the field is additive on
+   * `StageInput<T>` per the loop-design-spec section 4.1.
+   *
+   * Empty array is the canonical "no prior findings" signal; the
+   * runner threads `[]` rather than `undefined` so adapters that
+   * conditionally inject the prompt-block can do `priorAuditFindings.length > 0`
+   * without a defined-check.
+   */
+  readonly priorAuditFindings: ReadonlyArray<AuditFinding>;
 }
 
 export interface StageOutput<T> {

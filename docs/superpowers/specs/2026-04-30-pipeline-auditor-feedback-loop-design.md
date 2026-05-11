@@ -1,7 +1,14 @@
 # Pipeline Auditor-Findings Feedback Loop -- Design Spec
 
-**Status**: draft
-**Date**: 2026-04-30
+**Status**: PR-B implemented (2026-05-11). The substrate runner-side loop, `decideRePromptAction` + `buildRePromptContext` helpers, and the `pol-auditor-feedback-reprompt-default` canon policy ship together. The runner re-prompts the failing stage on a critical finding, bounded at `max_attempts=2` total per stage. Stage adapters that want the prompt-side teaching signal read `StageInput.priorAuditFindings` (additive, non-breaking); existing adapters continue to work without changes. PR-C through PR-F (per-stage prompt-template migrations) remain follow-ups.
+
+**Substrate surface** (PR-B):
+- `src/runtime/planning-pipeline/auditor-feedback-reprompt.ts` -- `decideRePromptAction`, `buildRePromptContext`, `AuditorFeedbackRePromptConfig`
+- `src/runtime/planning-pipeline/auditor-feedback-reprompt-config.ts` -- canon-policy reader + `HARDCODED_DEFAULT`
+- `src/runtime/planning-pipeline/runner.ts` -- inner attempt loop; reads canon once per pipeline; emits `retry-after-findings` events with `attempt_index` + `findings_summary`
+- `scripts/bootstrap-auditor-feedback-reprompt-canon.mjs` + `scripts/lib/auditor-feedback-reprompt-canon-policies.mjs` -- canon seed (idempotent, drift-checked)
+
+**Date**: 2026-04-30 (spec); 2026-05-11 (PR-B shipped)
 **Derived from**: `dev-deep-planning-pipeline` (L3, ratified 2026-04-30 via PR #246), PR #247 (`feat/brainstorm-citation-soft`)
 **Successor work to**: PR #247 (severity-downgrade interim fix)
 
