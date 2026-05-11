@@ -2427,4 +2427,253 @@ describe('runPipeline', () => {
       expect(events.length).toBe(0);
     });
   });
+
+  /*
+   * Pipeline-abandon coverage.
+   *
+   * The runner observes a `pipeline-abandoned` atom matching the
+   * current pipeline before each stage transition and halts cleanly
+   * with kind: 'abandoned'. The atom-store filter is `type ==
+   * 'pipeline-abandoned'` plus `metadata.pipeline_id` join, so atoms
+   * for OTHER pipelines must not divert the current pipeline.
+   *
+   * The check runs BEFORE the next stage's enter event; an abandon
+   * that lands mid-stage does NOT cancel the in-flight stage (the
+   * substrate has no AgentLoopAdapter cancel seam yet), but the next
+   * stage is NEVER dispatched.
+   */
+  describe('pipeline-abandon halt', () => {
+    /*
+     * Helper to seed a pipeline-abandoned atom into the memory host.
+     * Mirrors the substrate's pipeline-abandoned shape but stays
+     * minimal -- the runner observes the atom by type + metadata
+     * pipeline_id and does not require the full Console-side audit
+     * fields.
+     */
+    async function seedAbandonAtom(
+      host: MemoryHost,
+      opts: {
+        pipelineId: string;
+        atomId?: string;
+        reason?: string;
+      },
+    ): Promise<string> {
+      const atomId = opts.atomId ?? `pipeline-abandoned-${opts.pipelineId}-test`;
+      await host.atoms.put({
+        schema_version: 1,
+        id: atomId as AtomId,
+        content: `abandoned:${opts.pipelineId}`,
+        type: 'pipeline-abandoned',
+        layer: 'L0',
+        provenance: {
+          kind: 'user-directive',
+          source: { tool: 'test-fixture' },
+          derived_from: [opts.pipelineId as AtomId],
+        },
+        confidence: 1,
+        created_at: NOW,
+        last_reinforced_at: NOW,
+        expires_at: null,
+        supersedes: [],
+        superseded_by: [],
+        scope: 'project',
+        signals: {
+          agrees_with: [],
+          conflicts_with: [],
+          validation_status: 'unchecked',
+          last_validated_at: null,
+        },
+        principal_id: 'apex-agent' as PrincipalId,
+        taint: 'clean',
+        metadata: {
+          pipeline_id: opts.pipelineId,
+          reason: opts.reason ?? 'test-fixture abandon',
+          abandoned_at: NOW,
+          abandoner_principal_id: 'apex-agent',
+        },
+      });
+      return atomId;
+    }
+
+    it('halts with kind="abandoned" when an abandon atom lands before the first stage', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
+      const pipelineId = 'pipeline-corr-abandon-pre';
+      // Seed the abandon atom BEFORE runPipeline starts so the
+      // first-stage check finds it.
+      const abandonId = await seedAbandonAtom(host, {
+        pipelineId,
+        atomId: 'pipeline-abandoned-pre-1',
+      });
+      let runCount = 0;
+      const stages = [
+        mkStage<unknown, { a: number }>('stage-a', () => {
+          runCount += 1;
+          return { a: 1 };
+        }),
+        mkStage<{ a: number }, { b: number }>('stage-b', (i) => {
+          runCount += 1;
+          return { b: i.a + 1 };
+        }),
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-abandon-pre',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('abandoned');
+      if (result.kind === 'abandoned') {
+        expect(result.pipelineId).toBe(pipelineId);
+        expect(result.abandonAtomId).toBe(abandonId);
+      }
+      // No stages should have dispatched.
+      expect(runCount).toBe(0);
+      // The pipeline atom should carry pipeline_state='abandoned'.
+      const pipelineAtom = await host.atoms.get(pipelineId as AtomId);
+      expect(pipelineAtom?.pipeline_state).toBe('abandoned');
+    });
+
+    it('halts between stages when an abandon atom lands after the first stage completes', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
+      const pipelineId = 'pipeline-corr-abandon-mid';
+      // Stage-a writes the abandon atom from inside its run handler.
+      // This simulates the operator clicking abandon AFTER stage-a
+      // emits its output but BEFORE stage-b dispatches. The runner's
+      // next-iteration check should catch it.
+      let stageAReached = false;
+      let stageBReached = false;
+      const stageA: PlanningStage<unknown, { a: number }> = {
+        name: 'stage-a',
+        async run() {
+          stageAReached = true;
+          // Write the abandon atom from inside the stage to simulate
+          // an out-of-band write (the substrate has no cancel seam yet
+          // so the in-flight stage runs to completion; the next stage
+          // is what gets cancelled).
+          await seedAbandonAtom(host, {
+            pipelineId,
+            atomId: 'pipeline-abandoned-mid-1',
+          });
+          return {
+            value: { a: 1 },
+            cost_usd: 0,
+            duration_ms: 0,
+            atom_type: 'spec',
+          };
+        },
+      };
+      const stageB: PlanningStage<{ a: number }, { b: number }> = {
+        name: 'stage-b',
+        async run(input) {
+          stageBReached = true;
+          return {
+            value: { b: input.a + 1 },
+            cost_usd: 0,
+            duration_ms: 0,
+            atom_type: 'spec',
+          };
+        },
+      };
+      const result = await runPipeline([stageA, stageB], host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-abandon-mid',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      expect(result.kind).toBe('abandoned');
+      // Stage-a IS allowed to complete; stage-b never dispatches.
+      expect(stageAReached).toBe(true);
+      expect(stageBReached).toBe(false);
+    });
+
+    it('ignores tainted pipeline-abandoned atoms', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['stage-a']);
+      const pipelineId = 'pipeline-corr-abandon-tainted';
+      // Seed a TAINTED abandon atom; the runner must not honor it.
+      await host.atoms.put({
+        schema_version: 1,
+        id: 'pipeline-abandoned-tainted-1' as AtomId,
+        content: `abandoned:${pipelineId}`,
+        type: 'pipeline-abandoned',
+        layer: 'L0',
+        provenance: {
+          kind: 'user-directive',
+          source: { tool: 'test-fixture' },
+          derived_from: [pipelineId as AtomId],
+        },
+        confidence: 1,
+        created_at: NOW,
+        last_reinforced_at: NOW,
+        expires_at: null,
+        supersedes: [],
+        superseded_by: [],
+        scope: 'project',
+        signals: {
+          agrees_with: [],
+          conflicts_with: [],
+          validation_status: 'unchecked',
+          last_validated_at: null,
+        },
+        principal_id: 'apex-agent' as PrincipalId,
+        taint: 'compromised',
+        metadata: {
+          pipeline_id: pipelineId,
+          reason: 'tainted abandon should be ignored',
+          abandoned_at: NOW,
+          abandoner_principal_id: 'apex-agent',
+        },
+      });
+      const stages = [
+        mkStage<unknown, { a: number }>('stage-a', () => ({ a: 1 })),
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-abandon-tainted',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      // Tainted abandon should be ignored; pipeline completes normally.
+      expect(result.kind).toBe('completed');
+    });
+
+    it('ignores abandon atoms targeting a different pipeline', async () => {
+      const host = createMemoryHost();
+      await seedPauseNeverPolicies(host, ['stage-a']);
+      const myPipelineId = 'pipeline-corr-abandon-mine';
+      const otherPipelineId = 'pipeline-corr-abandon-other';
+      // Seed an abandon atom whose pipeline_id targets a DIFFERENT
+      // pipeline. The runner's join must scope the abandon-poll to
+      // the running pipeline only.
+      await seedAbandonAtom(host, {
+        pipelineId: otherPipelineId,
+        atomId: 'pipeline-abandoned-other-1',
+      });
+      const stages = [
+        mkStage<unknown, { a: number }>('stage-a', () => ({ a: 1 })),
+      ];
+      const result = await runPipeline(stages, host, {
+        principal: 'cto-actor' as PrincipalId,
+        correlationId: 'corr-abandon-mine',
+        seedAtomIds: ['intent-1' as AtomId],
+        now: () => NOW,
+        mode: 'substrate-deep',
+        stagePolicyAtomId: 'pol-test',
+      });
+      // Pipeline completes normally; the other pipeline's abandon
+      // atom MUST NOT divert this run.
+      expect(result.kind).toBe('completed');
+      if (result.kind === 'completed') {
+        expect(result.pipelineId).toBe(myPipelineId);
+      }
+    });
+  });
 });

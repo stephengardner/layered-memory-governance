@@ -86,6 +86,78 @@ const MAX_STAGES = 64;
 const USD_MICROS = 1_000_000;
 const toUsdMicros = (v: number): number => Math.round(v * USD_MICROS);
 
+/**
+ * Bound the pagination walk used by `findPipelineAbandonAtom`. The
+ * runner queries for `pipeline-abandoned` atoms before each stage
+ * transition; in a healthy pipeline this returns zero or one match.
+ * The cap exists so a runaway atom store cannot starve the runner on
+ * an abandon-check.
+ *
+ * 64 * 200 = 12_800 atoms inspected per check, which covers any
+ * reasonable single-pipeline abandon-atom volume (an abandon write
+ * produces at most one atom per request; even a malicious replay loop
+ * is bounded by the operator's click rate). If the cap is hit with a
+ * non-null cursor the runner falls through to "no abandon found"
+ * rather than throw, because failing closed here would let an
+ * adversary block pipeline progress just by spamming atoms.
+ */
+const MAX_ABANDON_PAGES = 64;
+const ABANDON_PAGE_SIZE = 200;
+
+/**
+ * Walk the atom store looking for a `pipeline-abandoned` atom whose
+ * `metadata.pipeline_id` matches the requested pipeline. Returns the
+ * first match found; null when no abandon atom exists for the
+ * pipeline.
+ *
+ * Substrate-side mechanism: the helper does NOT validate the abandon
+ * atom's principal_id against canon. The canon `pol-pipeline-abandon`
+ * gate runs on the writer side (Console route handler or any future
+ * authoring path); a forbidden abandon never lands on disk in the
+ * first place. The runner's role is to OBSERVE the atom + halt
+ * cleanly; the authorization decision lives upstream of this read.
+ * This split mirrors the resume flow: writers gate; runners observe.
+ *
+ * Pagination contract: walks until `nextCursor` is null OR the page
+ * cap trips. The cap is a defensive bound; a real-world deployment's
+ * abandon-atom volume is tiny so the walk almost always terminates
+ * on the first page.
+ *
+ * `pipeline-abandoned` atoms whose target is a DIFFERENT pipeline
+ * still land in the type-filter result (the AtomStore filters on
+ * `type` but not `metadata.pipeline_id`), so each match is verified
+ * via a metadata read before returning.
+ */
+async function findPipelineAbandonAtom(
+  host: Host,
+  pipelineId: AtomId,
+): Promise<Atom | null> {
+  let cursor: string | undefined = undefined;
+  for (let page = 0; page < MAX_ABANDON_PAGES; page++) {
+    const result = await host.atoms.query(
+      { type: ['pipeline-abandoned'] },
+      ABANDON_PAGE_SIZE,
+      cursor,
+    );
+    for (const atom of result.atoms) {
+      if (atom.taint !== 'clean') continue;
+      if (atom.superseded_by.length > 0) continue;
+      const meta = atom.metadata as Record<string, unknown> | undefined;
+      if (meta?.pipeline_id === pipelineId) {
+        return atom;
+      }
+    }
+    if (result.nextCursor === null) return null;
+    cursor = result.nextCursor;
+  }
+  // Page cap exhausted with cursor still non-null: fall through to
+  // "no abandon found". Failing closed here would let an adversary
+  // block pipeline progress just by spamming unrelated
+  // pipeline-abandoned atoms. The bound is generous enough that a
+  // realistic abandon-atom volume cannot trip it.
+  return null;
+}
+
 export type PipelineResult =
   | { readonly kind: 'completed'; readonly pipelineId: AtomId }
   | {
@@ -98,6 +170,21 @@ export type PipelineResult =
       readonly kind: 'hil-paused';
       readonly pipelineId: AtomId;
       readonly stageName: string;
+    }
+  | {
+      /*
+       * Operator-initiated terminal state: a pipeline-abandoned atom
+       * signed by an allowed principal landed on disk while the
+       * pipeline was running or hil-paused. The runner observed the
+       * atom on its next stage-transition check, persisted
+       * pipeline_state='abandoned', and returned cleanly without
+       * dispatching the next stage. Distinct from `halted` (which
+       * covers the kill-switch path) so audit consumers can
+       * distinguish operator-scoped abandon from the global STOP.
+       */
+      readonly kind: 'abandoned';
+      readonly pipelineId: AtomId;
+      readonly abandonAtomId: AtomId;
     }
   | { readonly kind: 'halted'; readonly pipelineId?: AtomId };
 
@@ -372,10 +459,55 @@ export async function runPipeline(
       return { kind: 'halted', pipelineId };
     }
 
+    // Pipeline-abandon poll BEFORE each stage transition. Mirrors the
+    // kill-switch posture: the abandon check runs before any per-stage
+    // write so the runner does not dispatch a stage AFTER an operator
+    // has signed an abandon. The check is scoped to a single pipeline
+    // (kill-switch is global; abandon is per-pipeline), which is why
+    // it cannot collapse into the kill-switch path.
+    //
+    // Authority contract: the canon `pol-pipeline-abandon` gate runs
+    // on the writer side; a forbidden abandon never lands on disk. The
+    // runner observes any pipeline-abandoned atom whose metadata
+    // pipeline_id matches the current pipeline and treats it as
+    // authoritative -- the principal-id check has already happened
+    // upstream at write time.
+    //
+    // On finding an abandon atom:
+    //   1. Persist pipeline_state='abandoned' (idempotent: writers
+    //      that already flipped the state are a no-op here).
+    //   2. Return kind: 'abandoned' so the caller (run-cto-actor and
+    //      its peers) can surface the terminal state without
+    //      misclassifying it as a stage failure.
+    //
+    // No stage-event emission: the pipeline-abandoned atom IS the
+    // audit-trail entry for the operator action; an extra
+    // pipeline-stage-event would duplicate the record.
+    const abandonAtom = await findPipelineAbandonAtom(host, pipelineId);
+    if (abandonAtom !== null) {
+      // Persist the terminal state when the writer's flip has not yet
+      // landed in this view (the writer side flips on disk too; this
+      // is the substrate-side idempotent re-assert). Honors the
+      // existing pattern in failPipeline where the runner stamps
+      // pipeline_state on terminal transitions.
+      await host.atoms.update(pipelineId, {
+        pipeline_state: 'abandoned',
+        metadata: {
+          abandoned_at: now(),
+          abandon_atom_id: String(abandonAtom.id),
+        },
+      });
+      return { kind: 'abandoned', pipelineId, abandonAtomId: abandonAtom.id };
+    }
+
     // Claim-before-mutate: re-read pipeline atom to prevent double-advance
     // under concurrent ticks. Halt if the atom is missing, tainted, or
-    // already in a terminal state (completed, failed) which would mean
-    // another tick raced ahead.
+    // already in a terminal state (completed, failed, abandoned) which
+    // would mean another tick raced ahead. The abandoned-state check
+    // here is a backstop: the abandon-poll above usually catches the
+    // transition before this point, but a concurrent writer that
+    // flipped pipeline_state to 'abandoned' between the abandon-poll
+    // and this re-read still terminates the loop cleanly.
     const fresh = await host.atoms.get(pipelineId);
     if (fresh === null) return { kind: 'halted', pipelineId };
     if (fresh.taint !== 'clean') return { kind: 'halted', pipelineId };

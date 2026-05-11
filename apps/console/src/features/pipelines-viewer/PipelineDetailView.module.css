@@ -790,3 +790,243 @@
      The substrate truncation (200 chars) already caps the wire shape;
      CSS overflow is a visual safety net for narrow viewports. */
 }
+
+/*
+ * Abandon button: surfaces in the pipeline header for any running or
+ * hil-paused pipeline. Mirrors the resume button's pill+icon
+ * geometry, but uses the danger tone (red) because abandon is
+ * destructive (the pipeline becomes terminal; the next stage never
+ * dispatches). Tap-target floor matches the resume button per
+ * dev-web-mobile-first-required.
+ */
+.abandonButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: color-mix(in srgb, var(--status-danger) 12%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-danger) 50%, transparent);
+  border-radius: var(--radius-pill);
+  color: var(--status-danger);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  min-height: var(--size-touch-target-min);
+}
+
+.abandonButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-danger) 22%, transparent);
+  border-color: color-mix(in srgb, var(--status-danger) 65%, transparent);
+}
+
+.abandonButton:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.abandonButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/*
+ * Modal backdrop: full-viewport overlay that dims background content
+ * while the abandon confirmation modal is visible. prefers-reduced-motion
+ * skips the fade-in by setting the transition duration to 0ms; canon
+ * `dev-web-interaction-quality` requires honoring this preference.
+ *
+ * z-index: high enough to clear sidebars + header but the value is
+ * a CSS variable so a future modal stack does not collide.
+ */
+.abandonBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal-backdrop, 9000);
+  background: color-mix(in srgb, var(--surface-base) 70%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+}
+
+.abandonDialog {
+  background: var(--surface-raised);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  max-width: 32rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  /* Mobile shape: single column already; nothing to scope to media query.
+     The padding/gap pattern reads cleanly at 390px width. */
+}
+
+.abandonDialogHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.abandonDialogIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--size-icon-lg, 32px);
+  height: var(--size-icon-lg, 32px);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--status-danger) 14%, transparent);
+  color: var(--status-danger);
+}
+
+.abandonDialogTitle {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.abandonDialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.abandonDialogText {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: var(--line-height-relaxed);
+}
+
+.abandonDialogPipelineId {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.abandonDialogReasonLabel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
+.abandonDialogReasonInput {
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  padding: var(--space-2) var(--space-3);
+  min-height: 6rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.abandonDialogReasonInput:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: 0;
+  border-color: var(--border-focus);
+}
+
+.abandonDialogReasonHint {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.abandonDialogReasonError {
+  color: var(--status-danger);
+  font-weight: var(--font-weight-medium);
+}
+
+.abandonDialogServerError {
+  font-size: var(--font-size-xs);
+  color: var(--status-danger);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--status-danger) 10%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-danger) 40%, transparent);
+  border-radius: var(--radius-xs);
+  overflow-wrap: anywhere;
+}
+
+.abandonDialogActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/*
+ * Modal action buttons: both meet the 44px touch-target floor per
+ * dev-web-mobile-first-required. The submit button uses danger tone
+ * (matches the abandon button); cancel is neutral.
+ */
+.abandonDialogCancel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-base);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  min-height: var(--size-touch-target-min);
+}
+
+.abandonDialogCancel:hover:not(:disabled) {
+  background: var(--surface-raised-hover, var(--surface-raised));
+}
+
+.abandonDialogCancel:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.abandonDialogSubmit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: color-mix(in srgb, var(--status-danger) 18%, transparent);
+  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-danger) 65%, transparent);
+  border-radius: var(--radius-xs);
+  color: var(--status-danger);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  min-height: var(--size-touch-target-min);
+}
+
+.abandonDialogSubmit:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--status-danger) 28%, transparent);
+  border-color: color-mix(in srgb, var(--status-danger) 80%, transparent);
+}
+
+.abandonDialogSubmit:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.abandonDialogSubmit:disabled,
+.abandonDialogCancel:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}

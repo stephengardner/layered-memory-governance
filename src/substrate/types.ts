@@ -173,6 +173,19 @@ export type AtomType =
   | 'pipeline-audit-finding'
   | 'pipeline-failed'
   | 'pipeline-resume'
+  // Operator-initiated pipeline kill. Written by the Console
+  // `/api/pipeline.abandon` route handler (or any future authoring
+  // path that respects the `pol-pipeline-abandon` canon gate); the
+  // substrate runner observes the atom on its next stage-transition
+  // check, persists `pipeline_state='abandoned'`, and halts cleanly
+  // before dispatching the next stage. `metadata.pipeline_id` joins
+  // back to the target pipeline; `metadata.reason` carries the
+  // free-text operator justification; `metadata.abandoner_principal_id`
+  // is the signed-as principal (server-derived, NOT client-supplied).
+  // Distinct from `pipeline-failed` (substrate-detected failure) so
+  // audit consumers can separate operator-scoped action from
+  // mechanism-driven failures.
+  | 'pipeline-abandoned'
   // PR-orphan reconciler substrate.
   // `pr-driver-claim`: one principal claiming responsibility for
   // driving a specific PR to merged (or operator-explicit closed)
