@@ -18,6 +18,8 @@ import { existsSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { withGitNoPromptEnv } from './lib/git-spawn-no-prompt.mjs';
+
 import {
   validateSlug,
   parseGitWorktreeList,
@@ -191,8 +193,17 @@ async function cmdNew(args) {
   }
 
   // Try to fetch; warn on failure (e.g. offline).
-  try { await execa('git', ['fetch', 'origin', from], { stdio: 'inherit' }); }
-  catch { console.warn(`[wt new] fetch origin ${from} failed; proceeding with local ref`); }
+  // Neutralize askpass + credential.helper so a missing PAT fails fast
+  // instead of popping the Windows Git Credential Manager dialog. The
+  // fetch is best-effort -- if a local ref exists we proceed -- so a
+  // network-auth failure logging a warning is the right outcome, never
+  // a silent stall on a GUI prompt.
+  try {
+    await execa('git', ['fetch', 'origin', from], {
+      stdio: 'inherit',
+      env: withGitNoPromptEnv(process.env),
+    });
+  } catch { console.warn(`[wt new] fetch origin ${from} failed; proceeding with local ref`); }
 
   // Parallel-agent collision scan.
   const activityWindowMs = parsePositiveNumber(process.env.WT_ACTIVITY_MIN, 10) * 60 * 1000;

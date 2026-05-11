@@ -183,13 +183,33 @@ export async function applyDraftBranch(
   const baseBranch = inputs.baseBranch ?? 'main';
   const env = inputs.env ?? process.env;
 
+  // Force no-prompt fields onto the spawn env regardless of what caller
+  // passed. Caller's env is preserved for credential tokens, but the
+  // four fields below must always neutralize the platform credential
+  // helper so a missing token fails fast (clean push-failed error)
+  // instead of stalling on a GUI askpass dialog. Observed on
+  // Cursor-managed Windows hosts: bare git push silently hung ~30s
+  // waiting on the askpass helper, then surfaced as push-failed with
+  // no diagnostic stderr. Forcing the override last means a caller
+  // that thinks it is wiring a token still gets fail-fast posture
+  // when the token is absent or expired.
+  const safeEnv = {
+    ...env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    SSH_ASKPASS: '',
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'credential.helper',
+    GIT_CONFIG_VALUE_0: '',
+  };
+
   const run = async (
     args: ReadonlyArray<string>,
     opts: { readonly input?: string } = {},
   ): Promise<ExecResult> => {
     return (await exec('git', ['-c', `user.name=${inputs.authorIdentity.name}`, '-c', `user.email=${inputs.authorIdentity.email}`, ...args], {
       cwd: inputs.repoDir,
-      env,
+      env: safeEnv,
       reject: false,
       ...(opts.input !== undefined ? { input: opts.input } : {}),
       ...(inputs.signal ? { cancelSignal: inputs.signal } : {}),

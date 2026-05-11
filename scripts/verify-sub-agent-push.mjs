@@ -64,8 +64,17 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execa } from 'execa';
+import { withGitNoPromptEnv } from './lib/git-spawn-no-prompt.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// Read-only git network ops (fetch, ls-remote) inherit credential helper
+// state from process.env, which on a Cursor-managed Windows host can pop
+// the Git Credential Manager dialog when nothing matches the requested
+// remote in the cache. The neutralized env forces git to skip askpass +
+// credential.helper so an auth-required path fails fast (handled by
+// failTooling at exit 5) instead of silently hanging on a GUI prompt.
+const GIT_ENV = withGitNoPromptEnv(process.env);
 
 function parseArgs(argv) {
   const out = { branch: null, expectPr: null };
@@ -95,7 +104,7 @@ function emit(verdict) {
 
 async function fetchOriginQuiet() {
   try {
-    await execa('git', ['fetch', '--quiet', 'origin'], { cwd: REPO_ROOT });
+    await execa('git', ['fetch', '--quiet', 'origin'], { cwd: REPO_ROOT, env: GIT_ENV });
   } catch (err) {
     // Fail fast: a fetch failure means origin/main is stale, which
     // makes the commits-ahead computation unreliable and could
@@ -123,7 +132,7 @@ function failTooling(label, err) {
 async function getRemoteSha(branch) {
   let result;
   try {
-    result = await execa('git', ['ls-remote', '--heads', 'origin', branch], { cwd: REPO_ROOT });
+    result = await execa('git', ['ls-remote', '--heads', 'origin', branch], { cwd: REPO_ROOT, env: GIT_ENV });
   } catch (err) {
     failTooling('git ls-remote', err);
     return null;
