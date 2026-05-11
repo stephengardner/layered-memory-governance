@@ -30,6 +30,9 @@ import {
   PR_FIX_ACTOR_PRINCIPAL_ID,
 } from '../../../../examples/agent-loops/resume-author/pr-fix-actor-strategy.js';
 import {
+  CODE_AUTHOR_PRINCIPAL_ID,
+} from '../../../../examples/agent-loops/resume-author/code-author-strategy.js';
+import {
   wrapAgentLoopAdapterIfEnabled,
   type RegistryHost,
   type PrincipalId as RegistryPrincipalId,
@@ -277,5 +280,166 @@ describe('wrapAgentLoopAdapterIfEnabled (registry-integration)', () => {
     // With the policy removed, the bridge passes through the fresh
     // adapter by reference.
     expect(wrappedB).toBe(fresh);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task #155: extend the registry-bridge tests to the code-author principal.
+//
+// The bridge is principal-keyed: the same wrapAgentLoopAdapterIfEnabled
+// call honors a per-principal canon policy keyed by
+// `pol-resume-strategy-<principal-id>`. The pr-fix-actor describe block
+// above pins the wiring for pr-fix; this block pins the symmetric wiring
+// for code-author so a substrate regression that breaks ONE descriptor
+// fails its own test rather than masquerading as an unrelated change.
+//
+// Acceptance per task #155: removing the `pol-resume-strategy-code-author`
+// atom flips code-author back to fresh-spawn (matches the pr-fix-actor
+// regression check vs PR #171).
+// ---------------------------------------------------------------------------
+
+const POLICY_ATOM_ID_CODE_AUTHOR = 'pol-resume-strategy-code-author';
+
+/**
+ * Helper: mirror `callWrap` for the code-author principal. Extracted
+ * per `dev-extract-helpers-at-n-2` so each code-author test focuses on
+ * its assertion rather than the principal+opts boilerplate. The
+ * descriptor's `assembleCandidates` is the registry-side concern; the
+ * runner-side closure passed to `wrapAgentLoopAdapterIfEnabled` only
+ * needs to be a no-op stub for the unwrap-or-wrap decision test.
+ */
+function callWrapCodeAuthor(
+  fresh: AgentLoopAdapter,
+  agentLoopHost: ReturnType<typeof createMemoryHost>,
+  registryHost: RegistryHost,
+): AgentLoopAdapter {
+  return wrapAgentLoopAdapterIfEnabled(
+    fresh,
+    CODE_AUTHOR_PRINCIPAL_ID as unknown as RegistryPrincipalId,
+    registryHost,
+    {
+      agentLoopHost,
+      strategies: [],
+      assembleCandidates: dummyAssemble,
+    },
+  );
+}
+
+describe('wrapAgentLoopAdapterIfEnabled (code-author principal, task #155)', () => {
+  it('policy ABSENT in canon → returns fresh adapter unchanged (indie-floor default)', () => {
+    // Acceptance: before task #155 ships its seed (or in any deployment
+    // that deliberately removes the atom), the code-author dispatch
+    // path must NOT silently wrap with resume. Empty canon -> fresh
+    // adapter returned by reference.
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map(),
+    });
+
+    const wrapped = callWrapCodeAuthor(fresh, host, registryHost);
+    expect(wrapped).toBe(fresh);
+    expect(wrapped).not.toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
+  });
+
+  it('policy PRESENT + enabled=true → returns a ResumeAuthorAgentLoopAdapter (task #155 seeded shape)', () => {
+    // The task #155 seed lands max_stale_hours=4; the bridge does not
+    // care about the value here (the schema validates it, the
+    // SameMachineCliResumeStrategy consumes it). The contract this
+    // test pins is: enabled=true + valid schema -> wrapped.
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        [POLICY_ATOM_ID_CODE_AUTHOR, { enabled: true, max_stale_hours: 4 }],
+      ]),
+    });
+
+    const wrapped = callWrapCodeAuthor(fresh, host, registryHost);
+    expect(wrapped).toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
+    expect(wrapped).not.toBe(fresh);
+    expect(wrapped.capabilities).toBe(fresh.capabilities);
+  });
+
+  it('policy PRESENT + enabled=false → returns fresh adapter unchanged', () => {
+    // The explicit-disable shape: keeps the policy atom present (so
+    // an operator-readable canon mention survives) but turns off the
+    // wrap. Symmetric with the pr-fix-actor coverage above.
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        [POLICY_ATOM_ID_CODE_AUTHOR, { enabled: false }],
+      ]),
+    });
+
+    expect(callWrapCodeAuthor(fresh, host, registryHost)).toBe(fresh);
+  });
+
+  it('policy PRESENT but malformed (missing enabled) → fail-closed: returns fresh adapter unchanged', () => {
+    // Fail-closed contract: a Zod-rejected payload does NOT silently
+    // activate resume. The runner sees the fresh adapter; the
+    // operator sees the malformed-policy log line at canon-read time.
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        [POLICY_ATOM_ID_CODE_AUTHOR, { max_stale_hours: 4 }],
+      ]),
+    });
+
+    expect(callWrapCodeAuthor(fresh, host, registryHost)).toBe(fresh);
+  });
+
+  it('removing the policy atom from canon flips back to fresh-spawn (task #155 acceptance criterion)', () => {
+    // Direct simulation of the task #155 acceptance check: with the
+    // policy present, the bridge produces a wrapped adapter; removing
+    // the policy returns the fresh adapter by reference. Symmetric
+    // with PR #171's pr-fix-actor regression check above.
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const canonStateA = new Map<string, unknown>([
+      [POLICY_ATOM_ID_CODE_AUTHOR, { enabled: true, max_stale_hours: 4 }],
+    ]);
+    const canonStateB = new Map<string, unknown>();
+    const hostA = mkRegistryHost({ registryHost: host, canonContents: canonStateA });
+    const hostB = mkRegistryHost({ registryHost: host, canonContents: canonStateB });
+
+    const wrappedA = callWrapCodeAuthor(fresh, host, hostA);
+    const wrappedB = callWrapCodeAuthor(fresh, host, hostB);
+
+    expect(wrappedA).not.toBe(fresh);
+    expect(wrappedA).toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
+    expect(wrappedB).toBe(fresh);
+  });
+
+  it('cross-principal isolation: a pr-fix policy in canon does NOT enable code-author wrapping', () => {
+    // A canon state with the PR-fix atom present and the code-author
+    // atom absent must NOT spill over: the bridge is principal-keyed,
+    // so a deployment that opts into pr-fix resume but not code-author
+    // resume sees fresh-spawn for code-author. This is the explicit
+    // "raise the dial per principal" promise (a global toggle would
+    // violate the indie-floor / org-ceiling spec).
+    const host = createMemoryHost();
+    const fresh = new StubFreshAgentLoopAdapter();
+    const registryHost = mkRegistryHost({
+      registryHost: host,
+      canonContents: new Map([
+        [POLICY_ATOM_ID_PR_FIX, { enabled: true, max_stale_hours: 8 }],
+      ]),
+    });
+
+    // pr-fix DOES wrap (sanity check that the canon read is finding the
+    // pr-fix entry).
+    const wrappedPrFix = callWrap(fresh, host, registryHost);
+    expect(wrappedPrFix).toBeInstanceOf(ResumeAuthorAgentLoopAdapter);
+
+    // code-author does NOT wrap because the code-author atom is absent.
+    const wrappedCodeAuthor = callWrapCodeAuthor(fresh, host, registryHost);
+    expect(wrappedCodeAuthor).toBe(fresh);
   });
 });
