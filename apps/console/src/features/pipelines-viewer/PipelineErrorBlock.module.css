@@ -80,8 +80,8 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-1);
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--size-touch-target-min);
+  min-height: var(--size-touch-target-min);
   padding: var(--space-2);
   background: transparent;
   border: var(--stroke-hairline) solid var(--border-subtle);
@@ -97,8 +97,8 @@
 }
 
 .toggle:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 2px;
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
 }
 
 .body {
@@ -165,7 +165,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  min-height: 44px;
+  min-height: var(--size-touch-target-min);
   padding: var(--space-1) 0;
   color: var(--text-tertiary);
   font-size: var(--font-size-xs);
@@ -175,8 +175,8 @@
 }
 
 .rawCauseDetails summary:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 2px;
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
 }
 
 .rawCauseDetails summary::-webkit-details-marker {
@@ -207,7 +207,7 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  min-height: 44px;
+  min-height: var(--size-touch-target-min);
   padding: var(--space-2) var(--space-4);
   background: var(--surface-raised);
   color: var(--text-primary);
@@ -226,8 +226,8 @@
 }
 
 .actionButton:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 2px;
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
 }
 
 .actionButton[data-kind='abandon'] {

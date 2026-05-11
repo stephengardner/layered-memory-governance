@@ -98,18 +98,26 @@ export function usePipelineStream(
           },
           onAtomChange: (ev: PipelineStreamAtomChange) => {
             /*
-             * Invalidate the three queries that read pipeline state.
-             * The cache invalidation re-fetches the full detail
-             * projection, which is the conservative choice: a single
-             * atom event might affect cost-rollup, stage timeline,
-             * AND the intent-outcome card simultaneously. Patching
-             * each surface independently is a follow-up optimization
-             * (DECISION: keep the surface simple in v1, optimize
-             * once the network cost shows up in real metrics).
+             * Invalidate every pipeline-scoped query that reads
+             * disk-backed state for this pipeline. The cache
+             * invalidation re-fetches the relevant projection; a
+             * single atom event might affect cost rollup, stage
+             * timeline, intent-outcome card, AND the error-state
+             * block simultaneously. Patching each surface independently
+             * is a follow-up optimization (DECISION: keep the surface
+             * simple in v1, optimize once the network cost shows up
+             * in real metrics).
+             *
+             * Key shapes MUST match the readers exactly:
+             *   - PipelineDetailView: ['pipeline', pipelineId]
+             *   - PipelineLifecycle:  ['pipeline', pipelineId, 'lifecycle']
+             *   - IntentOutcomeCard:  ['pipeline', pipelineId, 'intent-outcome']
+             *   - PipelineErrorBlock: ['pipeline-error-state', pipelineId]
              */
             void queryClient.invalidateQueries({ queryKey: ['pipeline', ev.pipeline_id] });
-            void queryClient.invalidateQueries({ queryKey: ['pipeline-lifecycle', ev.pipeline_id] });
-            void queryClient.invalidateQueries({ queryKey: ['pipeline-intent-outcome', ev.pipeline_id] });
+            void queryClient.invalidateQueries({ queryKey: ['pipeline', ev.pipeline_id, 'lifecycle'] });
+            void queryClient.invalidateQueries({ queryKey: ['pipeline', ev.pipeline_id, 'intent-outcome'] });
+            void queryClient.invalidateQueries({ queryKey: ['pipeline-error-state', ev.pipeline_id] });
           },
           onPipelineStateChange: (ev: PipelineStreamPipelineStateChange) => {
             /*
