@@ -1985,11 +1985,24 @@ describe('runPipeline', () => {
       });
       expect(result.kind).toBe('failed');
       // Stage-output atom WAS persisted before the audit ran, so the
-      // operator can inspect it after the pipeline halts.
+      // operator can inspect it after the pipeline halts. Under the
+      // auditor-feedback re-prompt loop, the runner attempts the stage
+      // up to pol-auditor-feedback-reprompt-default.max_attempts times
+      // (default 2). When every attempt produces a critical finding,
+      // the runner persists one stage-output atom per attempt and then
+      // halts -- so the operator sees BOTH attempts' outputs and can
+      // diff them to understand what the LLM tried.
       const brainstormAtoms = await host.atoms.query(
         { type: ['brainstorm-output'] }, 100,
       );
-      expect(brainstormAtoms.atoms.length).toBe(1);
+      expect(brainstormAtoms.atoms.length).toBe(2);
+      // The attempt-2 atom carries the suffix in its id and the
+      // attempt_index in its metadata for audit-side filtering.
+      const attempt2 = brainstormAtoms.atoms.find(
+        (a) => (a.metadata as Record<string, unknown>)?.attempt_index === 2,
+      );
+      expect(attempt2).toBeDefined();
+      expect(String(attempt2?.id)).toContain('-attempt-2');
     });
   });
 
@@ -2396,10 +2409,20 @@ describe('runPipeline', () => {
       });
       expect(result.kind).toBe('failed');
 
+      // Under the auditor-feedback re-prompt loop, the runner attempts
+      // the plan-stage up to pol-auditor-feedback-reprompt-default.max_attempts
+      // times (default 2). When every attempt produces a critical finding,
+      // the runner persists one plan atom per attempt and then halts on
+      // the second attempt's finding. Neither plan gets auto-approved
+      // because each attempt's critical-audit-finding halts BEFORE the
+      // auto-approve pass runs.
       const plans = await host.atoms.query({ type: ['plan'] }, 100);
-      expect(plans.atoms.length).toBe(1);
-      // Critical finding halted before auto-approval, so plan stays proposed.
-      expect(plans.atoms[0]!.plan_state).toBe('proposed');
+      expect(plans.atoms.length).toBe(2);
+      // Both plans stay proposed -- critical findings halt before
+      // auto-approval runs on either attempt.
+      for (const plan of plans.atoms) {
+        expect(plan.plan_state).toBe('proposed');
+      }
       const events = await host.auditor.query({ kind: ['plan.approved-by-intent'] }, 10);
       expect(events.length).toBe(0);
     });

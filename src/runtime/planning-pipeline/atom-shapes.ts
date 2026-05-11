@@ -52,6 +52,15 @@ const TRANSITION = z.enum([
   'canon-bound',
   'canon-audit-complete',
   'agent-turn',
+  // Re-prompt loop transitions (auditor-feedback feedback loop). Emit
+  // 'retry-after-findings' when the runner re-invokes the same stage
+  // with prior audit findings folded into the prompt context; the
+  // attempt_index discriminates the multiple events one stage now
+  // emits per run (attempt 1 + attempt 2 each emit enter/exit pairs,
+  // plus a single retry-after-findings event between them). Mirrors
+  // the per-stage one-event-per-transition contract: a stage that
+  // re-prompts once emits exactly one retry-after-findings event.
+  'retry-after-findings',
 ]);
 const CANON_AUDIT_VERDICT = z.enum(['approved', 'issues-found']);
 const AUDIT_STATUS = z.enum(['unchecked', 'clean', 'findings']);
@@ -260,7 +269,8 @@ export interface MkPipelineStageEventAtomInput {
     | 'hil-resume'
     | 'canon-bound'
     | 'canon-audit-complete'
-    | 'agent-turn';
+    | 'agent-turn'
+    | 'retry-after-findings';
   readonly durationMs: number;
   readonly costUsd: number;
   readonly outputAtomId?: AtomId;
@@ -295,6 +305,28 @@ export interface MkPipelineStageEventAtomInput {
    * console rendering can sort without reading the agent-turn atom.
    */
   readonly turnIndex?: number;
+  /**
+   * retry-after-findings: 1-based attempt index the runner is ABOUT to
+   * invoke after this retry event. The attempt that just produced the
+   * findings is `attemptIndex - 1`; attempt 2 (the first re-prompt)
+   * carries `attemptIndex = 2`. The 1-based shape matches the spec
+   * section 4.3 ("attempt_index") and the way operators count
+   * attempts; the runner is the only writer so the off-by-one is
+   * contained.
+   */
+  readonly attemptIndex?: number;
+  /**
+   * retry-after-findings: severity-bucketed count of the findings the
+   * just-completed attempt produced. Surfaced on the event metadata so
+   * a console projection or audit walk renders "stage X retried after
+   * 1 critical / 2 major / 0 minor" without re-walking the per-finding
+   * atoms. The runner builds this from the findings list at emit time.
+   */
+  readonly findingsSummary?: {
+    readonly critical: number;
+    readonly major: number;
+    readonly minor: number;
+  };
 }
 
 export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): Atom {
@@ -330,6 +362,38 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
       );
     }
   }
+  if (input.transition === 'retry-after-findings') {
+    // The retry event MUST carry the attempt index the runner is about
+    // to invoke. Without it, an audit walk cannot tell two distinct
+    // retry events on the same stage (max_attempts > 2) apart -- the
+    // atom-id discriminator below depends on a defined attempt index
+    // for uniqueness. findingsSummary is optional in the schema sense
+    // (a malformed summary is recoverable) but the runner emits it on
+    // every retry, so when present we validate the per-bucket counts.
+    if (input.attemptIndex === undefined) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='retry-after-findings' requires attempt_index`,
+      );
+    }
+    if (!Number.isInteger(input.attemptIndex) || input.attemptIndex < 2) {
+      throw new Error(
+        `mkPipelineStageEventAtom: attempt_index must be an integer >= 2 (got ${input.attemptIndex}); `
+          + 'attempt 1 produces the first audit, attempt 2 is the first re-prompt.',
+      );
+    }
+    if (input.findingsSummary !== undefined) {
+      const { critical, major, minor } = input.findingsSummary;
+      if (
+        !Number.isInteger(critical) || critical < 0
+        || !Number.isInteger(major) || major < 0
+        || !Number.isInteger(minor) || minor < 0
+      ) {
+        throw new Error(
+          `mkPipelineStageEventAtom: findings_summary buckets must be non-negative integers`,
+        );
+      }
+    }
+  }
   if (input.canonAtomIds !== undefined && input.canonAtomIds.length > MAX_CITED_LIST) {
     throw new Error(
       `mkPipelineStageEventAtom: canon_atom_ids capped at ${MAX_CITED_LIST}`,
@@ -347,11 +411,17 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
   // additionally folds in the turn_index so a single stage's multi-turn
   // session produces N distinct event atoms (one per turn) without
   // re-using the same id and triggering an idempotent put-as-overwrite.
-  // Other transitions remain {pipeline}-{stage}-{transition}-{correlation};
-  // the per-stage one-event-per-transition contract is preserved.
-  const idTail = input.transition === 'agent-turn' && input.turnIndex !== undefined
-    ? `${input.transition}-${input.turnIndex}`
-    : input.transition;
+  // Same posture for 'retry-after-findings': max_attempts > 2 means a
+  // stage may emit multiple retry events, each carrying a distinct
+  // attempt_index. Other transitions remain
+  // {pipeline}-{stage}-{transition}-{correlation}; the per-stage
+  // one-event-per-transition contract is preserved.
+  let idTail = input.transition as string;
+  if (input.transition === 'agent-turn' && input.turnIndex !== undefined) {
+    idTail = `${input.transition}-${input.turnIndex}`;
+  } else if (input.transition === 'retry-after-findings' && input.attemptIndex !== undefined) {
+    idTail = `${input.transition}-${input.attemptIndex}`;
+  }
   const id = `pipeline-stage-event-${input.pipelineId}-${input.stageName}-${idTail}-${input.correlationId}` as AtomId;
   return baseAtom({
     id,
@@ -393,6 +463,16 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
         ? { agent_turn_atom_id: input.agentTurnAtomId }
         : {}),
       ...(input.turnIndex !== undefined ? { turn_index: input.turnIndex } : {}),
+      ...(input.attemptIndex !== undefined ? { attempt_index: input.attemptIndex } : {}),
+      ...(input.findingsSummary !== undefined
+        ? {
+            findings_summary: {
+              critical: input.findingsSummary.critical,
+              major: input.findingsSummary.major,
+              minor: input.findingsSummary.minor,
+            },
+          }
+        : {}),
     },
   });
 }
@@ -412,6 +492,16 @@ export interface MkPipelineAuditFindingAtomInput {
   readonly message: string;
   readonly citedAtomIds: ReadonlyArray<AtomId>;
   readonly citedPaths: ReadonlyArray<string>;
+  /**
+   * 1-based attempt index from the auditor-feedback re-prompt loop;
+   * appended to the atom id when >= 2 so a finding that recurs across
+   * attempts does not collide on the canonical
+   * {severity, category, messageDigest} id. Omitted (or 1) preserves
+   * the pre-loop atom id shape so existing audit walks stay readable.
+   * The stamp also lands on metadata.attempt_index for query-side
+   * filtering by attempt.
+   */
+  readonly attemptIndex?: number;
 }
 
 export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInput): Atom {
@@ -430,7 +520,18 @@ export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInpu
   // Append a short deterministic hash of the message so two findings
   // sharing severity + category in the same stage do not collide on id.
   const messageDigest = shortHash(input.message);
-  const id = `pipeline-audit-finding-${input.pipelineId}-${input.stageName}-${input.correlationId}-${input.severity}-${input.category}-${messageDigest}` as AtomId;
+  // Append an attempt suffix when the runner is on a re-prompt
+  // (attemptIndex >= 2) so a finding that recurs across attempts
+  // produces a distinct atom per attempt rather than colliding on
+  // {severity, category, messageDigest}. Attempt 1 (or absent)
+  // preserves the historical id shape so existing audit-walk fixtures
+  // and live consumers stay round-trippable. Mirrors the
+  // stage-output id suffix policy.
+  const attemptSuffix =
+    typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
+      ? `-attempt-${input.attemptIndex}`
+      : '';
+  const id = `pipeline-audit-finding-${input.pipelineId}-${input.stageName}-${input.correlationId}-${input.severity}-${input.category}-${messageDigest}${attemptSuffix}` as AtomId;
   return baseAtom({
     id,
     type: 'pipeline-audit-finding',
@@ -447,6 +548,9 @@ export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInpu
       message: input.message,
       cited_atom_ids: input.citedAtomIds.map(String),
       cited_paths: [...input.citedPaths],
+      ...(typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
+        ? { attempt_index: input.attemptIndex }
+        : {}),
     },
   });
 }
@@ -625,6 +729,21 @@ export interface MkStageOutputAtomBaseInput {
    * load-bearing for cross-stage walking.
    */
   readonly extraMetadata?: Record<string, unknown>;
+  /**
+   * 1-based index of the attempt that produced this output. Omitted
+   * (or 1) on first-attempt writes for ID backward-compatibility; set
+   * to 2+ on re-prompt attempts so the persisted stage-output atom
+   * does not collide with the prior attempt's atom id under the
+   * auditor-feedback re-prompt loop. The runner emits the index on
+   * metadata.attempt_index so an audit walk can show the per-attempt
+   * payload trail without parsing the atom id.
+   *
+   * Substrate posture: optional + back-compat. A stage that never
+   * re-prompts continues to write a single atom id of
+   * `<typePrefix>-<pipelineId>-<stageSlug>-<correlationId>`; a stage
+   * with a re-prompt suffix appends `-attempt-<index>` for index >= 2.
+   */
+  readonly attemptIndex?: number;
 }
 
 /**
@@ -681,6 +800,16 @@ function buildStageOutputMetadata(
     pipeline_id: input.pipelineId,
     stage_name: input.stageName,
     stage_output: projectStageOutputForMetadata(input.value),
+    // Stamp attempt_index when >= 2 so an audit walk can sort
+    // multiple per-attempt atoms produced by the auditor-feedback
+    // re-prompt loop without re-parsing the atom id suffix. Omitted
+    // on attempt 1 (or absent) so existing single-attempt audit
+    // consumers do not see a spurious field on pre-loop atoms; the
+    // suffix on the atom id and the stamp on metadata are kept in
+    // lock-step (both fire only on attempt >= 2).
+    ...(typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
+      ? { attempt_index: input.attemptIndex }
+      : {}),
   };
 }
 
@@ -716,22 +845,39 @@ function slugifyStageName(stageName: string): string {
 
 /**
  * Build the deterministic id used by every stage-output mint helper.
- * Format: `<typePrefix>-<pipelineId>-<stageSlug>-<correlationId>`.
+ * Format: `<typePrefix>-<pipelineId>-<stageSlug>-<correlationId>` for
+ * attempt 1 (or unspecified); `<typePrefix>-<pipelineId>-<stageSlug>-<correlationId>-attempt-<index>`
+ * for attempts >= 2 under the auditor-feedback re-prompt loop.
  *
  * Including the stage slug ensures per-stage uniqueness when an
  * org-ceiling deployment registers two stages whose adapters declare
  * the SAME atom_type (e.g. two different review-stage variants both
  * emitting 'review-report'); without the stage slug the second stage's
- * id would collide with the first. Within a single stage, two writes
- * for the same {pipelineId, stageName, correlationId} collide rather
- * than create siblings (idempotent put on resume).
+ * id would collide with the first.
+ *
+ * The attempt-index suffix is the runner's mechanism for distinct
+ * per-attempt atoms under the re-prompt loop. Within a single attempt,
+ * two writes for the same {pipelineId, stageName, correlationId,
+ * attemptIndex} still collide rather than create siblings (idempotent
+ * put on resume). The suffix is omitted on attemptIndex=1 (or absent)
+ * so existing deployments without re-prompts continue producing the
+ * historical atom id shape; audit walks pre-dating the loop stay
+ * readable.
  */
 function stageOutputAtomId(
   typePrefix: string,
   input: MkStageOutputAtomBaseInput,
 ): AtomId {
   const stageSlug = slugifyStageName(input.stageName);
-  return `${typePrefix}-${input.pipelineId}-${stageSlug}-${input.correlationId}` as AtomId;
+  const base = `${typePrefix}-${input.pipelineId}-${stageSlug}-${input.correlationId}`;
+  // Only suffix when attemptIndex is explicitly >= 2. attemptIndex=1
+  // (or undefined) preserves the pre-loop atom id shape so existing
+  // audit walks (and any test fixture pinning the old id) keep
+  // working. Substrate posture: opt-in suffix, default-back-compat.
+  if (typeof input.attemptIndex === 'number' && input.attemptIndex >= 2) {
+    return `${base}-attempt-${input.attemptIndex}` as AtomId;
+  }
+  return base as AtomId;
 }
 
 // ---------------------------------------------------------------------------
@@ -854,6 +1000,15 @@ export interface MkPlanOutputAtomsInput {
    * a same-named bag.
    */
   readonly extraMetadata?: Readonly<Record<string, unknown>>;
+  /**
+   * 1-based index of the attempt that produced this plan-stage output.
+   * Mirrors `MkStageOutputAtomBaseInput.attemptIndex`: omitted or 1 on
+   * a first-attempt write preserves the historical id shape; >= 2
+   * appends `-attempt-<index>` to each plan atom's id so the
+   * re-prompt loop's per-attempt atoms do not collide. The stamp also
+   * lands on `metadata.attempt_index` for audit-walk filtering.
+   */
+  readonly attemptIndex?: number;
 }
 
 interface PlanEntryLike {
@@ -973,8 +1128,17 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
     // and a per-entry index (so a payload with multiple plans
     // produces distinct atoms even when their titles slug-collide).
     // The pipelineId namespace ensures cross-pipeline isolation.
+    // Append `-attempt-<index>` for attemptIndex >= 2 so the
+    // auditor-feedback re-prompt loop's per-attempt atoms do not
+    // collide with the prior attempt's plan ids. Mirrors the
+    // stageOutputAtomId helper suffix policy: attempt 1 (or absent)
+    // keeps the historical shape.
+    const attemptSuffix =
+      typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
+        ? `-attempt-${input.attemptIndex}`
+        : '';
     const id =
-      `plan-${slug}-${input.principalId}-${input.pipelineId}-${i}` as AtomId;
+      `plan-${slug}-${input.principalId}-${input.pipelineId}-${i}${attemptSuffix}` as AtomId;
 
     // Build derived_from: start with the runner-supplied chain
     // (pipelineId + prior stage outputs) and append the plan entry's
@@ -1070,6 +1234,14 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
         what_breaks_if_revisit: asString(entry.what_breaks_if_revisit),
         ...delegationMetadata,
         ...targetPathsMetadata,
+        // Stamp attempt_index when >= 2 so an audit walk can sort
+        // multiple per-attempt plan atoms produced by the auditor-
+        // feedback re-prompt loop. Kept in lock-step with the id
+        // suffix: attempt 1 (or absent) omits the field; >= 2 stamps
+        // it. Mirrors buildStageOutputMetadata's same posture.
+        ...(typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
+          ? { attempt_index: input.attemptIndex }
+          : {}),
       },
     });
   }
