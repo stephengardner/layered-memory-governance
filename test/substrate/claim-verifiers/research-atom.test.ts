@@ -80,7 +80,7 @@ describe('verifyResearchAtomTerminal', () => {
     expect(result).toEqual({ ok: false, observed_state: 'NOT_FOUND' });
   });
 
-  it('returns ok=false NOT_FOUND when status is missing on both paths', async () => {
+  it('returns ok=false NOT_FOUND when the metadata.research.status field is missing', async () => {
     const host = makeHost(async () => ({
       id: 'atom-5',
       metadata: { research: {} },

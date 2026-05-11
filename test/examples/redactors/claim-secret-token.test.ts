@@ -68,21 +68,34 @@ describe('CLAIM_SECRET_TOKEN_PATTERN', () => {
     expect(out).not.toContain(token);
   });
 
-  it('strips token from agent-turn atom llm_input / llm_output / tool_calls', () => {
+  it('strips token from agent-turn atom llm_input / llm_output / tool_calls (canonical inline shape)', () => {
+    // Canonical AgentTurnMeta uses discriminated-union shapes for
+    // llm_input / llm_output / tool_calls.args / tool_calls.result:
+    // `{ inline: string } | { ref: BlobRef }`. tool_calls entries also
+    // carry `tool`, `latency_ms`, `outcome`. The redactor MUST handle
+    // both shapes; this test exercises the inline branch.
     const token = 'B'.repeat(43);
     const atom = {
       type: 'agent-turn',
       metadata: {
         agent_turn: {
-          llm_input: `here is the token ${token}`,
-          llm_output: `received claim_secret_token: ${token}`,
-          tool_calls: [{ name: 'echo', args: { msg: token } }],
+          llm_input: { inline: `here is the token ${token}` },
+          llm_output: { inline: `received claim_secret_token: ${token}` },
+          tool_calls: [
+            {
+              tool: 'echo',
+              args: { inline: token },
+              result: { inline: 'ok' },
+              latency_ms: 42,
+              outcome: 'success',
+            },
+          ],
         },
       },
     };
     const redacted = redactAgentTurnAtom(atom);
-    expect(redacted.metadata.agent_turn.llm_input).not.toContain(token);
-    expect(redacted.metadata.agent_turn.llm_output).not.toContain(token);
+    expect(JSON.stringify(redacted.metadata.agent_turn.llm_input)).not.toContain(token);
+    expect(JSON.stringify(redacted.metadata.agent_turn.llm_output)).not.toContain(token);
     expect(JSON.stringify(redacted.metadata.agent_turn.tool_calls)).not.toContain(token);
   });
 
@@ -108,9 +121,12 @@ describe('CLAIM_SECRET_TOKEN_PATTERN', () => {
     expect(markerCount).toBeGreaterThanOrEqual(2);
   });
 
-  it('handles inline {inline: ...} discriminated-union shape on agent-turn atoms', () => {
-    // Canonical AgentTurnMeta uses { inline: string } | { ref: BlobRef }.
-    // The helper must redact the inline payload without disturbing ref-shaped slots.
+  it('handles mixed inline + ref discriminated-union shapes on agent-turn atoms', () => {
+    // Canonical AgentTurnMeta uses `{ inline: string } | { ref: BlobRef }`
+    // for llm_input / llm_output / tool_calls.args / tool_calls.result.
+    // tool_calls entries also carry `tool`, `latency_ms`, `outcome` per
+    // AgentTurnMeta (src/substrate/types.ts). The helper must redact
+    // every inline payload while leaving ref-shaped slots untouched.
     const token = 'E'.repeat(43);
     const atom = {
       type: 'agent-turn',
@@ -119,7 +135,13 @@ describe('CLAIM_SECRET_TOKEN_PATTERN', () => {
           llm_input: { inline: `token ${token}` },
           llm_output: { ref: { blob_id: 'b-xyz' } },
           tool_calls: [
-            { tool: 'echo', args: { inline: token }, result: { ref: { blob_id: 'b-r' } } },
+            {
+              tool: 'echo',
+              args: { inline: token },
+              result: { ref: { blob_id: 'b-r' } },
+              latency_ms: 17,
+              outcome: 'success',
+            },
           ],
         },
       },
