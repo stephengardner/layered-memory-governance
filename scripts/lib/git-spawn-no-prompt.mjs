@@ -31,6 +31,22 @@
  *                            the helper entirely and either succeed
  *                            (the remote is public or no auth needed)
  *                            or fail fast (auth required, none cached).
+ *
+ * Exclusive ownership of GIT_CONFIG_*
+ * -----------------------------------
+ * This helper assumes exclusive ownership of the GIT_CONFIG_* slot-0
+ * namespace. Composing it with callers that inject their own
+ * GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n> via the existingEnv
+ * argument is NOT supported: withGitNoPromptEnv() unconditionally
+ * resets COUNT='1' and writes credential.helper='' into slot 0,
+ * overwriting whatever the caller staged there. If you need to layer
+ * a token via `http.extraHeader` AND neutralize the credential
+ * helper (the buildReadOnlyEnv shape in scripts/lib/git-as-push-auth.mjs
+ * is the canonical example), do it directly in that helper -- do
+ * not stack it on top of withGitNoPromptEnv(). The two paths are
+ * mutually exclusive by design: git-as.mjs handles bot-authenticated
+ * read/push; this helper handles fail-fast for non-authenticated
+ * spawns.
  */
 export function buildGitNoPromptEnv() {
   return {
