@@ -4184,6 +4184,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const channel = path.substring('/api/events/'.length);
     const pipelineChannelId = parsePipelineChannel(channel);
 
+    /*
+     * Defense in depth: a channel that LOOKS like a per-pipeline
+     * channel (starts with the pipeline.<...> prefix) but failed the
+     * parser's validation MUST 404 here rather than fall through to
+     * the generic SSE handler below. Without this guard a malformed
+     * `pipeline.../etc/passwd` style channel would open a long-lived
+     * generic atoms socket and consume a connection slot outside the
+     * MAX_SUBSCRIBERS_PER_PIPELINE cap. Closes the CR PR #403 major
+     * finding.
+     */
+    if (pipelineChannelId === null && channel.startsWith('pipeline.')) {
+      sendErr(req, res, 404, 'invalid-pipeline-channel', `invalid pipeline channel ${channel}`);
+      return;
+    }
+
     if (pipelineChannelId !== null) {
       /*
        * Per-pipeline channel. Validate the pipeline exists BEFORE
@@ -4192,12 +4207,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
        * empty event stream that looks indistinguishable from "this
        * pipeline never emits".
        *
-       * The atomIndex check is the same priming-aware path used by
-       * the detail handler; pipeline lookup is O(1) when primed and
-       * falls back to a fresh disk read at startup.
+       * The lookup goes through handleAtomGet so the narrow startup
+       * window before primeAtomIndex resolves does not return a
+       * false 404 for a valid pipeline id. handleAtomGet falls back
+       * to a fresh disk read when the index is still cold.
        */
-      const filename = atomFilenameFromId(pipelineChannelId);
-      const existing = atomIndex.get(filename);
+      const existing = await handleAtomGet(pipelineChannelId);
       if (!existing || existing.type !== 'pipeline') {
         sendErr(req, res, 404, 'pipeline-not-found', `no pipeline atom with id ${pipelineChannelId}`);
         return;

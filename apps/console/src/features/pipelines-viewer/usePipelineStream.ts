@@ -152,8 +152,13 @@ export function usePipelineStream(
         return;
       }
       const cap = optionsRef.current.maxReconnectDelayMs ?? DEFAULT_MAX_RECONNECT_DELAY_MS;
-      // Exponential backoff: 1s, 2s, 4s, 8s, 16s, capped at cap.
-      const delay = Math.min(cap, DEFAULT_INITIAL_RECONNECT_DELAY_MS * 2 ** attempt);
+      /*
+       * Route through the exported computeReconnectDelayMs helper
+       * so the backoff curve has exactly one source of truth (the
+       * unit-tested pure function), not a copy here that can drift
+       * if the helper grows jitter or other policy.
+       */
+      const delay = computeReconnectDelayMs(attempt, cap, DEFAULT_INITIAL_RECONNECT_DELAY_MS);
       attempt += 1;
       setConnectionState('reconnecting');
       reconnectTimer = setTimeout(() => {

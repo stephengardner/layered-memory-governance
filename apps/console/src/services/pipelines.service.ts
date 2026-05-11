@@ -302,6 +302,15 @@ export function subscribeToPipelineStream(
       if (typeof ev !== 'object' || ev === null) return;
       const record = ev as Record<string, unknown>;
       if (typeof record['pipeline_id'] !== 'string') return;
+      /*
+       * Defense in depth: even though the server only broadcasts
+       * events for the matching pipeline_id, a misrouted or stale
+       * payload (e.g. a future server bug, an in-flight connection
+       * that was previously bound to a different id) must not patch
+       * the wrong detail view's cache. Drop events whose payload
+       * pipeline_id does not match the subscribed pipelineId.
+       */
+      if (record['pipeline_id'] !== pipelineId) return;
 
       if ('atom_id' in record && typeof record['atom_id'] === 'string') {
         handlers.onAtomChange?.(ev as PipelineStreamAtomChange);

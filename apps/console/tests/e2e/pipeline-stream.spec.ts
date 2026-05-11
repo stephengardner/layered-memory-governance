@@ -112,19 +112,16 @@ test.describe('pipeline SSE stream', () => {
 
   test('SSE endpoint rejects pipeline channels with malformed ids', async ({ request }) => {
     // Channel parser rejects '..' / slashes / control chars before reaching the index lookup.
-    // The route falls through to the legacy generic SSE handler in this case, which still returns
-    // 200 with content-type text/event-stream but without the pipeline routing -- not the
-    // surface we are testing here. The shape we assert is that the malformed id does NOT yield a
-    // working per-pipeline channel.
+    // The route explicitly 404s a malformed pipeline.* channel (not falling through to the
+    // generic SSE handler) so the malformed-id surface never opens a socket outside the
+    // MAX_SUBSCRIBERS_PER_PIPELINE cap. Pinned by the server-side guard in /api/events/.
     const response = await request.get('/api/events/pipeline.../etc/passwd');
-    // Either a 404 (channel parser rejected) or non-pipeline SSE; the
-    // explicit invariant is that we never resolve to pipeline-not-
-    // found with a leaked filesystem path.
-    if (response.status() === 404) {
-      const body = await response.json();
-      // Should NOT contain "passwd" or any filesystem-shape data.
-      expect(JSON.stringify(body)).not.toContain('passwd');
-    }
+    expect(response.status()).toBe(404);
+    const body = await response.json();
+    expect(body?.ok).toBe(false);
+    expect(body?.error?.code).toBe('invalid-pipeline-channel');
+    // Should NOT contain any filesystem-shape data leak.
+    expect(JSON.stringify(body)).not.toContain('passwd');
   });
 
   test('detail view exposes the SSE connection state via data attribute', async ({ page }) => {
