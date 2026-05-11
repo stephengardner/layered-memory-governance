@@ -500,6 +500,33 @@ describe('buildPipelineErrorState', () => {
     expect(result.cited_atom_ids).toEqual(['op-intent', 'spec-out', 'plan-out', 'extra-cited']);
   });
 
+  it('does NOT pull finding citations into a non-audit failure (e.g. budget-exceeded)', () => {
+    /*
+     * Regression for CR PR #404 finding: a budget-exceeded failure
+     * that happens to have an unrelated critical-audit-finding on
+     * disk MUST NOT surface that finding's cited_atom_ids -- the
+     * operator would chase citations that belong to a different
+     * concern.
+     */
+    const pipeline = pipelineAtom({ id: 'pipeline-1' });
+    const failed = failedAtom({
+      pipelineId: 'pipeline-1',
+      cause: 'budget-overflow: 1 > 0',
+      chain: ['op-intent', 'spec-out'],
+    });
+    const finding = findingAtom({
+      pipelineId: 'pipeline-1',
+      severity: 'critical',
+      category: 'security-issue',
+      citedAtomIds: ['unrelated-1', 'unrelated-2'],
+    });
+    const result = buildPipelineErrorState([pipeline, failed, finding], 'pipeline-1', NOW);
+    expect(result.category).toBe('budget-exceeded');
+    expect(result.cited_atom_ids).toEqual(['op-intent', 'spec-out']);
+    expect(result.cited_atom_ids).not.toContain('unrelated-1');
+    expect(result.cited_atom_ids).not.toContain('unrelated-2');
+  });
+
   it('filters tainted atoms from consideration', () => {
     const pipeline = pipelineAtom({ id: 'pipeline-1' });
     const failed: PipelineErrorStateSourceAtom = {

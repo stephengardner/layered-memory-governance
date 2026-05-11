@@ -74,7 +74,15 @@ export function PipelineErrorBlock({ pipelineId }: { pipelineId: string }) {
   });
 
   if (!query.data || query.data.state === 'ok') return null;
-  return <PipelineErrorBody data={query.data} pipelineId={pipelineId} />;
+  /*
+   * key={pipelineId} forces React to remount PipelineErrorBody when
+   * the surface navigates to a different pipeline. The body's
+   * `useState(() => readExpanded(pipelineId))` initializer only runs
+   * on mount, so without the key a same-component-instance update
+   * would keep the previous pipeline's expansion state. CR PR #404
+   * finding.
+   */
+  return <PipelineErrorBody key={pipelineId} data={query.data} pipelineId={pipelineId} />;
 }
 
 function readExpanded(pipelineId: string): boolean {

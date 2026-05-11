@@ -622,6 +622,20 @@ export function buildPipelineErrorState(
       ? findFailedStageOutputAtomId(atoms, pipelineId, failedStageName)
       : null;
 
+    /*
+     * Cited atoms scoping rule: the critical finding's cited_atom_ids
+     * are pulled into the block's chip strip ONLY for the audit-shaped
+     * categories (critical-audit-finding + plan-author-confabulation).
+     * A budget-exceeded or schema-mismatch failure that happens to
+     * have an unrelated critical-audit-finding on disk MUST NOT surface
+     * that finding's cited_atom_ids -- the operator would chase
+     * citations that belong to a different concern. CR PR #404 finding.
+     */
+    const findingForCitations =
+      category === 'critical-audit-finding' || category === 'plan-author-confabulation'
+        ? firstFinding
+        : null;
+
     return {
       pipeline_id: pipelineId,
       state: 'failed',
@@ -632,7 +646,7 @@ export function buildPipelineErrorState(
       raw_cause: cause.length > 0 ? cause : null,
       failed_stage_name: failedStageName,
       failed_stage_index: failedStageIndex,
-      cited_atom_ids: buildCitedAtomIds(failureAtom, firstFinding),
+      cited_atom_ids: buildCitedAtomIds(failureAtom, findingForCitations),
       actions: buildActions(category, failureAtom.id, stageOutputAtomId, firstFindingId, 'failed'),
       computed_at: computedAt,
     };

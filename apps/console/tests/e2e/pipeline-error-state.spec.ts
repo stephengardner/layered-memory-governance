@@ -485,7 +485,14 @@ test.describe('pipeline error-state block', () => {
     await expect(block).toBeVisible({ timeout: 10_000 });
     const details = page.getByTestId('pipeline-error-raw-cause');
     await expect(details).toBeVisible();
-    await details.click();
+    // Pre-click: the disclosure is closed (no open attribute).
+    await expect(details).not.toHaveAttribute('open', /.*/);
+    // Click the summary directly so the toggle actually fires
+    // (clicking the <details> wrapper itself doesn't always trigger
+    // the native disclosure on every browser).
+    await details.locator('summary').click();
+    // Post-click: the disclosure is open AND the raw cause is visible.
+    await expect(details).toHaveAttribute('open', /.*/);
     await expect(details).toContainText('schema-validation-failed');
   });
 });
