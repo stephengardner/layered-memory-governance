@@ -93,6 +93,10 @@ import { resolve } from 'node:path';
 import type { Host } from './interface.js';
 import type {
   AtomId,
+  AttestationRejectionReason,
+  ClaimAttestationAcceptedMeta,
+  ClaimAttestationRejectedMeta,
+  Event,
   PrincipalId,
   Time,
   WorkClaimBrief,
@@ -100,9 +104,13 @@ import type {
 } from './types.js';
 import type { AgentLoopAdapter } from './agent-loop.js';
 import type { BlobStore } from './blob-store.js';
-import { verifierRegistry } from './claim-verifiers/index.js';
+import { dispatchVerifier, verifierRegistry } from './claim-verifiers/index.js';
 import { resolveBudgetTier } from './policy/claim-budget-tier.js';
-import { generateClaimToken } from './claim-token.js';
+import {
+  resolveVerifierFailureCap,
+  resolveVerifierTimeoutMs,
+} from './policy/claim-reaper-config.js';
+import { constantTimeEqual, generateClaimToken } from './claim-token.js';
 
 /**
  * Spill threshold: prompts whose raw character length exceeds this cap
@@ -519,11 +527,422 @@ export type { WorkClaimBrief, WorkClaimMeta } from './types.js';
 export type { AgentLoopAdapter } from './agent-loop.js';
 export type { BlobStore } from './blob-store.js';
 
+// ---------------------------------------------------------------------------
+// markClaimComplete (plan Task 12 + spec Section 6 step 9)
+// ---------------------------------------------------------------------------
+
 /**
- * Stub: `markClaimComplete` lands in Task 12. The export is reserved
- * here so callers can declare-merge against the contract module while
- * the implementation is being written; calling it throws.
+ * The sub-agent's reported terminal observation. Three fields, all
+ * untrusted: the substrate verifies kind + identifier against the
+ * brief at gate time, then dispatches a verifier to confirm
+ * observed_state against ground truth.
  */
-export async function markClaimComplete(): Promise<never> {
-  throw new Error('markClaimComplete: not implemented (Task 12)');
+export interface AttestationInput {
+  readonly terminal_kind: string;
+  readonly terminal_identifier: string;
+  readonly observed_state: string;
+}
+
+/**
+ * Outcome of a `markClaimComplete` round-trip. `accepted: true` means
+ * the verifier confirmed the sub-agent's reported terminal state and
+ * the claim has been flipped to `complete`. `accepted: false` carries a
+ * closed-set `reason` from `AttestationRejectionReason`; consumers
+ * branch on the reason (operator escalation vs reaper-driven recovery
+ * vs principal-misbehavior alert) without re-parsing free text.
+ *
+ * `observed_state` is set only on `ground-truth-mismatch` (the verifier
+ * returned a state but it did not match the expected set). Other
+ * rejection reasons leave the field undefined because no ground-truth
+ * lookup occurred.
+ */
+export interface AttestationResult {
+  readonly accepted: boolean;
+  readonly reason?: AttestationRejectionReason;
+  readonly observed_state?: string;
+}
+
+/**
+ * Input to a `markClaimComplete` call. `claim_secret_token` is the
+ * unforgeable bearer secret minted at dispatch time; treat as opaque
+ * and never log. `caller_principal_id` is matched against the claim's
+ * dispatched principal at Gate 5.
+ */
+export interface MarkClaimCompleteInput {
+  readonly claim_id: string;
+  readonly claim_secret_token: string;
+  readonly caller_principal_id: string;
+  readonly attestation: AttestationInput;
+}
+
+/**
+ * Optional knobs threaded through to the gate logic. Today only the
+ * STOP predicate is injectable (parity with dispatchSubAgent so tests
+ * can run without a real `.lag/STOP` file). Future fields land here
+ * without churning the public signature.
+ */
+export interface MarkClaimCompleteOptions {
+  readonly stopSentinel?: () => boolean;
+}
+
+/**
+ * Close a work-claim by attesting its terminal state. Runs nine
+ * validation gates in the exact order specified by plan Task 12 + spec
+ * Section 6 step 9; each rejection writes a `claim-attestation-rejected`
+ * atom chained back to the claim (so the audit trail records every
+ * attempt, including denied ones).
+ *
+ * Gate order (do NOT reorder):
+ *   1. STOP sentinel        -> `stop-sentinel`
+ *   2. Claim lookup         -> `claim-not-found` (no atom written; no parent
+ *                              to chain to)
+ *   3. State guard          -> `claim-already-terminal` + principal-misbehavior
+ *                              Notifier event
+ *   4. Token match          -> `token-mismatch`
+ *   5. Principal match      -> `principal-mismatch`
+ *   6. Identifier match     -> `identifier-mismatch`
+ *   7. Kind match           -> `kind-mismatch`
+ *   8. State transition     -> claim_state := `attesting`
+ *   9. Verifier dispatch    -> `ground-truth-mismatch` | `verifier-error` |
+ *                              `verifier-timeout` (with failure-cap stall)
+ *
+ * On the happy path: writes a `claim-attestation-accepted` atom AND
+ * flips the claim to `complete` AND resets `verifier_failure_count` to
+ * 0 in the same logical step. Returns `{ accepted: true }`.
+ */
+export async function markClaimComplete(
+  input: MarkClaimCompleteInput,
+  host: Host,
+  options?: MarkClaimCompleteOptions,
+): Promise<AttestationResult> {
+  const stopSentinel = options?.stopSentinel ?? defaultStopSentinel;
+
+  // Gate 1: STOP sentinel. Refuse to close any claim while the kill-
+  // switch is engaged; write the rejection so the audit trail records
+  // the attempt rather than silently dropping it.
+  if (stopSentinel()) {
+    await writeRejectionAtom(host, input.claim_id, input.caller_principal_id, 'stop-sentinel');
+    return { accepted: false, reason: 'stop-sentinel' };
+  }
+
+  // Gate 2: claim lookup. No claim atom means there is no parent to
+  // chain a rejection-atom provenance against; skip the write per the
+  // plan Task 12 contract (see spec Section 6 step 9 Gate 2).
+  const claimAtom = await host.atoms.get(input.claim_id as AtomId);
+  if (claimAtom === null) {
+    return { accepted: false, reason: 'claim-not-found' };
+  }
+
+  const meta = claimAtom.metadata.work_claim as WorkClaimMeta | undefined;
+  if (meta === undefined) {
+    // Atom exists but is not a work-claim (or carries no metadata).
+    // Treat as claim-not-found per the same no-parent-to-chain logic.
+    return { accepted: false, reason: 'claim-not-found' };
+  }
+
+  // Gate 3: state guard. Only `executing` and `attesting` claims may be
+  // attested. A post-terminal attest IS a principal-misbehavior signal:
+  // the principal either lost track of state or is attempting to
+  // re-close a closed claim (potential replay attempt).
+  const state = meta.claim_state;
+  if (state !== 'executing' && state !== 'attesting') {
+    await writeRejectionAtom(host, input.claim_id, input.caller_principal_id, 'claim-already-terminal');
+    // Telegraph a principal-misbehavior event so the operator surface
+    // sees a post-terminal-attest distinct from a routine rejection.
+    const event: Event = {
+      kind: 'principal-misbehavior',
+      severity: 'warn',
+      summary: `post-terminal attest on ${input.claim_id} (state=${state})`,
+      body: JSON.stringify({ claim_id: input.claim_id, caller_principal_id: input.caller_principal_id, observed_state: state }),
+      atom_refs: [input.claim_id as AtomId],
+      principal_id: input.caller_principal_id as PrincipalId,
+      created_at: host.clock.now(),
+      payload: {
+        claim_id: input.claim_id,
+        caller_principal_id: input.caller_principal_id,
+        observed_claim_state: state,
+      },
+    };
+    // pending = no auto-disposition; the substrate just needs the
+    // surface delivery. Short timeout because the substrate does not
+    // wait on the operator response here; the rejection has already
+    // been recorded as an atom.
+    await host.notifier.telegraph(event, null, 'pending', 0);
+    return { accepted: false, reason: 'claim-already-terminal' };
+  }
+
+  // Gate 4: token match. Constant-time compare so a timing-oracle
+  // attacker cannot narrow the keyspace with repeated guesses.
+  if (!constantTimeEqual(input.claim_secret_token, meta.claim_secret_token)) {
+    await writeRejectionAtom(host, input.claim_id, input.caller_principal_id, 'token-mismatch');
+    return { accepted: false, reason: 'token-mismatch' };
+  }
+
+  // Gate 5: principal match. The caller MUST be the principal the
+  // claim was dispatched to; a stranger holding the token cannot
+  // attest. This is the audit-chain anchor: the dispatched principal
+  // is the only identity whose attestation we trust.
+  if (input.caller_principal_id !== meta.dispatched_principal_id) {
+    await writeRejectionAtom(host, input.claim_id, input.caller_principal_id, 'principal-mismatch');
+    return { accepted: false, reason: 'principal-mismatch' };
+  }
+
+  // Gate 6: identifier match. The attested terminal_identifier MUST
+  // match the brief; a sub-agent attesting completion of a different
+  // work-item than the one it was dispatched to is a spec-shape error.
+  if (input.attestation.terminal_identifier !== meta.brief.expected_terminal.identifier) {
+    await writeRejectionAtom(host, input.claim_id, input.caller_principal_id, 'identifier-mismatch');
+    return { accepted: false, reason: 'identifier-mismatch' };
+  }
+
+  // Gate 7: kind match. Same shape as Gate 6 but for the verifier kind.
+  if (input.attestation.terminal_kind !== meta.brief.expected_terminal.kind) {
+    await writeRejectionAtom(host, input.claim_id, input.caller_principal_id, 'kind-mismatch');
+    return { accepted: false, reason: 'kind-mismatch' };
+  }
+
+  // Gate 8: transition to `attesting`. The flip happens BEFORE the
+  // verifier runs because a slow verifier should not leave the claim
+  // visibly in `executing` while the substrate is mid-verify. The
+  // memory atom-store update is unconditional; future stores with
+  // explicit version checks pass the prior version through here.
+  await host.atoms.update(input.claim_id as AtomId, {
+    metadata: {
+      work_claim: { ...meta, claim_state: 'attesting' },
+    },
+  });
+
+  // Gate 9: verifier dispatch wrapped in Promise.race with a timeout.
+  // The timeout cap and the failure-cap both live in canon policy so
+  // org-ceiling deployments tune them via a canon edit, not a release.
+  const timeoutMs = await resolveVerifierTimeoutMs(host);
+  const failureCap = await resolveVerifierFailureCap(host);
+
+  // Discriminated race outcome so the timeout branch is distinguishable
+  // from a verifier returning ok=false. The third path (verifier
+  // throw) is captured in `verifierError` below and routed through the
+  // same infra-failure finalizer as the timeout branch.
+  type RaceOutcome =
+    | { kind: 'ok'; ok: boolean; observed_state: string }
+    | { kind: 'timeout' };
+
+  let raceOutcome: RaceOutcome;
+  let verifierError: unknown = null;
+  try {
+    const verifierPromise: Promise<RaceOutcome> = dispatchVerifier(
+      input.attestation.terminal_kind,
+      input.attestation.terminal_identifier,
+      [...meta.brief.expected_terminal.terminal_states],
+      { host },
+    ).then(r => ({ kind: 'ok' as const, ok: r.ok, observed_state: r.observed_state }));
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<RaceOutcome>(resolveOuter => {
+      timeoutHandle = setTimeout(() => resolveOuter({ kind: 'timeout' }), timeoutMs);
+    });
+    try {
+      raceOutcome = await Promise.race([verifierPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    }
+  } catch (err) {
+    // Verifier handler threw (or dispatchVerifier itself threw on an
+    // unknown kind, but Gate 7 prevents that path).
+    raceOutcome = { kind: 'ok', ok: false, observed_state: 'VERIFIER_ERROR' };
+    verifierError = err;
+  }
+
+  // Branch on the race outcome. Three terminal shapes: accepted,
+  // ground-truth-mismatch, infrastructure failure (error or timeout).
+  if (verifierError !== null) {
+    // verifier-error path: increment failure count, possibly stall.
+    return finalizeVerifierInfraFailure(host, input, meta, 'verifier-error', failureCap, verifierError);
+  }
+  if (raceOutcome.kind === 'timeout') {
+    return finalizeVerifierInfraFailure(host, input, meta, 'verifier-timeout', failureCap, null);
+  }
+  if (raceOutcome.ok) {
+    // Happy path: write accepted atom, flip to complete, reset
+    // failure count to 0. The reset matters: a claim that bounced
+    // off a transient verifier failure and then succeeded must NOT
+    // carry the prior failure count into a future re-attempt.
+    const now = host.clock.now();
+    const acceptedMeta: ClaimAttestationAcceptedMeta = {
+      claim_id: input.claim_id,
+      observed_state: raceOutcome.observed_state,
+      verified_at: now,
+    };
+    await host.atoms.put({
+      schema_version: 1,
+      id: `claim-attestation-accepted-${input.claim_id}-${now.replace(/[^0-9]/g, '')}` as AtomId,
+      content: `attestation accepted ${input.claim_id} ${raceOutcome.observed_state}`,
+      type: 'claim-attestation-accepted',
+      layer: 'L0',
+      provenance: {
+        kind: 'agent-inferred',
+        source: { agent_id: input.caller_principal_id },
+        derived_from: [input.claim_id as AtomId],
+      },
+      confidence: 1,
+      created_at: now,
+      last_reinforced_at: now,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'verified',
+        last_validated_at: now,
+      },
+      principal_id: input.caller_principal_id as PrincipalId,
+      taint: 'clean',
+      metadata: { claim_attestation: acceptedMeta },
+    });
+    await host.atoms.update(input.claim_id as AtomId, {
+      metadata: {
+        work_claim: {
+          ...meta,
+          claim_state: 'complete',
+          verifier_failure_count: 0,
+        },
+      },
+    });
+    return { accepted: true };
+  }
+  // ground-truth-mismatch: write rejection atom carrying the observed
+  // state from the verifier; state stays in `attesting`. Per spec,
+  // verifier_failure_count is NOT incremented on a ground-truth
+  // mismatch (the verifier worked; the sub-agent attested wrong).
+  await writeRejectionAtom(
+    host,
+    input.claim_id,
+    input.caller_principal_id,
+    'ground-truth-mismatch',
+    raceOutcome.observed_state,
+  );
+  await host.atoms.update(input.claim_id as AtomId, {
+    metadata: {
+      work_claim: {
+        ...meta,
+        claim_state: 'attesting',
+        last_attestation_rejected_at: host.clock.now(),
+      },
+    },
+  });
+  return {
+    accepted: false,
+    reason: 'ground-truth-mismatch',
+    observed_state: raceOutcome.observed_state,
+  };
+}
+
+/**
+ * Handle the two infrastructure-failure reasons (verifier-error,
+ * verifier-timeout) with shared rejection + counter-increment + cap
+ * logic. Extracted at N=2 per the dev-code-duplication-extract-at-n-2
+ * canon directive.
+ */
+async function finalizeVerifierInfraFailure(
+  host: Host,
+  input: MarkClaimCompleteInput,
+  meta: WorkClaimMeta,
+  reason: 'verifier-error' | 'verifier-timeout',
+  failureCap: number,
+  errorForBody: unknown,
+): Promise<AttestationResult> {
+  const nextCount = meta.verifier_failure_count + 1;
+  const errorMessage = errorForBody instanceof Error ? errorForBody.message : (errorForBody === null ? undefined : String(errorForBody));
+  await writeRejectionAtom(
+    host,
+    input.claim_id,
+    input.caller_principal_id,
+    reason,
+    undefined,
+    errorMessage,
+  );
+  // If the post-increment count is at or above the cap, flip the claim
+  // straight to `stalled` so the reaper does not wait for another
+  // attestation cycle to detect a wedged verifier.
+  const nextState: WorkClaimMeta['claim_state'] = nextCount >= failureCap ? 'stalled' : 'attesting';
+  await host.atoms.update(input.claim_id as AtomId, {
+    metadata: {
+      work_claim: {
+        ...meta,
+        claim_state: nextState,
+        verifier_failure_count: nextCount,
+        last_attestation_rejected_at: host.clock.now(),
+      },
+    },
+  });
+  return { accepted: false, reason };
+}
+
+/**
+ * Write a `claim-attestation-rejected` atom carrying the standard
+ * rejection-metadata shape. Centralized so every rejection path in
+ * `markClaimComplete` shares one writer; per `dev-code-duplication-
+ * extract-at-n-2`, we extracted at N=2 (the 8 rejection reasons that
+ * each need a rejection-atom write).
+ *
+ * `observed_state` is set only on `ground-truth-mismatch`. `error` is
+ * set only on `verifier-error` / `verifier-timeout` (when the underlying
+ * cause is structural). The two fields are mutually exclusive per the
+ * `ClaimAttestationRejectedMeta` JSDoc.
+ */
+async function writeRejectionAtom(
+  host: Host,
+  claimId: string,
+  callerPrincipalId: string,
+  reason: AttestationRejectionReason,
+  observedState?: string,
+  error?: string,
+): Promise<void> {
+  const now = host.clock.now();
+  const meta: ClaimAttestationRejectedMeta = {
+    claim_id: claimId,
+    reason,
+    ...(observedState !== undefined ? { observed_state: observedState } : {}),
+    ...(error !== undefined ? { error } : {}),
+  };
+  await host.atoms.put({
+    schema_version: 1,
+    id: `claim-attestation-rejected-${claimId}-${now.replace(/[^0-9]/g, '')}-${rejectionShortSuffix()}` as AtomId,
+    content: `attestation rejected ${claimId} ${reason}`,
+    type: 'claim-attestation-rejected',
+    layer: 'L0',
+    provenance: {
+      kind: 'agent-inferred',
+      source: { agent_id: callerPrincipalId },
+      derived_from: [claimId as AtomId],
+    },
+    confidence: 1,
+    created_at: now,
+    last_reinforced_at: now,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'verified',
+      last_validated_at: now,
+    },
+    principal_id: callerPrincipalId as PrincipalId,
+    taint: 'clean',
+    metadata: { claim_attestation: meta },
+  });
+}
+
+/**
+ * Short random suffix for rejection-atom ids. Two rejections at the
+ * same millisecond for the same claim (e.g. retry-driven) MUST produce
+ * distinct atom ids, otherwise the AtomStore.put duplicate-id guard
+ * would refuse the second write. Not security-load-bearing; the
+ * verifier-token is what authenticates attestation.
+ */
+function rejectionShortSuffix(): string {
+  return Math.random().toString(36).slice(2, 8);
 }

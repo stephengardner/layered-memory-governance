@@ -514,7 +514,14 @@ export type EventKind =
   | 'canon_edit'
   | 'principal_change'
   | 'anomaly'
-  | 'taint_alert';
+  | 'taint_alert'
+  // Substrate-emitted alert when a principal attempts an action it
+  // is not authorized to perform on a work-claim it does not own
+  // (post-terminal attest, stolen-token attempt detected upstream of
+  // the rejection atom). Distinct from `anomaly` because it carries
+  // a specific cause-and-actor pair the Notifier surface can route
+  // to a principal-misbehavior channel without parsing free text.
+  | 'principal-misbehavior';
 
 export interface Event {
   readonly kind: EventKind;
@@ -524,6 +531,17 @@ export interface Event {
   readonly atom_refs: ReadonlyArray<AtomId>;
   readonly principal_id: PrincipalId;
   readonly created_at: Time;
+  /**
+   * Structured payload for event kinds that carry concrete actor +
+   * artifact references (e.g. `principal-misbehavior` carries
+   * `{ claim_id, caller_principal_id }`). The payload is shape-open
+   * because different event kinds need different fields; consumers
+   * narrow on `kind` first then read the fields they expect. Optional
+   * because legacy kinds (`proposal`, `canon_edit`, `principal_change`,
+   * `anomaly`, `taint_alert`) carry their information in `body` and
+   * `atom_refs` already.
+   */
+  readonly payload?: Readonly<Record<string, unknown>>;
 }
 
 export interface AuditRefs {

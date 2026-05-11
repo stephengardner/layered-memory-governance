@@ -14,15 +14,22 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
-import { dispatchSubAgent } from '../../src/substrate/claim-contract.js';
+import {
+  dispatchSubAgent,
+  markClaimComplete,
+} from '../../src/substrate/claim-contract.js';
 import type {
   AgentLoopAdapter,
   AgentLoopInput,
   AgentLoopResult,
 } from '../../src/substrate/agent-loop.js';
+import { verifierRegistry } from '../../src/substrate/claim-verifiers/index.js';
 import type {
   Atom,
   AtomId,
+  AttestationRejectionReason,
+  ClaimAttestationAcceptedMeta,
+  ClaimAttestationRejectedMeta,
   PrincipalId,
   Time,
   WorkClaimBrief,
@@ -411,5 +418,636 @@ describe('dispatchSubAgent', () => {
     expect(promptSeen).toContain(`expected_terminal:`);
     expect(promptSeen).toContain(`deadline:${brief.deadline_ts}`);
     expect(promptSeen).toContain('fix the thing');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan Task 12: markClaimComplete substrate tests.
+//
+// Covers the nine validation gates per spec Section 6 step 9 (STOP, claim
+// lookup, post-terminal state guard, token match, principal match,
+// identifier match, kind match, transition to attesting, verifier dispatch)
+// plus the verifier-failure-cap path (3 consecutive timeouts -> stalled)
+// plus the post-terminal misbehavior Notifier assertion.
+//
+// Tests use the `plan` verifier (registered for kind='plan') because it is
+// an AtomStore lookup -- the test seeds a `plan` atom with a controlled
+// `plan_state` to drive ok/mismatch outcomes deterministically. The
+// verifier-timeout + verifier-error paths swap in a test-only registry
+// entry via `verifierRegistry.set(kind, handler)` so the timeout / throw
+// can be exercised without monkey-patching the contract module.
+// ---------------------------------------------------------------------------
+
+const VERIFIER_TIMEOUT_KIND = 'timeout-test-kind';
+const VERIFIER_ERROR_KIND = 'error-test-kind';
+
+/**
+ * Seed the 8 reaper-config policy atoms a markClaimComplete call needs to
+ * resolve at runtime (only `verifier-timeout-ms` and `verifier-failure-cap`
+ * are read by Task 12 today, but seeding the full set is cheap and matches
+ * what a real deployment looks like).
+ */
+function mkReaperConfigAtom(kind: string, value: number): Atom {
+  return {
+    schema_version: 1,
+    id: `pol-${kind}` as AtomId,
+    content: `reaper-config ${kind}`,
+    type: 'directive',
+    layer: 'L3',
+    provenance: {
+      kind: 'operator-seeded',
+      source: { agent_id: 'operator' },
+      derived_from: [],
+    },
+    confidence: 1,
+    created_at: NOW,
+    last_reinforced_at: NOW,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'verified',
+      last_validated_at: null,
+    },
+    principal_id: 'operator' as PrincipalId,
+    taint: 'clean',
+    metadata: { policy: { kind, value } },
+  };
+}
+
+/**
+ * Seed a plan atom with a controlled plan_state so the registered
+ * `plan` verifier returns ok=true / ok=false against the expected set.
+ */
+async function seedPlanAtom(
+  host: ReturnType<typeof createMemoryHost>,
+  id: string,
+  planState: 'succeeded' | 'failed' | 'executing',
+): Promise<void> {
+  await host.atoms.put({
+    schema_version: 1,
+    id: id as AtomId,
+    content: 'plan',
+    type: 'plan',
+    layer: 'L0',
+    provenance: {
+      kind: 'agent-inferred',
+      source: { agent_id: 'code-author' },
+      derived_from: [],
+    },
+    confidence: 1,
+    created_at: NOW,
+    last_reinforced_at: NOW,
+    expires_at: null,
+    supersedes: [],
+    superseded_by: [],
+    scope: 'project',
+    signals: {
+      agrees_with: [],
+      conflicts_with: [],
+      validation_status: 'unchecked',
+      last_validated_at: null,
+    },
+    principal_id: 'code-author' as PrincipalId,
+    taint: 'clean',
+    metadata: {},
+    plan_state: planState,
+  });
+}
+
+/**
+ * Common dispatch -> work-claim setup for markClaimComplete tests. Returns
+ * the dispatched output (claim_id + token + handle) for the test body to
+ * use. Seeds the principal, budget tier, reaper-config policies, and the
+ * target plan atom. The brief uses kind='plan' so the registered plan
+ * verifier resolves it.
+ */
+async function setupForAttestation(options: {
+  host: ReturnType<typeof createMemoryHost>;
+  callerPrincipalId?: string;
+  planAtomId?: string;
+  planState?: 'succeeded' | 'failed' | 'executing';
+  terminalKind?: string;
+  expectedStates?: ReadonlyArray<string>;
+}): Promise<{
+  readonly claim_id: string;
+  readonly claim_secret_token: string;
+  readonly planAtomId: string;
+  readonly terminalKind: string;
+}> {
+  const host = options.host;
+  const caller = options.callerPrincipalId ?? 'code-author';
+  const planAtomId = options.planAtomId ?? 'plan-target-1';
+  const planState = options.planState ?? 'succeeded';
+  const terminalKind = options.terminalKind ?? 'plan';
+  const expectedStates = options.expectedStates ?? ['succeeded'];
+
+  await seedCallerPrincipal(host, caller);
+  await host.atoms.put(mkBudgetTierAtom('default', 2));
+  await host.atoms.put(mkReaperConfigAtom('claim-verifier-timeout-ms', 30_000));
+  await host.atoms.put(mkReaperConfigAtom('claim-verifier-failure-cap', 3));
+  await seedPlanAtom(host, planAtomId, planState);
+
+  const adapter = mkAdapter();
+  const out = await dispatchSubAgent(
+    {
+      brief: {
+        prompt: 'attest a plan',
+        expected_terminal: {
+          kind: terminalKind,
+          identifier: planAtomId,
+          terminal_states: expectedStates,
+        },
+        deadline_ts: '2026-05-12T00:00:00.000Z' as Time,
+      },
+      caller_principal_id: caller,
+      agent_loop_adapter: adapter,
+      stopSentinel: () => false,
+    },
+    host,
+  );
+  return {
+    claim_id: out.claim_id,
+    claim_secret_token: out.claim_secret_token,
+    planAtomId,
+    terminalKind,
+  };
+}
+
+describe('markClaimComplete', () => {
+  it('Gate 1: STOP sentinel active -> reason stop-sentinel + rejection atom written', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, claim_secret_token, planAtomId, terminalKind } = await setupForAttestation({ host });
+
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => true },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'stop-sentinel' });
+
+    const rejections = await host.atoms.query({ type: ['claim-attestation-rejected'] }, 10);
+    expect(rejections.atoms).toHaveLength(1);
+    const meta = rejections.atoms[0]!.metadata.claim_attestation as ClaimAttestationRejectedMeta;
+    expect(meta.reason).toBe('stop-sentinel');
+    expect(meta.claim_id).toBe(claim_id);
+    expect(rejections.atoms[0]!.provenance.derived_from).toContain(claim_id as AtomId);
+    expect(rejections.atoms[0]!.provenance.kind).toBe('agent-inferred');
+  });
+
+  it('Gate 2: claim-not-found -> reason claim-not-found, NO rejection atom written (no parent to chain to)', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    await seedCallerPrincipal(host, 'code-author');
+
+    const result = await markClaimComplete(
+      {
+        claim_id: 'work-claim-does-not-exist',
+        claim_secret_token: 'irrelevant',
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: 'plan',
+          terminal_identifier: 'plan-x',
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'claim-not-found' });
+
+    // No rejection atom because there is no claim_id to chain provenance against.
+    const rejections = await host.atoms.query({ type: ['claim-attestation-rejected'] }, 10);
+    expect(rejections.atoms).toHaveLength(0);
+  });
+
+  it('Gate 3: claim already complete -> reason claim-already-terminal + principal-misbehavior telegraphed', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, claim_secret_token, planAtomId, terminalKind } = await setupForAttestation({ host });
+
+    // Force the claim into a terminal state.
+    const claim = await host.atoms.get(claim_id as AtomId);
+    const meta = claim!.metadata.work_claim as WorkClaimMeta;
+    await host.atoms.update(claim_id as AtomId, {
+      metadata: {
+        work_claim: { ...meta, claim_state: 'complete' },
+      },
+    });
+
+    const notifierSpy = vi.spyOn(host.notifier, 'telegraph');
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'claim-already-terminal' });
+
+    // Rejection atom written.
+    const rejections = await host.atoms.query({ type: ['claim-attestation-rejected'] }, 10);
+    expect(rejections.atoms).toHaveLength(1);
+    const rejectionMeta = rejections.atoms[0]!.metadata.claim_attestation as ClaimAttestationRejectedMeta;
+    expect(rejectionMeta.reason).toBe('claim-already-terminal');
+
+    // Notifier called with principal-misbehavior.
+    expect(notifierSpy).toHaveBeenCalledTimes(1);
+    const firstCall = notifierSpy.mock.calls[0]!;
+    expect(firstCall[0]).toEqual(
+      expect.objectContaining({
+        kind: 'principal-misbehavior',
+        payload: expect.objectContaining({
+          claim_id,
+          caller_principal_id: 'code-author',
+        }),
+      }),
+    );
+  });
+
+  it('Gate 3: claim already abandoned -> reason claim-already-terminal (mirror of complete)', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, claim_secret_token, planAtomId, terminalKind } = await setupForAttestation({ host });
+
+    const claim = await host.atoms.get(claim_id as AtomId);
+    const meta = claim!.metadata.work_claim as WorkClaimMeta;
+    await host.atoms.update(claim_id as AtomId, {
+      metadata: {
+        work_claim: { ...meta, claim_state: 'abandoned' },
+      },
+    });
+
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'claim-already-terminal' });
+  });
+
+  it('Gate 4: token mismatch -> reason token-mismatch + rejection atom written', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, planAtomId, terminalKind } = await setupForAttestation({ host });
+
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        // Use a same-length-prefix wrong token to guarantee a real mismatch
+        // (constantTimeEqual short-circuits length mismatch to false too).
+        claim_secret_token: 'this-is-not-the-real-token-xxxxxxxxxxxxxx',
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'token-mismatch' });
+
+    const rejections = await host.atoms.query({ type: ['claim-attestation-rejected'] }, 10);
+    expect(rejections.atoms).toHaveLength(1);
+    const meta = rejections.atoms[0]!.metadata.claim_attestation as ClaimAttestationRejectedMeta;
+    expect(meta.reason).toBe('token-mismatch');
+    expect(rejections.atoms[0]!.provenance.derived_from).toContain(claim_id as AtomId);
+  });
+
+  it('Gate 5: principal mismatch -> reason principal-mismatch', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, claim_secret_token, planAtomId, terminalKind } = await setupForAttestation({ host });
+    // Seed a second principal so principal-existence checks (if any) pass;
+    // the gate we are testing is the dispatched-principal mismatch, not
+    // existence.
+    await seedCallerPrincipal(host, 'other-principal');
+
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'other-principal',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'principal-mismatch' });
+
+    const rejections = await host.atoms.query({ type: ['claim-attestation-rejected'] }, 10);
+    expect(rejections.atoms).toHaveLength(1);
+    expect((rejections.atoms[0]!.metadata.claim_attestation as ClaimAttestationRejectedMeta).reason).toBe('principal-mismatch');
+  });
+
+  it('Gate 6: identifier mismatch -> reason identifier-mismatch', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, claim_secret_token, terminalKind } = await setupForAttestation({ host });
+
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: 'plan-different-id',
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'identifier-mismatch' });
+  });
+
+  it('Gate 7: kind mismatch -> reason kind-mismatch', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, claim_secret_token, planAtomId } = await setupForAttestation({ host });
+
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: 'task', // brief says 'plan'
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'kind-mismatch' });
+  });
+
+  it('Gate 8 + 9 happy path: transition to attesting -> verifier ok=true -> accepted + flip to complete + reset failure count', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, claim_secret_token, planAtomId, terminalKind } = await setupForAttestation({ host });
+
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: true });
+
+    const claim = await host.atoms.get(claim_id as AtomId);
+    const meta = claim!.metadata.work_claim as WorkClaimMeta;
+    expect(meta.claim_state).toBe('complete');
+    expect(meta.verifier_failure_count).toBe(0);
+
+    // Acceptance atom written with the verifier's observed_state.
+    const accepted = await host.atoms.query({ type: ['claim-attestation-accepted'] }, 10);
+    expect(accepted.atoms).toHaveLength(1);
+    const acceptedMeta = accepted.atoms[0]!.metadata.claim_attestation as ClaimAttestationAcceptedMeta;
+    expect(acceptedMeta.claim_id).toBe(claim_id);
+    expect(acceptedMeta.observed_state).toBe('succeeded');
+    expect(accepted.atoms[0]!.provenance.derived_from).toContain(claim_id as AtomId);
+  });
+
+  it('Gate 9 ok=false: ground-truth-mismatch -> rejection atom + state stays attesting + failure count NOT incremented + last_attestation_rejected_at set', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    // Seed plan in `executing` state but attest expects `succeeded`.
+    const { claim_id, claim_secret_token, planAtomId, terminalKind } = await setupForAttestation({
+      host,
+      planState: 'executing',
+    });
+
+    const result = await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+    expect(result).toEqual({ accepted: false, reason: 'ground-truth-mismatch', observed_state: 'executing' });
+
+    const claim = await host.atoms.get(claim_id as AtomId);
+    const meta = claim!.metadata.work_claim as WorkClaimMeta;
+    expect(meta.claim_state).toBe('attesting');
+    expect(meta.verifier_failure_count).toBe(0);
+    expect(meta.last_attestation_rejected_at).not.toBeNull();
+
+    const rejections = await host.atoms.query({ type: ['claim-attestation-rejected'] }, 10);
+    expect(rejections.atoms).toHaveLength(1);
+    const rejectionMeta = rejections.atoms[0]!.metadata.claim_attestation as ClaimAttestationRejectedMeta;
+    expect(rejectionMeta.reason).toBe('ground-truth-mismatch');
+    expect(rejectionMeta.observed_state).toBe('executing');
+  });
+
+  it('Gate 9 verifier-error: handler throws -> rejection + failure_count++', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    // Register an error-throwing verifier for this test only.
+    verifierRegistry.set(VERIFIER_ERROR_KIND, async () => {
+      throw new Error('verifier-internal-blowup');
+    });
+    try {
+      const { claim_id, claim_secret_token, planAtomId } = await setupForAttestation({
+        host,
+        terminalKind: VERIFIER_ERROR_KIND,
+        expectedStates: ['DOES_NOT_MATTER'],
+      });
+
+      const result = await markClaimComplete(
+        {
+          claim_id,
+          claim_secret_token,
+          caller_principal_id: 'code-author',
+          attestation: {
+            terminal_kind: VERIFIER_ERROR_KIND,
+            terminal_identifier: planAtomId,
+            observed_state: 'DOES_NOT_MATTER',
+          },
+        },
+        host,
+        { stopSentinel: () => false },
+      );
+      expect(result.accepted).toBe(false);
+      expect(result.reason).toBe('verifier-error');
+
+      const claim = await host.atoms.get(claim_id as AtomId);
+      const meta = claim!.metadata.work_claim as WorkClaimMeta;
+      expect(meta.claim_state).toBe('attesting');
+      expect(meta.verifier_failure_count).toBe(1);
+      expect(meta.last_attestation_rejected_at).not.toBeNull();
+    } finally {
+      verifierRegistry.delete(VERIFIER_ERROR_KIND);
+    }
+  });
+
+  it('Gate 9 verifier-timeout: handler exceeds timeout -> rejection + failure_count++', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    // Register a verifier that never resolves.
+    verifierRegistry.set(VERIFIER_TIMEOUT_KIND, () => new Promise(() => { /* never resolves */ }));
+    try {
+      // Lower the timeout so the test runs in <1s.
+      const { claim_id, claim_secret_token, planAtomId } = await setupForAttestation({
+        host,
+        terminalKind: VERIFIER_TIMEOUT_KIND,
+        expectedStates: ['DOES_NOT_MATTER'],
+      });
+      // Override the verifier-timeout-ms policy by writing a higher-
+      // priority atom with the same kind but a created_at after NOW.
+      // Most-recent-wins (per the reaper-config reader contract).
+      await host.atoms.put({
+        ...mkReaperConfigAtom('claim-verifier-timeout-ms', 50),
+        id: 'pol-claim-verifier-timeout-ms-override' as AtomId,
+        created_at: '2026-05-10T12:00:01.000Z' as Time,
+      });
+
+      const result = await markClaimComplete(
+        {
+          claim_id,
+          claim_secret_token,
+          caller_principal_id: 'code-author',
+          attestation: {
+            terminal_kind: VERIFIER_TIMEOUT_KIND,
+            terminal_identifier: planAtomId,
+            observed_state: 'DOES_NOT_MATTER',
+          },
+        },
+        host,
+        { stopSentinel: () => false },
+      );
+      expect(result.accepted).toBe(false);
+      expect(result.reason).toBe('verifier-timeout');
+
+      const claim = await host.atoms.get(claim_id as AtomId);
+      const meta = claim!.metadata.work_claim as WorkClaimMeta;
+      expect(meta.claim_state).toBe('attesting');
+      expect(meta.verifier_failure_count).toBe(1);
+    } finally {
+      verifierRegistry.delete(VERIFIER_TIMEOUT_KIND);
+    }
+  });
+
+  it('Gate 9 failure cap: 3 consecutive timeouts -> state stalls', async () => {
+    const host = createMemoryHost({ clockStart: NOW });
+    verifierRegistry.set(VERIFIER_TIMEOUT_KIND, () => new Promise(() => { /* never resolves */ }));
+    try {
+      const { claim_id, claim_secret_token, planAtomId } = await setupForAttestation({
+        host,
+        terminalKind: VERIFIER_TIMEOUT_KIND,
+        expectedStates: ['DOES_NOT_MATTER'],
+      });
+      // Lower the timeout for fast test execution.
+      await host.atoms.put({
+        ...mkReaperConfigAtom('claim-verifier-timeout-ms', 50),
+        id: 'pol-claim-verifier-timeout-ms-override' as AtomId,
+        created_at: '2026-05-10T12:00:01.000Z' as Time,
+      });
+
+      const input = {
+        claim_id,
+        claim_secret_token,
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: VERIFIER_TIMEOUT_KIND,
+          terminal_identifier: planAtomId,
+          observed_state: 'DOES_NOT_MATTER',
+        },
+      };
+
+      // Three consecutive timeouts.
+      await markClaimComplete(input, host, { stopSentinel: () => false });
+      let meta = (await host.atoms.get(claim_id as AtomId))!.metadata.work_claim as WorkClaimMeta;
+      expect(meta.verifier_failure_count).toBe(1);
+      expect(meta.claim_state).toBe('attesting');
+
+      await markClaimComplete(input, host, { stopSentinel: () => false });
+      meta = (await host.atoms.get(claim_id as AtomId))!.metadata.work_claim as WorkClaimMeta;
+      expect(meta.verifier_failure_count).toBe(2);
+      expect(meta.claim_state).toBe('attesting');
+
+      await markClaimComplete(input, host, { stopSentinel: () => false });
+      meta = (await host.atoms.get(claim_id as AtomId))!.metadata.work_claim as WorkClaimMeta;
+      expect(meta.verifier_failure_count).toBe(3);
+      // At >= cap (3), state flips to stalled.
+      expect(meta.claim_state).toBe('stalled');
+    } finally {
+      verifierRegistry.delete(VERIFIER_TIMEOUT_KIND);
+    }
+  });
+
+  it('Every rejection reason flows through the rejection-atom write helper with provenance.derived_from=[claim_id]', async () => {
+    // Smoke-test that the rejection-atom shape is stable across reasons.
+    const host = createMemoryHost({ clockStart: NOW });
+    const { claim_id, claim_secret_token, planAtomId, terminalKind } = await setupForAttestation({ host });
+
+    // token-mismatch as the representative case (other cases are
+    // exercised by the per-gate tests above; this asserts the shape).
+    await markClaimComplete(
+      {
+        claim_id,
+        claim_secret_token: 'wrong-token',
+        caller_principal_id: 'code-author',
+        attestation: {
+          terminal_kind: terminalKind,
+          terminal_identifier: planAtomId,
+          observed_state: 'succeeded',
+        },
+      },
+      host,
+      { stopSentinel: () => false },
+    );
+
+    const rejections = await host.atoms.query({ type: ['claim-attestation-rejected'] }, 10);
+    expect(rejections.atoms).toHaveLength(1);
+    const atom = rejections.atoms[0]!;
+    expect(atom.type).toBe('claim-attestation-rejected');
+    expect(atom.layer).toBe('L0');
+    expect(atom.provenance.kind).toBe('agent-inferred');
+    expect(atom.provenance.derived_from).toEqual([claim_id]);
+    const meta = atom.metadata.claim_attestation as ClaimAttestationRejectedMeta;
+    expect(meta.claim_id).toBe(claim_id);
+    const validReason: AttestationRejectionReason = meta.reason;
+    expect(validReason).toBe('token-mismatch');
   });
 });
