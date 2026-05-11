@@ -21,6 +21,7 @@ import { LiveOpsView } from '@/features/live-ops/LiveOpsView';
 import { ResumeAuditView } from '@/features/resume-audit/ResumeAuditView';
 import { OperatorActionsView } from '@/features/operator-actions/OperatorActionsView';
 import { AtomDetailView } from '@/features/atom-detail-viewer/AtomDetailView';
+import { FileIntentPanel } from '@/features/file-intent/FileIntentPanel';
 import { EmptyState } from '@/components/state-display/StateDisplay';
 import { PageTransition } from '@/components/page-transition/PageTransition';
 import { useRoute, useRouteId, type Route } from '@/state/router.store';
@@ -98,6 +99,7 @@ function renderRoute(r: Route, id: string | null) {
     case 'actor-activity': return <ActorActivityView />;
     case 'resume': return <ResumeAuditView />;
     case 'operator-actions': return <OperatorActionsView />;
+    case 'file-intent': return <FileIntentPanel />;
     case 'atom':
       /*
        * The atom-detail viewer requires an id segment. A bare /atom

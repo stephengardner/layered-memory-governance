@@ -85,6 +85,11 @@ import type {
 import { buildPipelineLifecycle } from './pipeline-lifecycle';
 import { buildIntentOutcome } from './intent-outcome';
 import type { IntentOutcome, IntentOutcomeSourceAtom } from './intent-outcome-types';
+import {
+  buildOperatorIntentAtom,
+  isPrincipalAllowedToFileIntent,
+  validateFileIntentInput,
+} from './file-intent';
 import { buildPulsePipelineSummary } from './pulse-pipeline-summary';
 import type { PulsePipelineSummary } from './pulse-pipeline-summary-types';
 import type {
@@ -3110,6 +3115,168 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'atom-propose-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/intents.file' && req.method === 'POST') {
+    /*
+     * File an operator-intent atom from the Console UI -- the
+     * replacement for `node scripts/intend.mjs`. Behaviour matches
+     * `scripts/intend.mjs` field-for-field so a Console-filed intent
+     * lands in the autonomous-intent approval tick the same way a
+     * CLI-filed one does (canon
+     * `dec-canon-as-projection-of-substrate`).
+     *
+     * Same console-read-only gate as /api/atoms.propose: writes are
+     * disabled unless `LAG_CONSOLE_ALLOW_WRITES=1`. Without the gate
+     * the route returns 403 `console-read-only` and the UI surfaces a
+     * loud toast pointing at the CLI alternative -- silent acceptance
+     * would let a misconfigured production deployment open a fresh
+     * autonomous-flow path the operator did not intend.
+     *
+     * Principal whitelist: even when console writes ARE enabled, the
+     * caller's principal_id must appear in the canon directive
+     * `pol-operator-intent-creation.allowed_principal_ids`. The check
+     * mirrors `readIntentCreationPolicy` in the runtime tick so
+     * skipping the canon edit that widens the allowlist cannot
+     * Trojan a Console-filed intent past the substrate gate.
+     */
+    if (!ALLOW_CONSOLE_WRITES) {
+      sendErr(
+        req,
+        res,
+        403,
+        'console-read-only',
+        'Console v1 is read-only. Set LAG_CONSOLE_ALLOW_WRITES=1 to enable intents.file, or use `node scripts/intend.mjs` for CLI filing.',
+      );
+      return;
+    }
+    const body = await readJsonBody(req).catch(() => null);
+    const parsed = validateFileIntentInput(body);
+    if (!parsed.ok) {
+      sendErr(req, res, 400, `invalid-${parsed.field}`, parsed.reason);
+      return;
+    }
+    /*
+     * Proposer identity: the server-side LAG_CONSOLE_ACTOR_ID env
+     * is the trust boundary, NOT a request-body field. A client
+     * cannot self-identify because the browser tab could claim
+     * any id (canon `dev-framework-mechanism-only`). Each deployment
+     * sets LAG_CONSOLE_ACTOR_ID at boot; unset -> 500 with a clear
+     * remediation pointer.
+     */
+    const operatorPrincipalId = process.env['LAG_CONSOLE_ACTOR_ID'];
+    if (!operatorPrincipalId) {
+      sendErr(
+        req,
+        res,
+        500,
+        'console-actor-id-unset',
+        'LAG_CONSOLE_ACTOR_ID is not configured on the backend; cannot attribute the intent atom. Set the env var and restart the server.',
+      );
+      return;
+    }
+    const allAtoms = await readAllAtoms();
+    if (!isPrincipalAllowedToFileIntent(allAtoms, operatorPrincipalId)) {
+      sendErr(
+        req,
+        res,
+        403,
+        'principal-not-allowed',
+        `principal ${operatorPrincipalId} is not in pol-operator-intent-creation.allowed_principal_ids; widening the allowlist requires a canon edit`,
+      );
+      return;
+    }
+    try {
+      const { randomBytes } = await import('node:crypto');
+      const nonce = randomBytes(6).toString('hex');
+      const now = new Date();
+      const atom = buildOperatorIntentAtom({
+        args: parsed.args,
+        operatorPrincipalId,
+        now,
+        nonce,
+      });
+      const filename = `${atom.id}.json`;
+      const fsWriteModule = await import('node:fs/promises');
+      await fsWriteModule.writeFile(
+        join(ATOMS_DIR, filename),
+        JSON.stringify(atom, null, 2),
+        { encoding: 'utf8', flag: 'wx' },
+      );
+      /*
+       * Synchronous index update: the file-watcher will pick up the
+       * write and broadcast atom.created on its own cycle, but a
+       * subsequent /api/atoms.get for this same id races the watcher.
+       * Mirror the write into the in-memory index immediately so
+       * reads downstream of the response see the new atom (the
+       * background watcher event is a no-op because the entry is
+       * already current).
+       */
+      atomIndex.set(filename, atom as unknown as Atom);
+      /*
+       * --trigger semantics: when the request asks the autonomous
+       * pipeline to start immediately, spawn the same run-cto-actor
+       * child the CLI uses. We await the child's first lifecycle
+       * event (spawn or error) so the `triggered` flag in the HTTP
+       * response is truthful: a synchronous "triggered: true" right
+       * after spawn() would lie when the child fails ENOENT on argv[0]
+       * (the error arrives asynchronously via 'error' event). A
+       * failed spawn does NOT roll back the atom write -- the
+       * operator can re-trigger from the CLI if needed, and the
+       * audit trail is unbroken either way.
+       */
+      let triggered = false;
+      if (parsed.args.trigger) {
+        try {
+          const { spawn } = await import('node:child_process');
+          const runCtoActorPath = resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs');
+          const defaultInvokersPath = resolve(REPO_ROOT, 'scripts/invokers/autonomous-dispatch.mjs');
+          const pipelineMode = process.env.LAG_PIPELINE_MODE;
+          const argv = [
+            runCtoActorPath,
+            '--request', parsed.args.request,
+            '--intent-id', atom.id,
+            '--invokers', defaultInvokersPath,
+            ...(pipelineMode ? ['--mode', pipelineMode] : []),
+          ];
+          const child = spawn(process.execPath, argv, {
+            cwd: REPO_ROOT,
+            stdio: 'ignore',
+            detached: true,
+            env: process.env,
+          });
+          /*
+           * Race spawn vs error to learn the truthful outcome. A
+           * successful child emits 'spawn'; ENOENT / EACCES surface
+           * via 'error'. Whichever fires first resolves the promise;
+           * we never wait for the child to complete (the autonomous
+           * loop is long-running by design).
+           */
+          triggered = await new Promise<boolean>((resolveSpawn) => {
+            let settled = false;
+            child.once('spawn', () => {
+              if (settled) return;
+              settled = true;
+              child.unref();
+              resolveSpawn(true);
+            });
+            child.once('error', (err) => {
+              if (settled) return;
+              settled = true;
+              console.error(`[intents.file] spawn error: ${err.message}`);
+              resolveSpawn(false);
+            });
+          });
+        } catch (err) {
+          console.error(`[intents.file] failed to spawn run-cto-actor: ${(err as Error).message}`);
+          triggered = false;
+        }
+      }
+      sendOk(req, res, { intent_id: atom.id, expires_at: atom.metadata.expires_at, triggered });
+    } catch (err) {
+      sendErr(req, res, 500, 'intent-file-failed', (err as Error).message);
     }
     return;
   }
