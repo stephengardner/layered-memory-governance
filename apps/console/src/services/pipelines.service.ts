@@ -237,3 +237,94 @@ export async function abandonPipeline(
     signal ? { signal } : undefined,
   );
 }
+
+/*
+ * Per-pipeline SSE stream wire shapes. These pin the contract with
+ * the server's pipeline-stream module; the field names below must
+ * match the payload builders in server/pipeline-stream.ts.
+ *
+ * Replaces the 5-second TanStack Query refetch on /pipelines/<id>
+ * with push-based updates: the backend sends each event within
+ * milliseconds of the watcher observing the corresponding atom write
+ * (vs the up-to-5s lag of the polling baseline). The polling
+ * fallback survives in PipelineDetailView for the case where the
+ * EventSource fails to connect.
+ */
+export interface PipelineStreamAtomChange {
+  readonly pipeline_id: string;
+  readonly atom_id: string;
+  readonly atom_type: string;
+  readonly at: string;
+}
+
+export interface PipelineStreamPipelineStateChange {
+  readonly pipeline_id: string;
+  readonly pipeline_state: string | null;
+  readonly at: string;
+}
+
+export interface PipelineStreamOpen {
+  readonly pipeline_id: string;
+  readonly at: string;
+}
+
+export interface PipelineStreamHandlers {
+  readonly onOpen?: (ev: PipelineStreamOpen) => void;
+  readonly onAtomChange?: (ev: PipelineStreamAtomChange) => void;
+  readonly onPipelineStateChange?: (ev: PipelineStreamPipelineStateChange) => void;
+  readonly onError?: (err: Error) => void;
+}
+
+/**
+ * Subscribe to the per-pipeline SSE stream. Returns an unsubscribe
+ * function the caller MUST invoke on component unmount or pipeline
+ * change to free the underlying socket.
+ *
+ * Routes through the existing `transport.subscribe` seam so the
+ * future Tauri port picks up the same channel naming convention with
+ * zero call-site changes. The transport implementation handles
+ * EventSource creation, named-event registration, and unsubscribe
+ * cleanup.
+ *
+ * The single SSE callback is fanned out to four typed handlers by
+ * payload shape: atom-change carries `atom_id`, pipeline-state-change
+ * carries `pipeline_state`, open carries only `{pipeline_id, at}`,
+ * and the heartbeat is intentionally swallowed (its only purpose is
+ * to keep the connection alive through idle-timeout proxies).
+ */
+export function subscribeToPipelineStream(
+  pipelineId: string,
+  handlers: PipelineStreamHandlers,
+): () => void {
+  return transport.subscribe<unknown>(
+    `pipeline.${pipelineId}`,
+    (ev) => {
+      if (typeof ev !== 'object' || ev === null) return;
+      const record = ev as Record<string, unknown>;
+      if (typeof record['pipeline_id'] !== 'string') return;
+      /*
+       * Defense in depth: even though the server only broadcasts
+       * events for the matching pipeline_id, a misrouted or stale
+       * payload (e.g. a future server bug, an in-flight connection
+       * that was previously bound to a different id) must not patch
+       * the wrong detail view's cache. Drop events whose payload
+       * pipeline_id does not match the subscribed pipelineId.
+       */
+      if (record['pipeline_id'] !== pipelineId) return;
+
+      if ('atom_id' in record && typeof record['atom_id'] === 'string') {
+        handlers.onAtomChange?.(ev as PipelineStreamAtomChange);
+        return;
+      }
+      if ('pipeline_state' in record) {
+        handlers.onPipelineStateChange?.(ev as PipelineStreamPipelineStateChange);
+        return;
+      }
+      // Lone {pipeline_id, at} is the open ack.
+      if (typeof record['at'] === 'string') {
+        handlers.onOpen?.(ev as PipelineStreamOpen);
+      }
+    },
+    handlers.onError,
+  );
+}
