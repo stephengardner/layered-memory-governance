@@ -82,3 +82,16 @@ export type {
   RunPipelinePlanAutoApprovalOptions,
   RunPipelinePlanAutoApprovalResult,
 } from './auto-approve.js';
+
+export {
+  decideRePromptAction,
+  buildRePromptContext,
+} from './auditor-feedback-reprompt.js';
+export type {
+  AuditorFeedbackRePromptConfig,
+  RePromptAction,
+} from './auditor-feedback-reprompt.js';
+export {
+  HARDCODED_DEFAULT as AUDITOR_FEEDBACK_REPROMPT_HARDCODED_DEFAULT,
+  readAuditorFeedbackRePromptPolicy,
+} from './auditor-feedback-reprompt-config.js';
