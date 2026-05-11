@@ -193,26 +193,19 @@ jobs:
   # migration but can confuse a reader of branch-protection logs who sees
   # one PR with a "check" and another with a "status" under the same name.
   #
-  # Identity note: this job posts the check-run as `github-actions[bot]`
-  # (via the default GITHUB_TOKEN). That is an attribution split from the
-  # rest of the autonomous-intent surface, which posts as `lag-ceo[bot]`
-  # via the lag-ceo GitHub App. Two cleaner identities were tried and
-  # rejected:
-  #   - LAG_OPS_PAT: rejected because GitHub's `checks.create` API
-  #     requires a GitHub App auth context and refuses PATs with
-  #     "You must authenticate via a GitHub App" (HTTP 403). The PAT
-  #     identity is fine for issue/PR comments via the autonomous flow
-  #     but not for check-runs.
-  #   - actions/create-github-app-token@v2 with lag-ceo App credentials:
-  #     the proper path; deferred because it requires adding
-  #     LAG_CEO_APP_ID and LAG_CEO_APP_PRIVATE_KEY as repo secrets.
-  #     Tracked as a follow-up; operator coordinates the secret rollout.
-  # Until the App-token path lands, this job's check-run shows up under
-  # `github-actions[bot]`. Branch protection accepts any poster of the
-  # `LAG-auditor` context (per `app_id: -1` in the migration script), so
-  # the merge gate is satisfied. The split is cosmetic; a future audit
-  # filter on `lag-ceo[bot]` will miss this noop until the App-token
-  # path lands.
+  # Identity: this job mints a short-lived installation token for the
+  # lag-ceo GitHub App via actions/create-github-app-token@v2 and posts
+  # the check-run with it, so the check-run is attributed to
+  # `lag-ceo[bot]`. This aligns the noop with the rest of the
+  # autonomous-intent surface (PR-landing replies, autonomous-intent PR
+  # opens, merges) which all attribute to `lag-ceo[bot]`. Required repo
+  # secrets: LAG_CEO_APP_ID (numeric App id) and LAG_CEO_APP_PRIVATE_KEY
+  # (PEM contents). Required App installation permission: Checks: Read &
+  # Write. If either secret is absent or the App lacks checks:write, the
+  # `Generate lag-ceo App token` step fails and the job fails; branch
+  # protection accepts any poster of the `LAG-auditor` context (per
+  # `app_id: -1` in the migration script), so the only effect on
+  # unlabeled PRs is that the check-run is missing instead of misposted.
   lag-auditor-noop:
     name: LAG-auditor (noop)
     runs-on: ubuntu-latest
@@ -236,12 +229,26 @@ jobs:
       github.event.pull_request.head.repo.fork == false &&
       !contains(github.event.pull_request.labels.*.name, 'autonomous-intent')
     permissions:
+      # Permissions for the workflow-job GITHUB_TOKEN. We do NOT use
+      # that token for the check-run post (the App-minted token is used
+      # instead, see `Generate lag-ceo App token` below); the
+      # `checks: write` declaration is kept as defense-in-depth so the
+      # workflow runner does not strip the scope from its own context.
       checks: write
     steps:
+      - name: Generate lag-ceo App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.LAG_CEO_APP_ID }}
+          private-key: ${{ secrets.LAG_CEO_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
       - name: Post LAG-auditor success check-run
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             await github.rest.checks.create({
               owner: context.repo.owner,
