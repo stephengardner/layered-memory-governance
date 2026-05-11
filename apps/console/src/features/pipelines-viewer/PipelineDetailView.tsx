@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { Activity, AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Wrench, Workflow, XCircle, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, Loader2, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Wrench, Workflow, XCircle, Zap } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { FreshnessPill } from '@/components/freshness-pill/FreshnessPill';
@@ -9,12 +9,15 @@ import { Tooltip } from '@/components/tooltip/Tooltip';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import {
   getPipelineDetail,
+  resumePipeline,
   type AgentTurnRow,
   type PipelineAuditFinding,
   type PipelineDetail,
   type PipelineStageEvent,
   type PipelineStageSummary,
 } from '@/services/pipelines.service';
+import { requireActorId } from '@/services/session.service';
+import { useCurrentActorId } from '@/hooks/useCurrentActorId';
 import { setRoute } from '@/state/router.store';
 import {
   findingSeverityTone,
@@ -163,7 +166,7 @@ function PipelineDetailBody({
     ? pipelineStateTone(pipeline.pipeline_state)
     : trueOutcomeTone(trueOutcome);
   // Use trueOutcome as the label whenever it diverges from the raw
-  // pipeline_state — both for noop (succeeded but produced 0 PRs) and
+  // pipeline_state -- both for noop (succeeded but produced 0 PRs) and
   // for failed (completed pipeline whose dispatch_summary.failed > 0).
   // Without the failed branch the pill renders a RED tone with the
   // text "completed", which is a visual lie: red + completed reads as
@@ -543,6 +546,48 @@ function StageCard({
     });
   };
   const panelId = `pipeline-stage-output-${pipelineId}-${stage.stage_name}`;
+
+  /*
+   * Resume mutation: lifts an HIL-paused pipeline back to running.
+   *
+   * The resumer principal is derived SERVER-SIDE from
+   * `LAG_CONSOLE_ACTOR_ID`. Unlike KillSwitchPill's transition mutation
+   * (which passes the client-resolved actor_id to the server), this
+   * route is gated by a canon `allowed_resumers` list and trusting a
+   * client-supplied identity would let any origin-allowed caller
+   * impersonate a principal in that list (CR PR #396 critical
+   * finding). The client never sends an actor_id; the server-side
+   * `LAG_CONSOLE_ACTOR_ID` is the only authoritative source.
+   *
+   * The client-side `useCurrentActorId` hook still drives a defensive
+   * pre-mutation check: if the server has no actor configured, the
+   * mutation surfaces an actionable error at click time instead of a
+   * server-side 500. This is a UX guard, not an authorization check.
+   *
+   * On success, invalidate the pipeline-detail query so the strip
+   * re-fetches and the resume atom shows up in the "HIL resumes"
+   * section. The substrate writes the same resume atom on disk; the
+   * file-watcher picks it up and the next poll reflects the new state.
+   */
+  const actorId = useCurrentActorId();
+  const qc = useQueryClient();
+  const resumeMutation = useMutation({
+    mutationFn: () => {
+      // Pre-mutation UX guard: fail at click time when the server has
+      // no actor configured. The server-side check is the authoritative
+      // gate (500 server-actor-unset); this is just to surface the
+      // error before the network round-trip.
+      requireActorId(actorId);
+      return resumePipeline({
+        pipeline_id: pipelineId,
+        reason: `Console resume of ${stage.stage_name}`,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pipeline', pipelineId] });
+    },
+  });
+
   return (
     <motion.li
       className={styles.stageCard}
@@ -573,7 +618,11 @@ function StageCard({
           </span>
           {stage.state === 'paused' && (
             <Tooltip
-              content="Resume not yet supported - wires through the operator CLI; UI affordance pending substrate gate"
+              content={
+                resumeMutation.isError
+                  ? `Resume failed: ${(resumeMutation.error as Error).message}`
+                  : 'Resume this paused stage. The pipeline state flips to running; the substrate runner picks up the unpause on its next tick.'
+              }
               testId="pipeline-stage-resume-tooltip"
             >
               <button
@@ -581,10 +630,22 @@ function StageCard({
                 className={styles.resumeButton}
                 data-testid="pipeline-stage-resume"
                 data-stage-name={stage.stage_name}
-                disabled
+                data-resume-status={
+                  resumeMutation.isPending
+                    ? 'pending'
+                    : resumeMutation.isError
+                      ? 'error'
+                      : 'idle'
+                }
+                disabled={resumeMutation.isPending}
+                onClick={() => resumeMutation.mutate()}
               >
-                <PlayCircle size={12} strokeWidth={2} aria-hidden="true" />
-                Resume
+                {resumeMutation.isPending ? (
+                  <Loader2 size={12} strokeWidth={2} aria-hidden="true" className={styles.resumeSpinner} />
+                ) : (
+                  <PlayCircle size={12} strokeWidth={2} aria-hidden="true" />
+                )}
+                {resumeMutation.isPending ? 'Resuming...' : 'Resume'}
               </button>
             </Tooltip>
           )}

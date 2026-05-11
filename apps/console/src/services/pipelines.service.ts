@@ -128,3 +128,55 @@ export async function getIntentOutcome(
     signal ? { signal } : undefined,
   );
 }
+
+/**
+ * Wire shape returned by `/api/pipeline.resume`. Mirrors the backend
+ * `handleResumePipeline` return shape so a client deserializes
+ * without an additional type layer.
+ *
+ * The substrate's runner picks up the unpause on its next tick per
+ * `runtime/planning-pipeline/runner.ts`; the Console's role here is
+ * (a) verify authority via the canon `pol-pipeline-stage-hil-<stage>`
+ * gate and (b) write the audit atom + flip the pipeline_state so the
+ * substrate sees a resumable atom. The response echoes the resolved
+ * stage + minted atom id so the UI can confirm the substrate observed
+ * the flip on the next poll cycle (the `resumes` list on
+ * `/api/pipelines.detail` walks the same atom).
+ */
+export interface PipelineResumeResult {
+  readonly pipeline_id: string;
+  readonly stage_name: string;
+  readonly resumer_principal_id: string;
+  readonly resume_atom_id: string;
+  readonly resumed_at: string;
+}
+
+/**
+ * Lift an HIL-paused pipeline back to running. Server-side checks:
+ *   - 404 pipeline-not-found        : id does not match a pipeline atom
+ *   - 409 pipeline-not-paused       : already running, completed, or failed
+ *   - 409 pipeline-resume-no-stage  : substrate invariant violated
+ *   - 409 pipeline-resume-conflict  : pipeline moved out of hil-paused
+ *                                     between validation and write
+ *   - 403 pipeline-resume-no-policy : canon entry missing for stage
+ *   - 403 pipeline-resume-forbidden : caller not in allowed_resumers
+ *   - 500 server-actor-unset        : LAG_CONSOLE_ACTOR_ID not configured
+ *
+ * Identity binding: the resumer principal is derived server-side from
+ * `LAG_CONSOLE_ACTOR_ID`; the client does NOT supply an `actor_id`.
+ * Trusting a client-supplied identity for a canon-gated write would
+ * let any caller who reaches the origin-allowed endpoint impersonate
+ * any principal in `allowed_resumers` (CR PR #396 critical finding).
+ * If a future deployment wants per-user resume gating, the substrate
+ * must surface auth tokens upstream of the backend handler.
+ */
+export async function resumePipeline(
+  params: { pipeline_id: string; reason?: string },
+  signal?: AbortSignal,
+): Promise<PipelineResumeResult> {
+  return transport.call<PipelineResumeResult>(
+    'pipeline.resume',
+    params as unknown as Record<string, unknown>,
+    signal ? { signal } : undefined,
+  );
+}
