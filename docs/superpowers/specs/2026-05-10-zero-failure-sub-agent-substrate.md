@@ -8,7 +8,7 @@
 
 ## Changelog
 
-**v3 (2026-05-10, after second reviewer pass):** All 2 new critical + 3 new major + 3 new minor v2 issues closed. (1) `claim_secret_token` is rotated on every Phase B recovery in the same atomic put that increments `recovery_attempts`; the recovery brief threads the new token; old-token attestations are rejected with `token-mismatch`. (2) `deadline_ts` is extended on every recovery via `pol-claim-recovery-deadline-extension-ms` (default 30 min), preventing instant re-stalls of the just-recovered claim. (3) AtomStore write-time policy for `claim-attestation-*` is documented as a layered defense — primary gate is per-principal PreToolUse hook rejecting writes from sub-agent principals; in-process forgery by a compromised contract module is escalated to the medium-tier kill switch concern (canon D13). (4) Verifier failure ping-pong bounded by `verifier_failure_count` field capped at `pol-claim-verifier-failure-cap` (default 3); after the cap, reaper flips straight to `stalled`. (5) Phase A condition #3 (executing session finalized) adds a debounce via `pol-claim-session-post-finalize-grace-ms` (default 30s) to avoid racing the in-flight attest. (6) STOP-rejected attest calls now write `claim-attestation-rejected` with reason `stop-sentinel` for audit completeness. (7) Section 16 clarifies "no canon ids in src/ JSDoc; doc-prose may reference them freely." **v2 (2026-05-10, after first reviewer pass):** Closed 5 critical + 5 major + 4 minor v1 issues: token+principal binding, verifier crash/timeout, past-deadline gate, post-terminal misbehavior, two-phase reaper, brief size cap. **v1 (2026-05-10):** Initial draft post brainstorming Q1-Q5.
+**v3 (2026-05-10, after second reviewer pass):** All 2 new critical + 3 new major + 3 new minor v2 issues closed. (1) `claim_secret_token` is rotated on every Phase B recovery in the same atomic put that increments `recovery_attempts`; the recovery brief threads the new token; old-token attestations are rejected with `token-mismatch`. (2) `deadline_ts` is extended on every recovery via `pol-claim-recovery-deadline-extension-ms` (default 30 min), preventing instant re-stalls of the just-recovered claim. (3) AtomStore write-time policy for `claim-attestation-*` is documented as a layered defense -- primary gate is per-principal PreToolUse hook rejecting writes from sub-agent principals; in-process forgery by a compromised contract module is escalated to the medium-tier kill switch concern (canon D13). (4) Verifier failure ping-pong bounded by `verifier_failure_count` field capped at `pol-claim-verifier-failure-cap` (default 3); after the cap, reaper flips straight to `stalled`. (5) Phase A condition #3 (executing session finalized) adds a debounce via `pol-claim-session-post-finalize-grace-ms` (default 30s) to avoid racing the in-flight attest. (6) STOP-rejected attest calls now write `claim-attestation-rejected` with reason `stop-sentinel` for audit completeness. (7) Section 16 clarifies "no canon ids in src/ JSDoc; doc-prose may reference them freely." **v2 (2026-05-10, after first reviewer pass):** Closed 5 critical + 5 major + 4 minor v1 issues: token+principal binding, verifier crash/timeout, past-deadline gate, post-terminal misbehavior, two-phase reaper, brief size cap. **v1 (2026-05-10):** Initial draft post brainstorming Q1-Q5.
 
 ---
 
@@ -28,7 +28,7 @@ Observed failure pattern (3/3 sub-agent dispatches today, 2026-05-10):
 
 Canon `dev-sub-agent-pr-driver-responsibility` already says "the sub-agent owns the PR through MERGED, parent re-dispatches on orphan-after-5min." The discipline is encoded. The 3/3 violations today show the discipline is not enforced at the substrate level; without enforcement, future agents will continue to violate it.
 
-The operator's framing — "ship the right fix the first time," "minimize errors," "enterprise product" — argues for substrate-level enforcement rather than stronger doctrine.
+The operator's framing -- "ship the right fix the first time," "minimize errors," "enterprise product" -- argues for substrate-level enforcement rather than stronger doctrine.
 
 ---
 
@@ -45,9 +45,9 @@ The operator's framing — "ship the right fix the first time," "minimize errors
 
 - **Making bad code automatically good.** Sub-agent output quality is orthogonal to terminal-state enforcement; this spec addresses *did the agent finish what it was given*, not *did it do it well*. Code quality remains the responsibility of CR + LAG-auditor + cr-precheck.
 - **Removing operator gates on canon writes.** L3 canon promotion remains operator-signed per `inv-l3-requires-human`. The budget ladder dial is itself a canon edit; raising or lowering it produces an audit-trailed decision atom.
-- **Auto-merging without operator approval.** Merge authority stays with the operator (or lag-cto under medium-tier kill switch, per canon `dec-autonomous-merge-endgame`). A `work-claim` reaching `complete` state means the work-item is in its expected terminal — which for PRs is MERGED, the merge having been performed by the authorized actor, not by the substrate.
+- **Auto-merging without operator approval.** Merge authority stays with the operator (or lag-cto under medium-tier kill switch, per canon `dec-autonomous-merge-endgame`). A `work-claim` reaching `complete` state means the work-item is in its expected terminal -- which for PRs is MERGED, the merge having been performed by the authorized actor, not by the substrate.
 - **Cross-agent claim handoff.** A claim is dispatched to one principal; if recovery moves it to a different principal, that's a new claim (new id, `parent_claim_id` link). This spec does not introduce multi-principal claim semantics.
-- **Hard-killing runaway sub-agents.** The substrate detects post-terminal misbehavior and escalates via Notifier, but does not forcibly terminate processes — that is the operator's STOP path. Substrate-side mid-process kill is a future medium-tier kill switch concern (canon D13).
+- **Hard-killing runaway sub-agents.** The substrate detects post-terminal misbehavior and escalates via Notifier, but does not forcibly terminate processes -- that is the operator's STOP path. Substrate-side mid-process kill is a future medium-tier kill switch concern (canon D13).
 - **In-process forgery of `claim-attestation-*` atoms by a compromised contract module.** The substrate ships defense-in-depth (PreToolUse hook + token + principal + verifier) but does not introduce a new AtomStore caller-module capability primitive; an attacker who has compromised the substrate's own contract layer has already won. Mitigation is medium-tier kill switch + operator STOP.
 
 ## 3. Decisions captured
@@ -62,7 +62,7 @@ The brainstorming session settled five foundational questions before the design 
 | Q4  | Recovery action                           | (c) tiered: resume then fresh then escalate (N=3) | Resume-first preserves knowledge per "maximize work and effort." Bounded recursion prevents resource burn on broken claims. Escalation is the audit-trail terminus.                                              |
 | Q5  | Budget posture                            | (b) tiered budget ladder | Substrate auto-raises tier on each recovery; directly executes "increase budgets." Default tier sized for typical PR-fix burn; max tier is the operator-dialed ceiling. Indie zero-config, org-dialable via canon. |
 
-Architecture phasing chosen: **Approach 2 (foundational substrate first)** — ship substrate primitives in 1-2 PRs with zero principal-specific wiring, then migrate each of the 5 principals in follow-up PRs.
+Architecture phasing chosen: **Approach 2 (foundational substrate first)** -- ship substrate primitives in 1-2 PRs with zero principal-specific wiring, then migrate each of the 5 principals in follow-up PRs.
 
 ## 4. Architecture
 
@@ -96,23 +96,23 @@ Clock
 
 **File layout (PR1 + PR2 deliverables):**
 
-- `src/atoms/types.ts`                                — additive: `WorkClaimAtom` shape, `claim_state` union, attestation-result atom types.
-- `src/substrate/claim-contract.ts`                   — new: `dispatchSubAgent`, `markClaimComplete`, `ClaimHandle`, verification dispatcher, claim-secret-token helpers (generate + rotate + constant-time compare).
-- `src/substrate/claim-verifiers/`                    — new: verification handlers, one per `terminal_kind`. `pr.ts`, `plan.ts`, `task.ts`, `research-atom.ts` + `index.ts` registry.
-- `src/runtime/loop/claim-reaper.ts`                  — new: `runClaimReaperTick(host)`, `detectStalledClaims`, `drainStalledQueue`, `recoverStalledClaim`.
-- `bootstrap/canon/pol-claim-budget-tier-default.json` — default tier ($2.00).
-- `bootstrap/canon/pol-claim-budget-tier-raised.json`  — raised tier ($5.00).
-- `bootstrap/canon/pol-claim-budget-tier-max.json`     — max tier ($10.00).
-- `bootstrap/canon/pol-claim-reaper-cadence-ms.json`   — reaper cadence dial (60_000 ms default).
-- `bootstrap/canon/pol-claim-recovery-max-attempts.json` — N=3 recovery cap dial.
-- `bootstrap/canon/pol-claim-recovery-deadline-extension-ms.json` — extension on each recovery (1_800_000 ms = 30 min default).
-- `bootstrap/canon/pol-claim-attesting-grace-ms.json`  — grace clock after attest rejection (300_000 ms default).
-- `bootstrap/canon/pol-claim-pending-grace-ms.json`    — grace after dispatch before agent must show signs of life (60_000 ms default).
-- `bootstrap/canon/pol-claim-verifier-timeout-ms.json` — verifier hard timeout (30_000 ms default).
-- `bootstrap/canon/pol-claim-verifier-failure-cap.json` — verifier-failure (timeout OR error) ping-pong cap (3 default).
-- `bootstrap/canon/pol-claim-session-post-finalize-grace-ms.json` — debounce for Phase A condition #3 to avoid racing in-flight attest (30_000 ms default).
-- `bootstrap/canon/pol-loop-pass-claim-reaper-default.json` — PR2: default-on dial for reaper in LoopRunner.
-- `bootstrap/bootstrap-claim-contract-canon.mjs`       — one-shot operator script to seed the canon atoms.
+- `src/atoms/types.ts`                                -- additive: `WorkClaimAtom` shape, `claim_state` union, attestation-result atom types.
+- `src/substrate/claim-contract.ts`                   -- new: `dispatchSubAgent`, `markClaimComplete`, `ClaimHandle`, verification dispatcher, claim-secret-token helpers (generate + rotate + constant-time compare).
+- `src/substrate/claim-verifiers/`                    -- new: verification handlers, one per `terminal_kind`. `pr.ts`, `plan.ts`, `task.ts`, `research-atom.ts` + `index.ts` registry.
+- `src/runtime/loop/claim-reaper.ts`                  -- new: `runClaimReaperTick(host)`, `detectStalledClaims`, `drainStalledQueue`, `recoverStalledClaim`.
+- `bootstrap/canon/pol-claim-budget-tier-default.json` -- default tier ($2.00).
+- `bootstrap/canon/pol-claim-budget-tier-raised.json`  -- raised tier ($5.00).
+- `bootstrap/canon/pol-claim-budget-tier-max.json`     -- max tier ($10.00).
+- `bootstrap/canon/pol-claim-reaper-cadence-ms.json`   -- reaper cadence dial (60_000 ms default).
+- `bootstrap/canon/pol-claim-recovery-max-attempts.json` -- N=3 recovery cap dial.
+- `bootstrap/canon/pol-claim-recovery-deadline-extension-ms.json` -- extension on each recovery (1_800_000 ms = 30 min default).
+- `bootstrap/canon/pol-claim-attesting-grace-ms.json`  -- grace clock after attest rejection (300_000 ms default).
+- `bootstrap/canon/pol-claim-pending-grace-ms.json`    -- grace after dispatch before agent must show signs of life (60_000 ms default). Referenced by Section 7 Phase A stall condition #2.
+- `bootstrap/canon/pol-claim-verifier-timeout-ms.json` -- verifier hard timeout (30_000 ms default).
+- `bootstrap/canon/pol-claim-verifier-failure-cap.json` -- verifier-failure (timeout OR error) ping-pong cap (3 default).
+- `bootstrap/canon/pol-claim-session-post-finalize-grace-ms.json` -- debounce for Phase A condition #3 to avoid racing in-flight attest (30_000 ms default).
+- `bootstrap/canon/pol-loop-pass-claim-reaper-default.json` -- PR2: default-on dial for reaper in LoopRunner.
+- `bootstrap/bootstrap-claim-contract-canon.mjs`       -- one-shot operator script to seed the canon atoms.
 
 **What stays the same:**
 
@@ -124,7 +124,7 @@ Clock
 
 **Substrate purity audit (per `dev-substrate-not-prescription` + `dev-indie-floor-org-ceiling`):**
 
-`src/substrate/claim-contract.ts` is mechanism-only. No principal names, no work-shape assumptions, no hardcoded budget values. The verifier dispatcher reads `terminal_kind` from the atom and dispatches to the matching handler — adding a new work-shape only adds a new file in `src/substrate/claim-verifiers/`, never changes the contract layer. `runClaimReaperTick` reads cadence + recovery max + budget tiers + verifier timeout + verifier-failure cap + session-finalize grace + deadline extension from canon-policy atoms; no constants in the runtime path. Canon policies are read by *kind* + *scope* (the existing arbitration mechanism), never by atom id, so the src/ "no canon ids in JSDoc" rule (per `feedback_src_docs_mechanism_only_no_design_links`) holds. Doc-prose may reference canon ids freely; the JSDoc fence is the gate.
+`src/substrate/claim-contract.ts` is mechanism-only. No principal names, no work-shape assumptions, no hardcoded budget values. The verifier dispatcher reads `terminal_kind` from the atom and dispatches to the matching handler -- adding a new work-shape only adds a new file in `src/substrate/claim-verifiers/`, never changes the contract layer. `runClaimReaperTick` reads cadence + recovery max + budget tiers + verifier timeout + verifier-failure cap + session-finalize grace + deadline extension from canon-policy atoms; no constants in the runtime path. Canon policies are read by *kind* + *scope* (the existing arbitration mechanism), never by atom id, so the src/ "no canon ids in JSDoc" rule (per `feedback_src_docs_mechanism_only_no_design_links`) holds. Doc-prose may reference canon ids freely; the JSDoc fence is the gate.
 
 ## 5. `work-claim` atom schema
 
@@ -347,7 +347,7 @@ Validation gates (each writes a `claim-attestation-rejected` atom on rejection f
 1. **STOP check.** Active? Write `claim-attestation-rejected` with reason `stop-sentinel`; return `{ accepted: false, reason: "stop-sentinel" }`. Audit trail captures attempts during STOP.
 2. **Claim lookup.** Atom with `id === claim_id` exists? Else `claim-not-found`.
 3. **State guard.** `claim.claim_state ∈ {executing, attesting}`. If `complete` or `abandoned` → `claim-already-terminal`. Write `claim-attestation-rejected` + send `principal-misbehavior` actor-message to operator. Sub-agents writing post-terminal attest calls are runaway processes; the substrate surfaces them rather than ignoring.
-4. **Token match.** Constant-time compare `attestation.claim_secret_token === claim.claim_secret_token`. Else `token-mismatch` (forgery signal OR zombie sub-agent from pre-recovery generation).
+4. **Token match.** Constant-time compare `input.claim_secret_token === claim.metadata.work_claim.claim_secret_token`. Else `token-mismatch` (forgery signal OR zombie sub-agent from pre-recovery generation). The token lives at the top level of `markClaimComplete`'s input (not inside `attestation`), matching the function signature.
 5. **Principal match.** `caller_principal_id === claim.dispatched_principal_id`. Else `principal-mismatch`.
 6. **Identifier match.** `attestation.terminal_identifier === claim.brief.expected_terminal.identifier`. Else `identifier-mismatch`.
 7. **Kind match.** `attestation.terminal_kind === claim.brief.expected_terminal.kind`. Else `kind-mismatch`.
@@ -475,11 +475,11 @@ For each stalled claim:
    - **Extends `deadline_ts`** to `max(claim.brief.deadline_ts, now() + pol-claim-recovery-deadline-extension-ms)` (default extension 30 min). Prevents instant re-stall on the next Phase A tick.
    - Resets `verifier_failure_count` to 0.
    - Updates `claim_state` to `executing`.
-   - (Does NOT append session_atom_id yet — that happens after dispatch initiates and the new session atom is written.)
+   - (Does NOT append session_atom_id yet -- that happens after dispatch initiates and the new session atom is written.)
    - If the put fails version check, another reaper is recovering this claim. Continue.
 
 3. **Dispatch.** AFTER the put succeeds (lock effectively released):
-   - If `claim.session_atom_ids.length === 0` (pending-state stall — never started): fresh respawn via `dispatchSubAgent`. No resume path; no prior session exists.
+   - If `claim.session_atom_ids.length === 0` (pending-state stall -- never started): fresh respawn via `dispatchSubAgent`. No resume path; no prior session exists.
    - Else if `recovery_attempts === 1` (first recovery, session exists): attempt resume via `ResumeAuthorAgentLoopAdapter` (PR6) against the last `agent-session` atom's `resumable_session_id`. If `walkAuthorSessions` returns null (session unrecoverable: blob shipped, model context overflow, stale beyond ttl) → fresh respawn fallback.
    - Else (`recovery_attempts >= 2`): fresh respawn with recovery brief (see Section 8).
    - In all cases, the recovery brief carries the NEW `claim_secret_token` (not the old one).
@@ -554,7 +554,7 @@ Three reference canon policy atoms shipped via `bootstrap/canon/`. Defaults size
   "type": "policy",
   "layer": "L3",
   "principal_id": "apex-agent",
-  "content": "Default budget tier for sub-agent claims. Indie-floor sizing — fits a typical PR-fix dispatch with headroom.",
+  "content": "Default budget tier for sub-agent claims. Indie-floor sizing -- fits a typical PR-fix dispatch with headroom.",
   "confidence": 1.0,
   "provenance": { ... },
   "metadata": {
@@ -624,7 +624,7 @@ export async function markClaimComplete(input, host): Promise<AttestationResult>
 }
 ```
 
-In-flight Phase B `recoverStalledClaim` calls finish their atom writes (do not leave half-written atoms). No NEW recovery attempts fire while STOP is present. Active claims sit in their current state — `executing`, `attesting`, `stalled` — until STOP is cleared. Operator inspects post-mortem.
+In-flight Phase B `recoverStalledClaim` calls finish their atom writes (do not leave half-written atoms). No NEW recovery attempts fire while STOP is present. Active claims sit in their current state -- `executing`, `attesting`, `stalled` -- until STOP is cleared. Operator inspects post-mortem.
 
 A sub-agent that's already running when STOP is set continues to its own next tick (substrate does not kill mid-LLM-call); but cannot be re-dispatched, and its attest calls fail-closed with `stop-sentinel` AND an audit atom is written.
 
@@ -651,7 +651,7 @@ The substrate adds new attack surfaces. Each is handled.
 | Reaper running on a forked or partial atom store    | The reaper reads only atoms it itself has written or descended from the operator-signed canon. The verifier handlers query ground truth from external sources (GitHub, etc.) authenticated via bot-identity wrappers, not from the atom store. A partial atom store cannot fake a "PR is MERGED" verification. |
 | Concurrent reaper ticks transitioning same claim    | All claim mutations use atomic-version-checked `AtomStore.put` (per PR #197 TOCTOU race fix). If two reaper invocations race, one's `put` fails the version check and aborts; the second's transition is the canonical one. Phase A and Phase B are decoupled so adapter dispatch never holds the lock. |
 | Past-dated `deadline_ts` at dispatch                | `dispatchSubAgent` validation step 4 rejects past-dated deadlines with `deadline-already-past`. Prevents the reaper from instantly flagging a fresh claim stalled due to clock skew or stale brief reuse. |
-| Direct write of `claim-attestation-accepted` by sub-agent principal | Primary gate: the existing per-principal PreToolUse hook (per `dev-attribution-hooks-cover-all-tool-paths`) rejects `AtomStore.put` of `claim-attestation-*` / `claim-stalled` / `claim-escalated` atoms when the calling principal is not the substrate's authorized writer (`apex-agent` per existing canon — substrate writes are operator-authority-tier). The hook implements an allowlist on `(principal_id, atom_type)`: the substrate principal can write all claim-lifecycle atoms; sub-agent principals (cto-actor, code-author, pr-fix-actor, brainstorm-actor, cpo-actor) cannot write any of them directly. Routine sub-agent bypass attempts are rejected at write time. Defense-in-depth: even if the bypass succeeds at the hook layer, the verifier in `markClaimComplete` is not the same path — a direct atom write cannot trigger a real GitHub verification, so the work-item terminal state remains observably wrong, and downstream consumers (e.g., the Console feed) see an attestation without a matching `claim-stalled→complete` lifecycle. **Residual risk:** an attacker who has compromised the substrate's own contract module can write any atom they want; that is a Tier 1 compromise outside this spec's threat boundary. Mitigation is medium-tier kill switch (canon D13) + operator STOP. This spec does not introduce a new AtomStore caller-module capability primitive; the existing hook is the gate. |
+| Direct write of `claim-attestation-accepted` by sub-agent principal | Primary gate: the existing per-principal PreToolUse hook (per `dev-attribution-hooks-cover-all-tool-paths`) rejects `AtomStore.put` of `claim-attestation-*` / `claim-stalled` / `claim-escalated` atoms when the calling principal is not the substrate's authorized writer (`apex-agent` per existing canon -- substrate writes are operator-authority-tier). The hook implements an allowlist on `(principal_id, atom_type)`: the substrate principal can write all claim-lifecycle atoms; sub-agent principals (cto-actor, code-author, pr-fix-actor, brainstorm-actor, cpo-actor) cannot write any of them directly. Routine sub-agent bypass attempts are rejected at write time. Defense-in-depth: even if the bypass succeeds at the hook layer, the verifier in `markClaimComplete` is not the same path -- a direct atom write cannot trigger a real GitHub verification, so the work-item terminal state remains observably wrong, and downstream consumers (e.g., the Console feed) see an attestation without a matching `claim-stalled→complete` lifecycle. **Residual risk:** an attacker who has compromised the substrate's own contract module can write any atom they want; that is a Tier 1 compromise outside this spec's threat boundary. Mitigation is medium-tier kill switch (canon D13) + operator STOP. This spec does not introduce a new AtomStore caller-module capability primitive; the existing hook is the gate. |
 | Token leak via agent-turn atom                      | The redactor seam (PR1 `Redactor` interface) ships a default regex that matches the format `claim_secret_token:\s*[A-Za-z0-9_-]{43,}` (the literal label + a base64url token of >= 43 chars) AND a standalone regex for any 43+ char base64url string in `llm_input` / `llm_output` / tool-call args. Tokens are stripped from atom-store-persisted strings before write. The contract surface (Section 6) instructs the agent not to echo the token; redaction is the fallback. |
 
 ## 12. Indie-floor vs org-ceiling
@@ -660,7 +660,7 @@ Per `dev-indie-floor-org-ceiling`, every design decision must articulate how it 
 
 | Concern                              | Indie-floor (zero-config)                                                                                                                                | Org-ceiling (50+ actors)                                                                                                                                                                                                                                                          |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Budget tiers                         | default=$2, raised=$5, max=$10. Solo developer's first sub-agent never knows the tiers exist; the defaults cover typical PR-fix work without throttling. | Deployment-scoped policy atoms set max=$50 or higher. Tier promotion is automatic; cost is predictable because every claim has a known ceiling. Custom tiers (e.g., `"emergency"=$100`) added via new policy atom — no substrate change. |
+| Budget tiers                         | default=$2, raised=$5, max=$10. Solo developer's first sub-agent never knows the tiers exist; the defaults cover typical PR-fix work without throttling. | Deployment-scoped policy atoms set max=$50 or higher. Tier promotion is automatic; cost is predictable because every claim has a known ceiling. Custom tiers (e.g., `"emergency"=$100`) added via new policy atom -- no substrate change. |
 | Reaper cadence                       | 60s default. Idle CPU is negligible.                                                                                                                     | 15s for tight SLA; or remove polling entirely and event-source-drive via Scheduler.NOTIFY (future seam reserved, not built). |
 | Recovery max attempts                | 3. After 3 attempts, escalate to operator. Solo developer gets a Notifier ping; not blocked. | Same default; org may dial to 5 for high-noise environments, or to 1 for low-tolerance environments where stalls are rare. |
 | Verifier timeout                     | 30s default. Covers typical GitHub API latency with margin. | Tune per integration (e.g., 60s for slow-to-respond internal CI). Dial via `pol-claim-verifier-timeout-ms`. |
@@ -676,7 +676,7 @@ Per `dev-indie-floor-org-ceiling`, every design decision must articulate how it 
 
 Two substrate PRs, then five wiring PRs:
 
-### PR1 — substrate core (~1000 LOC + 50 tests)
+### PR1 -- substrate core (~1000 LOC + 50 tests)
 
 - `WorkClaimAtom` type definition + lifecycle state union + attestation-result atom types.
 - `src/substrate/claim-contract.ts`: `dispatchSubAgent`, `markClaimComplete`, `ClaimHandle`, claim-secret-token helpers (generate + rotate + constant-time compare), verification dispatcher.
@@ -690,22 +690,22 @@ Two substrate PRs, then five wiring PRs:
 - Tests (50+, see Section 16).
 - **Critical:** sub-agents NOT yet using the new API. Legacy direct-dispatch paths continue to work. This PR is pure addition.
 
-### PR2 — LoopRunner wiring (~150 LOC + 8 tests)
+### PR2 -- LoopRunner wiring (~150 LOC + 8 tests)
 
 - Wire `runClaimReaperTick` into `LoopRunner.tick()` alongside `runReaperSweep`.
-- `bootstrap/canon/pol-loop-pass-claim-reaper-default.json` — default-on dial per `dev-loop-pass-defaults-via-canon`.
+- `bootstrap/canon/pol-loop-pass-claim-reaper-default.json` -- default-on dial per `dev-loop-pass-defaults-via-canon`.
 - CLI flag `--claim-reaper` (canon-default ON, CLI override).
 - Tests: tick ordering, Phase A/Phase B decoupling, STOP halting both reapers, canon-default ON, CLI override path.
 
-### PR3 — pr-fix-actor migration (~250 LOC + 10 tests)
+### PR3 -- pr-fix-actor migration (~250 LOC + 10 tests)
 
 - Replace direct Agent-tool dispatch in `PrFixActor.apply` with `dispatchSubAgent`.
 - Wire `markClaimComplete` into the sub-agent's exit path via the existing `pr-fix-observation` atom write.
 - Update `run-pr-fix.mjs` driver to thread `caller_principal_id` + accept the returned `claim_secret_token`.
 - Tests: full pr-fix flow with claim-contract, token-mismatch rejection, principal-mismatch rejection, post-complete rejection, recovery via PR6 resume strategy, recovery with rotated token.
-- **Highest-leverage principal** — covers today's failure pattern directly.
+- **Highest-leverage principal** -- covers today's failure pattern directly.
 
-### PR4-7 — other principal migrations
+### PR4-7 -- other principal migrations
 
 One PR per principal, each ~150 LOC + 6 tests, uniform pattern:
 
@@ -734,11 +734,11 @@ Between PR2 (substrate live) and PR7 (last principal migrated), non-migrated pri
 ### Q2 alternatives
 
 - **(1) PR number as the only handle.** Cheapest. Rejected because 1/3 of today's failures were pre-PR (Task #311 sub-agent stalled before opening a PR). A handle that only covers PRs misses real failure cases.
-- **(2) Plan-id as the handle.** Tightly couples this to the planning pipeline. Rejected because sub-agents dispatch for research, canon-scouting, audits — not just plans. The handle must generalize.
+- **(2) Plan-id as the handle.** Tightly couples this to the planning pipeline. Rejected because sub-agents dispatch for research, canon-scouting, audits -- not just plans. The handle must generalize.
 
 ### Q3 alternatives
 
-- **(a) Substrate-observed only (sub-agent never attests).** Purest enforcement. Rejected because it loses the audit signal of "agent thought it was done, here's what it checked" — that signal is gold for debugging future drift and for canon-grade learning. Enterprise systems want the rich audit, not just the gate.
+- **(a) Substrate-observed only (sub-agent never attests).** Purest enforcement. Rejected because it loses the audit signal of "agent thought it was done, here's what it checked" -- that signal is gold for debugging future drift and for canon-grade learning. Enterprise systems want the rich audit, not just the gate.
 - **(c) Sub-agent reports, no verification.** Just renames the current failure mode with a new atom type. Rejected as a non-fix.
 
 ### Q4 alternatives
@@ -749,13 +749,13 @@ Between PR2 (substrate live) and PR7 (last principal migrated), non-migrated pri
 ### Q5 alternatives
 
 - **(a) Uncapped per claim.** Solves "budget = never the failure cause" cleanly but is too sharp for indie (unbounded API bill) and unpredictable for org (one runaway claim chews 50-actor budget allocation).
-- **(c) Adaptive budget tied to claim progress.** Smarter targeting but adds progress-signal definition + observer wiring. YAGNI vs (b) — only worth shipping if ladder proves insufficient.
+- **(c) Adaptive budget tied to claim progress.** Smarter targeting but adds progress-signal definition + observer wiring. YAGNI vs (b) -- only worth shipping if ladder proves insufficient.
 - **(d) Budget by expected-terminal-state.** Sensible but requires claim-typing which isn't otherwise needed. Coupling claim-typing and budget would inflate the spec surface. Deferred to a future spec if observed-need emerges.
 
 ### Architecture-shape alternatives
 
-- **Approach 1 — Vertical slice on pr-fix-actor.** Build the full system for one principal first. Rejected because it creates one-principal-shaped substrate code that's hard to generalize cleanly when the second principal adopts. Substrate-purity discipline argues for mechanism-first.
-- **Approach 3 — Reaper-first quick-win.** Ship a minimal open-PR reaper as PR1 to address today's pain immediately. Rejected because the quick-win ships behavior we'd refactor in PR2; "ship the right fix the first time" argues against the false economy.
+- **Approach 1 -- Vertical slice on pr-fix-actor.** Build the full system for one principal first. Rejected because it creates one-principal-shaped substrate code that's hard to generalize cleanly when the second principal adopts. Substrate-purity discipline argues for mechanism-first.
+- **Approach 3 -- Reaper-first quick-win.** Ship a minimal open-PR reaper as PR1 to address today's pain immediately. Rejected because the quick-win ships behavior we'd refactor in PR2; "ship the right fix the first time" argues against the false economy.
 
 ### Other rejected designs
 
@@ -774,17 +774,17 @@ Per `dev-forward-thinking-no-regrets`:
 
 In 3 months at 10x scale (50+ actors, 10x more canon, more external integrations), the substrate is still sound:
 
-- The `work-claim` atom generalizes — adding terraform-apply or slack-acked work-shapes is a new verifier file, not a substrate change.
+- The `work-claim` atom generalizes -- adding terraform-apply or slack-acked work-shapes is a new verifier file, not a substrate change.
 - The reaper scales with `pol-claim-reaper-cadence-ms`; 15s cadence supports ~3,000 claims/min query throughput on the AtomStore (within current PR #197 race-fixed write throughput).
 - The budget tier ladder is dial-by-canon; an org running 50 actors sets a single deployment-scoped policy atom and every actor inherits.
 - The recovery layer composes cleanly with future actor types: every actor inherits the same dispatch contract, no per-actor recovery logic needed.
 - The Phase A / Phase B decoupling supports event-source migration: Phase B can move to a Scheduler.NOTIFY-driven backend without changing Phase A or the contract layer.
-- Token rotation is independent of `crypto` implementation — swapping `crypto.randomBytes` for a hardware RNG seam is a one-line change in `src/substrate/claim-contract.ts`.
+- Token rotation is independent of `crypto` implementation -- swapping `crypto.randomBytes` for a hardware RNG seam is a one-line change in `src/substrate/claim-contract.ts`.
 
 Regret modes:
 
 - **If sub-agents become reliable on their own**, the reaper is mostly idle and the substrate is "insurance" we pay for in code complexity (~1000 LOC). Acceptable; the insurance has historically been needed (3/3 today).
-- **If a future failure mode emerges that the verifier handlers can't catch** (e.g., the GitHub API itself reports incorrect state), the substrate's audit-trail still surfaces the divergence — the system fails loudly to the operator rather than silently to wrong terminal state.
+- **If a future failure mode emerges that the verifier handlers can't catch** (e.g., the GitHub API itself reports incorrect state), the substrate's audit-trail still surfaces the divergence -- the system fails loudly to the operator rather than silently to wrong terminal state.
 - **If budget tiers prove too coarse**, the adaptive-budget alternative (Q5c) can be added as a higher-priority canon-policy without changing substrate. The seam is preserved.
 - **If `claim_secret_token` leaks via a redactor regression**, the principal-match check (Section 6 step 5) is a second gate; defense-in-depth holds even on token leak. A red-team test in PR1's test suite asserts that a token-only-without-principal attestation is rejected.
 - **If the substrate's contract module itself is compromised**, all bets are off (Tier 1 compromise). The PreToolUse hook on `claim-attestation-*` writes is a gate against the routine sub-agent bypass, not against a substrate-module rewrite. Operator STOP + medium-tier kill switch are the operator's only response to a Tier 1 compromise.
@@ -897,27 +897,27 @@ A passing PR1 must:
 
 ### Canon directives applied
 
-- `dev-sub-agent-pr-driver-responsibility` — the foundational discipline this substrate enforces mechanically.
-- `dev-substrate-not-prescription` — substrate stays mechanism-only; policy in canon.
-- `dev-indie-floor-org-ceiling` — every design choice serves both ends.
-- `dev-governance-before-autonomy` — STOP sentinel + canon-policy first, automation dial second.
-- `inv-l3-requires-human` — canon-policy edits (budget tier, recovery max, cadence) remain operator-signed.
-- `inv-kill-switch-first` — STOP integration at every substrate entry point.
-- `arch-atomstore-source-of-truth` — AtomStore is the single source of truth for claim state.
-- `dev-extreme-rigor-and-research` — alternatives_rejected populated for every decision.
-- `dev-forward-thinking-no-regrets` — Section 15 articulates 3-month review.
-- `dev-attribution-hooks-cover-all-tool-paths` — AtomStore write-time policy fits the existing hook-enforcement model.
-- `feedback_claude_cli_subscription_cost_model` — budget tier default sizing rationale.
-- `feedback_src_docs_mechanism_only_no_design_links` — JSDoc fence on canon ids.
+- `dev-sub-agent-pr-driver-responsibility` -- the foundational discipline this substrate enforces mechanically.
+- `dev-substrate-not-prescription` -- substrate stays mechanism-only; policy in canon.
+- `dev-indie-floor-org-ceiling` -- every design choice serves both ends.
+- `dev-governance-before-autonomy` -- STOP sentinel + canon-policy first, automation dial second.
+- `inv-l3-requires-human` -- canon-policy edits (budget tier, recovery max, cadence) remain operator-signed.
+- `inv-kill-switch-first` -- STOP integration at every substrate entry point.
+- `arch-atomstore-source-of-truth` -- AtomStore is the single source of truth for claim state.
+- `dev-extreme-rigor-and-research` -- alternatives_rejected populated for every decision.
+- `dev-forward-thinking-no-regrets` -- Section 15 articulates 3-month review.
+- `dev-attribution-hooks-cover-all-tool-paths` -- AtomStore write-time policy fits the existing hook-enforcement model.
+- `feedback_claude_cli_subscription_cost_model` -- budget tier default sizing rationale.
+- `feedback_src_docs_mechanism_only_no_design_links` -- JSDoc fence on canon ids.
 
 ### Prior PRs informing this design
 
-- PR #166 — Agent-loop substrate (4 seams + 2 atom types + 2 policies + projection).
-- PR #170 — PrFixActor: the first actor with explicit observe → classify → propose → apply → reflect lifecycle that this substrate generalizes.
-- PR #171 — ResumeAuthorAgentLoopAdapter: the substrate the recovery layer reuses.
-- PR #172 — cr-precheck capability: the pre-push gate every PR honors.
-- PR #197 — AtomStore.put TOCTOU race fix: the foundation the concurrent-reaper-lock relies on.
-- PR #389 — pr-observation refresh canon-policy: the pattern the budget-tier policies follow.
+- PR #166 -- Agent-loop substrate (4 seams + 2 atom types + 2 policies + projection).
+- PR #170 -- PrFixActor: the first actor with explicit observe → classify → propose → apply → reflect lifecycle that this substrate generalizes.
+- PR #171 -- ResumeAuthorAgentLoopAdapter: the substrate the recovery layer reuses.
+- PR #172 -- cr-precheck capability: the pre-push gate every PR honors.
+- PR #197 -- AtomStore.put TOCTOU race fix: the foundation the concurrent-reaper-lock relies on.
+- PR #389 -- pr-observation refresh canon-policy: the pattern the budget-tier policies follow.
 
 ### Substrate seams reserved
 
