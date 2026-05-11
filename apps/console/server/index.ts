@@ -28,6 +28,17 @@ import {
   isConsoleWritesAllowed,
   makeAllowedOriginSet,
 } from './security';
+import {
+  HEARTBEAT_INTERVAL_MS as PIPELINE_HEARTBEAT_INTERVAL_MS,
+  MAX_SUBSCRIBERS_PER_PIPELINE,
+  buildAtomChangePayload as buildPipelineAtomChangePayload,
+  buildHeartbeatPayload as buildPipelineHeartbeatPayload,
+  buildOpenPayload as buildPipelineOpenPayload,
+  buildPipelineStateChangePayload,
+  extractAtomPipelineId,
+  formatSseMessage as formatPipelineSseMessage,
+  parsePipelineChannel,
+} from './pipeline-stream';
 import { parseAutonomyDial } from './kill-switch-state';
 import { median, extractFailureStage } from './metrics-rollup';
 import {
@@ -141,6 +152,14 @@ import {
   validateResumeRequest,
   type PipelineResumeSourceAtom,
 } from './pipeline-resume';
+import {
+  buildAbandonAtomId,
+  buildPipelineAbandonedAtom,
+  REASON_MAX_LENGTH,
+  REASON_MIN_LENGTH,
+  validatePipelineAbandonInput,
+  type PipelineAbandonSourceAtom,
+} from './pipeline-abandon';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONSOLE_ROOT = resolve(HERE, '..');
@@ -1460,6 +1479,296 @@ async function handleResumePipeline(params: {
     resumer_principal_id: params.actor_id,
     resume_atom_id: resumeAtomId,
     resumed_at: now,
+  };
+}
+
+/**
+ * Abandon a running or hil-paused pipeline.
+ *
+ * The validation half (pipeline-abandon.ts::validatePipelineAbandonInput)
+ * re-walks the in-memory atom index per canon `dec-console-atom-index-projection`
+ * and returns a tagged-union verdict the route maps to HTTP status codes.
+ * This wrapper does the disk I/O for the two writes the validated-ok rung
+ * authorizes:
+ *
+ *   1. Mint a `pipeline-abandoned` atom (built via the pure helper
+ *      `buildPipelineAbandonedAtom`) carrying the operator's reason +
+ *      principal + timestamp. The atom is the audit-trail entry; the
+ *      substrate keys off it for "this is who signed the abandon and
+ *      when". Mirrors the resume audit-atom shape so a downstream
+ *      audit walker that observes both kinds does not branch on origin.
+ *
+ *   2. Flip the pipeline atom's top-level `pipeline_state` to
+ *      `abandoned` so the next runner tick (substrate-side
+ *      runPipeline observes the terminal state and halts cleanly
+ *      before dispatching the next stage). The runner's
+ *      claim-before-mutate check re-validates substrate-side so the
+ *      Console mirror cannot bypass the gate; if the substrate sees
+ *      a stale flip, the runner returns 'halted' and the failure
+ *      shows up in the audit chain.
+ *
+ * Authority contract: the canon `pol-pipeline-abandon` directive's
+ * `allowed_principals` list is the authoritative gate.
+ * validatePipelineAbandonInput re-resolves the canon entry on every
+ * call (no caching) so a canon edit that removes a principal takes
+ * effect on the next click.
+ *
+ * Idempotency: the abandon atom id is keyed by {pipelineId,
+ * correlationId}. Two clicks with the same correlationId yield one
+ * atom on disk (the `wx` flag below fails the second write loudly so
+ * the operator sees the duplicate). Two clicks with distinct
+ * correlationIds (typical real-world replay after a transient error)
+ * produce two atoms -- both rows belong in the audit trail.
+ *
+ * Writes route through direct fs writes; the in-memory atom index
+ * picks them up on the next file-watcher event per canon
+ * `dec-console-atom-index-projection` (the watcher is the
+ * cache-invalidation signal). The handler does NOT touch the index
+ * directly so the read/write halves of the projection stay symmetric.
+ */
+async function handleAbandonPipeline(params: {
+  pipeline_id: string;
+  actor_id: string;
+  reason: string;
+}): Promise<{
+  pipeline_id: string;
+  abandoner_principal_id: string;
+  abandon_atom_id: string;
+  abandoned_at: string;
+}> {
+  const atoms = await readAllAtoms();
+  const verdict = validatePipelineAbandonInput(
+    atoms as ReadonlyArray<PipelineAbandonSourceAtom>,
+    {
+      pipelineId: params.pipeline_id,
+      abandonerPrincipalId: params.actor_id,
+      reason: params.reason,
+    },
+  );
+  if (verdict.kind === 'reason-missing') {
+    const err = Object.assign(
+      new Error('pipeline.abandon requires a non-empty reason string'),
+      { code: 'reason-missing' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'reason-too-short') {
+    const err = Object.assign(
+      new Error(
+        `reason length ${verdict.length} is below minimum ${verdict.min}; `
+        + 'a useful audit entry requires more context than a single word.',
+      ),
+      { code: 'reason-too-short' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'reason-too-long') {
+    const err = Object.assign(
+      new Error(
+        `reason length ${verdict.length} exceeds maximum ${verdict.max}; `
+        + 'shorten or split into multiple actions.',
+      ),
+      { code: 'reason-too-long' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'not-found') {
+    const err = Object.assign(
+      new Error(`no pipeline atom with id ${params.pipeline_id}`),
+      { code: 'pipeline-not-found' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'already-terminal') {
+    const err = Object.assign(
+      new Error(
+        `pipeline ${params.pipeline_id} is already in terminal state '${verdict.pipelineState}'; `
+        + 'a terminal pipeline cannot be abandoned.',
+      ),
+      { code: 'pipeline-already-terminal' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'no-policy') {
+    const err = Object.assign(
+      new Error(
+        'no canon pol-pipeline-abandon policy atom found; '
+        + 'cannot authorize abandon without an L3 canon entry.',
+      ),
+      { code: 'pipeline-abandon-no-policy' },
+    );
+    throw err;
+  }
+  if (verdict.kind === 'forbidden') {
+    const err = Object.assign(
+      new Error(
+        `caller '${params.actor_id}' is not in allowed_principals `
+        + `(allowed: ${verdict.allowedPrincipals.join(', ') || '<empty>'})`,
+      ),
+      { code: 'pipeline-abandon-forbidden' },
+    );
+    throw err;
+  }
+
+  // verdict.kind === 'ok'. Mint the audit atom + flip the pipeline state.
+  const now = new Date().toISOString();
+  /*
+   * correlationId is a per-request nonce so two distinct abandon clicks
+   * (real-world: operator clicks, transient error, operator clicks
+   * again) produce two distinct audit atoms. A `wx` flag write rejects
+   * the second attempt loudly if the correlationId collides; that
+   * keeps the idempotency contract intact without a silent overwrite.
+   */
+  const { randomBytes } = await import('node:crypto');
+  const correlationId = `console-abandon-${randomBytes(6).toString('hex')}`;
+  // Trim the reason once before atom build so the stored copy matches
+  // the validated form. validateReason already trimmed for the
+  // validation path; rebuilding here keeps the atom-write path
+  // self-contained (no implicit dependency on the verdict carrying
+  // the trimmed string).
+  const trimmedReason = params.reason.trim();
+  const abandonAtom = buildPipelineAbandonedAtom({
+    pipelineId: params.pipeline_id,
+    abandonerPrincipalId: params.actor_id,
+    reason: trimmedReason,
+    correlationId,
+    now,
+  });
+  const abandonAtomId = abandonAtom.id;
+  const abandonAtomFilename = atomFilenameFromId(abandonAtomId);
+  const fsWriteModule = await import('node:fs/promises');
+  await fsWriteModule.writeFile(
+    join(ATOMS_DIR, abandonAtomFilename),
+    JSON.stringify(abandonAtom, null, 2),
+    { encoding: 'utf8', flag: 'wx' },
+  );
+
+  /*
+   * On-disk compare-and-set before flipping pipeline_state. The
+   * validatePipelineAbandonInput call above ran against the in-memory
+   * atom index; a concurrent runner tick or another operator's
+   * resume/abandon between the index read and our write could have
+   * moved the pipeline into a terminal state. We re-read the pipeline
+   * file directly from disk (NOT the index) and re-verify the
+   * invariant validatePipelineAbandonInput checked:
+   *
+   *   - pipeline_state is NOT already terminal (abandoned, completed,
+   *     failed)
+   *
+   * On invariant violation OR any error in the re-read or final
+   * write, we UNLINK the abandon atom so an aborted abandon does not
+   * leave a dangling audit row that implies the pipeline transitioned
+   * when it did not. The substrate's runner re-walks the abandon
+   * atom on its next tick and would observe the orphaned write,
+   * halt the pipeline anyway, and report a successful abandon for
+   * what the operator saw as a failure -- the rollback wrapper here
+   * keeps that case from happening (CR finding on PR #402).
+   *
+   * The caller gets a 409 'pipeline-abandon-conflict' on the race
+   * case so the UI surfaces it loudly; for any other failure mode
+   * (file system error, JSON parse failure, etc.) the original error
+   * bubbles up after rollback so the operator sees the real cause.
+   *
+   * Mirrors the runner's claim-before-mutate posture from
+   * src/runtime/planning-pipeline/runner.ts and the symmetric pattern
+   * in handleResumePipeline above. handleResumePipeline can leak a
+   * resume atom on a post-write failure too -- a follow-up PR can
+   * apply the same rollback wrapper there for symmetry.
+   */
+  const pipelineFilename = atomFilenameFromId(params.pipeline_id);
+  try {
+    const pipelineRaw = await readFile(join(ATOMS_DIR, pipelineFilename), 'utf8');
+    const pipelineAtomOnDisk = JSON.parse(pipelineRaw) as Atom & {
+      pipeline_state?: string;
+      metadata?: Record<string, unknown>;
+    };
+    if (
+      pipelineAtomOnDisk.pipeline_state === 'abandoned'
+      || pipelineAtomOnDisk.pipeline_state === 'completed'
+      || pipelineAtomOnDisk.pipeline_state === 'failed'
+    ) {
+      // Race lost: another writer moved the pipeline into a terminal
+      // state between our index read and our re-read. Unlink the
+      // freshly-minted abandon atom so the audit trail does not
+      // falsely imply we authorized the flip. Best-effort unlink; a
+      // failure here is logged but does not prevent surfacing the
+      // conflict to the caller.
+      try {
+        await fsWriteModule.unlink(join(ATOMS_DIR, abandonAtomFilename));
+      } catch (unlinkErr) {
+        console.warn(
+          `[backend] abandon race: pipeline ${params.pipeline_id} `
+          + `pipeline_state moved to ${pipelineAtomOnDisk.pipeline_state} between `
+          + `validation and re-check; abandon atom ${abandonAtomId} unlink failed: `
+          + `${(unlinkErr as Error).message}`,
+        );
+      }
+      const err = Object.assign(
+        new Error(
+          `pipeline ${params.pipeline_id} moved into terminal state '${pipelineAtomOnDisk.pipeline_state}' `
+          + 'between validation and write; abandon atom unlinked',
+        ),
+        { code: 'pipeline-abandon-conflict' },
+      );
+      throw err;
+    }
+    pipelineAtomOnDisk.pipeline_state = 'abandoned';
+    pipelineAtomOnDisk.metadata = {
+      ...(pipelineAtomOnDisk.metadata ?? {}),
+      abandoned_at: now,
+      abandoned_by: params.actor_id,
+      abandon_reason: trimmedReason,
+      abandon_atom_id: abandonAtomId,
+    };
+    await fsWriteModule.writeFile(
+      join(ATOMS_DIR, pipelineFilename),
+      JSON.stringify(pipelineAtomOnDisk, null, 2),
+      'utf8',
+    );
+  } catch (err) {
+    /*
+     * Post-write failure rollback: any error after the abandon atom
+     * was written but before the pipeline state was successfully
+     * flipped MUST unlink the abandon atom. Without this, the
+     * substrate runner's abandon-poll would observe the orphan atom
+     * and halt the pipeline on its next tick -- the operator saw a
+     * 500 error response but the pipeline actually got killed. That
+     * report-vs-reality mismatch is the failure mode CR flagged.
+     *
+     * The conflict-rung above already unlinks before throwing, so a
+     * 'pipeline-abandon-conflict' error here is benign (the unlink
+     * is a no-op). Best-effort: a failure to unlink is logged but
+     * does not mask the original error.
+     */
+    const e = err as Error & { code?: string };
+    if (e.code !== 'pipeline-abandon-conflict') {
+      try {
+        await fsWriteModule.unlink(join(ATOMS_DIR, abandonAtomFilename));
+      } catch (unlinkErr) {
+        console.warn(
+          `[backend] abandon rollback: pipeline ${params.pipeline_id} `
+          + `post-write failure '${(err as Error).message}'; `
+          + `abandon atom ${abandonAtomId} unlink failed: `
+          + `${(unlinkErr as Error).message}`,
+        );
+      }
+    }
+    throw err;
+  }
+
+  // Silence unused-import warnings for length-floor / cap constants;
+  // they ship as part of the public API so consumers (e.g. the future
+  // client-side validator) can mirror the same bounds without
+  // re-declaring them. Cheaper than splitting the import block.
+  void REASON_MIN_LENGTH;
+  void REASON_MAX_LENGTH;
+  void buildAbandonAtomId;
+
+  return {
+    pipeline_id: params.pipeline_id,
+    abandoner_principal_id: params.actor_id,
+    abandon_atom_id: abandonAtomId,
+    abandoned_at: now,
   };
 }
 
@@ -3069,6 +3378,96 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  if (path === '/api/pipeline.abandon' && req.method === 'POST') {
+    /*
+     * Pipeline-abandon route: flips a running or hil-paused pipeline
+     * into the terminal `abandoned` state. The route mints a
+     * `pipeline-abandoned` audit atom carrying the operator's reason +
+     * principal + timestamp and flips the pipeline atom's
+     * `pipeline_state` to `abandoned`; the substrate's runner observes
+     * the terminal state on its next tick and halts cleanly before
+     * dispatching the next stage. Origin-allowlist applies; gated by
+     * canon `pol-pipeline-abandon` whose `allowed_principals` list
+     * determines who can sign an abandon.
+     *
+     * Identity binding: the abandoner is the SERVER-derived
+     * `LAG_CONSOLE_ACTOR_ID` env var, NOT a client-supplied actor_id.
+     * Trusting client JSON for the principal id would let any caller
+     * who reaches the origin-allowed endpoint impersonate any
+     * principal in `allowed_principals`. Mirrors the pipeline-resume
+     * route's identity binding (CR PR #396 critical finding).
+     */
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
+    const rawReason = body['reason'];
+    if (!pipelineId) {
+      sendErr(req, res, 400, 'missing-pipeline-id', 'pipeline.abandon requires { pipeline_id: string }');
+      return;
+    }
+    const serverActorId = process.env['LAG_CONSOLE_ACTOR_ID'] ?? '';
+    if (!serverActorId) {
+      sendErr(
+        req,
+        res,
+        500,
+        'server-actor-unset',
+        'pipeline.abandon requires LAG_CONSOLE_ACTOR_ID to be configured on the backend; '
+        + 'set the env var to the principal id the console should attribute abandons to and restart npm run dev:server.',
+      );
+      return;
+    }
+    try {
+      const data = await handleAbandonPipeline({
+        pipeline_id: pipelineId,
+        actor_id: serverActorId,
+        reason: typeof rawReason === 'string' ? rawReason : '',
+      });
+      sendOk(req, res, data);
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      switch (e.code) {
+        case 'reason-missing':
+          sendErr(req, res, 400, 'reason-missing', e.message);
+          return;
+        case 'reason-too-short':
+          sendErr(req, res, 400, 'reason-too-short', e.message);
+          return;
+        case 'reason-too-long':
+          sendErr(req, res, 400, 'reason-too-long', e.message);
+          return;
+        case 'pipeline-not-found':
+          sendErr(req, res, 404, 'pipeline-not-found', e.message);
+          return;
+        case 'pipeline-already-terminal':
+          sendErr(req, res, 409, 'pipeline-already-terminal', e.message);
+          return;
+        case 'pipeline-abandon-no-policy':
+          sendErr(req, res, 403, 'pipeline-abandon-no-policy', e.message);
+          return;
+        case 'pipeline-abandon-forbidden':
+          sendErr(req, res, 403, 'pipeline-abandon-forbidden', e.message);
+          return;
+        case 'pipeline-abandon-conflict':
+          /*
+           * On-disk re-check failed: another writer moved the
+           * pipeline between validation and write. 409 mirrors the
+           * already-terminal rung; the audit atom we wrote was
+           * unlinked so the caller is safe to retry once the
+           * conflicting writer settles.
+           */
+          sendErr(req, res, 409, 'pipeline-abandon-conflict', e.message);
+          return;
+        case 'invalid-atom-id':
+          sendErr(req, res, 400, 'invalid-atom-id', e.message);
+          return;
+        default:
+          sendErr(req, res, 500, 'pipeline-abandon-failed', e.message);
+          return;
+      }
+    }
+    return;
+  }
+
   if (path === '/api/atoms.propose' && req.method === 'POST') {
     /*
      * Read-only contract: the console is a projection over the atom
@@ -3771,9 +4170,126 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
    * "atom.created" push whenever a new .json file lands in
    * .lag/atoms. The file-watcher is started ONCE per server and
    * multiplexed across subscribers, so 100 open tabs == 1 watcher.
+   *
+   * Per-pipeline SSE channel: /api/events/pipeline.<pipeline_id>
+   * delivers ONLY events whose backing atom carries that pipeline_id
+   * (or whose atom IS that pipeline). Replaces the 5s polling on
+   * /pipelines/<id>; the cap MAX_SUBSCRIBERS_PER_PIPELINE prevents a
+   * runaway client from holding hundreds of sockets open. A 404
+   * fires when the requested pipeline_id has no backing atom on
+   * disk -- the client falls back to polling rather than holding a
+   * permanent listener on a pipeline that does not exist.
    */
   if (path.startsWith('/api/events/') && req.method === 'GET') {
     const channel = path.substring('/api/events/'.length);
+    const pipelineChannelId = parsePipelineChannel(channel);
+
+    /*
+     * Defense in depth: a channel that LOOKS like a per-pipeline
+     * channel (starts with the pipeline.<...> prefix) but failed the
+     * parser's validation MUST 404 here rather than fall through to
+     * the generic SSE handler below. Without this guard a malformed
+     * `pipeline.../etc/passwd` style channel would open a long-lived
+     * generic atoms socket and consume a connection slot outside the
+     * MAX_SUBSCRIBERS_PER_PIPELINE cap. Closes the CR PR #403 major
+     * finding.
+     */
+    if (pipelineChannelId === null && channel.startsWith('pipeline.')) {
+      sendErr(req, res, 404, 'invalid-pipeline-channel', `invalid pipeline channel ${channel}`);
+      return;
+    }
+
+    if (pipelineChannelId !== null) {
+      /*
+       * Per-pipeline channel. Validate the pipeline exists BEFORE
+       * upgrading to SSE so a 404 from an unknown id is a clean HTTP
+       * response (the client falls back to polling) rather than an
+       * empty event stream that looks indistinguishable from "this
+       * pipeline never emits".
+       *
+       * The lookup goes through handleAtomGet so the narrow startup
+       * window before primeAtomIndex resolves does not return a
+       * false 404 for a valid pipeline id. handleAtomGet falls back
+       * to a fresh disk read when the index is still cold.
+       */
+      const existing = await handleAtomGet(pipelineChannelId);
+      if (!existing || existing.type !== 'pipeline') {
+        sendErr(req, res, 404, 'pipeline-not-found', `no pipeline atom with id ${pipelineChannelId}`);
+        return;
+      }
+
+      const existingSubs = pipelineSubscribers.get(pipelineChannelId);
+      if (existingSubs && existingSubs.size >= MAX_SUBSCRIBERS_PER_PIPELINE) {
+        sendErr(
+          req,
+          res,
+          429,
+          'pipeline-stream-cap-exceeded',
+          `pipeline ${pipelineChannelId} has reached the subscriber cap of ${MAX_SUBSCRIBERS_PER_PIPELINE}`,
+        );
+        return;
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        /*
+         * Disable proxy / CDN buffering. Without this header, an
+         * nginx reverse-proxy (the most common deployment shape)
+         * buffers up to 8KB before flushing, holding the heartbeat
+         * back and making the connection look dead. See nginx
+         * proxy_buffering docs.
+         */
+        'X-Accel-Buffering': 'no',
+      });
+      const openMsg = formatPipelineSseMessage(
+        'open',
+        buildPipelineOpenPayload(pipelineChannelId, new Date().toISOString()),
+      );
+      res.write(openMsg);
+
+      // Push the current state immediately so the client can patch its
+      // cache and render without waiting for the first atom event.
+      const stateMsg = formatPipelineSseMessage(
+        'pipeline-state-change',
+        buildPipelineStateChangePayload(existing, new Date().toISOString()),
+      );
+      res.write(stateMsg);
+
+      let subs = pipelineSubscribers.get(pipelineChannelId);
+      if (!subs) {
+        subs = new Set<ServerResponse>();
+        pipelineSubscribers.set(pipelineChannelId, subs);
+      }
+      subs.add(res);
+
+      const heartbeatInterval = setInterval(() => {
+        try {
+          const hbMsg = formatPipelineSseMessage(
+            'heartbeat',
+            buildPipelineHeartbeatPayload(new Date().toISOString()),
+          );
+          res.write(hbMsg);
+        } catch {
+          // Will be cleaned up on the next req.close.
+        }
+      }, PIPELINE_HEARTBEAT_INTERVAL_MS);
+
+      req.on('close', () => {
+        clearInterval(heartbeatInterval);
+        const liveSet = pipelineSubscribers.get(pipelineChannelId);
+        if (liveSet) {
+          liveSet.delete(res);
+          if (liveSet.size === 0) {
+            pipelineSubscribers.delete(pipelineChannelId);
+          }
+        }
+      });
+      return;
+    }
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -3810,10 +4326,95 @@ const server = createServer((req, res) => {
 
 const atomSubscribers = new Set<ServerResponse>();
 
+/*
+ * Per-pipeline SSE subscribers. Keyed by pipeline_id; the value Set
+ * holds the open response objects for every client subscribing to
+ * that pipeline's change stream. A Map (not a single global Set) so
+ * the watcher does an O(1) lookup per atom event rather than a fan-
+ * out scan; under the org-ceiling pressure (50 pipelines, hundreds
+ * of total tabs), the difference is real.
+ *
+ * Lifecycle: a subscriber is added in the /api/events/pipeline.<id>
+ * route, removed on `req.on('close')`. The watcher pushes events but
+ * never mutates the map shape directly.
+ *
+ * Cleanup invariant: when a Set drops to zero, the key is removed
+ * from the Map so the watcher's pipeline-keyed lookup short-circuits
+ * (no empty Sets accumulate). Without this, 1000 sequential
+ * connect/disconnect cycles would leave 1000 stale keys whose
+ * Set.size is 0 but the Map.get still has to walk a Set object.
+ */
+const pipelineSubscribers = new Map<string, Set<ServerResponse>>();
+
 function broadcastAtomEvent(event: string, payload: unknown): void {
   const msg = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const sub of atomSubscribers) {
     try { sub.write(msg); } catch { atomSubscribers.delete(sub); }
+  }
+}
+
+/**
+ * Push a pipeline-stream message to every subscriber bound to the
+ * given pipeline_id. The watcher calls this after detecting an atom
+ * change with a resolved pipeline_id (see broadcastPipelineAtomChange).
+ *
+ * Subscribers whose write fails (client disconnect, broken pipe) are
+ * removed eagerly so the next iteration of the watcher loop does not
+ * spend cycles writing to a dead socket. This mirrors the cleanup
+ * pattern in broadcastAtomEvent above.
+ */
+function pushPipelineStreamMessage(pipelineId: string, msg: string): void {
+  const subs = pipelineSubscribers.get(pipelineId);
+  if (!subs) return;
+  const toRemove: ServerResponse[] = [];
+  for (const sub of subs) {
+    try {
+      sub.write(msg);
+    } catch {
+      toRemove.push(sub);
+    }
+  }
+  for (const dead of toRemove) {
+    subs.delete(dead);
+  }
+  if (subs.size === 0) {
+    pipelineSubscribers.delete(pipelineId);
+  }
+}
+
+/**
+ * Fan an atom-change event out to per-pipeline subscribers. Looks up
+ * the atom in the in-memory index (refreshAtomInIndex has already
+ * resolved it for `change` events; for `rename` events the resolve
+ * happens before this is called), reads its pipeline_id, and emits
+ * the matching SSE messages.
+ *
+ * For pipeline-type atoms, emits BOTH atom-change AND
+ * pipeline-state-change so a client patching its cache off the
+ * latter can render the new state pill without a round-trip while
+ * still receiving the generic atom-change for query-invalidation
+ * symmetry.
+ */
+function broadcastPipelineAtomChange(filename: string, at: string): void {
+  const atom = atomIndex.get(filename);
+  if (!atom) return;
+  const pipelineId = extractAtomPipelineId(atom);
+  if (!pipelineId) return;
+  // Skip the work entirely when no one is listening for this pipeline.
+  if (!pipelineSubscribers.has(pipelineId)) return;
+
+  const atomChangeMsg = formatPipelineSseMessage(
+    'atom-change',
+    buildPipelineAtomChangePayload(atom, pipelineId, at),
+  );
+  pushPipelineStreamMessage(pipelineId, atomChangeMsg);
+
+  if (atom.type === 'pipeline') {
+    const stateMsg = formatPipelineSseMessage(
+      'pipeline-state-change',
+      buildPipelineStateChangePayload(atom, at),
+    );
+    pushPipelineStreamMessage(pipelineId, stateMsg);
   }
 }
 
@@ -3832,6 +4433,7 @@ async function startAtomWatcher(): Promise<void> {
     fsWatch(ATOMS_DIR, { persistent: false }, async (eventType, filename) => {
       if (!filename || !filename.endsWith('.json')) return;
       const id = filename.replace(/\.json$/, '');
+      const at = new Date().toISOString();
       if (eventType === 'rename') {
         // Could be create OR delete. Attempt a fresh read — if it
         // succeeds the file exists (classify as create/refresh);
@@ -3840,15 +4442,25 @@ async function startAtomWatcher(): Promise<void> {
         await refreshAtomInIndex(filename);
         const hasItNow = atomIndex.has(filename);
         if (!hadIt && hasItNow) {
-          broadcastAtomEvent('atom.created', { id, at: new Date().toISOString() });
+          broadcastAtomEvent('atom.created', { id, at });
+          broadcastPipelineAtomChange(filename, at);
         } else if (hadIt && !hasItNow) {
-          broadcastAtomEvent('atom.deleted', { id, at: new Date().toISOString() });
+          broadcastAtomEvent('atom.deleted', { id, at });
+          // Note: deletion is rare for pipeline atoms (the AtomStore
+          // is append-only by canon `arch-atomstore-source-of-truth`)
+          // and we cannot resolve pipeline_id once the atom is gone
+          // from the index. The generic atom.deleted event still
+          // reaches the global subscribers; per-pipeline subscribers
+          // observe deletion via the next state-change atom that
+          // lands or via the heartbeat-driven fallback refresh.
         } else if (hasItNow) {
-          broadcastAtomEvent('atom.changed', { id, at: new Date().toISOString() });
+          broadcastAtomEvent('atom.changed', { id, at });
+          broadcastPipelineAtomChange(filename, at);
         }
       } else if (eventType === 'change') {
         await refreshAtomInIndex(filename);
-        broadcastAtomEvent('atom.changed', { id, at: new Date().toISOString() });
+        broadcastAtomEvent('atom.changed', { id, at });
+        broadcastPipelineAtomChange(filename, at);
       }
     });
     console.log(`[backend] watching ${ATOMS_DIR} for atom changes`);

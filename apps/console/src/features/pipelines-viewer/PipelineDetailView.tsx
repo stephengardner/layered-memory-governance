@@ -1,13 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { Activity, AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, Loader2, MessageSquare, PauseCircle, PlayCircle, ShieldAlert, Wrench, Workflow, XCircle, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, Loader2, MessageSquare, OctagonX, PauseCircle, PlayCircle, ShieldAlert, Wrench, Workflow, XCircle, Zap } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { FreshnessPill } from '@/components/freshness-pill/FreshnessPill';
 import { Tooltip } from '@/components/tooltip/Tooltip';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import {
+  abandonPipeline,
   getPipelineDetail,
   resumePipeline,
   type AgentTurnRow,
@@ -34,7 +35,29 @@ import { PipelineLifecycle } from './PipelineLifecycle';
 import { StageInputs } from './StageInputs';
 import { InlineStageOutput } from './InlineStageOutput';
 import { readStageExpanded, writeStageExpanded } from './stageExpansion';
+import { usePipelineStream } from './usePipelineStream';
 import styles from './PipelineDetailView.module.css';
+
+/*
+ * Polling cadences for the detail view.
+ *
+ * SSE_FALLBACK_POLL_MS is the long backstop interval that fires when
+ * the SSE stream is connected. The stream pushes updates in
+ * milliseconds, so the poll's only job is to catch the rare case
+ * where a watcher event was missed (filesystem races, NFS-style
+ * out-of-band changes) or the SSE handler invoked invalidateQueries
+ * but the cache write itself dropped. 60s is the standard
+ * server-sync floor used elsewhere in the Console (live-ops daemon
+ * posture, control-status refresh).
+ *
+ * SSE_DEGRADED_POLL_MS is the cadence when SSE is unavailable
+ * entirely (failed/connecting) -- keeps the original 5s polling
+ * cadence so the operator-visible freshness does not regress when
+ * the stream cannot connect (older Node servers, hostile proxies,
+ * etc.).
+ */
+const SSE_FALLBACK_POLL_MS = 60_000;
+const SSE_DEGRADED_POLL_MS = 5_000;
 
 /**
  * Pipeline drill-in view: full chain for one pipeline id.
@@ -54,28 +77,45 @@ import styles from './PipelineDetailView.module.css';
  * "back to list" affordance + a copyable id chip.
  */
 export function PipelineDetailView({ pipelineId }: { pipelineId: string }) {
+  /*
+   * Open the per-pipeline SSE stream. The hook handles connection,
+   * reconnect-on-error (1s -> 2s -> 4s -> 8s -> 16s), and query
+   * invalidation. It returns the current connection state so the
+   * fallback poll below can tighten its cadence when SSE is down.
+   *
+   * The SSE hook is the PRIMARY freshness signal; the TanStack Query
+   * poll below is a backstop for the (rare) case where a watcher
+   * event is missed or the stream cannot connect at all. Operator-
+   * visible latency in the happy path is bounded by the server's
+   * watcher debounce + a single round-trip on cache invalidate
+   * (sub-second), down from the up-to-5s of the legacy polling.
+   */
+  const streamConnectionState = usePipelineStream(pipelineId);
+  const streamIsLive = streamConnectionState === 'open';
+
   const query = useQuery({
     queryKey: ['pipeline', pipelineId],
     queryFn: ({ signal }) => getPipelineDetail(pipelineId, signal),
     /*
-     * Polling cadence: a running pipeline writes a new event atom
-     * roughly every 30s in substrate-deep mode. 5s gives the operator
-     * a near-live view without hammering the backend; the cap is
-     * larger than the smallest stage to ensure progress visible.
-     * Mirrors the live-ops 2s cadence in spirit but at a tier the
-     * detail surface justifies (it's not the at-a-glance dashboard).
+     * Polling cadence is dynamic on the SSE state:
+     *   - 'open'  : 60s backstop (SSE handles the operator-visible
+     *               freshness; the poll is only a safety net for
+     *               missed watcher events).
+     *   - any other state ('connecting', 'reconnecting', 'failed'):
+     *               5s poll, matching the legacy cadence so the UI
+     *               does not visibly regress while SSE is recovering.
      *
      * Stop polling once the pipeline reaches a terminal state
      * (succeeded/failed) or the request errors (404/missing). The
-     * org-ceiling case (canon dev-indie-floor-org-ceiling) is several
-     * operators pinning detail tabs on terminal pipelines; an
-     * unconditional 5s poll would waste backend cycles forever.
+     * org-ceiling case (canon dev-indie-floor-org-ceiling) is
+     * several operators pinning detail tabs on terminal pipelines;
+     * an unconditional poll would waste backend cycles forever.
      */
     refetchInterval: (queryState) => {
       if (queryState.state.error) return false;
       const state = queryState.state.data?.pipeline.pipeline_state;
       if (state === 'pending' || state === 'running' || state === 'hil-paused') {
-        return 5000;
+        return streamIsLive ? SSE_FALLBACK_POLL_MS : SSE_DEGRADED_POLL_MS;
       }
       return false;
     },
@@ -142,15 +182,23 @@ export function PipelineDetailView({ pipelineId }: { pipelineId: string }) {
     );
   }
 
-  return <PipelineDetailBody data={query.data!} lastSuccessAt={lastSuccessAt} />;
+  return (
+    <PipelineDetailBody
+      data={query.data!}
+      lastSuccessAt={lastSuccessAt}
+      streamConnectionState={streamConnectionState}
+    />
+  );
 }
 
 function PipelineDetailBody({
   data,
   lastSuccessAt,
+  streamConnectionState,
 }: {
   data: PipelineDetail;
   lastSuccessAt: number | null;
+  streamConnectionState: ReturnType<typeof usePipelineStream>;
 }) {
   const { pipeline, stages, events, findings, audit_counts: audit, failure, resumes } = data;
   /*
@@ -180,7 +228,11 @@ function PipelineDetailBody({
     : pipeline.pipeline_state;
 
   return (
-    <section className={styles.view} data-testid="pipeline-detail-view">
+    <section
+      className={styles.view}
+      data-testid="pipeline-detail-view"
+      data-pipeline-stream={streamConnectionState}
+    >
       <FocusBanner
         label="Pipeline"
         id={pipeline.id}
@@ -211,6 +263,13 @@ function PipelineDetailBody({
             lastSuccessAt={lastSuccessAt}
             testId="pipeline-detail-freshness"
           />
+          {(
+            pipeline.pipeline_state === 'pending'
+            || pipeline.pipeline_state === 'running'
+            || pipeline.pipeline_state === 'hil-paused'
+          ) && (
+            <AbandonControl pipelineId={pipeline.id} />
+          )}
         </div>
         <h2 className={styles.detailTitle}>{pipeline.title}</h2>
         <div className={styles.detailMeta}>
@@ -894,3 +953,270 @@ function transitionTone(t: string): string {
 // shipping the affordance.
 const _RESERVED_MESSAGE_ICON = MessageSquare;
 void _RESERVED_MESSAGE_ICON;
+
+/*
+ * Reason-length bounds mirror the substrate-side constants on
+ * pipeline-abandon.ts (REASON_MIN_LENGTH / REASON_MAX_LENGTH). Keeping
+ * them locally avoids importing server-side modules into client code;
+ * the server is still the authoritative validator (a client that
+ * bypasses these bounds will hit a 400 server-side). Drift between
+ * the two is caught at PR review (the substrate test asserts both
+ * sides agree).
+ */
+const ABANDON_REASON_MIN_LENGTH = 10;
+const ABANDON_REASON_MAX_LENGTH = 500;
+
+/**
+ * Operator-facing abandon control. Surfaces a Kill pipeline button in
+ * the header for any running or hil-paused pipeline. Clicking opens
+ * a confirmation modal with a required free-text reason field; the
+ * submit handler posts to /api/pipeline.abandon and invalidates the
+ * pipeline-detail query so the UI re-fetches.
+ *
+ * Identity binding: the abandoner principal is derived SERVER-side
+ * from `LAG_CONSOLE_ACTOR_ID`. The client never sends an actor_id;
+ * trusting client-supplied identity for a canon-gated write would
+ * let any caller who reaches the origin-allowed endpoint impersonate
+ * any principal in the allowed_principals list. Mirrors the resume
+ * mutation's identity binding (CR PR #396 critical finding).
+ *
+ * Modal pattern: a controlled state machine (closed / open / pending)
+ * gates the UI. Submitting closes the modal on success; the
+ * mutation's error state surfaces inline so the operator can retry
+ * without re-typing the reason. Escape key + click outside the
+ * dialog close the modal as long as the mutation is not in flight.
+ */
+function AbandonControl({ pipelineId }: { pipelineId: string }) {
+  const qc = useQueryClient();
+  const actorId = useCurrentActorId();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [touched, setTouched] = useState(false);
+
+  const abandonMutation = useMutation({
+    mutationFn: (params: { reason: string }) => {
+      /*
+       * Client-side actor preflight. Mirrors the resume mutation
+       * pattern in StageCard: every console write surface that calls
+       * a canon-gated endpoint MUST run requireActorId(actorId)
+       * inside mutationFn so the UI fails closed when
+       * LAG_CONSOLE_ACTOR_ID is unset on the backend. The server-side
+       * 500 server-actor-unset is the authoritative gate; this
+       * pre-check surfaces the misconfiguration at click time instead
+       * of after the network round-trip (CR PR #402 finding).
+       */
+      requireActorId(actorId);
+      return abandonPipeline({ pipeline_id: pipelineId, reason: params.reason });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['pipeline', pipelineId] });
+      closeModal();
+    },
+  });
+
+  /*
+   * Shared close helper: reset both the local form state AND the
+   * TanStack Query mutation state so re-opening the modal after a
+   * 403/409 does not show the stale server error. Every close path
+   * (Escape, backdrop click, Cancel button, success handler) routes
+   * through this helper for symmetry (CR PR #402 finding).
+   */
+  const closeModal = () => {
+    setOpen(false);
+    setReason('');
+    setTouched(false);
+    abandonMutation.reset();
+  };
+
+  const trimmedLength = reason.trim().length;
+  const reasonValid =
+    trimmedLength >= ABANDON_REASON_MIN_LENGTH
+    && trimmedLength <= ABANDON_REASON_MAX_LENGTH;
+
+  /*
+   * Close-on-Escape handler. Honors the in-flight guard: an in-flight
+   * abandon mutation must complete or fail before the modal closes
+   * so the operator does not lose the audit-trail entry mid-write.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !abandonMutation.isPending) {
+        closeModal();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // closeModal is a stable closure (only uses setters + the
+    // mutation, both already in deps via abandonMutation.isPending);
+    // we intentionally exclude it from the dep array so a stale
+    // closure does not race the mutation state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, abandonMutation.isPending]);
+
+  /*
+   * Auto-focus the reason textarea when the modal opens so the
+   * operator can start typing immediately. Canon
+   * dev-web-interaction-quality requires preserving focus across
+   * re-renders; we focus once on mount via a ref handle.
+   */
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    if (open && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [open]);
+
+  return (
+    <>
+      <Tooltip
+        content="Abandon this pipeline. The pipeline state flips to abandoned; the substrate runner halts cleanly before dispatching the next stage. Requires a reason for the audit trail; irreversible."
+        testId="pipeline-detail-abandon-tooltip"
+      >
+        <button
+          type="button"
+          className={styles.abandonButton}
+          data-testid="pipeline-detail-abandon"
+          data-pipeline-id={pipelineId}
+          onClick={() => setOpen(true)}
+        >
+          <OctagonX size={12} strokeWidth={2} aria-hidden="true" />
+          Abandon
+        </button>
+      </Tooltip>
+      {open && (
+        <div
+          className={styles.abandonBackdrop}
+          data-testid="pipeline-detail-abandon-modal"
+          role="presentation"
+          onClick={(e) => {
+            /*
+             * Click-outside-to-close, gated by the in-flight check
+             * so the operator does not accidentally cancel an
+             * in-progress write. Only close if the click target is
+             * the backdrop itself, not a descendant of the dialog.
+             */
+            if (e.target === e.currentTarget && !abandonMutation.isPending) {
+              closeModal();
+            }
+          }}
+        >
+          <div
+            className={styles.abandonDialog}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`abandon-title-${pipelineId}`}
+            aria-describedby={`abandon-body-${pipelineId}`}
+          >
+            <header className={styles.abandonDialogHead}>
+              <span className={styles.abandonDialogIcon} aria-hidden="true">
+                <OctagonX size={18} strokeWidth={2} />
+              </span>
+              <h3
+                className={styles.abandonDialogTitle}
+                id={`abandon-title-${pipelineId}`}
+              >
+                Abandon pipeline?
+              </h3>
+            </header>
+            <div className={styles.abandonDialogBody} id={`abandon-body-${pipelineId}`}>
+              <p className={styles.abandonDialogText}>
+                This stops the pipeline before its next stage dispatches and marks it as
+                <strong> abandoned</strong>. The action is irreversible and produces an
+                audit-trail atom signed by the configured console actor.
+              </p>
+              <code
+                className={styles.abandonDialogPipelineId}
+                data-testid="pipeline-detail-abandon-id"
+              >
+                {pipelineId}
+              </code>
+              <label className={styles.abandonDialogReasonLabel}>
+                Reason (required)
+                <textarea
+                  ref={textareaRef}
+                  className={styles.abandonDialogReasonInput}
+                  data-testid="pipeline-detail-abandon-reason"
+                  value={reason}
+                  disabled={abandonMutation.isPending}
+                  maxLength={ABANDON_REASON_MAX_LENGTH}
+                  minLength={ABANDON_REASON_MIN_LENGTH}
+                  onChange={(e) => {
+                    setReason(e.target.value);
+                    setTouched(true);
+                  }}
+                  onBlur={() => setTouched(true)}
+                  placeholder="Why are you abandoning this pipeline? (10-500 characters)"
+                  rows={4}
+                />
+                <span className={styles.abandonDialogReasonHint}>
+                  <span
+                    data-testid="pipeline-detail-abandon-reason-count"
+                    {...(touched && !reasonValid
+                      ? { className: styles.abandonDialogReasonError }
+                      : {})}
+                  >
+                    {trimmedLength} / {ABANDON_REASON_MAX_LENGTH} characters
+                  </span>
+                  {touched && trimmedLength > 0 && trimmedLength < ABANDON_REASON_MIN_LENGTH && (
+                    <span
+                      className={styles.abandonDialogReasonError}
+                      data-testid="pipeline-detail-abandon-reason-error"
+                    >
+                      Minimum {ABANDON_REASON_MIN_LENGTH} characters
+                    </span>
+                  )}
+                </span>
+              </label>
+              {abandonMutation.isError && (
+                <p
+                  className={styles.abandonDialogServerError}
+                  data-testid="pipeline-detail-abandon-server-error"
+                  role="alert"
+                >
+                  {(abandonMutation.error as Error).message}
+                </p>
+              )}
+            </div>
+            <footer className={styles.abandonDialogActions}>
+              <button
+                type="button"
+                className={styles.abandonDialogCancel}
+                data-testid="pipeline-detail-abandon-cancel"
+                disabled={abandonMutation.isPending}
+                onClick={closeModal}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={styles.abandonDialogSubmit}
+                data-testid="pipeline-detail-abandon-submit"
+                data-abandon-status={
+                  abandonMutation.isPending
+                    ? 'pending'
+                    : abandonMutation.isError
+                      ? 'error'
+                      : 'idle'
+                }
+                disabled={!reasonValid || abandonMutation.isPending}
+                onClick={() => {
+                  setTouched(true);
+                  if (!reasonValid) return;
+                  abandonMutation.mutate({ reason: reason.trim() });
+                }}
+              >
+                {abandonMutation.isPending ? (
+                  <Loader2 size={14} strokeWidth={2} aria-hidden="true" className={styles.resumeSpinner} />
+                ) : (
+                  <OctagonX size={14} strokeWidth={2} aria-hidden="true" />
+                )}
+                {abandonMutation.isPending ? 'Abandoning...' : 'Abandon pipeline'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
