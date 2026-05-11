@@ -36,6 +36,7 @@ import { StageInputs } from './StageInputs';
 import { InlineStageOutput } from './InlineStageOutput';
 import { readStageExpanded, writeStageExpanded } from './stageExpansion';
 import { usePipelineStream } from './usePipelineStream';
+import { PipelineErrorBlock } from './PipelineErrorBlock';
 import styles from './PipelineDetailView.module.css';
 
 /*
@@ -238,6 +239,8 @@ function PipelineDetailBody({
         id={pipeline.id}
         onClear={() => setRoute('pipelines')}
       />
+
+      <PipelineErrorBlock pipelineId={pipeline.id} />
 
       <IntentOutcomeCard pipelineId={pipeline.id} />
 
@@ -1066,6 +1069,29 @@ function AbandonControl({ pipelineId }: { pipelineId: string }) {
       textareaRef.current.focus();
     }
   }, [open]);
+
+  /*
+   * Cross-component open trigger. The PipelineErrorBlock surfaces an
+   * Abandon button when a pipeline is halted by the kill switch; it
+   * dispatches a 'pipeline-error-abandon' DOM custom event so this
+   * existing modal owns the actor-id preflight + reason input rather
+   * than the error block re-implementing the dialog. The listener
+   * gates on matching pipelineId so two tabs viewing different
+   * pipelines do not cross-fire.
+   */
+  useEffect(() => {
+    const onAbandonRequest = (e: Event) => {
+      const detail = (e as CustomEvent<{ pipelineId: string }>).detail;
+      if (detail?.pipelineId === pipelineId) setOpen(true);
+    };
+    window.addEventListener('pipeline-error-abandon', onAbandonRequest as EventListener);
+    return () => {
+      window.removeEventListener(
+        'pipeline-error-abandon',
+        onAbandonRequest as EventListener,
+      );
+    };
+  }, [pipelineId]);
 
   return (
     <>

@@ -52,6 +52,14 @@ export type {
   IntentOutcomeState,
 } from '../../server/intent-outcome-types';
 
+export type {
+  PipelineErrorAction,
+  PipelineErrorActionKind,
+  PipelineErrorCategory,
+  PipelineErrorSeverity,
+  PipelineErrorState,
+} from '../../server/pipeline-error-state-types';
+
 import type {
   PipelineDetail,
   PipelineListResult,
@@ -59,6 +67,7 @@ import type {
 } from '../../server/pipelines-types';
 import type { PipelineLifecycle } from '../../server/pipeline-lifecycle-types';
 import type { IntentOutcome } from '../../server/intent-outcome-types';
+import type { PipelineErrorState } from '../../server/pipeline-error-state-types';
 
 export async function listPipelines(signal?: AbortSignal): Promise<PipelineListResult> {
   return transport.call<PipelineListResult>(
@@ -124,6 +133,29 @@ export async function getIntentOutcome(
 ): Promise<IntentOutcome> {
   return transport.call<IntentOutcome>(
     'pipeline.intent-outcome',
+    { pipeline_id: pipelineId },
+    signal ? { signal } : undefined,
+  );
+}
+
+/**
+ * Fetch the categorized error-state envelope for a pipeline. Always
+ * returns a populated shape: state='ok' on the happy path, state in
+ * {failed, halted, abandoned} for the surfaces that need an inline
+ * error block + recovery suggestion + quick actions.
+ *
+ * The Console renders this above the stage timeline on /pipelines/<id>
+ * whenever state != 'ok'. Polling cadence inherits from the existing
+ * 5s pipeline-detail loop; the SSE stream's atom-change events
+ * invalidate the query cache so a substrate write that flips the
+ * pipeline into failed/halted lights up the block within milliseconds.
+ */
+export async function fetchPipelineErrorState(
+  pipelineId: string,
+  signal?: AbortSignal,
+): Promise<PipelineErrorState> {
+  return transport.call<PipelineErrorState>(
+    'pipeline.error-state',
     { pipeline_id: pipelineId },
     signal ? { signal } : undefined,
   );
