@@ -111,6 +111,24 @@ export interface CodeAuthorExecutorSuccess {
   readonly modelUsed: string;
   readonly confidence: number;
   readonly touchedPaths: ReadonlyArray<string>;
+  /**
+   * Optional non-blocking findings from the post-commit validator
+   * pass. Populated when one or more validators returned
+   * `severity: 'major'` or `severity: 'minor'`; absent when no
+   * validators ran OR every validator returned ok. The invoker
+   * uses this list to mint code-author-warning audit atoms after
+   * the PR opens. Empty list and absent field both mean
+   * "no warnings" -- callers MUST NOT distinguish the two.
+   *
+   * Critical findings never appear here; a critical validator
+   * aborts the dispatch via `CodeAuthorExecutorFailure` with stage
+   * `post-commit-validator/<name>` instead.
+   */
+  readonly postCommitFindings?: ReadonlyArray<{
+    readonly validatorName: string;
+    readonly severity: 'major' | 'minor';
+    readonly reason: string;
+  }>;
 }
 
 export interface CodeAuthorExecutorFailure {

@@ -23,6 +23,7 @@ export * as workspaceProvider from './workspace-provider.js';
 export * as blobStore from './blob-store.js';
 export * as redactor from './redactor.js';
 export * as agentBudget from './agent-budget.js';
+export * as postCommitValidator from './post-commit-validator.js';
 export * as policyReplayTier from './policy/replay-tier.js';
 export * as policyBlobThreshold from './policy/blob-threshold.js';
 export * as projectionsSessionTree from './projections/session-tree.js';
