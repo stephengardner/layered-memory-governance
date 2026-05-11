@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb, ShieldAlert, Radio, GitFork, Brain, Zap, MoreHorizontal, GitMerge, RotateCcw, ClipboardList } from 'lucide-react';
+import { Book, GitBranch, Activity, Users, Network, LineChart, Workflow, Gauge, Lightbulb, ShieldAlert, Radio, GitFork, Brain, Zap, MoreHorizontal, GitMerge, RotateCcw, ClipboardList, Target } from 'lucide-react';
 import { routeHref, setRoute, type Route } from '@/state/router.store';
 import logoUrl from '@/assets/lag-logo.png';
 import styles from './Sidebar.module.css';
@@ -49,6 +49,7 @@ const items: ReadonlyArray<NavItem> = [
   { id: 'live-ops', label: 'Pulse', icon: Zap, priority: 'critical' },
   { id: 'dashboard', label: 'Dashboard', mobileLabel: 'Home', icon: Gauge, mobileBar: true },
   { id: 'control', label: 'Control', icon: ShieldAlert, priority: 'critical', mobileBar: true },
+  { id: 'file-intent', label: 'File Intent', mobileLabel: 'Intent', icon: Target, priority: 'critical' },
   { id: 'canon', label: 'Canon', icon: Book, mobileBar: true },
   { id: 'canon-suggestions', label: 'Suggestions', icon: Lightbulb },
   { id: 'principals', label: 'Principals', icon: Users },
