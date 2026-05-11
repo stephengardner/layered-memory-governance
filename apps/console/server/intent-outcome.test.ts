@@ -794,3 +794,173 @@ describe('buildSummary: pure helper', () => {
     expect(summary).toMatch(/dispatched 0 PRs/);
   });
 });
+
+/*
+ * Substrate gap (2026-05-11): a pr-observation stuck at OPEN long
+ * after the PR actually merged would classify the row as
+ * 'intent-dispatched-pending-review' forever. The synthesizer's
+ * staleness window demotes the row to
+ * 'intent-dispatched-observation-stale' so the Pulse "awaiting merge"
+ * tile does not inflate. These tests pin every branch of the new state.
+ */
+describe('buildIntentOutcome: pr-observation staleness window', () => {
+  function makePipelineWithOpenObservation(observedAt: string) {
+    const intent = intentAtom({
+      id: 'op-stale-1',
+      created_at: '2026-05-01T00:00:00.000Z',
+    });
+    const pipeline = pipelineAtom({
+      id: 'pipeline-stale-1',
+      intent_id: intent.id,
+      created_at: '2026-05-01T00:01:00.000Z',
+      pipeline_state: 'completed',
+    });
+    const plan = planAtom({
+      id: 'plan-stale-1',
+      pipelineId: pipeline.id,
+      created_at: '2026-05-01T00:04:00.000Z',
+    });
+    const dispatch = dispatchRecord({
+      pipelineId: pipeline.id,
+      dispatched: 1,
+      created_at: '2026-05-01T00:05:00.000Z',
+    });
+    const ca = codeAuthorInvoked({
+      planId: plan.id,
+      kind: 'dispatched',
+      prNumber: 999,
+      prUrl: 'https://github.com/x/y/pull/999',
+      created_at: '2026-05-01T00:06:00.000Z',
+    });
+    const observation = prObservation({
+      planId: plan.id,
+      prNumber: 999,
+      prState: 'OPEN',
+      created_at: observedAt,
+    });
+    return [intent, pipeline, plan, dispatch, ca, observation];
+  }
+
+  it('classifies a fresh OPEN observation as intent-dispatched-pending-review (default 1h window)', () => {
+    // NOW = 2026-05-08T15:00. Observation at 14:30 is 30min old; under 1h.
+    const atoms = makePipelineWithOpenObservation('2026-05-08T14:30:00.000Z');
+    const result = buildIntentOutcome(atoms, 'pipeline-stale-1', NOW);
+    expect(result.state).toBe('intent-dispatched-pending-review');
+  });
+
+  it('classifies an old OPEN observation as intent-dispatched-observation-stale', () => {
+    // Observation at 2026-04-26 (12+ days before NOW) blows the 1h default.
+    const atoms = makePipelineWithOpenObservation('2026-04-26T06:07:42.274Z');
+    const result = buildIntentOutcome(atoms, 'pipeline-stale-1', NOW);
+    expect(result.state).toBe('intent-dispatched-observation-stale');
+    expect(result.pr_number).toBe(999);
+    expect(result.summary).toMatch(/PR #999 observation stale/);
+  });
+
+  it('honors a custom staleness threshold via options', () => {
+    // Observation at NOW - 10min. With staleness=30min it's fresh; with 5min it's stale.
+    const tenMinAgo = new Date(NOW - 10 * 60 * 1_000).toISOString();
+    const atoms = makePipelineWithOpenObservation(tenMinAgo);
+    const fresh = buildIntentOutcome(atoms, 'pipeline-stale-1', NOW, {
+      prObservationStalenessMs: 30 * 60 * 1_000,
+    });
+    expect(fresh.state).toBe('intent-dispatched-pending-review');
+    const stale = buildIntentOutcome(atoms, 'pipeline-stale-1', NOW, {
+      prObservationStalenessMs: 5 * 60 * 1_000,
+    });
+    expect(stale.state).toBe('intent-dispatched-observation-stale');
+  });
+
+  it('treats stalenessMs=Infinity as no-staleness (every observation is fresh)', () => {
+    // Webhook-driven deployments set staleness to Infinity. A 12-day-old
+    // observation must still classify as pending-review for those.
+    const atoms = makePipelineWithOpenObservation('2026-04-26T06:07:42.274Z');
+    const result = buildIntentOutcome(atoms, 'pipeline-stale-1', NOW, {
+      prObservationStalenessMs: Number.POSITIVE_INFINITY,
+    });
+    expect(result.state).toBe('intent-dispatched-pending-review');
+  });
+
+  it('does NOT demote a MERGED observation regardless of age', () => {
+    // Terminal observations are always authoritative -- the row is
+    // fulfilled even if the merge atom was recorded long ago.
+    const intent = intentAtom({ id: 'op-old-merge', created_at: '2026-04-01T00:00:00.000Z' });
+    const pipeline = pipelineAtom({
+      id: 'pipeline-old-merge',
+      intent_id: intent.id,
+      created_at: '2026-04-01T00:01:00.000Z',
+      pipeline_state: 'completed',
+    });
+    const plan = planAtom({
+      id: 'plan-old-merge',
+      pipelineId: pipeline.id,
+      created_at: '2026-04-01T00:04:00.000Z',
+    });
+    const dispatch = dispatchRecord({
+      pipelineId: pipeline.id,
+      dispatched: 1,
+      created_at: '2026-04-01T00:05:00.000Z',
+    });
+    const ca = codeAuthorInvoked({
+      planId: plan.id,
+      kind: 'dispatched',
+      prNumber: 1,
+      prUrl: 'https://github.com/x/y/pull/1',
+      created_at: '2026-04-01T00:06:00.000Z',
+    });
+    const observation = prObservation({
+      planId: plan.id,
+      prNumber: 1,
+      prState: 'MERGED',
+      // Observation timestamp from 5 weeks ago (well past 1h staleness).
+      created_at: '2026-04-01T00:52:00.000Z',
+    });
+    const result = buildIntentOutcome(
+      [intent, pipeline, plan, dispatch, ca, observation],
+      'pipeline-old-merge',
+      NOW,
+    );
+    expect(result.state).toBe('intent-fulfilled');
+  });
+
+  it('does NOT demote a CLOSED observation regardless of age (CLOSED is terminal)', () => {
+    // Same principle as MERGED -- CLOSED is a terminal pr_state and
+    // resolves to intent-dispatch-failed authoritatively.
+    const intent = intentAtom({ id: 'op-old-closed', created_at: '2026-04-01T00:00:00.000Z' });
+    const pipeline = pipelineAtom({
+      id: 'pipeline-old-closed',
+      intent_id: intent.id,
+      created_at: '2026-04-01T00:01:00.000Z',
+      pipeline_state: 'completed',
+    });
+    const plan = planAtom({
+      id: 'plan-old-closed',
+      pipelineId: pipeline.id,
+      created_at: '2026-04-01T00:04:00.000Z',
+    });
+    const dispatch = dispatchRecord({
+      pipelineId: pipeline.id,
+      dispatched: 1,
+      created_at: '2026-04-01T00:05:00.000Z',
+    });
+    const ca = codeAuthorInvoked({
+      planId: plan.id,
+      kind: 'dispatched',
+      prNumber: 2,
+      prUrl: 'https://github.com/x/y/pull/2',
+      created_at: '2026-04-01T00:06:00.000Z',
+    });
+    const observation = prObservation({
+      planId: plan.id,
+      prNumber: 2,
+      prState: 'CLOSED',
+      created_at: '2026-04-01T00:52:00.000Z',
+    });
+    const result = buildIntentOutcome(
+      [intent, pipeline, plan, dispatch, ca, observation],
+      'pipeline-old-closed',
+      NOW,
+    );
+    expect(result.state).toBe('intent-dispatch-failed');
+  });
+});

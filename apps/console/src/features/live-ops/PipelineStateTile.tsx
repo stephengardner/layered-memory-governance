@@ -47,7 +47,11 @@ import styles from './PipelineStateTile.module.css';
  */
 const REFRESH_INTERVAL_MS = 2_000;
 
-type BucketKey = 'running' | 'dispatched_pending_merge' | 'intent_fulfilled';
+type BucketKey =
+  | 'running'
+  | 'dispatched_pending_merge'
+  | 'dispatched_observation_stale'
+  | 'intent_fulfilled';
 
 interface BucketConfig {
   readonly key: BucketKey;
@@ -94,6 +98,21 @@ const BUCKETS: ReadonlyArray<BucketConfig> = [
     emptyMessage: 'No PRs awaiting merge.',
   },
   {
+    // Stale observation bucket: rows whose latest pr-observation atom
+    // is older than the canon-policy threshold (pol-pr-observation-
+    // staleness-ms, default 1h). The synthesizer demotes these from
+    // 'awaiting merge' so the headline reflects fresh data only. The
+    // backfill heal script (scripts/backfill-stale-pr-observations.mjs)
+    // OR the next loop tick (pr-observation-refresh widened filter)
+    // should clear this bucket once the substrate fixes catch up.
+    key: 'dispatched_observation_stale',
+    label: 'Observation stale',
+    className: styles.bucketStale,
+    testId: 'pulse-pipeline-tile-observation-stale',
+    onNavigate: () => navigateToPipelinesWithState(null),
+    emptyMessage: 'No stale observations.',
+  },
+  {
     key: 'intent_fulfilled',
     label: 'Intent fulfilled',
     className: styles.bucketFulfilled,
@@ -116,6 +135,8 @@ function samplesForBucket(
       return data.samples.running;
     case 'dispatched_pending_merge':
       return data.samples.dispatched_pending_merge;
+    case 'dispatched_observation_stale':
+      return data.samples.dispatched_observation_stale;
     case 'intent_fulfilled':
       return data.samples.intent_fulfilled;
   }
@@ -127,6 +148,8 @@ function countForBucket(data: PulsePipelineSummary, key: BucketKey): number {
       return data.running;
     case 'dispatched_pending_merge':
       return data.dispatched_pending_merge;
+    case 'dispatched_observation_stale':
+      return data.dispatched_observation_stale;
     case 'intent_fulfilled':
       return data.intent_fulfilled;
   }

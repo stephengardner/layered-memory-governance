@@ -4,8 +4,9 @@ import { test, expect } from '@playwright/test';
  * Pulse pipeline-state tile e2e.
  *
  * Coverage:
- *   - The tile renders on /live-ops with three bucket counts visible:
- *     running, dispatched-pending-merge, intent-fulfilled.
+ *   - The tile renders on /live-ops with four bucket counts visible:
+ *     running, dispatched-pending-merge, dispatched-observation-stale,
+ *     and intent-fulfilled.
  *   - Each bucket count is a number (never undefined, never NaN).
  *   - Clicking the Running bucket header navigates to /pipelines with
  *     the `state=running` query param so the existing filter chip-row
@@ -13,6 +14,10 @@ import { test, expect } from '@playwright/test';
  *   - Page renders cleanly on the mobile project (390x844) so the
  *     canonical mobile-first floor is exercised; the touch targets on
  *     the bucket headers measure >= 44x44 CSS pixels.
+ *   - Substrate gap (2026-05-11): stale pr-observation atoms are
+ *     counted in the dedicated stale bucket, NOT the awaiting-merge
+ *     headline; the substrate fix in pr-observation-refresh.ts (Gap B)
+ *     and the synthesizer's staleness window prevent inflated counts.
  *
  * These tests run against the live atom store. An empty store still
  * paints the tile with zero counts; a populated store paints non-zero
@@ -20,19 +25,21 @@ import { test, expect } from '@playwright/test';
  */
 
 test.describe('pulse pipeline-state tile', () => {
-  test('tile renders three bucket counts on the Pulse dashboard', async ({ page }) => {
+  test('tile renders four bucket counts on the Pulse dashboard', async ({ page }) => {
     await page.goto('/live-ops');
     await expect(page.getByTestId('live-ops-view')).toBeVisible({ timeout: 10_000 });
 
     const tile = page.getByTestId('pulse-pipeline-tile');
     await expect(tile).toBeVisible({ timeout: 10_000 });
 
-    // Three buckets, each with a count + label visible.
+    // Four buckets, each with a count + label visible.
     const running = page.getByTestId('pulse-pipeline-tile-running');
     const pending = page.getByTestId('pulse-pipeline-tile-pending-merge');
+    const stale = page.getByTestId('pulse-pipeline-tile-observation-stale');
     const fulfilled = page.getByTestId('pulse-pipeline-tile-fulfilled');
     await expect(running).toBeVisible();
     await expect(pending).toBeVisible();
+    await expect(stale).toBeVisible();
     await expect(fulfilled).toBeVisible();
 
     /*
@@ -42,9 +49,11 @@ test.describe('pulse pipeline-state tile', () => {
      */
     const runningCount = await page.getByTestId('pulse-pipeline-tile-running-count').innerText();
     const pendingCount = await page.getByTestId('pulse-pipeline-tile-pending-merge-count').innerText();
+    const staleCount = await page.getByTestId('pulse-pipeline-tile-observation-stale-count').innerText();
     const fulfilledCount = await page.getByTestId('pulse-pipeline-tile-fulfilled-count').innerText();
     expect(runningCount.trim()).toMatch(/^\d+$/);
     expect(pendingCount.trim()).toMatch(/^\d+$/);
+    expect(staleCount.trim()).toMatch(/^\d+$/);
     expect(fulfilledCount.trim()).toMatch(/^\d+$/);
   });
 

@@ -238,12 +238,56 @@ describe('runPlanObservationRefreshTick', () => {
     expect(r.skipped['fresh']).toBe(1);
   });
 
-  it('skips when linked plan is not in executing', async () => {
+  // Gap B (added 2026-05-11): the widened filter heals the stale
+  // observation when the plan transitioned terminally before the
+  // observation caught up. Both 'succeeded' and 'abandoned' plan states
+  // trigger one-shot refresh; other states (proposed/approved/etc.) are
+  // skipped via the new 'plan-not-actionable' bucket.
+  it('refreshes a stale OPEN observation linked to succeeded plan (Gap B heal)', async () => {
     const host = createMemoryHost();
     await host.atoms.put(planAtom('p1', 'succeeded'));
     await host.atoms.put(obsAtom('o1'));
+    const refresher = makeRefresher();
+    const r = await runPlanObservationRefreshTick(host, refresher, { now: nowFn });
+    expect(r.refreshed).toBe(1);
+    expect(refresher.calls).toEqual([
+      { pr: { owner: 'foo', repo: 'bar', number: 1 }, plan_id: 'p1' },
+    ]);
+  });
+
+  it('refreshes a stale OPEN observation linked to abandoned plan (Gap B heal)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1', 'abandoned'));
+    await host.atoms.put(obsAtom('o1'));
+    const refresher = makeRefresher();
+    const r = await runPlanObservationRefreshTick(host, refresher, { now: nowFn });
+    expect(r.refreshed).toBe(1);
+    expect(refresher.calls).toEqual([
+      { pr: { owner: 'foo', repo: 'bar', number: 1 }, plan_id: 'p1' },
+    ]);
+  });
+
+  it('skips when linked plan is in a non-actionable state (proposed)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1', 'proposed'));
+    await host.atoms.put(obsAtom('o1'));
     const r = await runPlanObservationRefreshTick(host, makeRefresher(), { now: nowFn });
-    expect(r.skipped['plan-not-executing']).toBe(1);
+    expect(r.skipped['plan-not-actionable']).toBe(1);
+  });
+
+  // Idempotency check for Gap B: once the refresher writes a MERGED
+  // atom, the next tick sees a fresh terminal observation and skips
+  // via the already-terminal branch. This is what keeps the widened
+  // filter one-shot even though the plan stays succeeded forever.
+  it('Gap B heal is one-shot: terminal observation skips on next tick', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(planAtom('p1', 'succeeded'));
+    await host.atoms.put(obsAtom('o1', { pr_state: 'MERGED' }));
+    const refresher = makeRefresher();
+    const r = await runPlanObservationRefreshTick(host, refresher, { now: nowFn });
+    expect(r.refreshed).toBe(0);
+    expect(r.skipped['already-terminal']).toBe(1);
+    expect(refresher.calls).toEqual([]);
   });
 
   it('skips when no plan_id on observation', async () => {

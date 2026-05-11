@@ -25,12 +25,22 @@
 
 @media (min-width: 32rem) {
   /*
-   * Beyond ~512px the three buckets fit comfortably in a row. The grid
-   * still uses minmax(0, 1fr) so a long sample title ellipsizes within
-   * its column rather than pushing the neighbor.
+   * Beyond ~512px the four buckets fit comfortably in a 2x2 grid (or
+   * a single row at wider widths). minmax(0, 1fr) keeps long sample
+   * titles ellipsizing within their column rather than pushing
+   * neighbors. The 2-column shape between 32rem and 48rem keeps the
+   * count + label legible on mid-size tablets; the 4-column row only
+   * fires above ~64rem desktop widths where the extra horizontal
+   * space is available.
    */
   .bucketGrid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 64rem) {
+  .bucketGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
@@ -108,6 +118,19 @@
 
 .bucketPendingMerge .bucketCount {
   color: var(--status-warning);
+}
+
+/*
+ * Stale-observation bucket renders in the warning tone, slightly
+ * muted (text-tertiary semantics) so it does not visually compete
+ * with the active pending-merge bucket. The substrate goal is
+ * "operator notices, but does not panic": a stale row is fixable
+ * via either the next loop tick (auto-heal) or the backfill script
+ * (manual heal).
+ */
+.bucketStale .bucketCount {
+  color: var(--status-warning);
+  opacity: 0.85;
 }
 
 .bucketFulfilled .bucketCount {

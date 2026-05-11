@@ -1,15 +1,26 @@
 /**
  * PR-observation refresh tick.
  *
- * Closes the substrate gap where plans stuck in plan_state='executing'
- * after their PR merges or closes because the only pr-observation atom
- * for the PR was written ONCE at PR-creation time and carries
- * pr_state='OPEN'. This module's tick scans pr-observation atoms still
- * showing non-terminal pr_state, filters to those whose linked Plan is
- * still 'executing', and asks a pluggable refresher to write a fresh
- * observation atom. The existing pr-merge-reconcile tick then picks up
- * the terminal-state observation on the next pass and transitions the
- * plan.
+ * Closes two substrate gaps:
+ *
+ * Gap A (original): plans stuck in plan_state='executing' after their
+ *   PR merges or closes because the only pr-observation atom for the PR
+ *   was written ONCE at PR-creation time and carries pr_state='OPEN'.
+ *   The original filter narrowed the refresh to plans still 'executing'
+ *   so the existing pr-merge-reconcile tick could see the terminal
+ *   observation on the next pass and transition the plan.
+ *
+ * Gap B (added 2026-05-11): a plan can be reaped or transitioned to
+ *   succeeded/abandoned by an out-of-band path BEFORE the observation
+ *   refresh catches up. Once that happens, the executing-only filter
+ *   would skip the observation forever, and any consumer (Console
+ *   pulse tile, intent-outcome synthesizer) that reads the stale OPEN
+ *   observation classifies the pipeline as 'awaiting merge' indefinitely.
+ *   The widened filter ALSO refreshes when the plan is in a terminal
+ *   state (succeeded/abandoned) AND the observation is still non-terminal.
+ *   The 'already-terminal' guard on the observation side keeps this
+ *   one-shot: once the refresh writes a MERGED/CLOSED atom, future ticks
+ *   skip it via the bump('already-terminal') branch.
  *
  * Substrate purity: this module never imports a GitHub adapter, never
  * shells out, never parses a PR number from a string. The pluggable
@@ -209,8 +220,22 @@ export async function runPlanObservationRefreshTick(
         bump('plan-superseded');
         continue;
       }
-      if (plan.plan_state !== 'executing') {
-        bump('plan-not-executing');
+      // Widened filter (Gap B): refresh on 'executing' to catch the
+      // plan-still-in-flight case (original semantics), AND on terminal
+      // plan states ('succeeded'/'abandoned') to heal the case where the
+      // plan transitioned terminally before the observation caught up.
+      // Other states (proposed/approved/etc) are skipped because no PR
+      // is open yet under their lifecycle, so an observation referencing
+      // them is structurally malformed. The 'already-terminal' guard on
+      // the observation side keeps the terminal-plan branch one-shot:
+      // once the refresh writes a MERGED/CLOSED atom, future ticks skip
+      // it via bump('already-terminal').
+      if (
+        plan.plan_state !== 'executing'
+        && plan.plan_state !== 'succeeded'
+        && plan.plan_state !== 'abandoned'
+      ) {
+        bump('plan-not-actionable');
         continue;
       }
       const pr = meta['pr'];

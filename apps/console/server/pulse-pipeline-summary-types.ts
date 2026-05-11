@@ -64,11 +64,27 @@ export interface PulsePipelineSummary {
   readonly running: number;
   /**
    * Pipelines that have dispatched a PR that is still open (not yet
-   * merged or closed-unmerged). Reads from the same intent-outcome
+   * merged or closed-unmerged) AND whose latest pr-observation atom is
+   * within the staleness window. Reads from the same intent-outcome
    * synthesizer used on /pipelines/<id> so the "pending review"
-   * definition is identical across surfaces.
+   * definition is identical across surfaces. Pre-2026-05-11 this count
+   * also included stale observations, which inflated the "awaiting
+   * merge" headline when a PR merged before the refresh tick caught up
+   * (see `dispatched_observation_stale` and the `pol-pr-observation-
+   * staleness-ms` canon policy for the staleness window).
    */
   readonly dispatched_pending_merge: number;
+  /**
+   * Pipelines that have a pr-observation atom whose latest snapshot is
+   * OLDER than the configured staleness threshold. The pipeline may
+   * have already merged or closed on GitHub; the local atom store has
+   * not caught up. The Pulse tile surfaces this as a separate bucket
+   * so the "awaiting merge" headline reflects fresh data only. Pre-
+   * staleness-window code paths (deployments without the canon policy
+   * or running with `pol-pr-observation-staleness-ms = 'Infinity'`)
+   * always report 0 in this bucket, restoring pre-2026-05-11 semantics.
+   */
+  readonly dispatched_observation_stale: number;
   /**
    * Pipelines whose operator-intent has been fulfilled (merged PR
    * observed). Reads from the same intent-outcome synthesizer; the
@@ -91,6 +107,7 @@ export interface PulsePipelineSummary {
   readonly samples: {
     readonly running: ReadonlyArray<PulsePipelineSummaryRow>;
     readonly dispatched_pending_merge: ReadonlyArray<PulsePipelineSummaryRow>;
+    readonly dispatched_observation_stale: ReadonlyArray<PulsePipelineSummaryRow>;
     readonly intent_fulfilled: ReadonlyArray<PulsePipelineSummaryRow>;
   };
 }

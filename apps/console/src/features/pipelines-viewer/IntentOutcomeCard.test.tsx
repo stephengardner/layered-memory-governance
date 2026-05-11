@@ -21,6 +21,7 @@ import type { IntentOutcomeState } from '@/services/pipelines.service';
 const ALL_STATES: ReadonlyArray<IntentOutcomeState> = [
   'intent-fulfilled',
   'intent-dispatched-pending-review',
+  'intent-dispatched-observation-stale',
   'intent-dispatch-failed',
   'intent-paused',
   'intent-running',
@@ -49,6 +50,16 @@ describe('prettyState', () => {
 
   it('maps dispatch-failed to "Dispatch failed"', () => {
     expect(prettyState('intent-dispatch-failed')).toBe('Dispatch failed');
+  });
+
+  it('maps dispatched-observation-stale to a stale-flavored phrase', () => {
+    // Substrate gap (2026-05-11): a stale pr-observation atom should
+    // surface to the operator as a stale-flavored label so the
+    // headline matches the row's actual ambiguity (could be fulfilled,
+    // could still be open -- the observation just hasn't refreshed).
+    const label = prettyState('intent-dispatched-observation-stale');
+    expect(label).toMatch(/stale/i);
+    expect(label).not.toContain('intent-');
   });
 
   it('maps unknown / future state values to "Unknown"', () => {
@@ -86,6 +97,13 @@ describe('stateTone', () => {
   it('maps running + dispatched-pending-review to info (mid-flight)', () => {
     expect(stateTone('intent-running')).toBe('info');
     expect(stateTone('intent-dispatched-pending-review')).toBe('info');
+  });
+
+  it('maps dispatched-observation-stale to warning (operator notices, not panics)', () => {
+    // The stale-observation row is a warning, not a danger: the
+    // underlying state may still resolve to merged once the refresh
+    // tick lands a fresh atom (or the backfill heal script runs).
+    expect(stateTone('intent-dispatched-observation-stale')).toBe('warning');
   });
 
   it('maps abandoned to muted (terminal but not red)', () => {

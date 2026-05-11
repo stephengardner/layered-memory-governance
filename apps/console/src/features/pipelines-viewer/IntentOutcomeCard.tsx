@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { motion, useReducedMotion } from 'framer-motion';
-import { AlertOctagon, CheckCircle2, ExternalLink, GitMerge, Loader2, MinusCircle, PauseCircle, Target, XCircle } from 'lucide-react';
+import { AlertOctagon, CheckCircle2, Clock, ExternalLink, GitMerge, Loader2, MinusCircle, PauseCircle, Target, XCircle } from 'lucide-react';
 import { ErrorState } from '@/components/state-display/StateDisplay';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
 import {
@@ -46,7 +46,11 @@ export function IntentOutcomeCard({ pipelineId }: { pipelineId: string }) {
       }
       const data = queryState.state.data;
       if (!data) return 5000;
-      if (data.state === 'intent-running' || data.state === 'intent-dispatched-pending-review') {
+      if (
+        data.state === 'intent-running'
+        || data.state === 'intent-dispatched-pending-review'
+        || data.state === 'intent-dispatched-observation-stale'
+      ) {
         return 5000;
       }
       // Terminal states (fulfilled / dispatch-failed / paused /
@@ -310,6 +314,8 @@ function StateIcon({ state }: { state: IntentOutcomeState }) {
       return <GitMerge size={12} strokeWidth={2.25} aria-hidden="true" />;
     case 'intent-dispatched-pending-review':
       return <CheckCircle2 size={12} strokeWidth={2.25} aria-hidden="true" />;
+    case 'intent-dispatched-observation-stale':
+      return <Clock size={12} strokeWidth={2.25} aria-hidden="true" />;
     case 'intent-dispatch-failed':
       return <XCircle size={12} strokeWidth={2.25} aria-hidden="true" />;
     case 'intent-paused':
@@ -338,6 +344,12 @@ export function stateTone(state: IntentOutcomeState): string {
       return 'success';
     case 'intent-dispatched-pending-review':
       return 'info';
+    case 'intent-dispatched-observation-stale':
+      // Stale observation surfaces as a warning so the operator notices
+      // the row needs a refresh, but does NOT escalate to danger because
+      // the underlying state may still resolve to merged once the
+      // refresh tick lands a fresh atom.
+      return 'warning';
     case 'intent-dispatch-failed':
       return 'danger';
     case 'intent-paused':
@@ -364,6 +376,8 @@ export function prettyState(state: IntentOutcomeState): string {
       return 'Fulfilled';
     case 'intent-dispatched-pending-review':
       return 'Dispatched - pending review';
+    case 'intent-dispatched-observation-stale':
+      return 'Observation stale - refresh pending';
     case 'intent-dispatch-failed':
       return 'Dispatch failed';
     case 'intent-paused':

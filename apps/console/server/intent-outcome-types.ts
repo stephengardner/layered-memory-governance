@@ -39,17 +39,33 @@ export interface IntentOutcomeSourceAtom {
  * plan_state alone); `intent-dispatch-failed` covers both dispatched=0
  * AND all PRs closed without merge.
  *
- *   - intent-fulfilled                  -- merged PR for this intent
- *   - intent-dispatched-pending-review  -- PR open, awaiting CR / merge
- *   - intent-dispatch-failed            -- dispatched=0 OR all PRs closed unmerged
- *   - intent-paused                     -- HIL pause at any stage
- *   - intent-running                    -- pipeline mid-execution
- *   - intent-abandoned                  -- operator-set or expired
- *   - intent-unknown                    -- no signal yet (early start)
+ *   - intent-fulfilled                    -- merged PR for this intent
+ *   - intent-dispatched-pending-review    -- PR open, awaiting CR / merge
+ *                                              (observation is fresh)
+ *   - intent-dispatched-observation-stale -- PR observation older than
+ *                                              the staleness threshold;
+ *                                              the synthesizer refuses to
+ *                                              authoritatively claim
+ *                                              'pending review' because
+ *                                              the observation may have
+ *                                              fallen out of date with
+ *                                              GitHub (e.g. the PR merged
+ *                                              before the refresh tick
+ *                                              caught up). Pulse counts
+ *                                              this as a separate bucket
+ *                                              (NOT 'awaiting merge') so
+ *                                              the tile doesn't inflate
+ *                                              on a stale store.
+ *   - intent-dispatch-failed              -- dispatched=0 OR all PRs closed unmerged
+ *   - intent-paused                       -- HIL pause at any stage
+ *   - intent-running                      -- pipeline mid-execution
+ *   - intent-abandoned                    -- operator-set or expired
+ *   - intent-unknown                      -- no signal yet (early start)
  */
 export type IntentOutcomeState =
   | 'intent-fulfilled'
   | 'intent-dispatched-pending-review'
+  | 'intent-dispatched-observation-stale'
   | 'intent-dispatch-failed'
   | 'intent-paused'
   | 'intent-running'

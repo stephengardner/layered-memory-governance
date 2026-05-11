@@ -232,16 +232,100 @@ function formatHmZ(iso: string | null): string | null {
 }
 
 /**
+ * Read the pr-observation staleness threshold from the canon atom set.
+ * Returns the configured ms value, or `DEFAULT_PR_OBSERVATION_STALENESS_MS`
+ * when no atom matches OR the value is malformed. Pure: takes the full
+ * atom array and returns a number.
+ *
+ * Mirrors the shape of the framework-side `readNumericCanonPolicy`
+ * (src/runtime/loop/canon-policy-cadence.ts) but stays local to the
+ * Console so the read path doesn't drag the Host abstraction into the
+ * backend server. The console atom index already has every atom in
+ * memory; a single linear scan over directive atoms is O(N) and cheap.
+ *
+ * Honors the `'Infinity'` string sentinel: deployments running on a
+ * webhook-driven observation pipeline (no polling) set the policy to
+ * `'Infinity'` to disable staleness detection. The synthesizer treats
+ * this as "no observation is ever stale", restoring pre-2026-05-11
+ * semantics for those deployments.
+ *
+ * Substrate-mirroring rationale: the framework reader (canon-policy-
+ * cadence.ts) restricts to L3 atoms so a same-subject non-canon atom
+ * cannot impersonate the policy. We replicate that guard here so the
+ * Console can't inadvertently honor an L0/L1 misuse of the same
+ * subject string.
+ */
+export function readPrObservationStalenessMs(
+  atoms: ReadonlyArray<IntentOutcomeSourceAtom>,
+): number {
+  for (const atom of atoms) {
+    if (atom.type !== 'directive') continue;
+    if (atom.layer !== undefined && atom.layer !== 'L3') continue;
+    if (atom.taint && atom.taint !== 'clean') continue;
+    if (atom.superseded_by && atom.superseded_by.length > 0) continue;
+    const meta = (atom.metadata ?? {}) as Record<string, unknown>;
+    const policy = meta['policy'] as Record<string, unknown> | undefined;
+    if (!policy) continue;
+    if (policy['subject'] !== 'pr-observation-staleness-ms') continue;
+    const raw = policy['staleness_ms'] ?? policy['value'];
+    if (raw === 'Infinity') return Number.POSITIVE_INFINITY;
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) continue;
+    return raw;
+  }
+  return DEFAULT_PR_OBSERVATION_STALENESS_MS;
+}
+
+/**
+ * Default pr-observation staleness window: 1 hour. An observation older
+ * than this is treated as "potentially out of date" by the synthesizer:
+ * the pipeline does NOT authoritatively classify as
+ * `intent-dispatched-pending-review` and the Pulse tile counts it as a
+ * separate stale bucket instead of inflating "awaiting merge".
+ *
+ * The default is intentionally generous (1h vs the refresh tick's 5min
+ * freshness target) so the synthesizer leaves a wide margin for the
+ * refresh tick to land a fresh observation before the synthesizer
+ * downgrades the row. Deployments running tighter SLAs can lower this
+ * via the canon policy atom `pol-pr-observation-staleness-ms`; the
+ * resolver lives outside the synthesizer (handler reads canon, passes
+ * the resolved number in) so this module stays pure.
+ */
+export const DEFAULT_PR_OBSERVATION_STALENESS_MS = 60 * 60 * 1_000;
+
+/**
+ * Options bag for `buildIntentOutcome`. All fields are optional; a
+ * caller that passes `{}` (or omits the arg entirely) gets the
+ * pre-staleness-window semantics so existing callers compile without
+ * change. The substrate gap that motivated the staleness window is
+ * documented at the top of this file under TRUE-outcome semantics:
+ * a pr-observation atom stuck at OPEN long after the PR merged would
+ * otherwise classify the row as "awaiting merge" forever.
+ */
+export interface BuildIntentOutcomeOptions {
+  /**
+   * Override the staleness window in milliseconds. Defaults to
+   * `DEFAULT_PR_OBSERVATION_STALENESS_MS` (1 hour). Pass
+   * `Number.POSITIVE_INFINITY` to disable staleness detection (every
+   * observation counts as fresh -- pre-staleness-window behavior).
+   */
+  readonly prObservationStalenessMs?: number;
+}
+
+/**
  * Build the IntentOutcome envelope. See module-doc for the
  * TRUE-outcome semantics this synthesizer encodes.
  *
  * The handler's `now` is injected for testability; production callers
- * pass `Date.now()`.
+ * pass `Date.now()`. The `options.prObservationStalenessMs` window is
+ * resolved by the handler from the canon policy atom
+ * `pol-pr-observation-staleness-ms` (default 1 hour) so the threshold
+ * is data, not code.
  */
 export function buildIntentOutcome(
   atoms: ReadonlyArray<IntentOutcomeSourceAtom>,
   pipelineId: string,
   now: number,
+  options: BuildIntentOutcomeOptions = {},
 ): IntentOutcome {
   const pipeline = pickPipelineAtom(atoms, pipelineId);
   const intent = resolveOperatorIntent(atoms, pipeline);
@@ -290,6 +374,38 @@ export function buildIntentOutcome(
   const hasObservedPr = observation?.pr_number != null
     && observation.pr_state !== 'MERGED';
 
+  // Substrate gap (2026-05-11): a pr-observation atom stuck at OPEN
+  // long after the PR actually merged or closed would classify the
+  // pipeline as 'awaiting merge' forever. The refresh tick now heals
+  // the executing-or-terminal plan branches (pr-observation-refresh.ts
+  // Gap B), but a synthesizer that authoritatively trusts every OPEN
+  // observation is still a sharp edge: a deployment without the refresh
+  // tick wired would surface stale rows; an in-flight refresh that lags
+  // behind GitHub by minutes would briefly mislabel a freshly-merged PR.
+  // The staleness window is the second prevention layer: when
+  // `now - observed_at` exceeds the threshold, the synthesizer demotes
+  // the row from pending-review to `intent-dispatched-observation-stale`
+  // so Pulse counts it in a separate bucket and the operator sees the
+  // staleness inline. The default threshold is 1h (generous compared to
+  // the 5min refresh target) so the heal window is wide.
+  const stalenessMs = options.prObservationStalenessMs
+    ?? DEFAULT_PR_OBSERVATION_STALENESS_MS;
+  let isObservationStale = false;
+  if (
+    observation
+    && observation.pr_state !== 'MERGED'
+    && observation.pr_state !== 'CLOSED'
+    && Number.isFinite(stalenessMs)
+    && stalenessMs > 0
+  ) {
+    const observedAtMs = observation.observed_at
+      ? Date.parse(observation.observed_at)
+      : NaN;
+    if (Number.isFinite(observedAtMs) && now - observedAtMs > stalenessMs) {
+      isObservationStale = true;
+    }
+  }
+
   // Pull a pipeline title from the pipeline atom's content / metadata.
   const pipelineMeta = (pipeline?.metadata ?? {}) as Record<string, unknown>;
   const titleFromMeta = readString(pipelineMeta, 'title');
@@ -328,11 +444,22 @@ export function buildIntentOutcome(
      * didn't fire). The observation may be missing entirely (early
      * state) or present with pr_state=OPEN; either way the row is
      * "pending review" unless the observation marks it CLOSED.
+     *
+     * Staleness branch (2026-05-11): if the observation is older than
+     * the configured threshold, we DO NOT authoritatively claim
+     * pending-review. The PR may have merged or closed; the observation
+     * just hasn't caught up. Pulse counts this in a separate bucket so
+     * the "awaiting merge" number reflects fresh data only. The branch
+     * fires AFTER the CLOSED-unmerged check so a stale CLOSED row
+     * still surfaces as dispatch-failed (terminal observations are
+     * always authoritative regardless of age).
      */
     if (prClosedUnmerged) {
       // PR was opened but later closed without merge -- a dispatch failure
       // by TRUE-outcome semantics: the chain produced no merged artifact.
       state = 'intent-dispatch-failed';
+    } else if (isObservationStale) {
+      state = 'intent-dispatched-observation-stale';
     } else {
       state = 'intent-dispatched-pending-review';
     }
@@ -524,6 +651,15 @@ export function buildSummary(input: {
         `Pipeline ran ${dur}`,
         stagePart,
         `${prPart} open, awaiting review`,
+      ].filter(Boolean);
+      return pieces.join(', ');
+    }
+    case 'intent-dispatched-observation-stale': {
+      const prPart = input.prNumber ? `PR #${input.prNumber}` : 'PR';
+      const pieces = [
+        `Pipeline ran ${dur}`,
+        stagePart,
+        `${prPart} observation stale, awaiting refresh`,
       ].filter(Boolean);
       return pieces.join(', ');
     }

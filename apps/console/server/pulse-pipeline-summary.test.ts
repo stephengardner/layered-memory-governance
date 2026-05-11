@@ -531,3 +531,90 @@ describe('buildPulsePipelineSummary: sample ordering', () => {
     expect(result.samples.running[0]?.pipeline_id).toBe(newestExpected);
   });
 });
+
+/*
+ * Substrate gap (2026-05-11): the staleness window prevents stale
+ * pr-observation atoms from inflating the awaiting-merge headline.
+ * These tests pin the new `dispatched_observation_stale` bucket.
+ */
+describe('buildPulsePipelineSummary: dispatched_observation_stale bucket', () => {
+  function makeBucketScenario(observedAt: string) {
+    const intent = intentAtom({ id: 'op-stale-bucket-1', created_at: '2026-05-01T00:00:00.000Z' });
+    const pipeline = pipelineAtom({
+      id: 'pipeline-stale-bucket-1',
+      intent_id: intent.id,
+      created_at: '2026-05-01T00:01:00.000Z',
+      pipeline_state: 'completed',
+    });
+    const plan = planAtom({
+      id: 'plan-stale-bucket-1',
+      pipelineId: pipeline.id,
+      created_at: '2026-05-01T00:04:00.000Z',
+    });
+    const dispatch = dispatchRecord({
+      pipelineId: pipeline.id,
+      dispatched: 1,
+      created_at: '2026-05-01T00:05:00.000Z',
+    });
+    const ca = codeAuthorInvoked({
+      planId: plan.id,
+      prNumber: 999,
+      created_at: '2026-05-01T00:06:00.000Z',
+    });
+    const obs = prObservation({
+      planId: plan.id,
+      prNumber: 999,
+      prState: 'OPEN',
+      created_at: observedAt,
+    });
+    return [intent, pipeline, plan, dispatch, ca, obs];
+  }
+
+  it('classifies a pipeline with an OPEN observation older than the staleness window as stale', () => {
+    // Observation at 2026-04-26 is 14+ days before NOW (2026-05-10),
+    // well past the 1h default staleness threshold.
+    const atoms = makeBucketScenario('2026-04-26T06:07:42.274Z');
+    const result = buildPulsePipelineSummary(atoms, NOW);
+    expect(result.dispatched_observation_stale).toBe(1);
+    expect(result.dispatched_pending_merge).toBe(0);
+    expect(result.samples.dispatched_observation_stale[0]?.pipeline_id).toBe(
+      'pipeline-stale-bucket-1',
+    );
+  });
+
+  it('classifies a fresh OPEN observation as pending-merge (NOT stale)', () => {
+    // Observation 30min before NOW: under the 1h staleness threshold.
+    const thirtyMinAgo = new Date(NOW - 30 * 60 * 1_000).toISOString();
+    const atoms = makeBucketScenario(thirtyMinAgo);
+    const result = buildPulsePipelineSummary(atoms, NOW);
+    expect(result.dispatched_pending_merge).toBe(1);
+    expect(result.dispatched_observation_stale).toBe(0);
+  });
+
+  it('honors a custom staleness threshold via options.prObservationStalenessMs', () => {
+    // 10min-old observation: stale under 5min, fresh under 30min.
+    const tenMinAgo = new Date(NOW - 10 * 60 * 1_000).toISOString();
+    const atoms = makeBucketScenario(tenMinAgo);
+    const stale = buildPulsePipelineSummary(atoms, NOW, {
+      prObservationStalenessMs: 5 * 60 * 1_000,
+    });
+    expect(stale.dispatched_observation_stale).toBe(1);
+    expect(stale.dispatched_pending_merge).toBe(0);
+
+    const fresh = buildPulsePipelineSummary(atoms, NOW, {
+      prObservationStalenessMs: 30 * 60 * 1_000,
+    });
+    expect(fresh.dispatched_observation_stale).toBe(0);
+    expect(fresh.dispatched_pending_merge).toBe(1);
+  });
+
+  it('returns empty stale bucket when staleness window is Infinity (webhook-driven deployments)', () => {
+    // Observation arbitrarily old; staleness=Infinity disables detection.
+    const atoms = makeBucketScenario('2026-04-26T06:07:42.274Z');
+    const result = buildPulsePipelineSummary(atoms, NOW, {
+      prObservationStalenessMs: Number.POSITIVE_INFINITY,
+    });
+    expect(result.dispatched_observation_stale).toBe(0);
+    expect(result.dispatched_pending_merge).toBe(1);
+  });
+});
