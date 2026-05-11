@@ -5,39 +5,46 @@
  * Run from repo root (after `npm run build`):
  *   LAG_OPERATOR_ID=<your-id> node scripts/bootstrap-pol-resume-strategy.mjs
  *
- * Seeds one L3 policy atom into the .lag/atoms store:
+ * Seeds L3 policy atoms into the .lag/atoms store:
  *
  *   pol-resume-strategy-pr-fix-actor   L3 directive: enabled=true,
  *                                      max_stale_hours=8,
  *                                      fresh_spawn_kinds=[...]
  *
+ *   pol-resume-strategy-code-author    L3 directive: enabled=true,
+ *                                      max_stale_hours=4,
+ *                                      fresh_spawn_kinds=[...]
+ *
  * Promotes the hard-coded posture from scripts/run-pr-fix.mjs (PR #171:
  * SameMachineCliResumeStrategy with maxStaleHours=8) to a canon policy
- * atom per spec section 11.3. A fresh deployment running this seed for
- * the first time observes IDENTICAL resume behavior to the
- * pre-canon-policy run; removing the atom flips PR-fix back to
- * fresh-spawn (regression check vs PR #171, the spec's PR3 acceptance
- * criterion).
+ * atom per spec section 11.3, and extends the symmetric posture to
+ * code-author (task #155, completed after task #293 / PR #397 wired the
+ * auditor feedback re-prompt loop that makes code-author re-invocation
+ * a real pattern). A fresh deployment running this seed observes
+ * IDENTICAL resume behavior to the pre-canon-policy run for pr-fix-actor,
+ * and resume-on for code-author whenever the agentic code-author
+ * dispatch path is wired against the registry bridge. Removing either
+ * atom flips that actor back to fresh-spawn (regression check vs PR #171
+ * + task #155).
  *
  * Atom data lives in scripts/lib/resume-strategy-canon-policies.mjs so
  * the test suite can drive the same builder. This wrapper handles
  * argument parsing, env discovery, the file-host write, and the
  * drift-check.
  *
- * --dry-run prints the atom that would be written without persisting
- * it. Useful for inspecting the seed before committing.
+ * --dry-run prints the atoms that would be written without persisting
+ * them. Useful for inspecting the seeds before committing.
  *
  * Idempotent per atom id; drift against the stored shape fails loud
  * (same discipline as bootstrap-inbox-canon.mjs and
  * bootstrap-reaper-canon.mjs).
  *
- * cto-actor + code-author policy atoms are intentionally OMITTED here:
- * per spec section 5.2 the policy atom for those principals ships
- * ABSENT so a solo developer's first run-cto-actor.mjs /
- * run-code-author.mjs invocation does not surprise-restore stale
- * context. An org-ceiling deployment that wants resume on cto-actor
- * adds a higher-priority canon atom via /decide or a separate
- * bootstrap; this script is the v1 minimal seed.
+ * cto-actor + pipeline-auditor policy atoms are intentionally OMITTED
+ * here: per spec section 5.2 the policy atom for principals with no
+ * observed re-invocation pattern ships ABSENT so a solo developer's
+ * first invocation does not surprise-restore stale context. An
+ * org-ceiling deployment that wants resume on those principals adds a
+ * higher-priority canon atom via /decide or a separate bootstrap.
  */
 
 import { resolve } from 'node:path';
