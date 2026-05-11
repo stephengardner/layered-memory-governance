@@ -521,7 +521,15 @@ export type EventKind =
   // the rejection atom). Distinct from `anomaly` because it carries
   // a specific cause-and-actor pair the Notifier surface can route
   // to a principal-misbehavior channel without parsing free text.
-  | 'principal-misbehavior';
+  | 'principal-misbehavior'
+  // Substrate-emitted alert when the claim reaper escalates a work-claim
+  // that has exhausted its recovery-attempts cap and been abandoned. The
+  // payload carries `{ claim_id, recovery_attempts }` so the Notifier
+  // surface can route to an operator-escalation channel without parsing
+  // free text. Distinct from `principal-misbehavior` because the agent
+  // did NOT misbehave; the work-shape was just unreachable in the
+  // budget the substrate is willing to spend on it.
+  | 'claim-stuck';
 
 export interface Event {
   readonly kind: EventKind;
