@@ -83,15 +83,25 @@ test.describe('file-intent panel', () => {
   test('toggles a sub-actor checkbox on click', async ({ page }) => {
     await page.goto('/file-intent');
     /*
-     * Both sub-actors start enabled-or-disabled depending on default
-     * state. We toggle one off + one on and assert the visual class
-     * via data-testid lookup; the validator-side test pins the array
-     * semantics so this spec stays at the UI behaviour level.
+     * auditor-actor starts unchecked (default sub-actor set is
+     * ['code-author']). Click once to add it; the underlying input
+     * MUST register checked=true. Click again to remove; the input
+     * MUST register checked=false. Asserting on the input's
+     * checked-state (rather than just clicking without an assertion)
+     * is the difference between testing "does the click event fire"
+     * vs "does the click event actually update the form state" --
+     * a future refactor that breaks the controlled-component wiring
+     * would silently slip past a click-only assertion.
      */
-    const auditor = page.getByTestId('file-intent-sub-actor-auditor-actor');
-    await auditor.click();
-    // Toggle back to land in a known state for downstream assertions.
-    await auditor.click();
+    const auditorPill = page.getByTestId('file-intent-sub-actor-auditor-actor');
+    const auditorInput = auditorPill.locator('input[type="checkbox"]');
+    await expect(auditorInput).not.toBeChecked();
+
+    await auditorPill.click();
+    await expect(auditorInput).toBeChecked();
+
+    await auditorPill.click();
+    await expect(auditorInput).not.toBeChecked();
   });
 
   test('every interactive control meets the 44px tap-target floor on mobile', async ({ page }, testInfo) => {
@@ -193,13 +203,39 @@ test.describe('file-intent panel', () => {
     await expect(errorOrToast).toBeVisible({ timeout: 10_000 });
 
     /*
-     * If the error fires, assert the message points at the gate so a
-     * regression that silently widens the surface is caught here.
+     * Branch-specific assertions: the spec covers BOTH lanes so a
+     * change to the env contract (e.g. enabling writes in CI) does
+     * not silently degrade test coverage to "test passed because UI
+     * appeared somehow". Each branch asserts the contract that lane
+     * is supposed to honor.
      */
     const errorCount = await page.getByTestId('file-intent-error').count();
     if (errorCount > 0) {
+      /*
+       * Read-only lane: the error message must point at the
+       * console-read-only gate so a regression that silently widens
+       * the surface (and hands the operator a generic 500) is caught.
+       */
       const errorText = await page.getByTestId('file-intent-error').innerText();
       expect(errorText.toLowerCase()).toContain('console');
+    } else {
+      /*
+       * Write-enabled lane: the toast must surface a real intent id
+       * (matching the substrate's intent-<nonce>-<iso> shape) AND a
+       * "View intent" action that routes to the atom-detail viewer.
+       * A bare "Intent filed" without the id or the action would
+       * regress the success UX -- the operator's next step is to
+       * inspect the atom, so the link is the load-bearing affordance.
+       */
+      const toast = page.getByTestId('file-intent-toast');
+      await expect(toast).toBeVisible();
+      const intentIdEl = page.getByTestId('file-intent-toast-id');
+      await expect(intentIdEl).toBeVisible();
+      const intentId = await intentIdEl.innerText();
+      expect(intentId, 'toast must show a real intent id').toMatch(/^intent-/);
+      const viewBtn = page.getByTestId('file-intent-toast-view');
+      await expect(viewBtn).toBeVisible();
+      await expect(viewBtn).toHaveText(/view intent/i);
     }
   });
 });

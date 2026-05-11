@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, Loader2, Send, Sparkles, Target, Zap } from 'lucide-react';
 import { ErrorState } from '@/components/state-display/StateDisplay';
 import { useCurrentActorId } from '@/hooks/useCurrentActorId';
+import { requireActorId } from '@/services/session.service';
 import {
   BLAST_RADIUS_VALUES,
   DEFAULT_EXPIRES,
@@ -57,15 +58,27 @@ export function FileIntentPanel() {
   const requestRef = useRef<HTMLTextAreaElement | null>(null);
 
   const mutation = useMutation<FileIntentResponse, Error, void>({
-    mutationFn: () => fileIntent({
-      request: request.trim(),
-      scope,
-      blast_radius: blastRadius,
-      sub_actors: subActors,
-      min_confidence: minConfidence,
-      expires_in: expiresIn,
-      trigger,
-    }),
+    mutationFn: () => {
+      /*
+       * Fail loud if LAG_CONSOLE_ACTOR_ID is unset or blank. The
+       * server enforces the same gate (returns 500 console-actor-id-unset
+       * when the env is missing), but the client-side requireActorId
+       * call surfaces the gap as an immediate operator-facing error
+       * with a remediation pointer instead of round-tripping a 500.
+       * Per canon `dev-framework-mechanism-only`, a governance write
+       * with no resolved operator identity must NEVER silently proceed.
+       */
+      requireActorId(actorId);
+      return fileIntent({
+        request: request.trim(),
+        scope,
+        blast_radius: blastRadius,
+        sub_actors: subActors,
+        min_confidence: minConfidence,
+        expires_in: expiresIn,
+        trigger,
+      });
+    },
     onSuccess: () => {
       // The intent atom shows up in the activities feed + may seed a
       // new pipeline atom. Invalidate both so the operator sees the

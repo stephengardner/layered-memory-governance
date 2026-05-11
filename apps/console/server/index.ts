@@ -2873,15 +2873,26 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         { encoding: 'utf8', flag: 'wx' },
       );
       /*
+       * Synchronous index update: the file-watcher will pick up the
+       * write and broadcast atom.created on its own cycle, but a
+       * subsequent /api/atoms.get for this same id races the watcher.
+       * Mirror the write into the in-memory index immediately so
+       * reads downstream of the response see the new atom (the
+       * background watcher event is a no-op because the entry is
+       * already current).
+       */
+      atomIndex.set(filename, atom as unknown as Atom);
+      /*
        * --trigger semantics: when the request asks the autonomous
        * pipeline to start immediately, spawn the same run-cto-actor
-       * child the CLI uses. The spawn is fire-and-forget for the HTTP
-       * response (we resolve with the intent id) but the spawn argv
-       * itself is identical to `scripts/intend.mjs --trigger` so
-       * downstream behaviour is byte-for-byte equivalent. A failed
-       * spawn does NOT roll back the atom write -- the operator can
-       * re-trigger from the CLI if needed, and the audit trail is
-       * unbroken either way.
+       * child the CLI uses. We await the child's first lifecycle
+       * event (spawn or error) so the `triggered` flag in the HTTP
+       * response is truthful: a synchronous "triggered: true" right
+       * after spawn() would lie when the child fails ENOENT on argv[0]
+       * (the error arrives asynchronously via 'error' event). A
+       * failed spawn does NOT roll back the atom write -- the
+       * operator can re-trigger from the CLI if needed, and the
+       * audit trail is unbroken either way.
        */
       let triggered = false;
       if (parsed.args.trigger) {
@@ -2903,16 +2914,31 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
             detached: true,
             env: process.env,
           });
-          child.on('error', (err) => {
-            console.error(`[intents.file] spawn error: ${err.message}`);
+          /*
+           * Race spawn vs error to learn the truthful outcome. A
+           * successful child emits 'spawn'; ENOENT / EACCES surface
+           * via 'error'. Whichever fires first resolves the promise;
+           * we never wait for the child to complete (the autonomous
+           * loop is long-running by design).
+           */
+          triggered = await new Promise<boolean>((resolveSpawn) => {
+            let settled = false;
+            child.once('spawn', () => {
+              if (settled) return;
+              settled = true;
+              child.unref();
+              resolveSpawn(true);
+            });
+            child.once('error', (err) => {
+              if (settled) return;
+              settled = true;
+              console.error(`[intents.file] spawn error: ${err.message}`);
+              resolveSpawn(false);
+            });
           });
-          // Detach so the parent HTTP server is not blocked by the
-          // long-running CTO loop; the child carries its own
-          // lifecycle + audit trail via the autonomous-dispatch tick.
-          child.unref();
-          triggered = true;
         } catch (err) {
           console.error(`[intents.file] failed to spawn run-cto-actor: ${(err as Error).message}`);
+          triggered = false;
         }
       }
       sendOk(req, res, { intent_id: atom.id, expires_at: atom.metadata.expires_at, triggered });
