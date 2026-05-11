@@ -128,6 +128,25 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   // mirrors the agent-session / agent-turn / plan-merge-settled posture.
   'pr-driver-claim': 12 * 60 * 60 * 1000,                 // 12 hours
   'pr-orphan-detected': 365 * 24 * 60 * 60 * 1000,        // ~1 year
+  // Zero-failure sub-agent substrate atoms.
+  //
+  // Work-claim atoms are in-flight contracts whose existence drives the
+  // reaper and the `markClaimComplete` gate; once the lifecycle reaches
+  // a terminal state the atom is historical-record material. A long
+  // half-life keeps stated confidence stable during the useful window
+  // (in-flight + post-terminal forensic re-read); operational purge
+  // after N months belongs in a follow-up policy atom. The 1-year
+  // value mirrors the agent-session / pr-orphan-detected posture.
+  //
+  // Attestation, stall, and escalation atoms are append-only audit
+  // records derived from a specific work-claim's history; same long
+  // half-life so the audit chain stays queryable without growing an
+  // AtomType-specific expiry policy on the substrate.
+  'work-claim': 365 * 24 * 60 * 60 * 1000,                  // ~1 year
+  'claim-attestation-accepted': 365 * 24 * 60 * 60 * 1000,  // ~1 year
+  'claim-attestation-rejected': 365 * 24 * 60 * 60 * 1000,  // ~1 year
+  'claim-stalled': 365 * 24 * 60 * 60 * 1000,               // ~1 year
+  'claim-escalated': 365 * 24 * 60 * 60 * 1000,             // ~1 year
 });
 
 export interface LoopOptions {
