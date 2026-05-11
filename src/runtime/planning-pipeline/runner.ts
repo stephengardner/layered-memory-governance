@@ -56,6 +56,7 @@ import {
   mkReviewReportAtom,
   mkSpecOutputAtom,
   projectStageOutputForMetadata,
+  safeAttemptIndexSuffix,
   serializeStageOutput,
 } from './atom-shapes.js';
 import {
@@ -1103,13 +1104,14 @@ function mkGenericStageOutputAtom(input: {
   // consistent envelope; the type field is 'observation' (the catch-
   // all atom type for any read-only artifact in the substrate). The
   // load-bearing routing key is metadata.stage_name + the
-  // metadata.pipeline_id pair. Attempt suffix applies only on
-  // attemptIndex >= 2 so existing single-attempt atoms keep the
-  // historical id shape (mirrors stageOutputAtomId in atom-shapes.ts).
-  const attemptSuffix =
-    typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
-      ? `-attempt-${input.attemptIndex}`
-      : '';
+  // metadata.pipeline_id pair. Attempt suffix applies only on a
+  // validated attemptIndex >= 2 (via safeAttemptIndexSuffix) so
+  // existing single-attempt atoms keep the historical id shape and
+  // malformed inputs fail closed to the first-attempt id.
+  const validatedAttempt = safeAttemptIndexSuffix(input.attemptIndex);
+  const attemptSuffix = validatedAttempt !== undefined
+    ? `-attempt-${validatedAttempt}`
+    : '';
   const id = `stage-output-${input.stageName}-${input.pipelineId}-${input.correlationId}${attemptSuffix}` as AtomId;
   return {
     schema_version: 1,
@@ -1155,11 +1157,13 @@ function mkGenericStageOutputAtom(input: {
       // would bypass the cap for custom-stage atoms.
       stage_output: projectStageOutputForMetadata(input.value),
       generic_stage_output: true,
-      // Stamp attempt_index on metadata for attemptIndex >= 2 so an
-      // audit walk can sort multiple per-attempt generic outputs the
-      // same way it sorts typed outputs (mirrors buildStageOutputMetadata).
-      ...(typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
-        ? { attempt_index: input.attemptIndex }
+      // Stamp attempt_index on metadata for a validated attemptIndex
+      // >= 2 so an audit walk can sort multiple per-attempt generic
+      // outputs the same way it sorts typed outputs (mirrors
+      // buildStageOutputMetadata's same posture; uses
+      // safeAttemptIndexSuffix for fail-closed validation).
+      ...(validatedAttempt !== undefined
+        ? { attempt_index: validatedAttempt }
         : {}),
     },
   };

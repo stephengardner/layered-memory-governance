@@ -523,14 +523,14 @@ export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInpu
   // Append an attempt suffix when the runner is on a re-prompt
   // (attemptIndex >= 2) so a finding that recurs across attempts
   // produces a distinct atom per attempt rather than colliding on
-  // {severity, category, messageDigest}. Attempt 1 (or absent)
-  // preserves the historical id shape so existing audit-walk fixtures
-  // and live consumers stay round-trippable. Mirrors the
-  // stage-output id suffix policy.
-  const attemptSuffix =
-    typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
-      ? `-attempt-${input.attemptIndex}`
-      : '';
+  // {severity, category, messageDigest}. Attempt 1 (or absent /
+  // malformed) preserves the historical id shape so existing
+  // audit-walk fixtures and live consumers stay round-trippable.
+  // Mirrors the stage-output id suffix policy via safeAttemptIndexSuffix.
+  const validatedAttempt = safeAttemptIndexSuffix(input.attemptIndex);
+  const attemptSuffix = validatedAttempt !== undefined
+    ? `-attempt-${validatedAttempt}`
+    : '';
   const id = `pipeline-audit-finding-${input.pipelineId}-${input.stageName}-${input.correlationId}-${input.severity}-${input.category}-${messageDigest}${attemptSuffix}` as AtomId;
   return baseAtom({
     id,
@@ -548,8 +548,8 @@ export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInpu
       message: input.message,
       cited_atom_ids: input.citedAtomIds.map(String),
       cited_paths: [...input.citedPaths],
-      ...(typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
-        ? { attempt_index: input.attemptIndex }
+      ...(validatedAttempt !== undefined
+        ? { attempt_index: validatedAttempt }
         : {}),
     },
   });
@@ -806,10 +806,12 @@ function buildStageOutputMetadata(
     // on attempt 1 (or absent) so existing single-attempt audit
     // consumers do not see a spurious field on pre-loop atoms; the
     // suffix on the atom id and the stamp on metadata are kept in
-    // lock-step (both fire only on attempt >= 2).
-    ...(typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
-      ? { attempt_index: input.attemptIndex }
-      : {}),
+    // lock-step via safeAttemptIndexSuffix (both fire only on a
+    // validated integer >= 2; malformed input collapses to omit).
+    ...((): Record<string, unknown> => {
+      const suffix = safeAttemptIndexSuffix(input.attemptIndex);
+      return suffix !== undefined ? { attempt_index: suffix } : {};
+    })(),
   };
 }
 
@@ -829,6 +831,34 @@ function requireNonEmptyDerivedFrom(
       `${helperName}: derivedFrom must be non-empty (provenance directive)`,
     );
   }
+}
+
+/**
+ * Validate + normalise an attempt-index value from a user-supplied
+ * MkStageOutputAtomBaseInput / MkPlanOutputAtomsInput /
+ * MkPipelineAuditFindingAtomInput. The contract surface says
+ * `attemptIndex` is a positive integer; this helper enforces it.
+ *
+ * - Returns the integer when it is a finite, integer, >= 2 value.
+ *   The id-suffix branch fires; metadata.attempt_index is stamped.
+ * - Returns `undefined` for any other input shape (NaN, Infinity,
+ *   non-integer, < 2, missing). The id-suffix branch is skipped;
+ *   metadata.attempt_index is omitted. This is the safe back-compat
+ *   behavior: a malformed attempt index produces a first-attempt atom
+ *   id rather than corrupting the id with NaN / `attempt-1.5` / etc.
+ *
+ * The runner caller always passes a clean integer because it tracks
+ * the attempt counter in code; this helper exists for direct mint
+ * callers (tests, future programmatic mints) where the value is
+ * outside the runner's control. Mirrors the safeMaxAttempts coercion
+ * in auditor-feedback-reprompt.ts: the substrate fails closed on
+ * malformed input rather than propagating it into atom ids.
+ */
+export function safeAttemptIndexSuffix(attemptIndex: number | undefined): number | undefined {
+  if (typeof attemptIndex !== 'number') return undefined;
+  if (!Number.isFinite(attemptIndex) || !Number.isInteger(attemptIndex)) return undefined;
+  if (attemptIndex < 2) return undefined;
+  return attemptIndex;
 }
 
 /**
@@ -870,12 +900,15 @@ function stageOutputAtomId(
 ): AtomId {
   const stageSlug = slugifyStageName(input.stageName);
   const base = `${typePrefix}-${input.pipelineId}-${stageSlug}-${input.correlationId}`;
-  // Only suffix when attemptIndex is explicitly >= 2. attemptIndex=1
-  // (or undefined) preserves the pre-loop atom id shape so existing
-  // audit walks (and any test fixture pinning the old id) keep
-  // working. Substrate posture: opt-in suffix, default-back-compat.
-  if (typeof input.attemptIndex === 'number' && input.attemptIndex >= 2) {
-    return `${base}-attempt-${input.attemptIndex}` as AtomId;
+  // Only suffix when attemptIndex is a validated finite integer >= 2.
+  // safeAttemptIndexSuffix returns undefined for any other shape so
+  // a malformed input (NaN, Infinity, fractional, negative) collapses
+  // to the historical first-attempt id rather than corrupting the id.
+  // Substrate posture: opt-in suffix, default-back-compat,
+  // fail-closed on malformed input.
+  const suffix = safeAttemptIndexSuffix(input.attemptIndex);
+  if (suffix !== undefined) {
+    return `${base}-attempt-${suffix}` as AtomId;
   }
   return base as AtomId;
 }
@@ -1128,15 +1161,16 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
     // and a per-entry index (so a payload with multiple plans
     // produces distinct atoms even when their titles slug-collide).
     // The pipelineId namespace ensures cross-pipeline isolation.
-    // Append `-attempt-<index>` for attemptIndex >= 2 so the
-    // auditor-feedback re-prompt loop's per-attempt atoms do not
-    // collide with the prior attempt's plan ids. Mirrors the
-    // stageOutputAtomId helper suffix policy: attempt 1 (or absent)
-    // keeps the historical shape.
-    const attemptSuffix =
-      typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
-        ? `-attempt-${input.attemptIndex}`
-        : '';
+    // Append `-attempt-<index>` for attemptIndex >= 2 (validated via
+    // safeAttemptIndexSuffix) so the auditor-feedback re-prompt
+    // loop's per-attempt atoms do not collide with the prior
+    // attempt's plan ids. Mirrors the stageOutputAtomId helper
+    // suffix policy: attempt 1 (or absent / malformed) keeps the
+    // historical shape, fail-closed on bad input.
+    const validatedAttempt = safeAttemptIndexSuffix(input.attemptIndex);
+    const attemptSuffix = validatedAttempt !== undefined
+      ? `-attempt-${validatedAttempt}`
+      : '';
     const id =
       `plan-${slug}-${input.principalId}-${input.pipelineId}-${i}${attemptSuffix}` as AtomId;
 
@@ -1237,10 +1271,11 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
         // Stamp attempt_index when >= 2 so an audit walk can sort
         // multiple per-attempt plan atoms produced by the auditor-
         // feedback re-prompt loop. Kept in lock-step with the id
-        // suffix: attempt 1 (or absent) omits the field; >= 2 stamps
+        // suffix via safeAttemptIndexSuffix: attempt 1 (or absent /
+        // malformed) omits the field; validated integer >= 2 stamps
         // it. Mirrors buildStageOutputMetadata's same posture.
-        ...(typeof input.attemptIndex === 'number' && input.attemptIndex >= 2
-          ? { attempt_index: input.attemptIndex }
+        ...(validatedAttempt !== undefined
+          ? { attempt_index: validatedAttempt }
           : {}),
       },
     });

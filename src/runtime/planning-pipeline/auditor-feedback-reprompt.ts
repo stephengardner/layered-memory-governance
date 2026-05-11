@@ -188,7 +188,23 @@ export function decideRePromptAction(
   // re-prompt). After attempt 1 fires, previousAttempts=1; 1 < 2 so
   // re-prompt fires. After attempt 2 fires, previousAttempts=2; 2 >= 2
   // so halt. The runner gets exactly one re-prompt total per stage.
-  if (previousAttempts >= config.max_attempts) {
+  //
+  // Fail-closed on malformed config: a NaN / Infinity / fractional /
+  // negative max_attempts is operator-provided data the canon reader
+  // already declined to validate (it returns null on malformed atoms,
+  // and the caller falls through to the hardcoded floor). But a
+  // hand-constructed config -- the test path, a future programmatic
+  // caller -- could pass a bad value here. Coerce to a safe integer
+  // before the cap check so any non-finite / non-integer / negative
+  // value collapses to 0 (immediate halt). Zero is the "no
+  // re-prompt" semantic that matches the dial's least-surprise shape.
+  const safeMaxAttempts =
+    Number.isFinite(config.max_attempts)
+    && Number.isInteger(config.max_attempts)
+    && config.max_attempts >= 0
+      ? config.max_attempts
+      : 0;
+  if (previousAttempts >= safeMaxAttempts) {
     return { action: 'halt' };
   }
   // Rule 4: re-prompt. Build the feedback text from the actionable
