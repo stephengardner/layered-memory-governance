@@ -5,7 +5,7 @@ does not match Conventional Commits.
 
 ## Pattern
 
-```
+```regex
 ^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z][a-z0-9-]*\))?: [a-z]
 ```
 
