@@ -2,17 +2,18 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // Runtime import forces the module to resolve so a missing file fails the run.
 import * as researchAtomVerifier from '../../../src/substrate/claim-verifiers/research-atom.js';
 import { verifyResearchAtomTerminal } from '../../../src/substrate/claim-verifiers/research-atom.js';
+import type { Host } from '../../../src/substrate/interface.js';
 
 /**
  * Build a minimal Host-shaped stub whose only meaningful surface is
- * `atoms.get`. The verifier never touches anything else, so the rest of
- * the Host can stay an obvious unknown; a real Host stand-in would
- * over-couple the test to the substrate interface shape.
+ * `atoms.get`. The verifier never touches anything else, so we route the
+ * cast through `unknown` to keep the no-explicit-any guard happy without
+ * standing up a full Host mock.
  */
-function makeHost(getImpl: (id: string) => Promise<unknown>) {
+function makeHost(getImpl: (id: string) => Promise<unknown>): Host {
   return {
     atoms: { get: vi.fn(getImpl) },
-  };
+  } as unknown as Host;
 }
 
 describe('verifyResearchAtomTerminal', () => {
@@ -28,8 +29,7 @@ describe('verifyResearchAtomTerminal', () => {
       metadata: { research: { status: 'published' } },
     }));
     const result = await verifyResearchAtomTerminal('atom-1', ['published'], {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      host: host as any,
+      host,
     });
     expect(result).toEqual({ ok: true, observed_state: 'published' });
   });
@@ -44,8 +44,7 @@ describe('verifyResearchAtomTerminal', () => {
       metadata: { status: 'published' },
     }));
     const result = await verifyResearchAtomTerminal('atom-2', ['published'], {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      host: host as any,
+      host,
     });
     expect(result).toEqual({ ok: true, observed_state: 'published' });
   });
@@ -56,8 +55,7 @@ describe('verifyResearchAtomTerminal', () => {
       metadata: { research: { status: 'drafting' } },
     }));
     const result = await verifyResearchAtomTerminal('atom-3', ['published'], {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      host: host as any,
+      host,
     });
     expect(result).toEqual({ ok: false, observed_state: 'drafting' });
   });
@@ -68,8 +66,7 @@ describe('verifyResearchAtomTerminal', () => {
       metadata: { research: { status: 'Published' } },
     }));
     const result = await verifyResearchAtomTerminal('atom-4', ['published'], {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      host: host as any,
+      host,
     });
     expect(result).toEqual({ ok: false, observed_state: 'Published' });
   });
@@ -77,8 +74,7 @@ describe('verifyResearchAtomTerminal', () => {
   it('returns ok=false NOT_FOUND when atom is null', async () => {
     const host = makeHost(async () => null);
     const result = await verifyResearchAtomTerminal('missing', ['published'], {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      host: host as any,
+      host,
     });
     expect(result).toEqual({ ok: false, observed_state: 'NOT_FOUND' });
   });
@@ -89,8 +85,7 @@ describe('verifyResearchAtomTerminal', () => {
       metadata: { research: {} },
     }));
     const result = await verifyResearchAtomTerminal('atom-5', ['published'], {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      host: host as any,
+      host,
     });
     expect(result).toEqual({ ok: false, observed_state: 'NOT_FOUND' });
   });
@@ -98,8 +93,7 @@ describe('verifyResearchAtomTerminal', () => {
   it('returns ok=false NOT_FOUND when atom has no metadata at all', async () => {
     const host = makeHost(async () => ({ id: 'atom-6' }));
     const result = await verifyResearchAtomTerminal('atom-6', ['published'], {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      host: host as any,
+      host,
     });
     expect(result).toEqual({ ok: false, observed_state: 'NOT_FOUND' });
   });
@@ -110,8 +104,7 @@ describe('verifyResearchAtomTerminal', () => {
     });
     await expect(
       verifyResearchAtomTerminal('atom-7', ['published'], {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        host: host as any,
+        host,
       }),
     ).rejects.toThrow(/store offline/);
   });

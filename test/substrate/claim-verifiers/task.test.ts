@@ -3,25 +3,26 @@ import { describe, expect, it, vi } from 'vitest';
 import * as taskVerifier from '../../../src/substrate/claim-verifiers/task.js';
 import { verifyTaskTerminal } from '../../../src/substrate/claim-verifiers/task.js';
 import type { Atom } from '../../../src/substrate/types.js';
+import type { Host, AtomStore } from '../../../src/substrate/interface.js';
 
 /**
  * Build a minimal stub Host whose only working sub-interface is
- * `atoms.get`. The verifier under test reads ONLY this surface, so
- * the other Host fields can stay as bare casts -- tests are deliberately
+ * `atoms.get`. The verifier under test reads ONLY this surface, so the
+ * other Host fields stay unimplemented. Casts go through `unknown` to
+ * satisfy the no-explicit-any architectural guard while keeping the stub
  * narrow to the contract the verifier consumes.
  */
-function buildHost(getImpl: (id: string) => Promise<Atom | null>) {
-  return {
-    atoms: { get: getImpl } as unknown as import('../../../src/substrate/interface.js').AtomStore,
-    // The remaining Host sub-interfaces are not touched by verifyTaskTerminal.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
+function buildHost(getImpl: (id: string) => Promise<Atom | null>): Host {
+  const atomStore = { get: getImpl } as unknown as AtomStore;
+  return { atoms: atomStore } as unknown as Host;
 }
 
 /**
  * Build a minimal Atom carrying `metadata.task.status`. Only the fields
  * the verifier actually reads are populated; the rest are placeholders
- * the type checker is happy with.
+ * the type checker is happy with. The final cast goes through `unknown`
+ * because the Atom shape narrows `metadata` more strictly than the test
+ * needs (research-atom payload schema is open by design).
  */
 function taskAtom(status: string): Atom {
   return {
@@ -53,8 +54,7 @@ function taskAtom(status: string): Atom {
     principal_id: 'p',
     taint: 'clean',
     metadata: { task: { status } },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
+  } as unknown as Atom;
 }
 
 describe('verifyTaskTerminal', () => {
