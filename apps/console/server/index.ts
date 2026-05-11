@@ -96,6 +96,11 @@ import type {
 import { buildPipelineLifecycle } from './pipeline-lifecycle';
 import { buildIntentOutcome } from './intent-outcome';
 import type { IntentOutcome, IntentOutcomeSourceAtom } from './intent-outcome-types';
+import { buildPipelineErrorState } from './pipeline-error-state';
+import type {
+  PipelineErrorState,
+  PipelineErrorStateSourceAtom,
+} from './pipeline-error-state-types';
 import {
   buildOperatorIntentAtom,
   isPrincipalAllowedToFileIntent,
@@ -2410,6 +2415,19 @@ async function handleIntentOutcome(pipelineId: string): Promise<IntentOutcome | 
 }
 
 /**
+ * /api/pipeline.error-state handler. Categorizes a pipeline's terminal
+ * failure (or kill-switch halt, or operator abandonment) into a typed
+ * shape the Console renders inline on /pipelines/<id>. Always returns a
+ * populated envelope (state='ok' for the happy path) so the client can
+ * poll uniformly without 404'ing on a running pipeline.
+ */
+async function handlePipelineErrorState(pipelineId: string): Promise<PipelineErrorState> {
+  const all = await readAllAtoms();
+  const sourceAtoms = all as unknown as ReadonlyArray<PipelineErrorStateSourceAtom>;
+  return buildPipelineErrorState(sourceAtoms, pipelineId, Date.now());
+}
+
+/**
  * /api/pulse.pipeline-summary handler. Rolls every live pipeline atom
  * through the same intent-outcome synthesizer used on /pipelines/<id>
  * and returns three bucket counts (running / dispatched-pending-merge
@@ -4069,6 +4087,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       sendOk(req, res, data);
     } catch (err) {
       sendErr(req, res, 500, 'pipeline-intent-outcome-failed', (err as Error).message);
+    }
+    return;
+  }
+
+  if (path === '/api/pipeline.error-state' && req.method === 'POST') {
+    const body = (await readJsonBody(req).catch(() => ({}))) as Record<string, unknown>;
+    const pipelineId = typeof body['pipeline_id'] === 'string' ? (body['pipeline_id'] as string) : '';
+    if (!pipelineId) {
+      sendErr(req, res, 400, 'missing-pipeline-id', 'pipeline.error-state requires { pipeline_id: string }');
+      return;
+    }
+    try {
+      const data = await handlePipelineErrorState(pipelineId);
+      sendOk(req, res, data);
+    } catch (err) {
+      sendErr(req, res, 500, 'pipeline-error-state-failed', (err as Error).message);
     }
     return;
   }

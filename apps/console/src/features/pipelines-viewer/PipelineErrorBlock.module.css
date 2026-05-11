@@ -1,0 +1,246 @@
+/*
+ * PipelineErrorBlock -- categorized error surface for /pipelines/<id>.
+ *
+ * Renders inline when the pipeline is in a terminal-negative state
+ * (failed / kill-switch-halted / operator-abandoned). Auto-expanded by
+ * default; the chevron toggles collapsed/expanded state which is
+ * persisted via storage.service so a reload restores the operator's
+ * last preference per pipeline.
+ *
+ * Layout shape:
+ *   - Mobile-first single column.
+ *   - Desktop (>=600px) splits the head into a row + the actions row
+ *     into a wrap-friendly flex strip.
+ *   - All actionable elements meet the 44x44 CSS-pixel touch target
+ *     floor per canon dev-web-mobile-first-touch-target.
+ */
+
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.block[data-severity='critical'] {
+  border-color: color-mix(in srgb, var(--status-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--status-danger) 8%, var(--surface-raised));
+}
+
+.block[data-severity='warning'] {
+  border-color: color-mix(in srgb, var(--status-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--status-warning) 8%, var(--surface-raised));
+}
+
+.block[data-severity='info'] {
+  border-color: color-mix(in srgb, var(--status-info) 40%, transparent);
+  background: color-mix(in srgb, var(--status-info) 6%, var(--surface-raised));
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.headLead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.severityBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: var(--stroke-hairline) solid currentColor;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.categoryLabel {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: var(--size-touch-target-min);
+  min-height: var(--size-touch-target-min);
+  padding: var(--space-2);
+  background: transparent;
+  border: var(--stroke-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: background 120ms ease-out;
+}
+
+.toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.toggle:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.suggested {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+  color: var(--text-primary);
+}
+
+.stageMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.stageMeta code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  padding: 0 var(--space-1);
+  background: var(--surface-raised);
+  border-radius: var(--radius-xs);
+}
+
+.citationBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.citationLabel {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.citationList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rawCauseDetails {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.rawCauseDetails summary {
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--size-touch-target-min);
+  padding: var(--space-1) 0;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.rawCauseDetails summary:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.rawCauseDetails summary::-webkit-details-marker {
+  display: none;
+}
+
+.rawCausePre {
+  margin: var(--space-2) 0 0 0;
+  padding: var(--space-3);
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.actionButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--size-touch-target-min);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: var(--stroke-hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+
+.actionButton:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent-primary);
+}
+
+.actionButton:focus-visible {
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--stroke-rail);
+}
+
+.actionButton[data-kind='abandon'] {
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 50%, transparent);
+}
+
+.actionButton[data-kind='abandon']:hover {
+  background: color-mix(in srgb, var(--status-danger) 12%, var(--surface-raised));
+}
+
+@media (min-width: 600px) {
+  .block {
+    padding: var(--space-5);
+  }
+}
