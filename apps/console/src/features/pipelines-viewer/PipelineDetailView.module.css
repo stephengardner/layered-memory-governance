@@ -333,6 +333,35 @@
   opacity: 0.6;
 }
 
+.resumeButton[data-resume-status='pending'] {
+  /*
+   * Loading affordance: keep the button's outline+color but visually
+   * pin it so the operator does not double-click during the in-flight
+   * mutation. The Loader2 icon spins inline next to the label.
+   */
+  opacity: 0.8;
+  cursor: progress;
+}
+
+.resumeButton[data-resume-status='error'] {
+  /*
+   * Error tone: shift the button into danger color so the operator
+   * sees that the last click failed. The tooltip carries the message;
+   * a follow-up click retries the mutation cleanly.
+   */
+  color: var(--status-danger);
+  border-color: color-mix(in srgb, var(--status-danger) 50%, transparent);
+  background: color-mix(in srgb, var(--status-danger) 14%, transparent);
+}
+
+.resumeSpinner {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .stageMeta {
   display: flex;
   flex-wrap: wrap;
