@@ -83,9 +83,43 @@ describe('HttpTransport.subscribe', () => {
     expect(names.has('atom.deleted')).toBe(true);
     expect(names.has('ping')).toBe(true);
     expect(names.has('open')).toBe(true);
+    // Per-pipeline channel vocabulary: pipeline-detail SSE stream
+    // emits dash-separated names that the same EventSource has to
+    // handle on the pipeline.<id> channel.
+    expect(names.has('atom-change')).toBe(true);
+    expect(names.has('pipeline-state-change')).toBe(true);
+    expect(names.has('heartbeat')).toBe(true);
 
     unsubscribe();
     expect(fakes[0]!.closed).toBe(true);
+  });
+
+  it('routes per-pipeline channel events through the same handler', () => {
+    const t = new HttpTransport('/api');
+    const onEvent = vi.fn();
+    t.subscribe<{ pipeline_id: string }>('pipeline.pipeline-fixture-x', onEvent);
+
+    fakes[0]!.dispatchNamed('open', { pipeline_id: 'pipeline-fixture-x', at: '2026-05-11T12:00:00.000Z' });
+    fakes[0]!.dispatchNamed('atom-change', {
+      pipeline_id: 'pipeline-fixture-x',
+      atom_id: 'pipeline-stage-event-x',
+      atom_type: 'pipeline-stage-event',
+      at: '2026-05-11T12:00:01.000Z',
+    });
+    fakes[0]!.dispatchNamed('pipeline-state-change', {
+      pipeline_id: 'pipeline-fixture-x',
+      pipeline_state: 'running',
+      at: '2026-05-11T12:00:02.000Z',
+    });
+    fakes[0]!.dispatchNamed('heartbeat', { at: '2026-05-11T12:00:03.000Z' });
+
+    expect(onEvent).toHaveBeenCalledTimes(4);
+  });
+
+  it('targets /api/events/pipeline.<id> URL when called with a pipeline channel', () => {
+    const t = new HttpTransport('/api');
+    t.subscribe('pipeline.pipeline-abc-123', vi.fn());
+    expect(fakes[0]!.url).toBe('/api/events/pipeline.pipeline-abc-123');
   });
 
   it('invokes onEvent for each named event that fires', () => {

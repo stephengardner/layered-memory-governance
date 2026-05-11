@@ -98,8 +98,22 @@ export class HttpTransport implements Transport {
 }
 
 /*
- * All named SSE events the server emits on /api/events/atoms. If the
- * server adds a new one, add it here.
+ * All named SSE events the server emits on its event channels. If
+ * the server adds a new one, add it here.
+ *
+ * Two channel families share this list:
+ *   - /api/events/atoms             -- the legacy global atom stream
+ *     uses the dotted `atom.*` names (atom.created, atom.changed,
+ *     atom.deleted) plus `ping` and `open`.
+ *   - /api/events/pipeline.<id>     -- the per-pipeline detail-view
+ *     stream uses dash-separated names (`atom-change`,
+ *     `pipeline-state-change`, `heartbeat`) plus `open`.
+ *
+ * Listing both vocabularies here means a single EventSource
+ * subscription stays robust regardless of which channel the caller
+ * targets. Unknown names that arrive over a given channel are
+ * silently ignored by EventSource, which is the right behavior for
+ * forward-compat.
  */
 const SSE_EVENT_NAMES: readonly string[] = [
   'atom.created',
@@ -107,4 +121,9 @@ const SSE_EVENT_NAMES: readonly string[] = [
   'atom.deleted',
   'ping',
   'open',
+  // Per-pipeline channel vocabulary; the server's pipeline-stream
+  // module is the authoritative source. Keep in sync.
+  'atom-change',
+  'pipeline-state-change',
+  'heartbeat',
 ] as const;

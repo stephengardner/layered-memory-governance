@@ -35,7 +35,29 @@ import { PipelineLifecycle } from './PipelineLifecycle';
 import { StageInputs } from './StageInputs';
 import { InlineStageOutput } from './InlineStageOutput';
 import { readStageExpanded, writeStageExpanded } from './stageExpansion';
+import { usePipelineStream } from './usePipelineStream';
 import styles from './PipelineDetailView.module.css';
+
+/*
+ * Polling cadences for the detail view.
+ *
+ * SSE_FALLBACK_POLL_MS is the long backstop interval that fires when
+ * the SSE stream is connected. The stream pushes updates in
+ * milliseconds, so the poll's only job is to catch the rare case
+ * where a watcher event was missed (filesystem races, NFS-style
+ * out-of-band changes) or the SSE handler invoked invalidateQueries
+ * but the cache write itself dropped. 60s is the standard
+ * server-sync floor used elsewhere in the Console (live-ops daemon
+ * posture, control-status refresh).
+ *
+ * SSE_DEGRADED_POLL_MS is the cadence when SSE is unavailable
+ * entirely (failed/connecting) -- keeps the original 5s polling
+ * cadence so the operator-visible freshness does not regress when
+ * the stream cannot connect (older Node servers, hostile proxies,
+ * etc.).
+ */
+const SSE_FALLBACK_POLL_MS = 60_000;
+const SSE_DEGRADED_POLL_MS = 5_000;
 
 /**
  * Pipeline drill-in view: full chain for one pipeline id.
@@ -55,28 +77,45 @@ import styles from './PipelineDetailView.module.css';
  * "back to list" affordance + a copyable id chip.
  */
 export function PipelineDetailView({ pipelineId }: { pipelineId: string }) {
+  /*
+   * Open the per-pipeline SSE stream. The hook handles connection,
+   * reconnect-on-error (1s -> 2s -> 4s -> 8s -> 16s), and query
+   * invalidation. It returns the current connection state so the
+   * fallback poll below can tighten its cadence when SSE is down.
+   *
+   * The SSE hook is the PRIMARY freshness signal; the TanStack Query
+   * poll below is a backstop for the (rare) case where a watcher
+   * event is missed or the stream cannot connect at all. Operator-
+   * visible latency in the happy path is bounded by the server's
+   * watcher debounce + a single round-trip on cache invalidate
+   * (sub-second), down from the up-to-5s of the legacy polling.
+   */
+  const streamConnectionState = usePipelineStream(pipelineId);
+  const streamIsLive = streamConnectionState === 'open';
+
   const query = useQuery({
     queryKey: ['pipeline', pipelineId],
     queryFn: ({ signal }) => getPipelineDetail(pipelineId, signal),
     /*
-     * Polling cadence: a running pipeline writes a new event atom
-     * roughly every 30s in substrate-deep mode. 5s gives the operator
-     * a near-live view without hammering the backend; the cap is
-     * larger than the smallest stage to ensure progress visible.
-     * Mirrors the live-ops 2s cadence in spirit but at a tier the
-     * detail surface justifies (it's not the at-a-glance dashboard).
+     * Polling cadence is dynamic on the SSE state:
+     *   - 'open'  : 60s backstop (SSE handles the operator-visible
+     *               freshness; the poll is only a safety net for
+     *               missed watcher events).
+     *   - any other state ('connecting', 'reconnecting', 'failed'):
+     *               5s poll, matching the legacy cadence so the UI
+     *               does not visibly regress while SSE is recovering.
      *
      * Stop polling once the pipeline reaches a terminal state
      * (succeeded/failed) or the request errors (404/missing). The
-     * org-ceiling case (canon dev-indie-floor-org-ceiling) is several
-     * operators pinning detail tabs on terminal pipelines; an
-     * unconditional 5s poll would waste backend cycles forever.
+     * org-ceiling case (canon dev-indie-floor-org-ceiling) is
+     * several operators pinning detail tabs on terminal pipelines;
+     * an unconditional poll would waste backend cycles forever.
      */
     refetchInterval: (queryState) => {
       if (queryState.state.error) return false;
       const state = queryState.state.data?.pipeline.pipeline_state;
       if (state === 'pending' || state === 'running' || state === 'hil-paused') {
-        return 5000;
+        return streamIsLive ? SSE_FALLBACK_POLL_MS : SSE_DEGRADED_POLL_MS;
       }
       return false;
     },
@@ -143,15 +182,23 @@ export function PipelineDetailView({ pipelineId }: { pipelineId: string }) {
     );
   }
 
-  return <PipelineDetailBody data={query.data!} lastSuccessAt={lastSuccessAt} />;
+  return (
+    <PipelineDetailBody
+      data={query.data!}
+      lastSuccessAt={lastSuccessAt}
+      streamConnectionState={streamConnectionState}
+    />
+  );
 }
 
 function PipelineDetailBody({
   data,
   lastSuccessAt,
+  streamConnectionState,
 }: {
   data: PipelineDetail;
   lastSuccessAt: number | null;
+  streamConnectionState: ReturnType<typeof usePipelineStream>;
 }) {
   const { pipeline, stages, events, findings, audit_counts: audit, failure, resumes } = data;
   /*
@@ -181,7 +228,11 @@ function PipelineDetailBody({
     : pipeline.pipeline_state;
 
   return (
-    <section className={styles.view} data-testid="pipeline-detail-view">
+    <section
+      className={styles.view}
+      data-testid="pipeline-detail-view"
+      data-pipeline-stream={streamConnectionState}
+    >
       <FocusBanner
         label="Pipeline"
         id={pipeline.id}

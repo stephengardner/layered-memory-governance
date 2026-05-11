@@ -28,6 +28,17 @@ import {
   isConsoleWritesAllowed,
   makeAllowedOriginSet,
 } from './security';
+import {
+  HEARTBEAT_INTERVAL_MS as PIPELINE_HEARTBEAT_INTERVAL_MS,
+  MAX_SUBSCRIBERS_PER_PIPELINE,
+  buildAtomChangePayload as buildPipelineAtomChangePayload,
+  buildHeartbeatPayload as buildPipelineHeartbeatPayload,
+  buildOpenPayload as buildPipelineOpenPayload,
+  buildPipelineStateChangePayload,
+  extractAtomPipelineId,
+  formatSseMessage as formatPipelineSseMessage,
+  parsePipelineChannel,
+} from './pipeline-stream';
 import { parseAutonomyDial } from './kill-switch-state';
 import { median, extractFailureStage } from './metrics-rollup';
 import {
@@ -4159,9 +4170,111 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
    * "atom.created" push whenever a new .json file lands in
    * .lag/atoms. The file-watcher is started ONCE per server and
    * multiplexed across subscribers, so 100 open tabs == 1 watcher.
+   *
+   * Per-pipeline SSE channel: /api/events/pipeline.<pipeline_id>
+   * delivers ONLY events whose backing atom carries that pipeline_id
+   * (or whose atom IS that pipeline). Replaces the 5s polling on
+   * /pipelines/<id>; the cap MAX_SUBSCRIBERS_PER_PIPELINE prevents a
+   * runaway client from holding hundreds of sockets open. A 404
+   * fires when the requested pipeline_id has no backing atom on
+   * disk -- the client falls back to polling rather than holding a
+   * permanent listener on a pipeline that does not exist.
    */
   if (path.startsWith('/api/events/') && req.method === 'GET') {
     const channel = path.substring('/api/events/'.length);
+    const pipelineChannelId = parsePipelineChannel(channel);
+
+    if (pipelineChannelId !== null) {
+      /*
+       * Per-pipeline channel. Validate the pipeline exists BEFORE
+       * upgrading to SSE so a 404 from an unknown id is a clean HTTP
+       * response (the client falls back to polling) rather than an
+       * empty event stream that looks indistinguishable from "this
+       * pipeline never emits".
+       *
+       * The atomIndex check is the same priming-aware path used by
+       * the detail handler; pipeline lookup is O(1) when primed and
+       * falls back to a fresh disk read at startup.
+       */
+      const filename = atomFilenameFromId(pipelineChannelId);
+      const existing = atomIndex.get(filename);
+      if (!existing || existing.type !== 'pipeline') {
+        sendErr(req, res, 404, 'pipeline-not-found', `no pipeline atom with id ${pipelineChannelId}`);
+        return;
+      }
+
+      const existingSubs = pipelineSubscribers.get(pipelineChannelId);
+      if (existingSubs && existingSubs.size >= MAX_SUBSCRIBERS_PER_PIPELINE) {
+        sendErr(
+          req,
+          res,
+          429,
+          'pipeline-stream-cap-exceeded',
+          `pipeline ${pipelineChannelId} has reached the subscriber cap of ${MAX_SUBSCRIBERS_PER_PIPELINE}`,
+        );
+        return;
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        /*
+         * Disable proxy / CDN buffering. Without this header, an
+         * nginx reverse-proxy (the most common deployment shape)
+         * buffers up to 8KB before flushing, holding the heartbeat
+         * back and making the connection look dead. See nginx
+         * proxy_buffering docs.
+         */
+        'X-Accel-Buffering': 'no',
+      });
+      const openMsg = formatPipelineSseMessage(
+        'open',
+        buildPipelineOpenPayload(pipelineChannelId, new Date().toISOString()),
+      );
+      res.write(openMsg);
+
+      // Push the current state immediately so the client can patch its
+      // cache and render without waiting for the first atom event.
+      const stateMsg = formatPipelineSseMessage(
+        'pipeline-state-change',
+        buildPipelineStateChangePayload(existing, new Date().toISOString()),
+      );
+      res.write(stateMsg);
+
+      let subs = pipelineSubscribers.get(pipelineChannelId);
+      if (!subs) {
+        subs = new Set<ServerResponse>();
+        pipelineSubscribers.set(pipelineChannelId, subs);
+      }
+      subs.add(res);
+
+      const heartbeatInterval = setInterval(() => {
+        try {
+          const hbMsg = formatPipelineSseMessage(
+            'heartbeat',
+            buildPipelineHeartbeatPayload(new Date().toISOString()),
+          );
+          res.write(hbMsg);
+        } catch {
+          // Will be cleaned up on the next req.close.
+        }
+      }, PIPELINE_HEARTBEAT_INTERVAL_MS);
+
+      req.on('close', () => {
+        clearInterval(heartbeatInterval);
+        const liveSet = pipelineSubscribers.get(pipelineChannelId);
+        if (liveSet) {
+          liveSet.delete(res);
+          if (liveSet.size === 0) {
+            pipelineSubscribers.delete(pipelineChannelId);
+          }
+        }
+      });
+      return;
+    }
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -4198,10 +4311,95 @@ const server = createServer((req, res) => {
 
 const atomSubscribers = new Set<ServerResponse>();
 
+/*
+ * Per-pipeline SSE subscribers. Keyed by pipeline_id; the value Set
+ * holds the open response objects for every client subscribing to
+ * that pipeline's change stream. A Map (not a single global Set) so
+ * the watcher does an O(1) lookup per atom event rather than a fan-
+ * out scan; under the org-ceiling pressure (50 pipelines, hundreds
+ * of total tabs), the difference is real.
+ *
+ * Lifecycle: a subscriber is added in the /api/events/pipeline.<id>
+ * route, removed on `req.on('close')`. The watcher pushes events but
+ * never mutates the map shape directly.
+ *
+ * Cleanup invariant: when a Set drops to zero, the key is removed
+ * from the Map so the watcher's pipeline-keyed lookup short-circuits
+ * (no empty Sets accumulate). Without this, 1000 sequential
+ * connect/disconnect cycles would leave 1000 stale keys whose
+ * Set.size is 0 but the Map.get still has to walk a Set object.
+ */
+const pipelineSubscribers = new Map<string, Set<ServerResponse>>();
+
 function broadcastAtomEvent(event: string, payload: unknown): void {
   const msg = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
   for (const sub of atomSubscribers) {
     try { sub.write(msg); } catch { atomSubscribers.delete(sub); }
+  }
+}
+
+/**
+ * Push a pipeline-stream message to every subscriber bound to the
+ * given pipeline_id. The watcher calls this after detecting an atom
+ * change with a resolved pipeline_id (see broadcastPipelineAtomChange).
+ *
+ * Subscribers whose write fails (client disconnect, broken pipe) are
+ * removed eagerly so the next iteration of the watcher loop does not
+ * spend cycles writing to a dead socket. This mirrors the cleanup
+ * pattern in broadcastAtomEvent above.
+ */
+function pushPipelineStreamMessage(pipelineId: string, msg: string): void {
+  const subs = pipelineSubscribers.get(pipelineId);
+  if (!subs) return;
+  const toRemove: ServerResponse[] = [];
+  for (const sub of subs) {
+    try {
+      sub.write(msg);
+    } catch {
+      toRemove.push(sub);
+    }
+  }
+  for (const dead of toRemove) {
+    subs.delete(dead);
+  }
+  if (subs.size === 0) {
+    pipelineSubscribers.delete(pipelineId);
+  }
+}
+
+/**
+ * Fan an atom-change event out to per-pipeline subscribers. Looks up
+ * the atom in the in-memory index (refreshAtomInIndex has already
+ * resolved it for `change` events; for `rename` events the resolve
+ * happens before this is called), reads its pipeline_id, and emits
+ * the matching SSE messages.
+ *
+ * For pipeline-type atoms, emits BOTH atom-change AND
+ * pipeline-state-change so a client patching its cache off the
+ * latter can render the new state pill without a round-trip while
+ * still receiving the generic atom-change for query-invalidation
+ * symmetry.
+ */
+function broadcastPipelineAtomChange(filename: string, at: string): void {
+  const atom = atomIndex.get(filename);
+  if (!atom) return;
+  const pipelineId = extractAtomPipelineId(atom);
+  if (!pipelineId) return;
+  // Skip the work entirely when no one is listening for this pipeline.
+  if (!pipelineSubscribers.has(pipelineId)) return;
+
+  const atomChangeMsg = formatPipelineSseMessage(
+    'atom-change',
+    buildPipelineAtomChangePayload(atom, pipelineId, at),
+  );
+  pushPipelineStreamMessage(pipelineId, atomChangeMsg);
+
+  if (atom.type === 'pipeline') {
+    const stateMsg = formatPipelineSseMessage(
+      'pipeline-state-change',
+      buildPipelineStateChangePayload(atom, at),
+    );
+    pushPipelineStreamMessage(pipelineId, stateMsg);
   }
 }
 
@@ -4220,6 +4418,7 @@ async function startAtomWatcher(): Promise<void> {
     fsWatch(ATOMS_DIR, { persistent: false }, async (eventType, filename) => {
       if (!filename || !filename.endsWith('.json')) return;
       const id = filename.replace(/\.json$/, '');
+      const at = new Date().toISOString();
       if (eventType === 'rename') {
         // Could be create OR delete. Attempt a fresh read — if it
         // succeeds the file exists (classify as create/refresh);
@@ -4228,15 +4427,25 @@ async function startAtomWatcher(): Promise<void> {
         await refreshAtomInIndex(filename);
         const hasItNow = atomIndex.has(filename);
         if (!hadIt && hasItNow) {
-          broadcastAtomEvent('atom.created', { id, at: new Date().toISOString() });
+          broadcastAtomEvent('atom.created', { id, at });
+          broadcastPipelineAtomChange(filename, at);
         } else if (hadIt && !hasItNow) {
-          broadcastAtomEvent('atom.deleted', { id, at: new Date().toISOString() });
+          broadcastAtomEvent('atom.deleted', { id, at });
+          // Note: deletion is rare for pipeline atoms (the AtomStore
+          // is append-only by canon `arch-atomstore-source-of-truth`)
+          // and we cannot resolve pipeline_id once the atom is gone
+          // from the index. The generic atom.deleted event still
+          // reaches the global subscribers; per-pipeline subscribers
+          // observe deletion via the next state-change atom that
+          // lands or via the heartbeat-driven fallback refresh.
         } else if (hasItNow) {
-          broadcastAtomEvent('atom.changed', { id, at: new Date().toISOString() });
+          broadcastAtomEvent('atom.changed', { id, at });
+          broadcastPipelineAtomChange(filename, at);
         }
       } else if (eventType === 'change') {
         await refreshAtomInIndex(filename);
-        broadcastAtomEvent('atom.changed', { id, at: new Date().toISOString() });
+        broadcastAtomEvent('atom.changed', { id, at });
+        broadcastPipelineAtomChange(filename, at);
       }
     });
     console.log(`[backend] watching ${ATOMS_DIR} for atom changes`);
