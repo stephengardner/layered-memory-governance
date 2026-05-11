@@ -462,16 +462,28 @@ export async function runPipeline(
     // field continues to work; the field is additive.
     //
     // The attempt loop is bounded by config.max_attempts (default 2)
-    // so a runaway loop is impossible by construction. Each attempt's
-    // cost accumulates against the existing per-stage `budget_cap_usd`
-    // fence; a re-prompt storm hits the budget cap and halts via the
-    // existing budget-overflow path (no new code in the cost layer).
+    // so a runaway loop is impossible by construction. The per-stage
+    // `budget_cap_usd` fence is enforced CUMULATIVELY across attempts
+    // via stageAttemptCostUsd: a re-prompt storm hits the cap and
+    // halts even when each attempt's individual cost would have
+    // passed a per-attempt check. Two $0.60 attempts under a $1.00
+    // cap together exceed the cap on the second attempt and halt
+    // via the existing budget-overflow path. The single-attempt
+    // check is still useful as a fast-fail backstop for a one-shot
+    // overrun.
     let priorAuditFindings: ReadonlyArray<AuditFinding> = [];
     let output: StageOutput<unknown> | undefined;
     let stageOutputAtomId: AtomId | undefined;
     let persistedPlanAtomIds: ReadonlyArray<AtomId> = [];
     let findings: ReadonlyArray<AuditFinding> = [];
     let durationMs = 0;
+    // Cumulative cost across all attempts at THIS stage. Reset to 0
+    // at the start of every outer-loop iteration (one entry per
+    // stage). The cap check at the top of the inner loop subtracts
+    // attempt cost from this counter before committing the attempt
+    // so a re-prompt that would push the running total over the cap
+    // halts before the cost is "spent" on the wrong side of the gate.
+    let stageAttemptCostUsd = 0;
     const maxAttempts = Math.max(1, auditorFeedbackConfig.max_attempts);
     let attempt = 0;
     // eslint-disable-next-line no-constant-condition
@@ -552,13 +564,24 @@ export async function runPipeline(
       // Per-stage budget enforcement. Stage-supplied cap takes precedence;
       // canon policy is the fallback. A null cap means "no limit at this
       // layer" -- the per-pipeline total is a forward-compat fence.
+      //
+      // The cap is enforced CUMULATIVELY across attempts at this stage
+      // (stageAttemptCostUsd), not per-attempt. Without this, two
+      // $0.60 attempts under a $1.00 cap would both pass the per-attempt
+      // check and together spend $1.20 -- the re-prompt loop would
+      // overshoot the stage budget the cap is meant to fence. Tally
+      // this attempt's cost into the cumulative tracker first, then
+      // compare the running total against the cap. A failed attempt
+      // still spent its tokens; the runner accounts for them rather
+      // than discounting on the post-hoc audit-halt.
       const stageCap =
         stage.budget_cap_usd
         ?? (await readPipelineStageCostCapPolicy(host, stage.name)).cap_usd;
+      stageAttemptCostUsd += output.cost_usd;
       if (
         stageCap !== null
         && stageCap !== undefined
-        && toUsdMicros(output.cost_usd) > toUsdMicros(stageCap)
+        && toUsdMicros(stageAttemptCostUsd) > toUsdMicros(stageCap)
       ) {
         await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
         return await failPipeline(
@@ -567,7 +590,7 @@ export async function runPipeline(
           options,
           now,
           stage.name,
-          `budget-overflow: cost ${output.cost_usd} > cap ${stageCap}`,
+          `budget-overflow: cumulative-attempt-cost ${stageAttemptCostUsd} > cap ${stageCap}`,
           i,
         );
       }
@@ -668,6 +691,18 @@ export async function runPipeline(
           verifiedSubActorPrincipalIds,
           operatorIntentContent,
         });
+        // Re-check the kill switch after stage.audit() returns BEFORE
+        // we write any pipeline-audit-finding atoms or the
+        // retry-after-findings event below. stage.audit can await
+        // arbitrary async work (atom-store reads, cite-verification
+        // walks); if STOP flips during that window the file-header
+        // contract requires we halt without subsequent writes. The
+        // findings are dropped on halt -- the operator can re-run the
+        // stage if they want the audit signal preserved; that is a
+        // conscious trade for STOP's absolute-priority guarantee.
+        if (host.scheduler.killswitchCheck()) {
+          return { kind: 'halted', pipelineId };
+        }
         for (const finding of findings) {
           await host.atoms.put(
             mkPipelineAuditFindingAtom({
@@ -706,6 +741,13 @@ export async function runPipeline(
       // consumer of that prompt-shape signal.
       const decision = decideRePromptAction(findings, attempt, auditorFeedbackConfig);
       if (decision.action === 'reprompt') {
+        // Final kill-switch check before the retry-after-findings emit.
+        // A STOP that flipped between the audit-findings writes and
+        // here must NOT produce a retry event; mirrors the absolute-
+        // priority guarantee in the file header for every write site.
+        if (host.scheduler.killswitchCheck()) {
+          return { kind: 'halted', pipelineId };
+        }
         const summary = {
           critical: findings.filter((f) => f.severity === 'critical').length,
           major: findings.filter((f) => f.severity === 'major').length,
