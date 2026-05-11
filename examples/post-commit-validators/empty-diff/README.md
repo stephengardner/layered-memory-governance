@@ -19,7 +19,10 @@ catches that case at the boundary every executor shares.
 ## Indie path
 
 ```ts
-import { EmptyDiffValidator } from './post-commit-validators/empty-diff';
+// From a caller in the parent `examples/post-commit-validators/`
+// directory or anywhere that has the package's example tree on its
+// import path:
+import { EmptyDiffValidator } from './empty-diff/index.js';
 const validators = [new EmptyDiffValidator()];
 ```
 

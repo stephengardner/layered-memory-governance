@@ -7,9 +7,8 @@
  * After the executor's commit lands on the local worktree and BEFORE
  * the PR is opened, the substrate needs a fail-fast inspection
  * surface that catches commit-shape violations the upstream pipeline
- * cannot (or chooses not to) enforce. Concrete violations the
- * CodeRabbit-side review catches today but only after a full
- * review-cycle round-trip:
+ * cannot (or chooses not to) enforce. Concrete violations often
+ * found only after a full downstream review round-trip:
  *   - empty / no-op diffs the drafter or agent loop reported as
  *     "shipped"
  *   - diffs that touch files the plan did NOT authorize
@@ -17,9 +16,9 @@
  *   - commits with wrong author / committer attribution
  *   - Conventional-Commit title format violations
  *
- * Each violation a PR-side reviewer flags is a 5-to-90-minute round
- * trip. A local validator that runs synchronously before the PR
- * opens fails the same case in milliseconds.
+ * Each violation a downstream reviewer flags is a 5-to-90-minute
+ * round trip. A local validator that runs synchronously before the
+ * PR opens fails the same case in milliseconds.
  *
  * Contract
  * --------
@@ -264,11 +263,19 @@ export async function runPostCommitValidators(
  * passing through a dynamic-loaded adapter may produce a shape the
  * TS layer cannot catch, and the sequencer's fail-closed posture
  * relies on this gate to refuse unrecognized output.
+ *
+ * Contradictory `ok: true` shapes (e.g.,
+ * `{ ok: true, severity: 'critical', reason: '...' }`) are also
+ * refused: the success variant carries no `severity` / `reason`
+ * fields, so a payload that asserts both ok and a failure shape is
+ * malformed by definition.
  */
 function isWellFormedResult(value: unknown): value is PostCommitValidatorResult {
   if (value === null || typeof value !== 'object') return false;
   const v = value as { ok?: unknown; reason?: unknown; severity?: unknown };
-  if (v.ok === true) return true;
+  if (v.ok === true) {
+    return v.reason === undefined && v.severity === undefined;
+  }
   if (v.ok !== false) return false;
   if (typeof v.reason !== 'string') return false;
   return v.severity === 'critical' || v.severity === 'major' || v.severity === 'minor';

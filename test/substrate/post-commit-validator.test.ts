@@ -186,6 +186,29 @@ describe('runPostCommitValidators (sequencer)', () => {
     }
   });
 
+  it('refuses a contradictory `{ ok: true, severity, reason }` shape (defensive)', async () => {
+    // A validator that asserts BOTH ok=true AND a failure-shape
+    // payload is malformed by definition; the success variant
+    // carries no severity / reason. The sequencer must refuse
+    // rather than silently accept the ok=true claim.
+    const validators: PostCommitValidator[] = [
+      {
+        name: 'contradictory',
+        validate: (async () => ({
+          ok: true,
+          severity: 'critical',
+          reason: 'I am both ok and not',
+        })) as unknown as PostCommitValidator['validate'],
+      },
+    ];
+    const out = await runPostCommitValidators(validators, BASE_INPUT);
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.criticalValidatorName).toBe('contradictory');
+      expect(out.reason).toContain('unrecognized result shape');
+    }
+  });
+
   it('does not mutate input (deep-frozen object survives the call)', async () => {
     // BASE_INPUT is already frozen at module scope; if the sequencer
     // tried to mutate, the throw would surface here. We additionally

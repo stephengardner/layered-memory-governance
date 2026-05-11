@@ -14,7 +14,7 @@ catches that case locally before the PR opens.
 ## Indie path
 
 ```ts
-import { AuthorIdentityValidator } from './post-commit-validators/author-identity';
+import { AuthorIdentityValidator } from './author-identity/index.js';
 const validators = [
   new AuthorIdentityValidator({
     allowedEmailSuffixes: [
@@ -42,5 +42,9 @@ GitHub's noreply addresses are lowercase.
 An empty `allowedEmailSuffixes` rejects every commit. The substrate
 ships no implicit allow-list because the right shape is
 deployment-specific (which noreply domains, which machine users).
-A deployment that wants "any email" passes the universal-suffix
-`''` explicitly so the choice is auditable.
+Empty-string entries (`''`) are silently filtered out at
+construction time so an accidental blank line in the config does
+not flip the gate into allow-all -- which is what
+`email.endsWith('')` would otherwise produce. A deployment that
+genuinely wants allow-all behaviour ships its own validator
+rather than passing an empty suffix.

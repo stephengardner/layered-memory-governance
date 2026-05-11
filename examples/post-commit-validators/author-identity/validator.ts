@@ -50,20 +50,35 @@ export class AuthorIdentityValidator implements PostCommitValidator {
   private readonly allowedLower: ReadonlyArray<string>;
 
   constructor(options: AuthorIdentityValidatorOptions) {
+    // Trim + lowercase each suffix; drop empties so an accidental
+    // empty entry (`''`) does not become an allow-all (every
+    // `email.endsWith('')` is true). A deployment that really wants
+    // empty-suffix semantics passes a separate adapter; the
+    // substrate's posture is fail-closed.
     this.allowedLower = Object.freeze(
-      options.allowedEmailSuffixes.map((s) => s.toLowerCase()),
+      options.allowedEmailSuffixes
+        .map((s) => s.trim().toLowerCase())
+        .filter((s) => s.length > 0),
     );
   }
 
   async validate(input: PostCommitValidatorInput): Promise<PostCommitValidatorResult> {
-    const email = input.authorIdentity.email.toLowerCase();
+    const rawEmail = input.authorIdentity.email;
+    const email = rawEmail.toLowerCase();
     for (const suffix of this.allowedLower) {
       if (email.endsWith(suffix)) return { ok: true };
     }
+    // Redact the local-part of the email before it enters the
+    // failure reason. The reason flows into audit atoms and
+    // observation metadata; storing full author emails increases
+    // PII exposure for no governance benefit. The domain/suffix is
+    // retained so an operator can still tell "the commit came from
+    // example.com instead of users.noreply.github.com".
+    const redactedEmail = rawEmail.replace(/^[^@]+/, '<redacted>');
     return {
       ok: false,
       severity: 'critical',
-      reason: `commit author email ${JSON.stringify(input.authorIdentity.email)} does not end with any allowed suffix`,
+      reason: `commit author email ${JSON.stringify(redactedEmail)} does not end with any allowed suffix`,
     };
   }
 }

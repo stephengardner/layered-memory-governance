@@ -38,7 +38,12 @@ describe('AuthorIdentityValidator', () => {
     expect(out.ok).toBe(false);
     if (!out.ok) {
       expect(out.severity).toBe('critical');
-      expect(out.reason).toContain('stephen@example.com');
+      // Local-part must be redacted; only the domain/suffix survives
+      // so the reason carries enough signal for an operator to
+      // diagnose the wrong-suffix case without leaking PII into
+      // audit atoms.
+      expect(out.reason).not.toContain('stephen');
+      expect(out.reason).toContain('<redacted>@example.com');
     }
   });
 
@@ -48,7 +53,24 @@ describe('AuthorIdentityValidator', () => {
     expect(out.ok).toBe(false);
     if (!out.ok) {
       expect(out.severity).toBe('critical');
-      expect(out.reason).toContain('lag-ceo');
+      // Local-part redaction also applies to the bot address in
+      // this failure case; only the domain survives.
+      expect(out.reason).toContain('<redacted>@users.noreply.github.com');
+    }
+  });
+
+  it('refuses to allow-all when an empty-string suffix is supplied (fail-closed)', async () => {
+    // `''.endsWith('')` is true in plain JS; without filtering the
+    // constructor would silently flip the validator into allow-all.
+    // The substrate's fail-closed posture is to filter empties out
+    // so an accidental blank entry does not disable the gate.
+    const v = new AuthorIdentityValidator({
+      allowedEmailSuffixes: ['', '   '],
+    });
+    const out = await v.validate(buildInput('stephen@example.com'));
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.severity).toBe('critical');
     }
   });
 

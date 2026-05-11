@@ -331,6 +331,73 @@ describe('runCodeAuthor', () => {
     expect(atomId).toBeDefined();
   });
 
+  it('with executor injected (dispatched + postCommitFindings): findings persist on observation metadata', async () => {
+    // Regression: when the executor returns major/minor findings on
+    // the success result, the invoker MUST persist them under
+    // metadata.executor_result.post_commit_findings so downstream
+    // audit / warning writers can consume them at the atom boundary.
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-pcv-find', 'executing'));
+    const executor = stubExecutor(async () => ({
+      kind: 'dispatched',
+      prNumber: 124,
+      prHtmlUrl: 'https://github.com/o/r/pull/124',
+      branchName: 'code-author/plan-pcv-find-abc',
+      commitSha: 'cafef00d000000000000000000000000000000ff',
+      totalCostUsd: 0.5,
+      modelUsed: 'claude-opus-4-7',
+      confidence: 0.9,
+      touchedPaths: ['README.md'],
+      postCommitFindings: [
+        { validatorName: 'conventional-commit-title-validator', severity: 'major', reason: 'subject is capitalized' },
+        { validatorName: 'empty-diff-validator', severity: 'minor', reason: 'one hunk is whitespace-only' },
+      ],
+    }));
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-pcv-find' },
+      'corr-pcv',
+      { idNonce: 'pcvfnd', executor },
+    );
+    expect(result.kind).toBe('dispatched');
+    const exec = await getInvokedExecutorResult(host);
+    expect(exec['post_commit_findings']).toEqual([
+      { validator_name: 'conventional-commit-title-validator', severity: 'major', reason: 'subject is capitalized' },
+      { validator_name: 'empty-diff-validator', severity: 'minor', reason: 'one hunk is whitespace-only' },
+    ]);
+  });
+
+  it('with executor injected (dispatched, no postCommitFindings): metadata omits post_commit_findings', async () => {
+    // Symmetric back-compat case: when the executor did not run any
+    // validators (or every validator returned ok), the
+    // post_commit_findings field MUST be absent so downstream readers
+    // can distinguish "validators not run" (or "validators clean")
+    // by field presence rather than empty array semantics.
+    await seedFullFence(host);
+    await host.atoms.put(planAtom('plan-pcv-clean', 'executing'));
+    const executor = stubExecutor(async () => ({
+      kind: 'dispatched',
+      prNumber: 125,
+      prHtmlUrl: 'https://github.com/o/r/pull/125',
+      branchName: 'code-author/plan-pcv-clean-abc',
+      commitSha: 'cafef00d000000000000000000000000000000ff',
+      totalCostUsd: 0.5,
+      modelUsed: 'claude-opus-4-7',
+      confidence: 0.9,
+      touchedPaths: ['README.md'],
+      // No postCommitFindings field
+    }));
+    const result = await runCodeAuthor(
+      host,
+      { plan_id: 'plan-pcv-clean' },
+      'corr-pcv-clean',
+      { idNonce: 'pcvcln', executor },
+    );
+    expect(result.kind).toBe('dispatched');
+    const exec = await getInvokedExecutorResult(host);
+    expect(exec['post_commit_findings']).toBeUndefined();
+  });
+
   it('with executor injected (error): returns error and stores failure stage on observation', async () => {
     await seedFullFence(host);
     await host.atoms.put(planAtom('plan-test-1', 'executing'));

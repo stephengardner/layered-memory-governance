@@ -17,7 +17,7 @@ never opens a PR.
 ## Indie path
 
 ```ts
-import { TargetPathsValidator } from './post-commit-validators/target-paths';
+import { TargetPathsValidator } from './target-paths/index.js';
 const validators = [new TargetPathsValidator()];
 ```
 

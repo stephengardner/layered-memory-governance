@@ -21,7 +21,7 @@ release-notes generators key off the title shape stays intact.
 ## Indie path
 
 ```ts
-import { ConventionalCommitTitleValidator } from './post-commit-validators/conventional-commit-title';
+import { ConventionalCommitTitleValidator } from './conventional-commit-title/index.js';
 const validators = [new ConventionalCommitTitleValidator()];
 ```
 
