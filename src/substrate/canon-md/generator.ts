@@ -75,6 +75,15 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   // appear in a rendered target.
   'pr-driver-claim',
   'pr-orphan-detected',
+  // Zero-failure sub-agent substrate atoms (operational + audit
+  // records, never L3 canon). Listed for deterministic ordering when
+  // a debug tool dumps non-L3 atoms; the canon applier filters to L3
+  // and these never appear in a rendered target.
+  'work-claim',
+  'claim-attestation-accepted',
+  'claim-attestation-rejected',
+  'claim-stalled',
+  'claim-escalated',
 ];
 
 const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
@@ -133,6 +142,15 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   // a debug tool dumps non-L3 atoms.
   'pr-driver-claim': 'PR Driver Claims',
   'pr-orphan-detected': 'PR Orphans Detected',
+  // Zero-failure sub-agent substrate atoms. Operational records
+  // (work-claim lifecycle + attestation + stall + escalation); never
+  // L3 canon. Headings exist for deterministic ordering when a debug
+  // tool dumps non-L3 atoms.
+  'work-claim': 'Work Claims',
+  'claim-attestation-accepted': 'Claim Attestations Accepted',
+  'claim-attestation-rejected': 'Claim Attestations Rejected',
+  'claim-stalled': 'Claims Stalled',
+  'claim-escalated': 'Claims Escalated',
 };
 
 export interface RenderOptions {

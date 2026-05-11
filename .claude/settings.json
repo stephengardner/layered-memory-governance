@@ -23,6 +23,12 @@
         "hooks": [
           { "type": "command", "command": "node .claude/hooks/enforce-lag-ceo-for-gh.mjs" }
         ]
+      },
+      {
+        "matcher": "AtomStore\\..*|mcp__atomstore__.*",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/enforce-claim-atom-writers.mjs" }
+        ]
       }
     ],
     "PostToolUse": [

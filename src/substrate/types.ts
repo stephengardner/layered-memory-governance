@@ -193,7 +193,40 @@ export type AtomType =
   // mutual-exclusion lock against repeated dispatch and the
   // historical record of the orphan event.
   | 'pr-driver-claim'
-  | 'pr-orphan-detected';
+  | 'pr-orphan-detected'
+  // Zero-failure sub-agent substrate.
+  // `work-claim`: one atom per dispatched sub-agent run, carrying the
+  // unforgeable contract between dispatcher and sub-agent. The claim's
+  // brief (prompt + expected_terminal + deadline_ts) plus its lifecycle
+  // state machine (pending -> executing -> attesting -> complete or
+  // pending -> stalled -> abandoned) is the substrate authority that
+  // gates `markClaimComplete`. `metadata.work_claim.claim_secret_token`
+  // is a high-entropy bearer secret authenticating the sub-agent at
+  // attestation time; redaction is mandatory in every persisted log or
+  // atom-derived string (enforced by the redactor pass).
+  // `claim-attestation-accepted`: written by the verifier when ground
+  // truth confirms the sub-agent's reported terminal state. Pure-data
+  // atom; functions as the historical record of a successful claim
+  // closure.
+  // `claim-attestation-rejected`: written when attestation fails for
+  // any reason (token mismatch, principal mismatch, ground-truth
+  // mismatch, verifier error/timeout, STOP sentinel, etc.). Carries a
+  // closed-set rejection reason for audit. Does not by itself terminate
+  // the claim; the reaper recovers from repeated rejections via the
+  // bounded recovery ladder.
+  // `claim-stalled`: written by the reaper when a claim crosses a
+  // deadline or grace-period boundary. Carries the recovery counters at
+  // the moment of stall so a postmortem can reconstruct the recovery
+  // path without replaying the reaper.
+  // `claim-escalated`: written by the reaper when the recovery cap is
+  // reached and the claim's failure surfaces to the operator. Carries
+  // the cumulative failure reasons and the chain of session-atom ids
+  // that participated in the failed recovery attempts.
+  | 'work-claim'
+  | 'claim-attestation-accepted'
+  | 'claim-attestation-rejected'
+  | 'claim-stalled'
+  | 'claim-escalated';
 
 /**
  * Execution lifecycle for atoms with `type: 'plan'`. Plans are composite
@@ -481,7 +514,22 @@ export type EventKind =
   | 'canon_edit'
   | 'principal_change'
   | 'anomaly'
-  | 'taint_alert';
+  | 'taint_alert'
+  // Substrate-emitted alert when a principal attempts an action it
+  // is not authorized to perform on a work-claim it does not own
+  // (post-terminal attest, stolen-token attempt detected upstream of
+  // the rejection atom). Distinct from `anomaly` because it carries
+  // a specific cause-and-actor pair the Notifier surface can route
+  // to a principal-misbehavior channel without parsing free text.
+  | 'principal-misbehavior'
+  // Substrate-emitted alert when the claim reaper escalates a work-claim
+  // that has exhausted its recovery-attempts cap and been abandoned. The
+  // payload carries `{ claim_id, recovery_attempts }` so the Notifier
+  // surface can route to an operator-escalation channel without parsing
+  // free text. Distinct from `principal-misbehavior` because the agent
+  // did NOT misbehave; the work-shape was just unreachable in the
+  // budget the substrate is willing to spend on it.
+  | 'claim-stuck';
 
 export interface Event {
   readonly kind: EventKind;
@@ -491,6 +539,17 @@ export interface Event {
   readonly atom_refs: ReadonlyArray<AtomId>;
   readonly principal_id: PrincipalId;
   readonly created_at: Time;
+  /**
+   * Structured payload for event kinds that carry concrete actor +
+   * artifact references (e.g. `principal-misbehavior` carries
+   * `{ claim_id, caller_principal_id }`). The payload is shape-open
+   * because different event kinds need different fields; consumers
+   * narrow on `kind` first then read the fields they expect. Optional
+   * because legacy kinds (`proposal`, `canon_edit`, `principal_change`,
+   * `anomaly`, `taint_alert`) carry their information in `body` and
+   * `atom_refs` already.
+   */
+  readonly payload?: Readonly<Record<string, unknown>>;
 }
 
 export interface AuditRefs {
@@ -739,3 +798,192 @@ export interface AgentTurnMeta {
   readonly extra?: Readonly<Record<string, unknown>>;
 }
 
+// ---------------------------------------------------------------------------
+// Zero-failure sub-agent substrate
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle states for an atom of `type: 'work-claim'`. The transition
+ * graph is:
+ *
+ *   pending   -> executing | stalled | abandoned
+ *   executing -> attesting | stalled | abandoned
+ *   attesting -> complete  | executing | stalled
+ *   stalled   -> executing | abandoned
+ *   {complete, abandoned} are terminal.
+ *
+ * Mistyping a state name in implementation code surfaces as a TS error
+ * rather than a silent runtime drift; the closed union is the gate.
+ */
+export type ClaimState =
+  | 'pending'
+  | 'executing'
+  | 'attesting'
+  | 'complete'
+  | 'stalled'
+  | 'abandoned';
+
+/**
+ * The contract handed to a dispatched sub-agent. `prompt` is the inline
+ * task description; `prompt_blob_ref` is the optional content-addressed
+ * pointer when the prompt is large (mirrors the inline/ref discriminator
+ * pattern used by `AgentTurnMeta.llm_input`).
+ *
+ * `expected_terminal.kind` is open-extensible (a deployment may register
+ * a verifier for any string label); the four canonical kinds shipped at
+ * substrate level are 'pr', 'plan', 'task', and 'research-atom'.
+ * `terminal_states` is the closed set of acceptable end-states for that
+ * kind (e.g. `['MERGED']` for a PR claim required to land, or
+ * `['succeeded']` for a plan claim).
+ *
+ * `deadline_ts` is the substrate's reaper boundary; a claim that has not
+ * reached a terminal state by `deadline_ts` enters the stalled queue and
+ * the bounded recovery ladder takes over.
+ */
+export interface WorkClaimBrief {
+  readonly prompt: string;
+  readonly prompt_blob_ref?: BlobRef;
+  readonly expected_terminal: {
+    readonly kind: 'pr' | 'plan' | 'task' | 'research-atom' | string;
+    readonly identifier: string;
+    readonly terminal_states: ReadonlyArray<string>;
+  };
+  readonly deadline_ts: Time;
+}
+
+/**
+ * Stored on atoms with `type: 'work-claim'` under `metadata.work_claim`.
+ *
+ * `claim_secret_token` is a high-entropy bearer secret (43-char base64url
+ * from `crypto.randomBytes(32)` in the substrate). It authenticates the
+ * dispatched sub-agent at `markClaimComplete` time and is the single
+ * gate distinguishing a legitimate attestation from a spoofed write.
+ *
+ * MUST be redacted from every persisted log, every atom-derived
+ * projection (canon-md render, session-tree projection, console payload,
+ * dashboard export), and every external surface (operator notification
+ * body, error message, audit detail). The substrate redactor ships a
+ * regex that matches the token shape and replaces it with a placeholder;
+ * consumers that bypass the redactor (custom projections, ad-hoc
+ * scripts) MUST implement equivalent redaction or refuse to render claim
+ * atoms. A leaked token authorizes any holder to close the claim and is
+ * treated as a security incident.
+ *
+ * `budget_tier` is a string label (`'default' | 'raised' | 'max' | ...`)
+ * resolved at dispatch time against the claim-budget-tier policy atoms;
+ * the string is open-extensible so an org-ceiling deployment can
+ * register additional tiers via canon edit without a substrate release.
+ * Runtime validation of the resolved tier (max_turns, max_wall_clock_ms,
+ * max_usd) happens in the claim contract dispatcher, not at type-check
+ * time.
+ */
+export interface WorkClaimMeta {
+  readonly claim_id: string;
+  /**
+   * High-entropy bearer secret. See the surrounding `WorkClaimMeta`
+   * JSDoc for the redaction contract. NEVER log, render, project, or
+   * surface this field outside the substrate's authorized
+   * `markClaimComplete` code path. A leak is a security incident.
+   */
+  readonly claim_secret_token: string;
+  readonly dispatched_principal_id: PrincipalId;
+  readonly brief: WorkClaimBrief;
+  readonly claim_state: ClaimState;
+  readonly budget_tier: string;
+  readonly recovery_attempts: number;
+  readonly verifier_failure_count: number;
+  /** Set when the claim was spawned as a recovery successor of another claim. */
+  readonly parent_claim_id: string | null;
+  /** Agent-session atom ids associated with this claim's execution attempts. */
+  readonly session_atom_ids: ReadonlyArray<AtomId>;
+  readonly last_attestation_rejected_at: Time | null;
+  readonly latest_session_finalized_at: Time | null;
+}
+
+/**
+ * Closed-set reason codes for `claim-attestation-rejected` atoms.
+ *
+ * Eight failure axes plus two verifier-infrastructure modes:
+ *   - stop-sentinel: the kill-switch sentinel was active at attestation time.
+ *   - claim-not-found: no work-claim atom matched the claim id.
+ *   - claim-already-terminal: the claim was already in a terminal state.
+ *   - token-mismatch: the bearer token did not equal the claim's secret.
+ *   - principal-mismatch: the attesting principal was not the dispatched one.
+ *   - identifier-mismatch: the attested identifier did not equal the brief.
+ *   - kind-mismatch: the attested terminal kind did not match the brief.
+ *   - ground-truth-mismatch: the verifier returned a different observed state.
+ *   - verifier-error: the verifier handler threw or returned a structural error.
+ *   - verifier-timeout: the verifier did not respond within the configured cap.
+ */
+export type AttestationRejectionReason =
+  | 'stop-sentinel'
+  | 'claim-not-found'
+  | 'claim-already-terminal'
+  | 'token-mismatch'
+  | 'principal-mismatch'
+  | 'identifier-mismatch'
+  | 'kind-mismatch'
+  | 'ground-truth-mismatch'
+  | 'verifier-error'
+  | 'verifier-timeout';
+
+/**
+ * Stored on atoms with `type: 'claim-attestation-accepted'` under
+ * `metadata.claim_attestation`. Written when the verifier confirms the
+ * sub-agent's reported terminal state against ground truth. Functions
+ * as the audit record of a successful claim closure; the claim-contract
+ * code transitions the linked work-claim to `claim_state: 'complete'`
+ * in the same write batch.
+ */
+export interface ClaimAttestationAcceptedMeta {
+  readonly claim_id: string;
+  readonly observed_state: string;
+  readonly verified_at: Time;
+}
+
+/**
+ * Stored on atoms with `type: 'claim-attestation-rejected'` under
+ * `metadata.claim_attestation`. Written when attestation fails for any
+ * reason in `AttestationRejectionReason`. Does NOT by itself terminate
+ * the claim; the reaper consumes rejection records and routes the claim
+ * through the bounded recovery ladder.
+ *
+ * `observed_state` is set when the verifier produced a concrete state
+ * that simply did not match the brief; `error` is set when the failure
+ * is structural (verifier crashed, token check failed before any
+ * verifier ran). At most one is meaningful per rejection.
+ */
+export interface ClaimAttestationRejectedMeta {
+  readonly claim_id: string;
+  readonly reason: AttestationRejectionReason;
+  readonly observed_state?: string;
+  readonly error?: string;
+}
+
+/**
+ * Stored on atoms with `type: 'claim-stalled'` under
+ * `metadata.claim_stall`. Written by the reaper when a claim crosses a
+ * deadline or grace-period boundary. Snapshots the recovery counters at
+ * the moment of stall so a postmortem can reconstruct the recovery path
+ * without replaying the reaper from logs.
+ */
+export interface ClaimStalledMeta {
+  readonly claim_id: string;
+  readonly reason: string;
+  readonly recovery_attempts_at_stall: number;
+  readonly verifier_failure_count_at_stall: number;
+}
+
+/**
+ * Stored on atoms with `type: 'claim-escalated'` under
+ * `metadata.claim_escalation`. Written by the reaper when the recovery
+ * cap is reached and the failure surfaces to the operator. Carries the
+ * cumulative failure reasons and the chain of session-atom ids that
+ * participated in the failed recovery attempts so the operator can
+ * inspect the full trail in one place.
+ */
+export interface ClaimEscalatedMeta {
+  readonly claim_id: string;
+  readonly failure_reasons: ReadonlyArray<string>;
+  readonly session_atom_ids: ReadonlyArray<AtomId>;
+}
