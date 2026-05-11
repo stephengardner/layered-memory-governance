@@ -2,8 +2,10 @@
  * Drift tests for scripts/bootstrap-pol-resume-strategy.mjs.
  *
  * The POLICIES array (built via buildPolicies) seeds the L3 directive
- * atom `pol-resume-strategy-pr-fix-actor` whose runtime behavior is
- * consumed by `wrapAgentLoopAdapterIfEnabled` in
+ * atoms `pol-resume-strategy-pr-fix-actor` (PR #171 posture) and
+ * `pol-resume-strategy-code-author` (task #155 extension after PR #397
+ * shipped the auditor feedback re-prompt loop). Their runtime behavior
+ * is consumed by `wrapAgentLoopAdapterIfEnabled` in
  * `examples/agent-loops/resume-author/registry.ts` and validated
  * against `resumeStrategyPolicySchema` (Zod) at canon-read time.
  * Keeping seed and registry validator in sync is load-bearing: a
@@ -17,14 +19,16 @@
  *
  * Covers:
  *   - buildPolicies returns the expected stable set of ids.
- *   - pol-resume-strategy-pr-fix-actor.content matches the schema.
- *   - The seeded `enabled: true` matches PR #171's hard-coded posture.
+ *   - Each .content matches the schema.
+ *   - The seeded `enabled: true` matches the upstream actor's posture.
  *   - policyAtom() shape is a well-formed L3 directive.
  *   - File-host round-trip (put + get) preserves every field.
  *   - Idempotency: the same buildPolicies output is byte-identical
  *     across calls (no Date.now() / Math.random() leakage).
  *   - First-write writes the atom; second-write with same shape is a
  *     no-op (idempotency); writes with drifted shape fail loud.
+ *   - cto-actor + pipeline-auditor remain OMITTED per spec section 5.2
+ *     (regression guard for the indie-floor minimal seed).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -65,9 +69,28 @@ describe('bootstrap-pol-resume-strategy POLICIES', () => {
   it('returns the expected stable set of policy ids', () => {
     const policies = buildPolicies(OP);
     const ids = policies.map((p: { id: string }) => p.id).sort();
-    // v1 minimal seed: pr-fix-actor only (cto-actor + code-author
-    // ship absent per spec section 5.2).
-    expect(ids).toEqual(['pol-resume-strategy-pr-fix-actor']);
+    // Post task #155: pr-fix-actor (PR #171 posture) + code-author
+    // (after PR #397 shipped the auditor feedback re-prompt loop that
+    // makes code-author re-invocation a real pattern). cto-actor +
+    // pipeline-auditor still ship ABSENT per spec section 5.2 (no
+    // observed re-invocation pattern justifying resume).
+    expect(ids).toEqual([
+      'pol-resume-strategy-code-author',
+      'pol-resume-strategy-pr-fix-actor',
+    ]);
+  });
+
+  it('OMITS cto-actor + pipeline-auditor policy ids (indie-floor regression guard)', () => {
+    // Per spec section 5.2: the indie-floor seed ships ABSENT for
+    // actors that have no observed re-invocation pattern. Adding
+    // either id here would silently restore stale context on a solo
+    // developer's first run-cto-actor.mjs invocation; the operator
+    // catches this regression at test time rather than via a
+    // surprise behavior change at deploy time.
+    const policies = buildPolicies(OP);
+    const ids = policies.map((p: { id: string }) => p.id);
+    expect(ids).not.toContain('pol-resume-strategy-cto-actor');
+    expect(ids).not.toContain('pol-resume-strategy-pipeline-auditor');
   });
 
   it('pol-resume-strategy-pr-fix-actor.content satisfies the Zod schema', () => {
@@ -111,9 +134,11 @@ describe('bootstrap-pol-resume-strategy POLICIES', () => {
     expect(content.max_stale_hours).toBe(8);
   });
 
-  it('policyAtom emits a well-formed L3 directive with metadata.policy.subject and content', () => {
+  it('policyAtom emits a well-formed L3 directive for the pr-fix-actor seed', () => {
     const policies = buildPolicies(OP);
-    const spec = policies[0]!;
+    const spec = policies.find(
+      (p: { id: string }) => p.id === 'pol-resume-strategy-pr-fix-actor',
+    )!;
     const atom = policyAtom(spec, OP);
     expect(atom.id).toBe('pol-resume-strategy-pr-fix-actor');
     expect(atom.type).toBe('directive');
@@ -139,10 +164,126 @@ describe('bootstrap-pol-resume-strategy POLICIES', () => {
   });
 
   it('rebuild is byte-identical (deterministic, no Date.now / Math.random leakage)', () => {
-    const a = policyAtom(buildPolicies(OP)[0]!, OP);
-    const b = policyAtom(buildPolicies(OP)[0]!, OP);
+    // Compare each entry individually so a future re-ordering of the
+    // POLICIES array surfaces as a localized test failure rather than
+    // a confusing whole-array equality miss.
+    const a = buildPolicies(OP).map((spec: { id: string }) => policyAtom(spec, OP));
+    const b = buildPolicies(OP).map((spec: { id: string }) => policyAtom(spec, OP));
     expect(a).toEqual(b);
   });
+});
+
+describe('bootstrap-pol-resume-strategy code-author seed (task #155)', () => {
+  it('pol-resume-strategy-code-author.content satisfies the Zod schema', () => {
+    // Drift guard: the schema is the same one the registry's bridge
+    // (wrapAgentLoopAdapterIfEnabled) consults at canon-read time, so
+    // a malformed code-author payload would fail-closed silently at
+    // runtime. This test catches the mismatch at seed time.
+    const policies = buildPolicies(OP);
+    const spec = policies.find(
+      (p: { id: string }) => p.id === 'pol-resume-strategy-code-author',
+    );
+    expect(spec).toBeDefined();
+    const content = (spec! as { content: unknown }).content;
+    const parsed = resumeStrategyPolicySchema.safeParse(content);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.enabled).toBe(true);
+      // 4-hour staleness window per the 2026-05-09 audit memo: the
+      // auditor feedback re-prompt loop (PR #397) lands within
+      // seconds-to-minutes of the first attempt, so a 4h floor is the
+      // tighter bound the code-author re-invocation pattern justifies
+      // (vs pr-fix-actor's 8h, which covers a CR cycle).
+      expect(parsed.data.max_stale_hours).toBe(4);
+      // Same fresh_spawn_kinds floor as pr-fix-actor per spec section
+      // 6.2: the indie-floor minimum. Per-actor widening lands as a
+      // separate canon edit if the operator decides a specific
+      // failure mode should also force fresh-spawn for code-author.
+      expect(parsed.data.fresh_spawn_kinds).toEqual([
+        'budget-exhausted',
+        'stale-window-exceeded',
+        'workspace-unrecoverable',
+        'operator-reset',
+      ]);
+    }
+  });
+
+  it('pol-resume-strategy-code-author preserves the task #155 posture (enabled=true, 4h window)', () => {
+    // Per the audit memo recommendation: enabled=true + 4h window.
+    // Removing this atom flips code-author back to fresh-spawn
+    // (symmetric with the pr-fix-actor regression check). The audit
+    // chose 4h as the tighter feedback loop relative to pr-fix-actor's
+    // 8h; document the asymmetry so a future canon edit that aligns
+    // the two windows is a conscious choice, not an accidental drift.
+    const policies = buildPolicies(OP);
+    const spec = policies.find(
+      (p: { id: string }) => p.id === 'pol-resume-strategy-code-author',
+    );
+    expect(spec).toBeDefined();
+    const content = (spec! as { content: { enabled: boolean; max_stale_hours: number } }).content;
+    expect(content.enabled).toBe(true);
+    expect(content.max_stale_hours).toBe(4);
+  });
+
+  it('policyAtom emits a well-formed L3 directive for the code-author seed', () => {
+    // Mirrors the pr-fix-actor shape test exactly so any future
+    // serialization-shape drift between the two seeds (a field added
+    // to one but not the other) surfaces here. Two-test pattern is
+    // intentional per `dev-extract-helpers-at-n-2`: a parameterized
+    // helper would hide the divergence by collapsing both cases into
+    // one assertion path.
+    const policies = buildPolicies(OP);
+    const spec = policies.find(
+      (p: { id: string }) => p.id === 'pol-resume-strategy-code-author',
+    )!;
+    const atom = policyAtom(spec, OP);
+    expect(atom.id).toBe('pol-resume-strategy-code-author');
+    expect(atom.type).toBe('directive');
+    expect(atom.layer).toBe('L3');
+    expect(atom.principal_id).toBe(OP);
+    expect(atom.taint).toBe('clean');
+    expect(atom.scope).toBe('project');
+    expect(atom.confidence).toBe(1.0);
+    expect(atom.supersedes).toEqual([]);
+    expect(atom.superseded_by).toEqual([]);
+    expect(atom.provenance.kind).toBe('operator-seeded');
+    const meta = atom.metadata as {
+      policy: {
+        subject: string;
+        principal_id: string;
+        content: { enabled: boolean; max_stale_hours: number };
+      };
+    };
+    expect(meta.policy.subject).toBe('resume-strategy');
+    expect(meta.policy.principal_id).toBe('code-author');
+    expect(meta.policy.content.enabled).toBe(true);
+    expect(meta.policy.content.max_stale_hours).toBe(4);
+  });
+
+  it('code-author seed round-trips through the file host with the schema-valid payload preserved', () => withTempFileHost(async (host) => {
+    // Symmetric smoke test with the pr-fix-actor file-host round-trip
+    // below. Catches a serialization regression that drops a nested
+    // field from one seed but not the other (e.g. a string-only
+    // serializer that strips number arrays).
+    const policies = buildPolicies(OP);
+    const spec = policies.find(
+      (p: { id: string }) => p.id === 'pol-resume-strategy-code-author',
+    )!;
+    const expected = policyAtom(spec, OP);
+    await host.atoms.put(expected);
+
+    const stored = await host.atoms.get(expected.id);
+    expect(stored).not.toBeNull();
+    expect(stored!.type).toBe(expected.type);
+    expect(stored!.layer).toBe(expected.layer);
+    expect(stored!.principal_id).toBe(expected.principal_id);
+    expect(stored!.metadata.policy).toEqual(expected.metadata.policy);
+
+    const storedContent = (stored!.metadata as { policy: { content: unknown } }).policy.content;
+    const parsed = resumeStrategyPolicySchema.safeParse(storedContent);
+    expect(parsed.success).toBe(true);
+    expect(diffPolicyAtom(stored!, expected)).toEqual([]);
+  }));
 });
 
 describe('bootstrap-pol-resume-strategy idempotency (smoke)', () => {
@@ -151,9 +292,13 @@ describe('bootstrap-pol-resume-strategy idempotency (smoke)', () => {
     // put/get round-trip via the file-backed host. If the file
     // adapter's serialization drops a field (e.g. nested
     // metadata.policy.content), the get returns a different shape
-    // and this test fails.
+    // and this test fails. Pin to pol-resume-strategy-pr-fix-actor by
+    // id rather than index so a future re-ordering of the POLICIES
+    // array does not silently change which seed this test exercises.
     const policies = buildPolicies(OP);
-    const spec = policies[0]!;
+    const spec = policies.find(
+      (p: { id: string }) => p.id === 'pol-resume-strategy-pr-fix-actor',
+    )!;
     const expected = policyAtom(spec, OP);
     await host.atoms.put(expected);
 
@@ -186,7 +331,9 @@ describe('bootstrap-pol-resume-strategy idempotency (smoke)', () => {
     // check. We simulate the bootstrap's main() loop here without
     // spawning a child Node process.
     const policies = buildPolicies(OP);
-    const spec = policies[0]!;
+    const spec = policies.find(
+      (p: { id: string }) => p.id === 'pol-resume-strategy-pr-fix-actor',
+    )!;
     const expected = policyAtom(spec, OP);
 
     // First run.
@@ -213,7 +360,9 @@ describe('bootstrap-pol-resume-strategy idempotency (smoke)', () => {
     // diffPolicyAtom and asserting on its output ties the test to
     // the real drift-detection contract.
     const policies = buildPolicies(OP);
-    const spec = policies[0]!;
+    const spec = policies.find(
+      (p: { id: string }) => p.id === 'pol-resume-strategy-pr-fix-actor',
+    )!;
     const expected = policyAtom(spec, OP);
 
     // Plant a drifted atom: same id, different enabled flag.

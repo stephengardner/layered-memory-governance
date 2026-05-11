@@ -25,8 +25,13 @@ const BOOTSTRAP_TIME = '2026-05-05T00:00:00.000Z';
  * pre-canon-policy run.
  *
  * Indie-floor fit: the seed is intentionally minimal:
- *   - enabled: true            -> matches PR #171's behavior
- *   - max_stale_hours: 8       -> matches SameMachineCliResumeStrategy default
+ *   - enabled: true            -> matches the upstream actor's behavior
+ *   - max_stale_hours: <N>     -> per-actor floor; pr-fix-actor inherits
+ *                                  the 8h SameMachineCliResumeStrategy
+ *                                  default; code-author uses 4h per the
+ *                                  audit recommendation (tighter feedback
+ *                                  loop than pr-fix because the auditor
+ *                                  re-prompt loop fires within seconds).
  *   - fresh_spawn_kinds: [...] -> the indie-floor minimum set per
  *                                 spec section 6.2:
  *                                  - 'budget-exhausted'
@@ -34,14 +39,23 @@ const BOOTSTRAP_TIME = '2026-05-05T00:00:00.000Z';
  *                                  - 'workspace-unrecoverable'
  *                                  - 'operator-reset'
  *
- * cto-actor + code-author POLICIES are intentionally OMITTED in this
- * v1 seed: per spec section 5.2 ("indie-floor default: absent") the
- * policy atom for those principals ships absent so a solo developer's
- * first run-cto-actor.mjs / run-code-author.mjs invocation does not
- * surprise-restore stale context. An org-ceiling deployment that
- * decides resume should be on for those principals adds a
- * higher-priority canon atom via a second `decide` call; this
- * bootstrap is the v1 minimal seed.
+ * Coverage as of task #155 ship (2026-05-11):
+ *   - pr-fix-actor    seeded resume-on (PR #171 + bootstrap)
+ *   - code-author     seeded resume-on (this seed; closes task #155 after
+ *                     task #293 / PR #397 wired the auditor feedback
+ *                     re-prompt loop that turns code-author re-invocation
+ *                     into a real pattern worth resuming)
+ *   - cto-actor       still OMITTED per spec section 5.2; single-shot in
+ *                     current design with no observed resume benefit.
+ *                     Monitor via operator telemetry before seeding.
+ *   - pipeline-auditor still OMITTED; only relevant once the review-stage
+ *                     critical-finding loop is observed re-running on the
+ *                     same plan+bundle within the staleness window.
+ *
+ * Future per-actor adds: write a separate spec entry mirroring the
+ * code-author shape, with reason text citing the specific re-invocation
+ * pattern justifying resume. Removing an entry flips that actor back to
+ * fresh-spawn (the registry bridge fails-closed on absent policy).
  */
 export function buildPolicies(_operatorId) {
   return [
@@ -55,14 +69,49 @@ export function buildPolicies(_operatorId) {
         + 'The bootstrap seeds the canon atom so a fresh deployment running this seed for '
         + 'the first time observes IDENTICAL behavior to the pre-canon-policy run; '
         + 'removing this atom flips PR-fix back to fresh-spawn (regression check vs PR #171). '
-        + 'Indie-floor default per spec section 5.2 (cto-actor + code-author ship ABSENT '
-        + 'so a solo developer does not surprise-restore stale context); org-ceiling '
-        + 'deployments that want resume on cto-actor or code-author write a separate '
-        + 'pol-resume-strategy-cto-actor or pol-resume-strategy-code-author atom via '
-        + 'a deliberate canon-edit moment, not a global toggle.',
+        + 'Indie-floor default per spec section 5.2 (cto-actor + pipeline-auditor ship ABSENT '
+        + 'so a solo developer does not surprise-restore stale context for actors with no '
+        + 'observed re-invocation pattern); org-ceiling deployments that want resume on those '
+        + 'principals write a separate pol-resume-strategy-<principal> atom via a deliberate '
+        + 'canon-edit moment, not a global toggle.',
       content: {
         enabled: true,
         max_stale_hours: 8,
+        fresh_spawn_kinds: [
+          'budget-exhausted',
+          'stale-window-exceeded',
+          'workspace-unrecoverable',
+          'operator-reset',
+        ],
+      },
+    },
+    {
+      id: 'pol-resume-strategy-code-author',
+      principal_id: 'code-author',
+      reason:
+        'Per-actor resume-strategy policy for the code-author principal. '
+        + 'Extends the indie-floor seed once task #293 (auditor feedback re-prompt loop, '
+        + 'bounded N=2 retry, PR #397) shipped a real re-invocation pattern for the '
+        + 'code-author dispatch chain: when the auditor returns a critical finding the '
+        + 'planning-pipeline runner re-invokes the same stage with the feedback folded '
+        + 'into the next attempt. The second invocation lands within seconds of the '
+        + 'first, so resuming the prior agent-loop session preserves the in-memory '
+        + 'context the model already built rather than paying the cold-start tax again. '
+        + 'The 4-hour staleness window (tighter than the pr-fix-actor 8h) reflects this: '
+        + 'a re-prompt that took longer than 4 hours is almost certainly a different '
+        + 'work item, not a real follow-up to the first attempt. The descriptor and '
+        + 'registry wiring shipped in PRs #305-#308; this atom is the substrate-pure '
+        + 'flip-the-dial completion (closes task #155). Removing this atom flips '
+        + 'code-author back to fresh-spawn (regression check, symmetric with the '
+        + 'pr-fix-actor seed). Future-forward note: the agentic-code-author-executor '
+        + 'at src/runtime/actor-message/agentic-code-author-executor.ts is the seam '
+        + 'where the wrapped AgentLoopAdapter lands once the production dispatch path '
+        + 'wires the agentic executor (today the diff-based path is the production '
+        + 'shape; the seam is reserved + tested so wiring is one config change, not '
+        + 'an architecture change).',
+      content: {
+        enabled: true,
+        max_stale_hours: 4,
         fresh_spawn_kinds: [
           'budget-exhausted',
           'stale-window-exceeded',
