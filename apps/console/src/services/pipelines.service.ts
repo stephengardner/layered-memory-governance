@@ -180,3 +180,60 @@ export async function resumePipeline(
     signal ? { signal } : undefined,
   );
 }
+
+/**
+ * Wire shape returned by `/api/pipeline.abandon`. Mirrors the backend
+ * `handleAbandonPipeline` return shape so a client deserializes
+ * without an additional type layer.
+ *
+ * The substrate's runner observes the pipeline-abandoned atom on its
+ * next stage-transition check per
+ * `runtime/planning-pipeline/runner.ts` and halts cleanly before
+ * dispatching the next stage. The Console's role is (a) verify
+ * authority via the canon `pol-pipeline-abandon` gate, (b) write the
+ * audit atom carrying the operator's reason, and (c) flip the
+ * pipeline_state so the substrate observes the terminal state. The
+ * response echoes the minted atom id so the UI can confirm the
+ * substrate observed the flip on the next poll cycle.
+ */
+export interface PipelineAbandonResult {
+  readonly pipeline_id: string;
+  readonly abandoner_principal_id: string;
+  readonly abandon_atom_id: string;
+  readonly abandoned_at: string;
+}
+
+/**
+ * Abandon a running or hil-paused pipeline. Server-side checks:
+ *   - 400 reason-missing            : reason field absent or empty
+ *   - 400 reason-too-short          : reason below the 10-char floor
+ *   - 400 reason-too-long           : reason above the 500-char cap
+ *   - 404 pipeline-not-found        : id does not match a pipeline atom
+ *   - 409 pipeline-already-terminal : already abandoned, completed, or failed
+ *   - 409 pipeline-abandon-conflict : pipeline moved into terminal state
+ *                                     between validation and write
+ *   - 403 pipeline-abandon-no-policy: canon pol-pipeline-abandon missing
+ *   - 403 pipeline-abandon-forbidden: caller not in allowed_principals
+ *   - 500 server-actor-unset        : LAG_CONSOLE_ACTOR_ID not configured
+ *
+ * Identity binding: the abandoner principal is derived server-side
+ * from `LAG_CONSOLE_ACTOR_ID`; the client does NOT supply an
+ * `actor_id`. Mirrors the pipeline.resume route's identity binding
+ * (CR PR #396 critical finding); a forbidden caller cannot land an
+ * audit atom on disk even when reaching the origin-allowed endpoint.
+ *
+ * The `reason` field is REQUIRED and forms part of the audit trail.
+ * Per the substrate's reason-validation rung, an empty or whitespace-
+ * only reason fails the 400 floor; trim is server-side so leading or
+ * trailing whitespace does not count toward the minimum.
+ */
+export async function abandonPipeline(
+  params: { pipeline_id: string; reason: string },
+  signal?: AbortSignal,
+): Promise<PipelineAbandonResult> {
+  return transport.call<PipelineAbandonResult>(
+    'pipeline.abandon',
+    params as unknown as Record<string, unknown>,
+    signal ? { signal } : undefined,
+  );
+}

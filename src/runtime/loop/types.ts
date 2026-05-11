@@ -111,6 +111,13 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   'pipeline-audit-finding': 365 * 24 * 60 * 60 * 1000,   // ~1 year
   'pipeline-failed': 365 * 24 * 60 * 60 * 1000,          // ~1 year
   'pipeline-resume': 365 * 24 * 60 * 60 * 1000,          // ~1 year
+  // Pipeline-abandoned atoms are operator-initiated terminal records
+  // for a pipeline run; same retention shape as the pipeline-failed
+  // and pipeline-resume audit atoms (long half-life so the audit
+  // chain stays queryable for at least a year). Operational purge
+  // belongs in a follow-up policy atom, not on the substrate decay
+  // axis.
+  'pipeline-abandoned': 365 * 24 * 60 * 60 * 1000,       // ~1 year
   // PR-orphan reconciler atoms.
   //
   // Driver-claim atoms carry a 12-hour DEFAULT half-life that matches the

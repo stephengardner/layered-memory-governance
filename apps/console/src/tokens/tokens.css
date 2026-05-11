@@ -46,6 +46,11 @@
        so a chevron resize in one place can't drift the spacer in the
        other. 0.875rem = 14px at default font scale. */
     --icon-size-sm: 0.875rem;
+    /* Larger icon size for prominent dialog headers (modal icons,
+       header badges). 2rem = 32px at default font scale; matches
+       --space-7 in the scale but lives on its own semantic axis so
+       a spacing change does not silently resize every dialog icon. */
+    --size-icon-lg: 2rem;
 
     /* Tap-target floor per canon `dev-web-mobile-first-required`:
        interactive elements meet 44 CSS pixels in both dimensions.
