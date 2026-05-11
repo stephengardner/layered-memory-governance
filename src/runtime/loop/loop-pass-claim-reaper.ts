@@ -75,7 +75,16 @@ export async function readLoopPassClaimReaperFromCanon(
   const PAGE_SIZE = 200;
   let cursor: string | undefined;
   do {
-    const page = await host.atoms.query({ type: ['directive'] }, PAGE_SIZE, cursor);
+    // Constrain to L3 (canonical layer) so a same-subject non-canon
+    // directive (L0/L1/L2) cannot impersonate authoritative canon.
+    // Mirrors the L3-only scan in `canon-policy-cadence.ts`; without
+    // this filter an attacker-or-mistake L0/L1 atom with the same
+    // subject discriminator could flip the claim-reaper enable knob.
+    const page = await host.atoms.query(
+      { type: ['directive'], layer: ['L3'] },
+      PAGE_SIZE,
+      cursor,
+    );
     for (const atom of page.atoms) {
       if (atom.taint !== 'clean') continue;
       if (atom.superseded_by.length > 0) continue;

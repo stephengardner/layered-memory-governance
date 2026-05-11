@@ -249,4 +249,43 @@ describe('LoopRunner claim-reaper pass wiring', () => {
     expect(report.tickNumber).toBe(1);
     expect(report.finishedAt).not.toBe('');
   });
+
+  it('does not fail the tick when canon gate-resolution throws', async () => {
+    // Isolation guarantee: `shouldRunClaimReaperPass()` awaits an
+    // atom-store query. A transient atom-store fault during gate
+    // resolution MUST be contained by the pass's own try/catch so
+    // the tick keeps running for downstream passes (decay, promotion,
+    // canon applier). Without the try/catch wrapping the gate read,
+    // a host.atoms.query failure here would abort the entire tick
+    // with an unhandled rejection. CR PR #394 flagged this as Major.
+    const host = createMemoryHost();
+    host.clock.setTime(NOW);
+    // Stub host.atoms.query so the directive query inside the canon
+    // reader throws. Other passes use other filters; do not break them.
+    const realQuery = host.atoms.query.bind(host.atoms);
+    (host.atoms as { query: typeof host.atoms.query }).query = async (
+      filter,
+      limit,
+      cursor,
+    ) => {
+      const types = (filter as { type?: ReadonlyArray<string> } | undefined)?.type;
+      const layers = (filter as { layer?: ReadonlyArray<string> } | undefined)?.layer;
+      // Match the canon reader's exact query shape so other passes'
+      // directive queries (e.g. promotion) continue working.
+      if (types?.includes('directive') && layers?.includes('L3')) {
+        throw new Error('synthetic atom-store failure during gate resolution');
+      }
+      return realQuery(filter, limit, cursor);
+    };
+    const runner = new LoopRunner(host, {
+      principalId: principal,
+      runClaimReaperPass: true,
+    });
+    const report = await runner.tick();
+    expect(report.claimReaperReport).toBeNull();
+    expect(report.errors.some((e) => e.startsWith('claim-reaper-pass:'))).toBe(true);
+    // Tick still completed.
+    expect(report.tickNumber).toBe(1);
+    expect(report.finishedAt).not.toBe('');
+  });
 });

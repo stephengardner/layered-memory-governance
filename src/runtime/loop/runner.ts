@@ -614,19 +614,22 @@ export class LoopRunner {
     // inside `runClaimReaperTick` so a `.lag/STOP` arming during the
     // tick produces a `halted: true` report rather than partial work.
     //
-    // Independent try/catch so a claim-reaper throw does NOT
-    // short-circuit any later pass (plan-obs-refresh, reconcile,
-    // notify, pr-orphan). Mirrors the plan-reaper / pipeline-reaper
-    // catch shape above.
-    if (await this.shouldRunClaimReaperPass()) {
-      try {
+    // Both the gate resolution AND the pass execution sit inside one
+    // try/catch so a canon-read fault during `shouldRunClaimReaperPass`
+    // (an `await host.atoms.query(...)` that throws) does NOT abort
+    // the entire tick. Mirrors the plan-reaper / pipeline-reaper
+    // best-effort cleanup discipline: one fault per sub-pass surfaces
+    // through `errors[]`, never cascades into later passes
+    // (plan-obs-refresh, reconcile, notify, pr-orphan).
+    try {
+      if (await this.shouldRunClaimReaperPass()) {
         claimReaperReport = await this.claimReaperPass();
-      } catch (err) {
-        this.errorCounter += 1;
-        errors.push(
-          `claim-reaper-pass: ${err instanceof Error ? err.message : String(err)}`,
-        );
       }
+    } catch (err) {
+      this.errorCounter += 1;
+      errors.push(
+        `claim-reaper-pass: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     // --- Plan-observation refresh pass --------------------------------------
