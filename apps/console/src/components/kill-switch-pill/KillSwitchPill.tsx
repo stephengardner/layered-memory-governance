@@ -179,6 +179,7 @@ export function KillSwitchPill() {
             {mutation.isError && (
               <InlineError
                 message={toErrorMessage(mutation.error)}
+                label="Could not transition the kill switch:"
                 testId="kill-switch-error"
               />
             )}
