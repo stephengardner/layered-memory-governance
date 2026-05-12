@@ -358,7 +358,7 @@ describe('buildIntentOutcome: intent-dispatch-failed', () => {
     expect(result.skip_reasons).toHaveLength(1);
     expect(result.skip_reasons[0]?.reason).toMatch(/envelope mismatch/);
     expect(result.skip_reasons[0]?.source).toBe('dispatch-record');
-    expect(result.summary).toMatch(/dispatched 0 PRs/);
+    expect(result.summary).toMatch(/no PR opened/);
     expect(result.summary).toMatch(/envelope mismatch/);
   });
 
@@ -791,7 +791,11 @@ describe('buildSummary: pure helper', () => {
       pausedFromPipeline: null,
     });
     expect(summary).toMatch(/envelope mismatch/);
-    expect(summary).toMatch(/dispatched 0 PRs/);
+    // When a skipReason is set, the dispatch-record count is misleading
+    // (executor was invoked but returned noop). The summary now reads
+    // "no PR opened: <reason>" so the operator can't read a green
+    // count as success.
+    expect(summary).toMatch(/no PR opened/);
   });
 });
 
