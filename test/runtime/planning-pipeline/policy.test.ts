@@ -320,6 +320,32 @@ describe('readDispatchInvokerDefaultPolicy', () => {
     expect(result.atomId).toBeNull();
   });
 
+  it('returns null when role is whitespace-only (fail-closed on blank)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-dispatch-invoker-default', {
+        subject: 'dispatch-invoker-default',
+        role: '   ',
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBeNull();
+    expect(result.atomId).toBeNull();
+  });
+
+  it('trims whitespace off a quoted role value (substrate-pure normalization)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-dispatch-invoker-default', {
+        subject: 'dispatch-invoker-default',
+        role: '  lag-ceo  ',
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBe('lag-ceo');
+    expect(result.atomId).toBe('pol-dispatch-invoker-default');
+  });
+
   it('returns null when role is not a string', async () => {
     const host = createMemoryHost();
     await host.atoms.put(

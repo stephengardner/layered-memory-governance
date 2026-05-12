@@ -227,12 +227,17 @@ export async function readPipelineDefaultModePolicy(
  * a directive atom whose `metadata.policy.subject` is
  * 'dispatch-invoker-default'; the `role` field must be a non-empty
  * string. Returns `role: null, atomId: null` when no atom resolves so
- * the caller (autonomous-dispatch.register) can layer env override ->
- * canon -> documented fallback without conflating "canon did not
- * resolve" with "canon explicitly said X". Substrate-pure mechanism:
- * the reader knows nothing about the specific role names this
- * deployment uses (lag-ceo / lag-cto / lag-pr-landing / machine-user);
- * those live in the canon atom's content.
+ * the caller can layer env override -> canon -> documented fallback
+ * without conflating "canon did not resolve" with "canon explicitly
+ * said X". Substrate-pure mechanism: the reader knows nothing about
+ * the specific role names a deployment uses; the role taxonomy lives
+ * in the canon atom's content per dev-substrate-not-prescription.
+ *
+ * Trims `role` before validation so a quoted policy value with leading
+ * or trailing whitespace does not leak into downstream path
+ * resolution; whitespace-only values fail-closed (treated as
+ * unresolved canon) rather than reporting canon-resolved data for an
+ * effectively empty role.
  */
 export async function readDispatchInvokerDefaultPolicy(
   host: Host,
@@ -241,8 +246,9 @@ export async function readDispatchInvokerDefaultPolicy(
     const policy = readPolicy(atom);
     if (policy?.subject !== 'dispatch-invoker-default') continue;
     const raw = policy.role;
-    if (typeof raw === 'string' && raw.length > 0) {
-      return { role: raw, atomId: String(atom.id) };
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    if (trimmed.length > 0) {
+      return { role: trimmed, atomId: String(atom.id) };
     }
   }
   return { role: null, atomId: null };
