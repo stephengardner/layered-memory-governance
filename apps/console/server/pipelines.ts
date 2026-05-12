@@ -424,17 +424,43 @@ function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
     && typeof findingsSummaryRaw === 'object'
   ) {
     const fs = findingsSummaryRaw as Record<string, unknown>;
-    const critical = typeof fs['critical'] === 'number' ? fs['critical'] : null;
-    const major = typeof fs['major'] === 'number' ? fs['major'] : null;
-    const minor = typeof fs['minor'] === 'number' ? fs['minor'] : null;
+    // Bound + sanitize the per-severity counts: a malformed atom (NaN,
+    // Infinity, negative, fractional) must not surface a malformed
+    // numeric shape on the wire. Coerce to finite non-negative numbers
+    // before projecting; any bucket that fails validation drops the
+    // whole findings_summary so consumers see "absent" rather than
+    // "partial" -- matching the CR-suggested posture (PR #412).
+    const critical = typeof fs['critical'] === 'number'
+      && Number.isFinite(fs['critical'])
+      && fs['critical'] >= 0
+      ? fs['critical']
+      : null;
+    const major = typeof fs['major'] === 'number'
+      && Number.isFinite(fs['major'])
+      && fs['major'] >= 0
+      ? fs['major']
+      : null;
+    const minor = typeof fs['minor'] === 'number'
+      && Number.isFinite(fs['minor'])
+      && fs['minor'] >= 0
+      ? fs['minor']
+      : null;
     if (critical !== null && major !== null && minor !== null) {
       findings_summary = { critical, major, minor };
     }
   }
+  // Hard cap on validator_error_message length, mirroring
+  // MAX_VALIDATOR_ERROR_MESSAGE_LEN on the substrate mint side
+  // (src/runtime/planning-pipeline/atom-shapes.ts). The runner already
+  // truncates at emit time, but a malformed atom written by a future
+  // adapter or migration path could carry an unbounded value; the
+  // projection clamps it before wire-projection so detail payloads do
+  // not bloat under malformed input.
+  const VALIDATOR_ERROR_MESSAGE_MAX = 4096;
   const validatorErrorMessageRaw = meta['validator_error_message'];
   const validator_error_message = typeof validatorErrorMessageRaw === 'string'
     && validatorErrorMessageRaw.length > 0
-    ? validatorErrorMessageRaw
+    ? validatorErrorMessageRaw.slice(0, VALIDATOR_ERROR_MESSAGE_MAX)
     : undefined;
   return {
     atom_id: atom.id,

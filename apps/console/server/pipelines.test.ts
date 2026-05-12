@@ -579,6 +579,87 @@ describe('getPipelineDetail', () => {
     expect(result2!.stages[0]!.state).toBe('running');
   });
 
+  it('drops findings_summary on malformed numeric values (sanitization)', () => {
+    // CR PR #412: bound + sanitize retry metadata before projecting
+    // to wire. A malformed atom carrying NaN / Infinity / negative
+    // counts must surface as findings_summary=absent rather than
+    // a partial / malformed numeric shape.
+    const pipeline = pipelineAtom({
+      id: 'pipeline-malformed-counts',
+      state: 'completed',
+      createdAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+    });
+    const events = [
+      stageEventAtom({
+        pipelineId: 'pipeline-malformed-counts',
+        stageName: 'plan',
+        transition: 'enter',
+        at: new Date(NOW - 20 * 60 * 1000).toISOString(),
+      }),
+      // Negative + non-finite bucket counts. Each bucket fails
+      // validation; the whole findings_summary drops.
+      stageEventAtom({
+        pipelineId: 'pipeline-malformed-counts',
+        stageName: 'plan',
+        transition: 'retry-after-findings',
+        at: new Date(NOW - 19 * 60 * 1000).toISOString(),
+        attemptIndex: 2,
+        findingsSummary: { critical: -1, major: 0, minor: 0 },
+      }),
+    ];
+    const result = getPipelineDetail(
+      [pipeline, ...events],
+      'pipeline-malformed-counts',
+    );
+    expect(result).not.toBeNull();
+    const retryEvent = result!.events.find(
+      (e) => e.transition === 'retry-after-findings',
+    );
+    expect(retryEvent).toBeDefined();
+    expect(retryEvent!.findings_summary).toBeUndefined();
+  });
+
+  it('truncates validator_error_message at the wire cap (4096 chars)', () => {
+    // CR PR #412: a runaway zod error (e.g. malformed atom from a
+    // future adapter or migration path) must not bloat detail
+    // payloads. The wire-projection truncates at the same cap as the
+    // substrate mint, leaving headroom for the page-rendered detail.
+    const pipeline = pipelineAtom({
+      id: 'pipeline-giant-validator-error',
+      state: 'completed',
+      createdAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+    });
+    const giantError = 'schema-validation-failed: ' + 'x'.repeat(10_000);
+    const events = [
+      stageEventAtom({
+        pipelineId: 'pipeline-giant-validator-error',
+        stageName: 'plan',
+        transition: 'enter',
+        at: new Date(NOW - 20 * 60 * 1000).toISOString(),
+      }),
+      stageEventAtom({
+        pipelineId: 'pipeline-giant-validator-error',
+        stageName: 'plan',
+        transition: 'validator-retry-after-failure',
+        at: new Date(NOW - 19 * 60 * 1000).toISOString(),
+        attemptIndex: 2,
+        validatorErrorMessage: giantError,
+      }),
+    ];
+    const result = getPipelineDetail(
+      [pipeline, ...events],
+      'pipeline-giant-validator-error',
+    );
+    expect(result).not.toBeNull();
+    const retryEvent = result!.events.find(
+      (e) => e.transition === 'validator-retry-after-failure',
+    );
+    expect(retryEvent).toBeDefined();
+    // Wire shape is bounded at the projection layer regardless of
+    // the substrate-side cap. The slice is exact-length truncation.
+    expect(retryEvent!.validator_error_message!.length).toBe(4096);
+  });
+
   it('surfaces validator-retry-after-failure transition on events strip', () => {
     // Plan-stage validator-retry loop projection: when the runner
     // emits 'validator-retry-after-failure' between two attempts,

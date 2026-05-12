@@ -786,6 +786,17 @@ function EventRow({ event }: { event: PipelineStageEvent }) {
   const isRetryTransition =
     event.transition === 'retry-after-findings'
     || event.transition === 'validator-retry-after-failure';
+  // Render the validator error message inline on the
+  // 'validator-retry-after-failure' event so the operator sees WHICH
+  // schema-validation error triggered the teach-back -- not just that
+  // a retry happened. Mirrors the way auditor-feedback retry events
+  // surface findings_summary via the substrate's stamped metadata;
+  // both teaching signals belong on the timeline row that minted them.
+  // The full message is on `title` attribute so a long zod error is
+  // discoverable on hover; the visible row keeps the timeline scannable.
+  const validatorMessage = event.transition === 'validator-retry-after-failure'
+    ? event.validator_error_message
+    : undefined;
   return (
     <li
       className={styles.eventRow}
@@ -806,6 +817,15 @@ function EventRow({ event }: { event: PipelineStageEvent }) {
           aria-label={`attempt ${event.attempt_index}`}
         >
           attempt {event.attempt_index}
+        </span>
+      )}
+      {validatorMessage !== undefined && (
+        <span
+          className={styles.eventDetail}
+          data-testid="pipeline-stage-event-validator-error"
+          title={validatorMessage}
+        >
+          {validatorMessage}
         </span>
       )}
       <span className={styles.eventTime}>
