@@ -272,6 +272,184 @@ describe('readPipelineDefaultModePolicy', () => {
     expect(result.mode).toBe('single-pass');
     expect(result.atomId).toBeNull();
   });
+
+  it('source-rank arbitration: principal scope beats project scope when ctx.scope matches the principal', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-project', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'project',
+        mode: 'single-pass',
+      }),
+    );
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-apex', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'principal:apex-agent',
+        mode: 'substrate-deep',
+      }),
+    );
+    const result = await readPipelineDefaultModePolicy(host, {
+      scope: 'principal:apex-agent',
+    });
+    expect(result.mode).toBe('substrate-deep');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode-apex');
+  });
+
+  it('principal-scoped policy does NOT leak into project-scope query', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-project', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'project',
+        mode: 'single-pass',
+      }),
+    );
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-apex', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'principal:apex-agent',
+        mode: 'substrate-deep',
+      }),
+    );
+    const result = await readPipelineDefaultModePolicy(host, { scope: 'project' });
+    expect(result.mode).toBe('single-pass');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode-project');
+  });
+
+  it('recency tiebreak: newer atom at the same depth wins', async () => {
+    const host = createMemoryHost();
+    // Construct two project-scope atoms with explicit created_at values
+    // so the recency tiebreak is deterministic (memory-host ordering
+    // alone would not exercise the tiebreak).
+    const older: Atom = {
+      ...policyAtom('pol-planning-pipeline-default-mode-old', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'project',
+        mode: 'single-pass',
+      }),
+      created_at: '2026-01-01T00:00:00.000Z' as Time,
+    };
+    const newer: Atom = {
+      ...policyAtom('pol-planning-pipeline-default-mode-new', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'project',
+        mode: 'substrate-deep',
+      }),
+      created_at: '2026-04-28T12:00:00.000Z' as Time,
+    };
+    await host.atoms.put(older);
+    await host.atoms.put(newer);
+    const result = await readPipelineDefaultModePolicy(host, { scope: 'project' });
+    expect(result.mode).toBe('substrate-deep');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode-new');
+  });
+
+  it('recency tiebreak: order-independent (older atom written second still loses)', async () => {
+    const host = createMemoryHost();
+    // Reverse the insertion order from the previous case to prove the
+    // arbitration does not just pick whichever came off disk first.
+    const newer: Atom = {
+      ...policyAtom('pol-planning-pipeline-default-mode-new', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'project',
+        mode: 'substrate-deep',
+      }),
+      created_at: '2026-04-28T12:00:00.000Z' as Time,
+    };
+    const older: Atom = {
+      ...policyAtom('pol-planning-pipeline-default-mode-old', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'project',
+        mode: 'single-pass',
+      }),
+      created_at: '2026-01-01T00:00:00.000Z' as Time,
+    };
+    await host.atoms.put(newer);
+    await host.atoms.put(older);
+    const result = await readPipelineDefaultModePolicy(host, { scope: 'project' });
+    expect(result.mode).toBe('substrate-deep');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode-new');
+  });
+
+  it('legacy atom without a scope field is treated as project-scope (backward compat)', async () => {
+    const host = createMemoryHost();
+    // Existing deployments seeded pol-planning-pipeline-default-mode
+    // before the scope field was introduced. The reader must still
+    // resolve these atoms when callers ask for project scope, otherwise
+    // a substrate update would silently revert the deployment to the
+    // indie-floor fallback.
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-legacy', {
+        subject: 'planning-pipeline-default-mode',
+        mode: 'substrate-deep',
+      }),
+    );
+    const result = await readPipelineDefaultModePolicy(host, { scope: 'project' });
+    expect(result.mode).toBe('substrate-deep');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode-legacy');
+  });
+
+  it('scope-mismatch: principal-scoped policy ignored when ctx is a different principal', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-alice', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'principal:alice',
+        mode: 'substrate-deep',
+      }),
+    );
+    const result = await readPipelineDefaultModePolicy(host, {
+      scope: 'principal:bob',
+    });
+    // No project-scope atom present and the alice-scoped atom does not
+    // apply to bob, so the reader falls through to its fail-closed
+    // built-in default.
+    expect(result.mode).toBe('single-pass');
+    expect(result.atomId).toBeNull();
+  });
+
+  it('default ctx (no argument) resolves at project scope', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-project', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'project',
+        mode: 'substrate-deep',
+      }),
+    );
+    // Existing callers (intend.mjs, bootstrap test) pass no ctx
+    // argument and rely on the default project-scope resolution.
+    const result = await readPipelineDefaultModePolicy(host);
+    expect(result.mode).toBe('substrate-deep');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode-project');
+  });
+
+  it('malformed-but-highest-depth atom does not shadow a valid lower-depth atom', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-project', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'project',
+        mode: 'substrate-deep',
+      }),
+    );
+    await host.atoms.put(
+      policyAtom('pol-planning-pipeline-default-mode-apex-malformed', {
+        subject: 'planning-pipeline-default-mode',
+        scope: 'principal:apex-agent',
+        mode: 'lightning-deep',
+      }),
+    );
+    // The malformed principal-scoped atom is filtered BEFORE
+    // arbitration, so the valid project-scope atom wins instead of the
+    // reader collapsing to the built-in fallback.
+    const result = await readPipelineDefaultModePolicy(host, {
+      scope: 'principal:apex-agent',
+    });
+    expect(result.mode).toBe('substrate-deep');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode-project');
+  });
 });
 
 describe('readDispatchInvokerDefaultPolicy', () => {
