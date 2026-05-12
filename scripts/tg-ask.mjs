@@ -2,7 +2,8 @@
 /**
  * Ask a HIL question via Telegram with causality tracking.
  *
- * Creates a pending_question atom in .lag/ AND queues an outbox
+ * Creates a pending_question atom in the LAG state dir (honors LAG_STATE_DIR,
+ * else defaults to .lag/) AND queues an outbox
  * message. The daemon sends the message and records the Telegram
  * message_id onto the question atom's metadata. When the HIL
  * swipe-replies on Telegram, the daemon's autoBindAnswer flips

@@ -45,7 +45,7 @@ async function main() {
   }
   const args = parsed.args;
   if (existsSync(resolve(STATE_DIR, 'STOP'))) {
-    console.error('[intend] .lag/STOP present; kill-switch is armed. Remove it to proceed.');
+    console.error(`[intend] ${resolve(STATE_DIR, 'STOP')} present; kill-switch is armed. Remove it to proceed.`);
     process.exit(3);
   }
   const operatorPrincipalId = process.env.LAG_OPERATOR_ID;

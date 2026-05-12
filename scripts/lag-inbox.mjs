@@ -48,7 +48,7 @@ function parseArgs(argv) {
         '',
         'Options:',
         '  --for <id>            Required. Principal whose inbox to show.',
-        '  --state-dir <path>    Default: .lag/ under the repo root.',
+        '  --state-dir <path>    Default: LAG_STATE_DIR (if set), else .lag/ under the repo root.',
         '  --json                Emit JSON (default: human-readable).',
         '',
         'Output sections:',
