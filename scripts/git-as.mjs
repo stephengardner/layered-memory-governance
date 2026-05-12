@@ -110,9 +110,10 @@ import {
   findRemoteArg,
   isPushCommand,
 } from './lib/git-as-push-auth.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 /**
  * Resolve a remote's URL by shelling out to `git remote get-url`.

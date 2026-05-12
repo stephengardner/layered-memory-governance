@@ -44,6 +44,7 @@ import {
 import { parseRunCtoActorArgs } from './lib/run-cto-actor.mjs';
 import { computeVerifiedCitedAtomIds } from './lib/verified-citation-set.mjs';
 import { formatIntentApproveResult } from './lib/intent-approve-log.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 // Instance configuration lives here, NOT in src/. Framework code
 // stays mechanism-focused; vendor model ids are the caller's choice.
@@ -78,7 +79,7 @@ const INSTANCE_JUDGE_TIMEOUT_MS = 1_800_000;
 const JUDGE_CALLS_PER_ITERATION = 2;
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const STOP_SENTINEL = resolve(STATE_DIR, 'STOP');
 
 function printUsageAndExit() {

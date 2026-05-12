@@ -92,6 +92,7 @@ import {
   truncatePlanIdLabel,
   verifyDispatchRepoIdentity,
 } from '../lib/autonomous-dispatch-exec.mjs';
+import { resolveStateDir } from '../lib/resolve-state-dir.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GH_AS_PATH = resolve(HERE, '..', 'gh-as.mjs');
@@ -140,7 +141,7 @@ export default async function register(host, registry) {
   const role = resolved.role;
   console.error(`[autonomous-dispatch] dispatch bot role: ${role} (source=${resolved.source})`);
   const repoDir = resolve(process.env.LAG_REPO_DIR ?? process.cwd());
-  const stateDir = resolve(process.env.LAG_STATE_DIR ?? join(repoDir, '.lag'));
+  const stateDir = resolveStateDir(repoDir);
   // Default to Opus 4.7 for drafter calls. Opus has a 1M context window and
   // higher max_tokens output, which matters for multi-file diffs where a
   // tighter ceiling can starve the structured-output budget after extended

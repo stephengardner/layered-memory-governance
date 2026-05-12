@@ -50,9 +50,10 @@ import { execa } from 'execa';
 import { GitHubPrReviewAdapter } from '../dist/actors/pr-review/index.js';
 import { createGhClient } from '../dist/external/github/index.js';
 import { createFileHost } from '../dist/adapters/file/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 // Freshness threshold: if the newest pr-observation atom for this PR is
 // older than this, we still render it (with an age banner) but ALSO

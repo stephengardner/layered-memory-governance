@@ -31,9 +31,10 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { buildSuggestionAtom } from './lib/canon-suggestion.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 function parseArgs(argv) {
   const args = {

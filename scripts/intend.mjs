@@ -21,6 +21,7 @@ import {
 } from './lib/intend.mjs';
 import { runPreflight, formatPreflightError } from './lib/intend-preflight.mjs';
 import { spawnNode } from './lib/spawn-node.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 /**
  * Documented indie-floor default reached when env LAG_PIPELINE_MODE is
@@ -33,7 +34,7 @@ import { spawnNode } from './lib/spawn-node.mjs';
 const FALLBACK_PIPELINE_MODE = 'substrate-deep';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 async function main() {
   const parsed = parseIntendArgs(process.argv.slice(2));
@@ -44,7 +45,7 @@ async function main() {
   }
   const args = parsed.args;
   if (existsSync(resolve(STATE_DIR, 'STOP'))) {
-    console.error('[intend] .lag/STOP present; kill-switch is armed. Remove it to proceed.');
+    console.error(`[intend] ${resolve(STATE_DIR, 'STOP')} present; kill-switch is armed. Remove it to proceed.`);
     process.exit(3);
   }
   const operatorPrincipalId = process.env.LAG_OPERATOR_ID;

@@ -26,9 +26,10 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { listUnread } from '../dist/actor-message/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const DEFAULT_STATE_DIR = resolve(REPO_ROOT, '.lag');
+const DEFAULT_STATE_DIR = resolveStateDir(REPO_ROOT);
 
 function parseArgs(argv) {
   const args = {
@@ -47,7 +48,7 @@ function parseArgs(argv) {
         '',
         'Options:',
         '  --for <id>            Required. Principal whose inbox to show.',
-        '  --state-dir <path>    Default: .lag/ under the repo root.',
+        '  --state-dir <path>    Default: LAG_STATE_DIR (if set), else .lag/ under the repo root.',
         '  --json                Emit JSON (default: human-readable).',
         '',
         'Output sections:',

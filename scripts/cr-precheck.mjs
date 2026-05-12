@@ -48,9 +48,10 @@ import {
   isCliErrorResult,
   decideExitCode,
 } from './lib/cr-precheck.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 function parseArgs(argv) {
   const args = { base: null, strict: false };

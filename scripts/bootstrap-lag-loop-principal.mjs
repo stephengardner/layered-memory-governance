@@ -48,9 +48,10 @@ import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const BOOTSTRAP_TIME = '2026-05-04T00:00:00.000Z';
 
 const LAG_LOOP_AGENT = 'lag-loop';

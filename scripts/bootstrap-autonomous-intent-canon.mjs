@@ -30,9 +30,10 @@ import {
   buildAtomFromSpec,
   buildAutonomousIntentCanonSpecs,
 } from './lib/autonomous-intent-canon-atoms.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
 if (!OPERATOR_ID) {

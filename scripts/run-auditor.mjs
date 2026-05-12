@@ -30,9 +30,10 @@ import {
   parsePlanIdFromPrBody,
   truncatePlanIdLabel,
 } from './lib/autonomous-dispatch-exec.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const REPO = process.env.GH_REPO ?? 'stephengardner/layered-autonomous-governance';
 
 function parseArgs(argv) {
