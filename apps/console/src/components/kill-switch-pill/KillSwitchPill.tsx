@@ -5,6 +5,8 @@ import { ShieldCheck, ShieldAlert, ShieldX, Shield, Power, Pause } from 'lucide-
 import { getKillSwitchState, transitionKillSwitch, type KillSwitchTier } from '@/services/kill-switch.service';
 import { requireActorId } from '@/services/session.service';
 import { useCurrentActorId } from '@/hooks/useCurrentActorId';
+import { toErrorMessage } from '@/services/errors';
+import { InlineError } from '@/components/state-display/InlineError';
 import styles from './KillSwitchPill.module.css';
 
 const TIER_ICON: Record<KillSwitchTier, typeof Shield> = {
@@ -175,7 +177,11 @@ export function KillSwitchPill() {
               medium and hard transitions require CLI
             </footer>
             {mutation.isError && (
-              <div className={styles.error}>{(mutation.error as Error).message}</div>
+              <InlineError
+                message={toErrorMessage(mutation.error)}
+                label="Could not transition the kill switch:"
+                testId="kill-switch-error"
+              />
             )}
           </motion.div>
         )}

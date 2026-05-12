@@ -185,15 +185,13 @@
   accent-color: var(--accent);
 }
 
-.error {
-  padding: var(--space-3);
-  background: color-mix(in srgb, var(--status-danger) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--status-danger) 30%, transparent);
-  border-radius: var(--radius-sm);
-  color: var(--status-danger);
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-}
+/*
+ * Mutation-error display: route through the shared InlineError
+ * primitive with a custom label ("Could not propose the atom:") so
+ * the dialog's failure matches every other in-card error in the
+ * console. The previous bespoke `.error` rule was removed when this
+ * dialog migrated.
+ */
 
 .actions {
   display: flex;

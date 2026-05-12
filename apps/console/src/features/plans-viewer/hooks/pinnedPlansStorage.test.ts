@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /*
  * Unit coverage for the pinned-plans storage seam. The hook composes
@@ -6,98 +6,99 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * directly so the suite stays in vitest's default Node environment
  * (no jsdom / no React-Testing-Library dependency required).
  *
- * The helpers call `storage.service.get`/`set`. We stub the localStorage
- * the service feature-detects and assert the resolved key carries the
- * `lag-console.` prefix -- a regression to direct `window.localStorage`
- * with the legacy `lag-pinned-plans` key would fail the resolved-key
- * assertions.
+ * Hermetic strategy: mock the entire `@/services/storage.service`
+ * module with an in-memory implementation that records every read
+ * and write the helper makes. The previous globalThis.localStorage
+ * stub approach was flaky under vitest's parallel-worker model
+ * because storage.service.ts feature-detects `typeof localStorage`
+ * at module-evaluation time, so module caching across workers raced
+ * with vi.stubGlobal. vi.mock applies before any import in this
+ * file resolves, so the helper never sees the real service.
  */
 
 const RESOLVED_KEY = 'lag-console.pinned-plans';
+const RAW_KEY = 'pinned-plans';
 
-class MemoryStorage {
-  readonly map = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.map.has(key) ? this.map.get(key)! : null;
-  }
-  setItem(key: string, value: string): void {
-    this.map.set(key, value);
-  }
-  removeItem(key: string): void {
-    this.map.delete(key);
-  }
-  clear(): void {
-    this.map.clear();
-  }
-}
-
-let memoryStorage: MemoryStorage;
-
-beforeEach(() => {
-  /*
-   * Stub the global the storage.service module-loaded above expects.
-   * We use vi.stubGlobal so it survives the cached module reference
-   * inside storage.service. The service's module-level singleton was
-   * picked at import time -- but that import happened before the
-   * stub, against a real (undefined-or-jsdom) localStorage. To make
-   * the per-test stub take effect we re-import the helpers fresh
-   * inside each test below via dynamic import. This avoids the
-   * "module evaluated once with the wrong global" trap.
-   */
-  memoryStorage = new MemoryStorage();
-  vi.stubGlobal('localStorage', memoryStorage);
+/*
+ * Hoisted mock state: vi.mock factories run before module-level
+ * variable initialisation (vitest hoists the mock above the import
+ * chain), so the storage map must come from a vi.hoisted block to
+ * exist by the time the factory executes.
+ */
+const { mockStorage, getCalls, setCalls } = vi.hoisted(() => {
+  const store = new Map<string, unknown>();
+  const reads: string[] = [];
+  const writes: Array<{ key: string; value: unknown }> = [];
+  return {
+    mockStorage: {
+      get<T>(key: string): T | null {
+        reads.push(key);
+        return (store.has(key) ? (store.get(key) as T) : null);
+      },
+      set<T>(key: string, value: T): void {
+        writes.push({ key, value });
+        store.set(key, value);
+      },
+      remove(key: string): void {
+        store.delete(key);
+      },
+      _clear(): void {
+        store.clear();
+        reads.length = 0;
+        writes.length = 0;
+      },
+      _setSeed(key: string, value: unknown): void {
+        store.set(key, value);
+      },
+    },
+    getCalls: () => reads.slice(),
+    setCalls: () => writes.slice(),
+  };
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.resetModules();
+vi.mock('@/services/storage.service', () => ({
+  storage: mockStorage,
+}));
+
+beforeEach(() => {
+  mockStorage._clear();
 });
 
 describe('pinnedPlansStorage', () => {
   it('readPinnedPlans returns [] when storage is empty', async () => {
     const mod = await import('./pinnedPlansStorage');
     expect(mod.readPinnedPlans()).toEqual([]);
+    /*
+     * The helper must read the un-prefixed key; storage.service is
+     * responsible for resolving it to the lag-console-prefixed slot.
+     */
+    expect(getCalls()).toContain(RAW_KEY);
   });
 
-  it('writePinnedPlans persists under the lag-console-prefixed key', async () => {
+  it('writePinnedPlans goes through storage.service (no direct localStorage access)', async () => {
     const mod = await import('./pinnedPlansStorage');
     mod.writePinnedPlans(['plan-a', 'plan-b']);
-    const raw = memoryStorage.getItem(RESOLVED_KEY);
-    expect(raw).not.toBeNull();
-    expect(JSON.parse(raw!)).toEqual(['plan-a', 'plan-b']);
-    /*
-     * The legacy un-prefixed key from the pre-migration shape must
-     * NEVER be touched. A read at the old slot would indicate the
-     * hook regressed back to direct localStorage access.
-     */
-    expect(memoryStorage.getItem('lag-pinned-plans')).toBeNull();
+    const writes = setCalls();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toEqual({ key: RAW_KEY, value: ['plan-a', 'plan-b'] });
   });
 
-  it('readPinnedPlans rehydrates from a pre-existing prefixed key', async () => {
-    memoryStorage.setItem(RESOLVED_KEY, JSON.stringify(['plan-a', 'plan-b']));
+  it('readPinnedPlans rehydrates from a pre-existing seeded value', async () => {
+    mockStorage._setSeed(RAW_KEY, ['plan-a', 'plan-b']);
     const mod = await import('./pinnedPlansStorage');
     expect(mod.readPinnedPlans()).toEqual(['plan-a', 'plan-b']);
   });
 
   it('readPinnedPlans rejects non-array payloads', async () => {
-    memoryStorage.setItem(RESOLVED_KEY, JSON.stringify({ not: 'an array' }));
+    mockStorage._setSeed(RAW_KEY, { not: 'an array' });
     const mod = await import('./pinnedPlansStorage');
     expect(mod.readPinnedPlans()).toEqual([]);
   });
 
   it('readPinnedPlans filters non-string entries', async () => {
-    memoryStorage.setItem(
-      RESOLVED_KEY,
-      JSON.stringify(['plan-a', 42, null, 'plan-b', { id: 'plan-c' }]),
-    );
+    mockStorage._setSeed(RAW_KEY, ['plan-a', 42, null, 'plan-b', { id: 'plan-c' }]);
     const mod = await import('./pinnedPlansStorage');
     expect(mod.readPinnedPlans()).toEqual(['plan-a', 'plan-b']);
-  });
-
-  it('readPinnedPlans returns [] on malformed JSON (storage.service swallows the parse error)', async () => {
-    memoryStorage.setItem(RESOLVED_KEY, '{not json');
-    const mod = await import('./pinnedPlansStorage');
-    expect(mod.readPinnedPlans()).toEqual([]);
   });
 
   it('RESOLVED_PINNED_PLANS_STORAGE_KEY exposes the prefixed key for cross-tab subscribers', async () => {

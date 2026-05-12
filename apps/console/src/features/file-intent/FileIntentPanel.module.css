@@ -390,27 +390,14 @@
   to { transform: rotate(360deg); }
 }
 
-.error {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-3);
-  background: color-mix(in srgb, var(--status-danger) 12%, transparent);
-  border: var(--stroke-hairline) solid color-mix(in srgb, var(--status-danger) 30%, transparent);
-  border-radius: var(--radius-sm);
-  color: var(--status-danger);
-}
-
-.errorTitle {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-}
-
-.errorMessage {
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-  word-break: break-word;
-}
+/*
+ * Mutation-error display: route through the shared InlineError
+ * primitive (apps/console/src/components/state-display/InlineError)
+ * with a custom label ("Could not file the intent:") so the form's
+ * error matches every other in-card error in the console. The
+ * previous bespoke `.error`/`.errorTitle`/`.errorMessage` rules were
+ * removed when this panel migrated.
+ */
 
 .toast {
   position: fixed;
