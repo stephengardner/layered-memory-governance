@@ -37,9 +37,13 @@ import {
 } from '../dist/actors/planning/index.js';
 import { loadLlmToolPolicy } from '../dist/llm-tool-policy.js';
 import { askQuestion } from '../dist/runtime/questions/index.js';
-import { runPlanApprovalTick } from '../dist/actor-message/index.js';
+import {
+  runIntentAutoApprovePass,
+  runPlanApprovalTick,
+} from '../dist/actor-message/index.js';
 import { parseRunCtoActorArgs } from './lib/run-cto-actor.mjs';
 import { computeVerifiedCitedAtomIds } from './lib/verified-citation-set.mjs';
+import { formatIntentApproveResult } from './lib/intent-approve-log.mjs';
 
 // Instance configuration lives here, NOT in src/. Framework code
 // stays mechanism-focused; vendor model ids are the caller's choice.
@@ -847,18 +851,47 @@ async function main() {
     lastNote: report.lastNote,
   }, null, 2));
 
-  // End-of-run opportunistic approval sweep. If votes were cast
-  // before this run (HIL reviewers casting lag-respond [v] on a
-  // previously-proposed plan), the new plan we just wrote might
-  // share a topic whose consensus is already ready, OR a co-scheduled
-  // plan in 'proposed' might now clear the threshold. Running the
-  // approval tick here catches those immediately instead of waiting
-  // for the next approval-cycle daemon pass.
+  // End-of-run opportunistic approval sweep. Two ticks in priority
+  // order, mirroring scripts/run-approval-cycle.mjs:
+  //
+  //   1. runIntentAutoApprovePass  -- proposed -> approved when the
+  //      plan's seed operator-intent's trust envelope authorises the
+  //      delegation shape. The intent IS the authorisation; no votes
+  //      required. Single-principal autonomous path.
+  //   2. runPlanApprovalTick       -- proposed -> approved when N
+  //      distinct principals cast fresh approve votes via lag-respond
+  //      [v]. Multi-reviewer consensus path for plans without an
+  //      intent envelope.
+  //
+  // The intent-approve tick runs FIRST because the autonomous-intent
+  // gate is the most-specific authorization: a plan derived from a
+  // fresh, clean intent with a matching envelope is authorized by the
+  // operator's signed intent atom and does not need vote consensus to
+  // advance. Without this call, a single-pass CTO run that emits an
+  // intent-backed plan leaves it stuck in 'proposed' until the next
+  // scripts/run-approval-cycle.mjs daemon pass -- which may never fire
+  // if the daemon isn't running. The substrate-deep pipeline path
+  // (runDeepPipeline above) already runs the equivalent via
+  // runPipelinePlanAutoApproval inline after each plan-stage emit;
+  // this brings the single-pass path to parity so neither mode ships
+  // plans that need an out-of-band cron tick to advance.
   //
   // Best-effort: a tick failure here MUST NOT alter the CTO run's
   // exit code. The planning work is the load-bearing outcome; a
-  // consensus-sweep failure is an operational signal for the approval
-  // daemon to surface on its own.
+  // sweep failure is an operational signal for the approval daemon
+  // to surface on its own.
+  try {
+    const intentResult = await runIntentAutoApprovePass(host);
+    // formatIntentApproveResult renders the canonical metrics tail with
+    // per-reason rejection + skip breakdowns when present; shared with
+    // scripts/run-approval-cycle.mjs so both surfaces stay in lock-step
+    // on field order and naming.
+    console.log(
+      `[cto-actor] end-of-run intent-approve tick: ${formatIntentApproveResult(intentResult)}`,
+    );
+  } catch (err) {
+    console.warn(`[cto-actor] end-of-run intent-approve tick FAILED (non-fatal): ${err?.message ?? err}`);
+  }
   try {
     const approvalResult = await runPlanApprovalTick(host);
     console.log(

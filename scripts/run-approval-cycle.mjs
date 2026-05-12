@@ -96,6 +96,7 @@ import {
 } from './lib/approval-cycle-gate.mjs';
 import { createPrLandingObserveRefresher } from './lib/pr-observation-refresher.mjs';
 import { runDaemonLoop } from './lib/approval-cycle-daemon.mjs';
+import { formatIntentApproveResult } from './lib/intent-approve-log.mjs';
 
 const SUPPORTED_LLMS = new Set(['claude-cli', 'memory']);
 
@@ -372,32 +373,14 @@ async function runOnePass(host, registry, args) {
   // 0. Intent-backed single-principal path (most-specific gate, runs first).
   try {
     const intentResult = await runIntentAutoApprovePass(host);
-    const skipped = intentResult.skipped ?? 0;
-    const byReason = intentResult.skippedByReason ?? {};
-    // Render the skip breakdown only when at least one skip happened;
-    // a clean tick stays terse. Keys with zero counts are omitted so
-    // the line stays scannable even with a 7-reason taxonomy.
-    const skipBreakdown = Object.entries(byReason)
-      .filter(([, n]) => n > 0)
-      .map(([k, n]) => `${k}=${n}`)
-      .join(' ');
-    const skippedFragment = skipped > 0
-      ? ` skipped=${skipped}${skipBreakdown ? ` (${skipBreakdown})` : ''}`
-      : '';
-    // Same shape for rejections: surface WHY a plan was rejected rather
-    // than a bare counter that hides the cause from the operator. The
-    // recordReject emit path produces audit events; this fragment is the
-    // at-a-glance signal on stdout for dogfeeds running --once.
-    const rejected = intentResult.rejected ?? 0;
-    const rejectedByReason = intentResult.rejectedByReason ?? {};
-    const rejectBreakdown = Object.entries(rejectedByReason)
-      .filter(([, n]) => n > 0)
-      .map(([k, n]) => `${k}=${n}`)
-      .join(' ');
-    const rejectedFragment = rejected > 0 && rejectBreakdown
-      ? ` rejected=${rejected} (${rejectBreakdown})`
-      : ` rejected=${rejected}`;
-    console.log(`[approval-cycle] intent-approve     scanned=${intentResult.scanned} approved=${intentResult.approved}${rejectedFragment}${skippedFragment}${intentResult.halted ? ' [HALTED by kill-switch]' : ''}`);
+    // formatIntentApproveResult renders the canonical metrics tail with
+    // per-reason rejection + skip breakdowns; shared with
+    // scripts/run-cto-actor.mjs so both surfaces stay in lock-step on
+    // field order and naming.
+    const haltTag = intentResult.halted ? ' [HALTED by kill-switch]' : '';
+    console.log(
+      `[approval-cycle] intent-approve     ${formatIntentApproveResult(intentResult)}${haltTag}`,
+    );
     if (intentResult.halted) return firstError;
   } catch (err) {
     console.error(`[approval-cycle] intent-approve FAILED: ${err?.message ?? err}`);
