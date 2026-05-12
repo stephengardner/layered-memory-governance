@@ -69,11 +69,11 @@ describe('assertSafeRoleForResolution', () => {
 
   it('rejects non-string', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => assertSafeRoleForResolution(null as any)).toThrow(
+    expect(() => assertSafeRoleForResolution(null as unknown as string)).toThrow(
       /unsafe role name/,
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => assertSafeRoleForResolution(undefined as any)).toThrow(
+    expect(() => assertSafeRoleForResolution(undefined as unknown as string)).toThrow(
       /unsafe role name/,
     );
   });
@@ -240,7 +240,7 @@ describe('resolveBotCredsStateDir', () => {
   it('rejects a non-string stateDir', () => {
     expect(() =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      resolveBotCredsStateDir(null as any, 'lag-ceo', { env: undefined }),
+      resolveBotCredsStateDir(null as unknown as string, 'lag-ceo', { env: undefined }),
     ).toThrow(/stateDir must be a non-empty string/);
     expect(() =>
       resolveBotCredsStateDir('', 'lag-ceo', { env: undefined }),
