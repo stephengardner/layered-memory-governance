@@ -271,6 +271,26 @@ describe('shared filesystem-token extractor', () => {
       }
     });
 
+    it('isRepoRootAllowedBare returns true for agent-canon render targets', () => {
+      // CanonMdManager (per the canon-renders-into-CLAUDE.md decision)
+      // renders the canon bracket section into named `*.md` files at
+      // repo root, configured via `LoopRunner.canonTargets`. Plans
+      // citing these shapes are updating canon-managed files, not
+      // creating random repo-root deliverables; the bare-filename
+      // guard MUST recognise the shape so plan-stage validators do not
+      // false-positive on a legitimate canon-render update. The names
+      // match the substrate's render-target SHAPE (top-level `*.md`
+      // consumed by a canon-aware tool), and a recent dogfeed surfaced
+      // a plan citing `CLAUDE.md` that the schema rejected as
+      // confabulated. Until a `pol-extract-body-paths-bare-allowlist`
+      // extension seam exists, this set holds the canon-target shapes
+      // the substrate already supports out of the box.
+      const canonTargets = ['CLAUDE.md', 'DECISIONS.md', 'NOTES.md'];
+      for (const name of canonTargets) {
+        expect(isRepoRootAllowedBare(name)).toBe(true);
+      }
+    });
+
     it('isRepoRootAllowedBare returns false for arbitrary leaf-only filenames', () => {
       const negatives = [
         'header-version-chip.spec.ts',

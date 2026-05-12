@@ -152,6 +152,22 @@ export function isGitignoredFirstSegment(path: string): boolean {
  * false-positive on the legitimate case. Allowlisting closes the gap
  * the 2026-05-08 dogfeed surfaced when a tooling-envelope plan needed
  * to update `package.json` and the schema rejected it as bare.
+ *
+ * Agent-canon render targets (`CLAUDE.md`, `DECISIONS.md`, `NOTES.md`)
+ * are also included: these are the multi-target canon render shapes
+ * `CanonMdManager` supports (CanonMdManager renders the canon bracket
+ * section into one or more named `*.md` files at repo root, configured
+ * via `LoopRunner.canonTargets`). A plan citing `CLAUDE.md` is updating
+ * a canon-managed file, not creating a random repo-root deliverable;
+ * the allowlist entry recognises the shape so the bare-filename guard
+ * does not false-positive. The names match the substrate's render-
+ * target SHAPE (a top-level `*.md` consumed by a canon-aware tool),
+ * not any vendor identity. A future extension seam (`pol-extract-body-
+ * paths-bare-allowlist` or a `repoRootBareAllowlist` host option)
+ * would let org-ceiling deployments add `AGENTS.md` / `GEMINI.md` /
+ * `RULES.md` etc. via a higher-priority canon atom rather than editing
+ * the framework primitive; until that seam exists this set holds the
+ * canon-target shapes the substrate already supports.
  */
 const REPO_ROOT_BARE_ALLOWLIST: ReadonlySet<string> = new Set([
   'package.json',
@@ -161,6 +177,9 @@ const REPO_ROOT_BARE_ALLOWLIST: ReadonlySet<string> = new Set([
   'README.md',
   'LICENSE',
   'CHANGELOG.md',
+  'CLAUDE.md',
+  'DECISIONS.md',
+  'NOTES.md',
   'CONTRIBUTING.md',
   'CODE_OF_CONDUCT.md',
   '.gitignore',
