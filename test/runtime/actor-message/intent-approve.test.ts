@@ -387,13 +387,58 @@ describe('runIntentAutoApprovePass', () => {
     expect(events[0]?.details['intent_principal_id']).toBe('rogue-bot');
   });
 
-  // Note: INTENT_MISSING_OR_WRONG_TYPE guards a race between
-  // findIntentInProvenance (which already verifies type ===
-  // 'operator-intent') and the subsequent host.atoms.get for envelope
-  // read. Deterministic in-memory tests cannot trigger the second
-  // fetch to return null while the first found a match; the branch
-  // remains as defensive production-race protection rather than a
-  // covered test path.
+  // 5b. INTENT_MISSING_OR_WRONG_TYPE branch coverage.
+  //
+  // The branch is a TOCTOU defensive recheck: findIntentInProvenance only
+  // RETURNS an id when the cited atom resolves to type === 'operator-intent',
+  // so the `if (!intent || intent.type !== 'operator-intent')` rejection
+  // rung fires only when a concurrent writer mutates the atom between
+  // the two reads. In the single-threaded MemoryHost the two reads are
+  // serialized, so the branch is exercised here by spying on
+  // host.atoms.get to return null on the second call for the cited id
+  // (the same shape a concurrent delete would produce). This proves the
+  // branch is wired through recordReject -> audit event without
+  // depending on a non-deterministic race in the adapter.
+  it('T5b: TOCTOU concurrent delete of intent -> rejected + INTENT_MISSING_OR_WRONG_TYPE audit event', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom());
+    await host.atoms.put(intentCreationPolicyAtom());
+    await host.atoms.put(intentAtom('intent-vanish'));
+    await host.atoms.put(planAtom('plan-vanish', 'intent-vanish'));
+
+    // Simulate the TOCTOU: first get (in findIntentInProvenance) sees
+    // the operator-intent atom; second get (in the rung) sees null,
+    // mirroring a concurrent delete between the two reads.
+    const realGet = host.atoms.get.bind(host.atoms);
+    let callCount = 0;
+    host.atoms.get = async (id: AtomId) => {
+      callCount += 1;
+      if (id === 'intent-vanish' && callCount > 1) return null;
+      return realGet(id);
+    };
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    // Restore the real get so claim-before-mutate and any post-run
+    // reads in the assertions below are not affected.
+    host.atoms.get = realGet;
+
+    expect(result.rejected).toBe(1);
+    expect(result.rejectedByReason[RejectReason.INTENT_MISSING_OR_WRONG_TYPE]).toBe(1);
+    expect(result.approved).toBe(0);
+
+    const plan = await host.atoms.get('plan-vanish' as AtomId);
+    expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.rejected-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(RejectReason.INTENT_MISSING_OR_WRONG_TYPE);
+    expect(events[0]?.details['plan_id']).toBe('plan-vanish');
+    expect(events[0]?.details['intent_id']).toBe('intent-vanish');
+    // observed_type is null when the intent atom is missing entirely
+    // (the TOCTOU concurrent-delete case modelled here).
+    expect(events[0]?.details['observed_type']).toBeNull();
+  });
 
   // 6. Plan confidence below envelope.min_plan_confidence -> skipped + observable
   it('T6: plan confidence below min_plan_confidence -> observable skip, not rejected', async () => {
