@@ -68,11 +68,9 @@ describe('assertSafeRoleForResolution', () => {
   });
 
   it('rejects non-string', () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => assertSafeRoleForResolution(null as unknown as string)).toThrow(
       /unsafe role name/,
     );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => assertSafeRoleForResolution(undefined as unknown as string)).toThrow(
       /unsafe role name/,
     );
