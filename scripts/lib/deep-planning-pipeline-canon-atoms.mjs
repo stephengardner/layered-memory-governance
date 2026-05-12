@@ -248,6 +248,13 @@ export function buildDeepPlanningPipelineSpecs(operatorId) {
         + 'indie default re-seed this atom via their own bootstrap.',
       policy: {
         subject: 'planning-pipeline-default-mode',
+        // Project-scope default makes the deployment-wide choice
+        // explicit so a future principal-scoped override
+        // ('principal:<id>') beats it via the standard scope-depth
+        // arbitration in readPipelineDefaultModePolicy. Legacy atoms
+        // seeded before this field was added stay applicable: the
+        // reader's scopeApplies treats missing scope as 'project'.
+        scope: 'project',
         mode: DEFAULT_PIPELINE_MODE,
       },
       alternatives_rejected: [

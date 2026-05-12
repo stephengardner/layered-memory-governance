@@ -133,49 +133,95 @@ function scopeDepth(policyScope: unknown): number {
  * Feature/principal policies ('feature:<id>' / 'principal:<id>') apply
  * only when ctx.scope matches the same prefix-and-id form, so a
  * principal:foo policy does not leak into a principal:bar query.
+ *
+ * Undefined / missing scope on the policy is treated as 'project' so
+ * legacy seed atoms (e.g. pol-planning-pipeline-default-mode bootstrapped
+ * before the scope field was introduced) keep their project-wide
+ * applicability without forcing every deployment to re-seed.
  */
 function scopeApplies(policyScope: unknown, ctxScope: string): boolean {
+  if (policyScope === undefined || policyScope === null) return true;
   if (typeof policyScope !== 'string') return false;
   if (policyScope === 'project') return true;
   return policyScope === ctxScope;
+}
+
+/**
+ * Pick the highest-priority policy atom from a list of candidates that
+ * have already been filtered by subject (and any other policy-specific
+ * predicates). Arbitration mirrors the substrate's standard rules so
+ * every policy reader resolves the same way:
+ *
+ *   1. Filter to atoms whose `policy.scope` applies to `ctxScope`.
+ *   2. Sort the remaining by scope depth (descending) so principal-scoped
+ *      atoms beat feature-scoped beat project-scoped.
+ *   3. Break ties at the same depth by `created_at` (descending) so the
+ *      most-recently-written atom wins -- the canon-edit moment is what
+ *      flips a dial, and the latest edit must take effect immediately.
+ *
+ * The reader returns `null` when no candidate matches so callers can
+ * apply their own fail-closed default and distinguish "canon did not
+ * resolve" from "canon explicitly stated X".
+ */
+function arbitratePolicyAtoms(atoms: ReadonlyArray<Atom>, ctxScope: string): Atom | null {
+  let best: { atom: Atom; depth: number; createdAt: string } | null = null;
+  for (const atom of atoms) {
+    const policy = readPolicy(atom);
+    if (policy === null) continue;
+    if (!scopeApplies(policy.scope, ctxScope)) continue;
+    const depth = scopeDepth(policy.scope);
+    const createdAt = String(atom.created_at);
+    if (best === null) {
+      best = { atom, depth, createdAt };
+      continue;
+    }
+    if (depth > best.depth) {
+      best = { atom, depth, createdAt };
+      continue;
+    }
+    if (depth === best.depth && createdAt > best.createdAt) {
+      best = { atom, depth, createdAt };
+    }
+  }
+  return best?.atom ?? null;
 }
 
 export async function readPipelineStagesPolicy(
   host: Host,
   ctx: { readonly scope: string },
 ): Promise<PipelineStagesPolicyResult> {
-  let best: { atom: Atom; depth: number } | null = null;
+  const candidates: Atom[] = [];
   for await (const atom of iteratePolicyAtoms(host)) {
     const policy = readPolicy(atom);
     if (policy?.subject !== 'planning-pipeline-stages') continue;
-    if (!scopeApplies(policy.scope, ctx.scope)) continue;
-    const depth = scopeDepth(policy.scope);
-    if (best === null || depth > best.depth) best = { atom, depth };
+    candidates.push(atom);
   }
-  if (best === null) return { stages: [], atomId: null };
-  const policy = readPolicy(best.atom);
+  const winner = arbitratePolicyAtoms(candidates, ctx.scope);
+  if (winner === null) return { stages: [], atomId: null };
+  const policy = readPolicy(winner);
   if (policy === null) return { stages: [], atomId: null };
+  const winnerId = String(winner.id);
   const rawStages = policy.stages;
-  if (!Array.isArray(rawStages)) return { stages: [], atomId: String(best.atom.id) };
+  if (!Array.isArray(rawStages)) return { stages: [], atomId: winnerId };
   const stages: StageDescriptor[] = [];
   const seen = new Set<string>();
   for (const entry of rawStages) {
     if (entry === null || typeof entry !== 'object') {
-      return { stages: [], atomId: String(best.atom.id) };
+      return { stages: [], atomId: winnerId };
     }
     const obj = entry as Record<string, unknown>;
     const name = typeof obj.name === 'string' ? obj.name : null;
     const principal_id = typeof obj.principal_id === 'string' ? obj.principal_id : null;
     if (name === null || principal_id === null) {
-      return { stages: [], atomId: String(best.atom.id) };
+      return { stages: [], atomId: winnerId };
     }
     if (seen.has(name)) {
-      return { stages: [], atomId: String(best.atom.id) };
+      return { stages: [], atomId: winnerId };
     }
     seen.add(name);
     stages.push({ name, principal_id });
   }
-  return { stages, atomId: String(best.atom.id) };
+  return { stages, atomId: winnerId };
 }
 
 export async function readPipelineStageHilPolicy(
@@ -208,18 +254,50 @@ export async function readPipelineStageHilPolicy(
   return { pause_mode: 'always', auto_resume_after_ms: null, allowed_resumers: [] };
 }
 
+/**
+ * Read the default pipeline mode from canon. Resolution applies the
+ * substrate's standard arbitration: principal scope beats feature beats
+ * project (scope depth), and at the same depth the most-recently-written
+ * atom wins (created_at recency tiebreak). Without this, a deployment
+ * that writes a principal-scoped override (e.g. apex-agent gets
+ * substrate-deep while the project default stays single-pass) would
+ * silently fall through to whichever atom happened to come first off
+ * disk -- arbitration would not happen and the override would not
+ * reliably take effect.
+ *
+ * The `ctx` parameter is optional and defaults to `{ scope: 'project' }`
+ * so existing callers (intend.mjs and bootstrap tests) keep their
+ * project-wide semantics without an API change. Callers that resolve
+ * the mode for a specific principal pass `{ scope: 'principal:<id>' }`
+ * and pick up a higher-priority principal-scoped atom when one exists.
+ *
+ * Returns `mode: 'single-pass'` with `atomId: null` when no atom
+ * resolves so callers can distinguish "canon did not resolve" from
+ * "canon explicitly stated single-pass" -- the indie-floor fallback per
+ * dev-default-pipeline-mode-single-pass.
+ */
 export async function readPipelineDefaultModePolicy(
   host: Host,
+  ctx: { readonly scope: string } = { scope: 'project' },
 ): Promise<PipelineDefaultModePolicyResult> {
+  const candidates: Atom[] = [];
   for await (const atom of iteratePolicyAtoms(host)) {
     const policy = readPolicy(atom);
     if (policy?.subject !== 'planning-pipeline-default-mode') continue;
     const raw = policy.mode;
-    if (raw === 'substrate-deep' || raw === 'single-pass') {
-      return { mode: raw, atomId: String(atom.id) };
-    }
+    // Filter to atoms whose mode value is well-formed; a malformed atom
+    // must not win arbitration and shadow a valid lower-priority atom.
+    if (raw !== 'substrate-deep' && raw !== 'single-pass') continue;
+    candidates.push(atom);
   }
-  return { mode: 'single-pass', atomId: null };
+  const winner = arbitratePolicyAtoms(candidates, ctx.scope);
+  if (winner === null) return { mode: 'single-pass', atomId: null };
+  const policy = readPolicy(winner);
+  const raw = policy?.mode;
+  if (raw !== 'substrate-deep' && raw !== 'single-pass') {
+    return { mode: 'single-pass', atomId: null };
+  }
+  return { mode: raw, atomId: String(winner.id) };
 }
 
 /**
