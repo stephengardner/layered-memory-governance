@@ -5,6 +5,7 @@ import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
@@ -467,7 +468,9 @@ function PlanCard({ plan, focused }: { plan: PlanAtom; focused: boolean }) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            <span>by {plan.principal_id}</span>
+            <span>
+              by <PrincipalLink id={plan.principal_id} testId="plan-card-principal-link" />
+            </span>
             <span>•</span>
             <span>layer {plan.layer}</span>
             <span>•</span>

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { Activity, AlertTriangle, ArrowRight, Brain, CheckCircle2, ChevronDown, ChevronRight, Clock, Coins, Cpu, ListChecks, Loader2, MessageSquare, OctagonX, PauseCircle, PlayCircle, ShieldAlert, Wrench, Workflow, XCircle, Zap } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
 import { FreshnessPill } from '@/components/freshness-pill/FreshnessPill';
 import { Tooltip } from '@/components/tooltip/Tooltip';
@@ -276,7 +277,9 @@ function PipelineDetailBody({
         </div>
         <h2 className={styles.detailTitle}>{pipeline.title}</h2>
         <div className={styles.detailMeta}>
-          <span>by {pipeline.principal_id}</span>
+          <span>
+            by <PrincipalLink id={pipeline.principal_id} testId="pipeline-detail-principal-link" />
+          </span>
           <span aria-hidden="true">{'\u00B7'}</span>
           <span>started {formatRelative(pipeline.started_at)}</span>
           {pipeline.completed_at && (
@@ -445,7 +448,11 @@ function PipelineDetailBody({
             {resumes.map((r) => (
               <li key={r.atom_id} className={styles.resumeRow} data-testid="pipeline-detail-resume-row">
                 <span>
-                  <strong>{r.stage_name}</strong> resumed by <code>{r.resumer_principal_id}</code>
+                  <strong>{r.stage_name}</strong> resumed by{' '}
+                  <PrincipalLink
+                    id={r.resumer_principal_id}
+                    testId="pipeline-detail-resumer-link"
+                  />
                 </span>
                 <time dateTime={r.at}>{formatRelative(r.at)}</time>
               </li>

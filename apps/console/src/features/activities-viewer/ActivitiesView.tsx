@@ -4,6 +4,7 @@ import { listActivities, type Activity } from '@/services/activities.service';
 import { storage } from '@/services/storage.service';
 import { useRouteId, setRoute } from '@/state/router.store';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
+import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { LoadingState, ErrorState, EmptyState } from '@/components/state-display/StateDisplay';
 import { ActivityHeatmap } from '@/components/heatmap/ActivityHeatmap';
@@ -156,7 +157,13 @@ export function ActivitiesView() {
                             </div>
                             <p className={styles.itemContent}>{truncate(a.content, 220)}</p>
                             <div className={styles.itemMeta}>
-                              <span>by {a.principal_id}</span>
+                              <span>
+                                by{' '}
+                                <PrincipalLink
+                                  id={a.principal_id}
+                                  testId="activity-item-principal-link"
+                                />
+                              </span>
                               <span>•</span>
                               <span>layer {a.layer}</span>
                               {typeof a.confidence === 'number' && (

@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { Brain, Library, Compass, GitBranch, ShieldQuestion } from 'lucide-react';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
+import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import {
   LoadingState,
   ErrorState,
@@ -271,7 +272,13 @@ function DeliberationTrail({ data }: { data: DeliberationDetail }) {
         )}
         <h2 className={styles.detailTitle}>{plan.title}</h2>
         <div className={styles.detailMeta}>
-          <span>by {plan.principal_id}</span>
+          <span>
+            by{' '}
+            <PrincipalLink
+              id={plan.principal_id}
+              testId="deliberation-detail-principal-link"
+            />
+          </span>
           <span aria-hidden="true">·</span>
           <span>layer {plan.layer}</span>
           <span aria-hidden="true">·</span>
