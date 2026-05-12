@@ -31,17 +31,32 @@ interface PipelineRow {
   readonly principal_id: string;
 }
 
-async function loadAnyAtom(request: import('@playwright/test').APIRequestContext): Promise<AtomRow | null> {
-  // Walk the activities feed first, then fall back to canon/plans so
-  // the test stays meaningful regardless of the install's mix of atom
-  // types. Bail out only when ALL three endpoints return empty (a truly
-  // fresh install with nothing to render).
+/*
+ * Activity-feed loader: stricter than the generic loadAnyAtom below
+ * because the activity-feed test asserts that THIS atom's principal
+ * appears in /activities. Falling back to canon (which has a different
+ * principal mix on most installs) would produce a non-product flake
+ * instead of a clean skip when activities is empty.
+ */
+async function loadAnyActivityAtom(
+  request: import('@playwright/test').APIRequestContext,
+): Promise<AtomRow | null> {
   const activities = await request.post('/api/activities.list', { data: { limit: 5 } });
-  if (activities.ok()) {
-    const body = await activities.json();
-    const first = (body?.data?.[0] ?? body?.[0] ?? null) as AtomRow | null;
-    if (first?.id && first.principal_id) return first;
-  }
+  if (!activities.ok()) return null;
+  const body = await activities.json();
+  const first = (body?.data?.[0] ?? body?.[0] ?? null) as AtomRow | null;
+  if (first?.id && first.principal_id) return first;
+  return null;
+}
+
+async function loadAnyAtom(request: import('@playwright/test').APIRequestContext): Promise<AtomRow | null> {
+  // Walk activities first, then fall back to canon so generic
+  // atom-detail / cmd-click tests stay meaningful regardless of the
+  // install's mix of atom types. The activity-feed test uses
+  // loadAnyActivityAtom instead so a canon fallback never masquerades
+  // as an activity entry the feed cannot find.
+  const activity = await loadAnyActivityAtom(request);
+  if (activity) return activity;
   const canon = await request.post('/api/canon.list');
   if (canon.ok()) {
     const body = await canon.json();
@@ -128,8 +143,8 @@ test.describe('principal-link cross-surface relationships', () => {
   });
 
   test('activity feed by-line opens the principal detail page', async ({ page, request }) => {
-    const atom = await loadAnyAtom(request);
-    test.skip(atom === null, 'no atoms in store');
+    const atom = await loadAnyActivityAtom(request);
+    test.skip(atom === null, 'no activity atoms in store');
 
     await page.goto('/activities');
     const link = page

@@ -11,7 +11,7 @@
   color: var(--text-secondary);
   padding: var(--space-1) var(--space-3);
   background: var(--surface-raised);
-  border: 1px solid transparent;
+  border: var(--stroke-hairline) solid transparent;
   border-radius: var(--radius-sm);
   display: inline-block;
   word-break: break-all;
@@ -28,8 +28,8 @@
 }
 
 .chip:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--space-px);
 }
 
 .inline {
@@ -37,7 +37,7 @@
   font-size: 0.9em;
   color: var(--accent);
   text-decoration: none;
-  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 40%, transparent);
+  border-bottom: var(--stroke-hairline) dashed color-mix(in srgb, var(--accent) 40%, transparent);
   word-break: break-all;
   transition: color var(--duration-fast) var(--easing-standard),
               border-color var(--duration-fast) var(--easing-standard);
@@ -49,7 +49,7 @@
 }
 
 .inline:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
+  outline: var(--stroke-rail) solid var(--border-focus);
+  outline-offset: var(--space-px);
   border-radius: var(--radius-sm);
 }
