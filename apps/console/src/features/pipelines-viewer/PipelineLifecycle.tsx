@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { motion, useReducedMotion } from 'framer-motion';
 import { AlertTriangle, CheckCircle2, ExternalLink, FileCheck, GitBranch, GitMerge, GitPullRequest, MinusCircle, Send, ShieldAlert, XCircle } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import { ErrorState } from '@/components/state-display/StateDisplay';
 import {
   getPipelineLifecycle,
@@ -699,7 +700,10 @@ function MergeRow({ data }: { data: PipelineLifecycleData }) {
               {merge.merger_principal_id && (
                 <>
                   <span className={styles.metaLabel}>Merger</span>
-                  <code className={styles.metaCode}>{merge.merger_principal_id}</code>
+                  <PrincipalLink
+                    id={merge.merger_principal_id}
+                    testId="pipeline-lifecycle-merger-link"
+                  />
                 </>
               )}
             </div>

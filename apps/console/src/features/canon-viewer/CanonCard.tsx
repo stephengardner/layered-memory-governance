@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, AlertTriangle, Archive, RefreshCw, Clock, ShieldCheck } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import { AtomGraph } from '@/components/atom-graph/AtomGraph';
 import { SupersedesDiff } from '@/components/supersedes-diff/SupersedesDiff';
 import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
@@ -59,7 +60,8 @@ export function CanonCard({ atom }: Props) {
 
       <footer className={styles.footer}>
         <span className={styles.meta}>
-          <span className={styles.metaLabel}>by</span> {atom.principal_id}
+          <span className={styles.metaLabel}>by</span>{' '}
+          <PrincipalLink id={atom.principal_id} testId="canon-card-principal-link" />
         </span>
         <span className={styles.metaDot} aria-hidden="true">•</span>
         <span className={styles.meta}>

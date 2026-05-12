@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Archive } from 'lucide-react';
 import { AtomRef } from '@/components/atom-ref/AtomRef';
+import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import { ConfidenceBar } from '@/components/confidence-bar/ConfidenceBar';
 import { CopyLinkButton } from '@/components/copy-link/CopyLinkButton';
 import { RawJson } from '@/components/raw-json/RawJson';
@@ -183,7 +184,7 @@ function AtomDetailBody({ atom }: { atom: AnyAtom }) {
         <div className={styles.metaRow}>
           <span className={styles.meta}>
             <span className={styles.metaLabel}>by</span>
-            <code>{atom.principal_id}</code>
+            <PrincipalLink id={atom.principal_id} testId="atom-detail-principal-link" />
           </span>
           <span className={styles.metaDot} aria-hidden="true">{'\u00B7'}</span>
           <span className={styles.meta}>

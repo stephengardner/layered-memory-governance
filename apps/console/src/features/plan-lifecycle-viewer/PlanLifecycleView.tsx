@@ -11,6 +11,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { FocusBanner } from '@/components/focus-banner/FocusBanner';
+import { PrincipalLink } from '@/components/principal-link/PrincipalLink';
 import { StatsHeader } from '@/components/stats-header/StatsHeader';
 import {
   LoadingState,
@@ -305,7 +306,13 @@ function PlanLifecycleTimeline({ data }: { data: PlanLifecycle }) {
         </span>
         <h2 className={styles.detailTitle}>{title || plan.id}</h2>
         <div className={styles.detailMeta}>
-          <span>by {plan.principal_id}</span>
+          <span>
+            by{' '}
+            <PrincipalLink
+              id={plan.principal_id}
+              testId="plan-lifecycle-principal-link"
+            />
+          </span>
           <span aria-hidden="true">·</span>
           <span>layer {plan.layer}</span>
           <span aria-hidden="true">·</span>
