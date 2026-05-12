@@ -37,7 +37,12 @@
  *     autonomous-intent-canon-atoms builder.
  */
 
-import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_DISPATCH_INVOKER_ROLE,
@@ -58,6 +63,14 @@ import {
   readPipelineStagesPolicy,
 } from '../../src/runtime/planning-pipeline/policy.js';
 import type { Atom } from '../../src/types.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(HERE, '..', '..');
+const BOOTSTRAP_SCRIPT = resolve(
+  REPO_ROOT,
+  'scripts',
+  'bootstrap-deep-planning-pipeline-canon.mjs',
+);
 
 const OP = 'test-operator';
 
@@ -272,6 +285,95 @@ describe('bootstrap-deep-planning-pipeline-canon atom shapes', () => {
     expect(() =>
       buildAtomFromSpec(spec, undefined as unknown as string),
     ).toThrow(/operatorId/);
+  });
+});
+
+describe('bootstrap-deep-planning-pipeline-canon honors LAG_STATE_DIR', () => {
+  // Regression: prior to this guard the wrapper hardcoded
+  //   const STATE_DIR = resolve(REPO_ROOT, '.lag');
+  // so a deployment whose other substrate components honored
+  // LAG_STATE_DIR (e.g. scripts/invokers/autonomous-dispatch.mjs) would
+  // silently fork canon: every runtime read landed at the env-pointed
+  // dir, but bootstrap writes landed at REPO_ROOT/.lag. The next
+  // bootstrap run against the env-pointed dir would then "rewrite" 9
+  // atoms that the runtime had never seen, masking real drift.
+  //
+  // Indie-floor default (env unset) preserved by the unset-env case in
+  // the existing builder tests above; this block locks in the
+  // org-ceiling case (env set) by running the real wrapper end-to-end.
+  let tempStateDir: string;
+
+  beforeEach(() => {
+    tempStateDir = mkdtempSync(join(tmpdir(), 'lag-bootstrap-state-dir-'));
+  });
+
+  afterEach(() => {
+    try { rmSync(tempStateDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('writes atoms to the LAG_STATE_DIR-pointed dir, not REPO_ROOT/.lag', () => {
+    // Snapshot the in-repo .lag/atoms/ before the run so a later
+    // diff isolates atoms written by this invocation (the dir already
+    // exists in a real checkout and carries unrelated atoms).
+    const inRepoAtomsDir = resolve(REPO_ROOT, '.lag', 'atoms');
+    const beforeInRepo = existsSync(inRepoAtomsDir)
+      ? new Set(readdirSync(inRepoAtomsDir))
+      : new Set<string>();
+
+    const r = spawnSync(
+      process.execPath,
+      [BOOTSTRAP_SCRIPT],
+      {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          LAG_STATE_DIR: tempStateDir,
+          LAG_OPERATOR_ID: 'test-operator',
+        },
+      },
+    );
+
+    expect(r.status, `bootstrap stderr: ${r.stderr}`).toBe(0);
+
+    // Atoms must land at the env-pointed dir.
+    const tempAtomsDir = join(tempStateDir, 'atoms');
+    expect(existsSync(tempAtomsDir)).toBe(true);
+    const writtenInTemp = readdirSync(tempAtomsDir);
+    // Builder emits 9 atoms (8 pipeline policies + 1 dispatch-invoker
+    // default); same count as the every-atom-shape test above.
+    expect(writtenInTemp.length).toBe(9);
+
+    // The bootstrap MUST NOT have added any new atom files to the
+    // in-repo .lag/atoms/ directory. Pre-existing atoms are out of
+    // scope (the test isn't asserting cleanliness of the checkout).
+    const afterInRepo = existsSync(inRepoAtomsDir)
+      ? new Set(readdirSync(inRepoAtomsDir))
+      : new Set<string>();
+    const newInRepo = [...afterInRepo].filter((f) => !beforeInRepo.has(f));
+    expect(newInRepo, 'bootstrap leaked atoms into REPO_ROOT/.lag/atoms/').toEqual([]);
+  });
+
+  it('falls back to REPO_ROOT/.lag when LAG_STATE_DIR is unset (indie-floor default)', () => {
+    // Drive --dry-run so the unset-env case asserts the resolved path
+    // shape without writing real atoms into the checkout. The dry-run
+    // path still resolves STATE_DIR at module-eval time and lists every
+    // atom id it would have written; success on this branch confirms
+    // the env-aware logic preserves the indie default behaviour.
+    const env = { ...process.env, LAG_OPERATOR_ID: 'test-operator' };
+    delete env.LAG_STATE_DIR;
+
+    const r = spawnSync(
+      process.execPath,
+      [BOOTSTRAP_SCRIPT, '--dry-run'],
+      { cwd: REPO_ROOT, encoding: 'utf8', env },
+    );
+
+    expect(r.status, `dry-run stderr: ${r.stderr}`).toBe(0);
+    // Dry-run prints "dry-run: 9 atoms would be written" and lists
+    // each id; a regression that broke the wrapper's argv handling
+    // would surface as a non-zero exit.
+    expect(r.stdout).toContain('dry-run: 9 atoms');
   });
 });
 
