@@ -64,12 +64,16 @@ export function PrFixObservationRenderer({ atom }: AtomRendererProps) {
             />
           )}
           {prState && <AttrRow label="State" value={prState} />}
-          {mergeable && (
-            <AttrRow
-              label="Conflicts"
-              value={mergeable === 'true' ? 'none' : mergeable === 'false' ? 'present' : mergeable}
-            />
-          )}
+          <AttrRow
+            label="Conflicts"
+            value={
+              mergeable === 'true'
+                ? 'none'
+                : mergeable === 'false'
+                  ? 'present'
+                  : 'unknown'
+            }
+          />
           {mergeState && (
             <AttrRow
               label="Merge state"
