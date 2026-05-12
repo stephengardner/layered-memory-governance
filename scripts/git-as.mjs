@@ -111,6 +111,7 @@ import {
   isPushCommand,
 } from './lib/git-as-push-auth.mjs';
 import { resolveStateDir } from './lib/resolve-state-dir.mjs';
+import { resolveBotCredsStateDir } from './lib/resolve-bot-creds-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolveStateDir(REPO_ROOT);
@@ -140,7 +141,13 @@ async function main() {
     process.exit(2);
   }
 
-  const store = createCredentialsStore(STATE_DIR);
+  // Walk-up resolution for sub-agent worktrees: when this wrapper is
+  // invoked from a freshly-spawned worktree without its own
+  // `.lag/apps/<role>.json`, look for the creds in the nearest
+  // ancestor `.lag/`. Honors `LAG_STATE_DIR` as an explicit operator
+  // override (walk-up skipped). Indie-floor default unchanged.
+  const credsStateDir = resolveBotCredsStateDir(STATE_DIR, role);
+  const store = createCredentialsStore(credsStateDir);
   let loaded;
   try {
     loaded = await store.load(role);
