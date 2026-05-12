@@ -1,16 +1,31 @@
 import { expect, test } from '@playwright/test';
 
-const STORAGE_KEY = 'lag-pinned-plans';
+/*
+ * Storage key is namespaced through storage.service which prefixes
+ * every key with `lag-console.` (apps/console/CLAUDE.md principle 10).
+ * The resolved key is what the browser sees in localStorage; assert
+ * against it directly to keep the persistence contract testable
+ * without reaching into the hook's internals.
+ */
+const STORAGE_KEY = 'lag-console.pinned-plans';
 
 test.describe('Pinned plans persistence', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript((key) => {
+    /*
+     * Clear both the new key and any pre-migration entry so a stale
+     * dev profile does not pollute the run. The hook no longer reads
+     * the legacy key, but clearing it keeps the test environment
+     * deterministic across machines.
+     */
+    await page.addInitScript((keys) => {
       try {
-        window.localStorage.removeItem(key);
+        for (const key of keys) {
+          window.localStorage.removeItem(key);
+        }
       } catch {
         /* ignore */
       }
-    }, STORAGE_KEY);
+    }, [STORAGE_KEY, 'lag-pinned-plans']);
   });
 
   test('pin, persist across reload, then unpin', async ({ page }) => {
