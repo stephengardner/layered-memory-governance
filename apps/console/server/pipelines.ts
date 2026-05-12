@@ -382,6 +382,12 @@ function currentStageFromSummaries(
  * and projected into the `agent_turns` array on the detail payload;
  * they DO NOT belong on the per-stage `events` strip (which models
  * the canonical enter/exit/pause/resume lifecycle).
+ *
+ * Retry transitions ('retry-after-findings',
+ * 'validator-retry-after-failure') ARE surfaced on the events strip
+ * so the operator sees the teaching-seam emit between attempts; their
+ * transition-specific payload (attempt_index + findings_summary OR
+ * validator_error_message) is carried through to the wire shape.
  */
 function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
   const meta = readMeta(atom);
@@ -394,9 +400,67 @@ function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
     && transitionRaw !== 'exit-failure'
     && transitionRaw !== 'hil-pause'
     && transitionRaw !== 'hil-resume'
+    && transitionRaw !== 'retry-after-findings'
+    && transitionRaw !== 'validator-retry-after-failure'
   ) {
     return null;
   }
+  // Pull retry-specific payload when applicable. The runner stamps
+  // attempt_index on both retry transitions; findings_summary lands
+  // only on retry-after-findings and validator_error_message lands
+  // only on validator-retry-after-failure. The wire shape carries
+  // each as optional fields so console renderers can branch on
+  // presence rather than transition string alone.
+  const attemptIndexRaw = meta['attempt_index'];
+  const attempt_index = typeof attemptIndexRaw === 'number'
+    && Number.isInteger(attemptIndexRaw)
+    && attemptIndexRaw >= 2
+    ? attemptIndexRaw
+    : undefined;
+  let findings_summary: PipelineStageEvent['findings_summary'];
+  const findingsSummaryRaw = meta['findings_summary'];
+  if (
+    findingsSummaryRaw !== null
+    && typeof findingsSummaryRaw === 'object'
+  ) {
+    const fs = findingsSummaryRaw as Record<string, unknown>;
+    // Bound + sanitize the per-severity counts: a malformed atom (NaN,
+    // Infinity, negative, fractional, non-integer) must not surface a
+    // malformed numeric shape on the wire. The substrate mint contract
+    // requires non-negative integers (mkPipelineStageEventAtom validates
+    // Number.isInteger + >= 0 at write time); projection mirrors that
+    // contract so a malformed atom written by a future adapter / migration
+    // path cannot leak a fractional value into the UI. Any bucket that
+    // fails validation drops the whole findings_summary so consumers see
+    // "absent" rather than "partial".
+    const readCount = (value: unknown): number | null => (
+      typeof value === 'number'
+      && Number.isFinite(value)
+      && Number.isInteger(value)
+      && value >= 0
+    )
+      ? value
+      : null;
+    const critical = readCount(fs['critical']);
+    const major = readCount(fs['major']);
+    const minor = readCount(fs['minor']);
+    if (critical !== null && major !== null && minor !== null) {
+      findings_summary = { critical, major, minor };
+    }
+  }
+  // Hard cap on validator_error_message length, mirroring
+  // MAX_VALIDATOR_ERROR_MESSAGE_LEN on the substrate mint side
+  // (src/runtime/planning-pipeline/atom-shapes.ts). The runner already
+  // truncates at emit time, but a malformed atom written by a future
+  // adapter or migration path could carry an unbounded value; the
+  // projection clamps it before wire-projection so detail payloads do
+  // not bloat under malformed input.
+  const VALIDATOR_ERROR_MESSAGE_MAX = 4096;
+  const validatorErrorMessageRaw = meta['validator_error_message'];
+  const validator_error_message = typeof validatorErrorMessageRaw === 'string'
+    && validatorErrorMessageRaw.length > 0
+    ? validatorErrorMessageRaw.slice(0, VALIDATOR_ERROR_MESSAGE_MAX)
+    : undefined;
   return {
     atom_id: atom.id,
     stage_name: stageName,
@@ -406,6 +470,9 @@ function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
     cost_usd: readNumber(meta, 'cost_usd'),
     output_atom_id: readString(meta, 'output_atom_id'),
     principal_id: atom.principal_id,
+    ...(attempt_index !== undefined ? { attempt_index } : {}),
+    ...(findings_summary !== undefined ? { findings_summary } : {}),
+    ...(validator_error_message !== undefined ? { validator_error_message } : {}),
   };
 }
 

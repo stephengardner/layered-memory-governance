@@ -540,6 +540,8 @@ function mkRunInput<TIn>(
     verifiedCitedAtomIds: [],
     verifiedSubActorPrincipalIds: [],
     operatorIntentContent: '',
+    priorAuditFindings: [],
+    priorValidatorError: '',
   };
 }
 

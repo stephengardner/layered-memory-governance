@@ -776,16 +776,58 @@ function StageCard({
 function EventRow({ event }: { event: PipelineStageEvent }) {
   const transitionLabel = humanizeTransition(event.transition);
   const tone = transitionTone(event.transition);
+  // Retry transitions carry attempt_index on the wire shape. Render
+  // the "attempt N/total" marker next to the transition label so the
+  // operator sees "stage X retrying (audit feedback) attempt 2" rather
+  // than just "stage X retrying". The total is not on the event
+  // (canon-side dial), so we show only the current attempt; the
+  // canon-resolved cap is rendered separately on the stage card when
+  // a future enhancement surfaces it.
+  const isRetryTransition =
+    event.transition === 'retry-after-findings'
+    || event.transition === 'validator-retry-after-failure';
+  // Render the validator error message inline on the
+  // 'validator-retry-after-failure' event so the operator sees WHICH
+  // schema-validation error triggered the teach-back -- not just that
+  // a retry happened. Mirrors the way auditor-feedback retry events
+  // surface findings_summary via the substrate's stamped metadata;
+  // both teaching signals belong on the timeline row that minted them.
+  // The full message is on `title` attribute so a long zod error is
+  // discoverable on hover; the visible row keeps the timeline scannable.
+  const validatorMessage = event.transition === 'validator-retry-after-failure'
+    ? event.validator_error_message
+    : undefined;
   return (
     <li
       className={styles.eventRow}
       data-testid="pipeline-stage-event"
       data-transition={event.transition}
+      {...(event.attempt_index !== undefined
+        ? { 'data-attempt-index': String(event.attempt_index) }
+        : {})}
     >
       <span className={styles.eventArrow} aria-hidden="true" style={{ color: tone }}>
         <ArrowRight size={11} strokeWidth={2} />
       </span>
       <span className={styles.eventTransition} style={{ color: tone }}>{transitionLabel}</span>
+      {isRetryTransition && event.attempt_index !== undefined && (
+        <span
+          className={styles.eventDetail}
+          data-testid="pipeline-stage-event-attempt"
+          aria-label={`attempt ${event.attempt_index}`}
+        >
+          attempt {event.attempt_index}
+        </span>
+      )}
+      {validatorMessage !== undefined && (
+        <span
+          className={styles.eventDetail}
+          data-testid="pipeline-stage-event-validator-error"
+          title={validatorMessage}
+        >
+          {validatorMessage}
+        </span>
+      )}
       <span className={styles.eventTime}>
         <time dateTime={event.at}>{formatRelative(event.at)}</time>
       </span>
@@ -941,6 +983,8 @@ function humanizeTransition(t: string): string {
     case 'exit-failure': return 'exited (failure)';
     case 'hil-pause': return 'paused for HIL';
     case 'hil-resume': return 'resumed';
+    case 'retry-after-findings': return 'retrying (audit feedback)';
+    case 'validator-retry-after-failure': return 'retrying (schema feedback)';
     default: return t;
   }
 }
@@ -952,6 +996,8 @@ function transitionTone(t: string): string {
     case 'exit-failure': return 'var(--status-danger)';
     case 'hil-pause': return 'var(--status-warning)';
     case 'hil-resume': return 'var(--status-info)';
+    case 'retry-after-findings': return 'var(--status-warning)';
+    case 'validator-retry-after-failure': return 'var(--status-warning)';
     default: return 'var(--text-secondary)';
   }
 }

@@ -46,6 +46,7 @@ import type {
   StageOutput,
 } from './types.js';
 import {
+  MAX_VALIDATOR_ERROR_MESSAGE_LEN,
   mkBrainstormOutputAtom,
   mkDispatchRecordAtom,
   mkPipelineAtom,
@@ -75,6 +76,14 @@ import {
   HARDCODED_DEFAULT as AUDITOR_FEEDBACK_REPROMPT_HARDCODED_DEFAULT,
   readAuditorFeedbackRePromptPolicy,
 } from './auditor-feedback-reprompt-config.js';
+import {
+  decideValidatorRetryAction,
+  type PlanStageValidatorRetryConfig,
+} from './plan-stage-validator-retry.js';
+import {
+  HARDCODED_DEFAULT as PLAN_STAGE_VALIDATOR_RETRY_HARDCODED_DEFAULT,
+  readPlanStageValidatorRetryPolicy,
+} from './plan-stage-validator-retry-config.js';
 
 /**
  * Bound on the number of stages a single pipeline run may walk.
@@ -466,6 +475,29 @@ export async function runPipeline(
     (await readAuditorFeedbackRePromptPolicy(host))
     ?? AUDITOR_FEEDBACK_REPROMPT_HARDCODED_DEFAULT;
 
+  // Resolve the plan-stage validator-retry config ONCE per pipeline
+  // run, mirroring the auditor-feedback read above. The canon policy
+  // atom (pol-plan-stage-validator-retry-default) gates the
+  // max_attempts + recoverable_error_patterns dial; a null read (no
+  // atom OR malformed payload) falls through to the hardcoded floor at
+  // PLAN_STAGE_VALIDATOR_RETRY_HARDCODED_DEFAULT. The pure decision
+  // function `decideValidatorRetryAction` consumes this struct inside
+  // the per-stage schema-validation block below; reading once per
+  // pipeline keeps the canon-walk cost O(1) per run.
+  //
+  // The two policies (auditor-feedback + validator-retry) gate
+  // different retry decisions:
+  //   - validator-retry fires AFTER stage.outputSchema.safeParse fails
+  //     but BEFORE persistence + audit. Teach back the zod error.
+  //   - auditor-feedback fires AFTER persistence + audit, only on
+  //     critical findings. Teach back the audit feedback.
+  // Both bound by their respective max_attempts; the runner's unified
+  // attempt counter covers both gates so a stage that hits BOTH (rare
+  // but possible) cannot exceed max(both caps) total attempts.
+  const validatorRetryConfig: PlanStageValidatorRetryConfig =
+    (await readPlanStageValidatorRetryPolicy(host))
+    ?? PLAN_STAGE_VALIDATOR_RETRY_HARDCODED_DEFAULT;
+
   for (let i = startIdx; i < stages.length; i++) {
     const stage = stages[i]!;
 
@@ -634,31 +666,49 @@ export async function runPipeline(
         };
       }
     }
-    // Auditor-feedback re-prompt loop. The inner attempt loop reruns
-    // run + schema + budget + persist + audit when the just-completed
-    // attempt produced findings the runner is configured to teach
-    // back (default: critical). Attempt 1 always runs; the loop stops
-    // when (a) findings are empty / non-actionable, (b) the attempt
-    // cap is reached, or (c) the stage's run/schema/budget path
-    // returns early (which short-circuits via the existing return).
+    // Per-stage retry loops: TWO bounded retry gates run inside this
+    // attempt loop, both consulting the unified `attempt` counter so a
+    // stage that triggers both validators stays bounded by
+    // max(both caps).
     //
-    // priorAuditFindings starts empty on attempt 1; on subsequent
-    // attempts it carries the LAST attempt's findings only. Stage
-    // adapters fold these into their LLM prompt under
-    // `StageInput.priorAuditFindings`. A stage that does not read the
-    // field continues to work; the field is additive.
+    // 1. Plan-stage validator-retry (this PR): teach back when
+    //    `stage.outputSchema.safeParse` rejects. Fires AFTER stage.run
+    //    but BEFORE persistence + audit. priorValidatorError carries
+    //    the prior attempt's zod-error prefix shape
+    //    (`schema-validation-failed: <zod error>`).
     //
-    // The attempt loop is bounded by config.max_attempts (default 2)
-    // so a runaway loop is impossible by construction. The per-stage
-    // `budget_cap_usd` fence is enforced CUMULATIVELY across attempts
-    // via stageAttemptCostUsd: a re-prompt storm hits the cap and
-    // halts even when each attempt's individual cost would have
-    // passed a per-attempt check. Two $0.60 attempts under a $1.00
-    // cap together exceed the cap on the second attempt and halt
-    // via the existing budget-overflow path. The single-attempt
-    // check is still useful as a fast-fail backstop for a one-shot
-    // overrun.
+    // 2. Auditor-feedback re-prompt (existing): teach back when
+    //    stage.audit returns findings in `severities_to_reprompt`.
+    //    Fires AFTER persistence + audit. priorAuditFindings carries
+    //    the prior attempt's findings filtered to configured
+    //    severities.
+    //
+    // Attempt 1 always runs with both prior fields empty; the loop
+    // stops when (a) schema parses + (findings are empty or
+    // non-actionable), (b) the unified attempt cap is reached, or
+    // (c) the stage's run path returns early.
+    //
+    // Stage adapters fold prior* fields into their LLM prompt under
+    // stable data-block keys. A stage that does not read these fields
+    // continues to work; the fields are additive.
+    //
+    // The attempt loop is bounded by the LARGER of the two policies'
+    // max_attempts (default both = 2) so a runaway loop is impossible
+    // by construction. The per-stage `budget_cap_usd` fence is
+    // enforced CUMULATIVELY across attempts via stageAttemptCostUsd:
+    // a retry storm hits the cap and halts even when each attempt's
+    // individual cost would have passed a per-attempt check. Two
+    // $0.60 attempts under a $1.00 cap together exceed the cap on the
+    // second attempt and halt via the existing budget-overflow path.
     let priorAuditFindings: ReadonlyArray<AuditFinding> = [];
+    // Prior validator (schema) error. Empty string on attempt 1; on
+    // subsequent attempts (after a recoverable schema-validation
+    // failure) it carries the runner-constructed prefix shape
+    // `schema-validation-failed: <zod error message>`. Stage adapters
+    // fold this into their LLM prompt under
+    // `StageInput.priorValidatorError`; a stage that does not read
+    // the field continues to work.
+    let priorValidatorError = '';
     let output: StageOutput<unknown> | undefined;
     let stageOutputAtomId: AtomId | undefined;
     let persistedPlanAtomIds: ReadonlyArray<AtomId> = [];
@@ -671,7 +721,19 @@ export async function runPipeline(
     // so a re-prompt that would push the running total over the cap
     // halts before the cost is "spent" on the wrong side of the gate.
     let stageAttemptCostUsd = 0;
-    const maxAttempts = Math.max(1, auditorFeedbackConfig.max_attempts);
+    // The unified attempt cap is the LARGER of the two retry-loop
+    // caps. Both validator-retry and auditor-feedback retry consult
+    // the same `attempt` counter (a single stage cannot exceed
+    // max(both) total attempts). When the operator narrows one dial
+    // (e.g. validator max_attempts=1 to disable validator-retry while
+    // keeping auditor-feedback at 2), the other dial's cap still
+    // gates its own decision via decideRePromptAction /
+    // decideValidatorRetryAction.
+    const maxAttempts = Math.max(
+      1,
+      auditorFeedbackConfig.max_attempts,
+      validatorRetryConfig.max_attempts,
+    );
     let attempt = 0;
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -696,6 +758,7 @@ export async function runPipeline(
           verifiedSubActorPrincipalIds,
           operatorIntentContent,
           priorAuditFindings,
+          priorValidatorError,
         };
         output = await runStageWithRetry(
           () =>
@@ -732,9 +795,136 @@ export async function runPipeline(
       // Schema validation. Run before persistence so an LLM-emitted
       // payload outside the schema NEVER becomes the priorOutput of a
       // downstream stage.
+      //
+      // Validator-retry loop: when a recoverable schema-validation
+      // failure lands and the configured attempt cap has not been
+      // reached, the runner re-invokes the SAME stage with the
+      // validator's exact zod error message folded into the next
+      // attempt's prompt context. The first failure becomes a teaching
+      // moment rather than a pipeline halt. Mirrors the
+      // auditor-feedback re-prompt pattern (PR #397) so the two retry
+      // gates share one mental model.
+      //
+      // Cost accounting on schema failure: the attempt's cost is
+      // accumulated BEFORE the retry-or-halt decision so a retry storm
+      // of cheap-but-failing attempts still respects the per-stage
+      // budget cap. Without this, an LLM that emits broken-shape
+      // payloads cheaply would never hit the budget cap. Mirrors the
+      // post-audit accumulation below.
       if (stage.outputSchema !== undefined) {
         const parsed = stage.outputSchema.safeParse(output.value);
         if (!parsed.success) {
+          const cause = `schema-validation-failed: ${parsed.error.message}`;
+          // Final kill-switch check before the retry-after-failure
+          // emit. A STOP that flipped between stage.run and here must
+          // NOT produce a retry event; mirrors the absolute-priority
+          // guarantee at every other write site.
+          if (host.scheduler.killswitchCheck()) {
+            return { kind: 'halted', pipelineId };
+          }
+          // Accumulate this attempt's cost so a retry storm respects
+          // the per-stage budget cap. The total cost also rolls into
+          // the pipeline-total cap a few lines below; checking those
+          // caps BEFORE the retry decision means a retry that would
+          // overshoot halts on budget-overflow rather than retry-cap.
+          stageAttemptCostUsd += output.cost_usd;
+          totalCostUsd += output.cost_usd;
+          // Resolve per-stage budget cap. Stage-supplied takes
+          // precedence over canon policy; null means no cap. Mirrors
+          // the post-audit budget block.
+          const failedStageCap =
+            stage.budget_cap_usd
+            ?? (await readPipelineStageCostCapPolicy(host, stage.name)).cap_usd;
+          if (
+            failedStageCap !== null
+            && failedStageCap !== undefined
+            && toUsdMicros(stageAttemptCostUsd) > toUsdMicros(failedStageCap)
+          ) {
+            await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+            return await failPipeline(
+              host,
+              pipelineId,
+              options,
+              now,
+              stage.name,
+              `budget-overflow: cumulative-attempt-cost ${stageAttemptCostUsd} > cap ${failedStageCap}`,
+              i,
+            );
+          }
+          if (
+            pipelineCostCapUsd !== null
+            && toUsdMicros(totalCostUsd) > toUsdMicros(pipelineCostCapUsd)
+          ) {
+            await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+            return await failPipeline(
+              host,
+              pipelineId,
+              options,
+              now,
+              stage.name,
+              `pipeline-cost-overflow: total ${totalCostUsd} > cap ${pipelineCostCapUsd}`,
+              i,
+            );
+          }
+          // Validator-retry decision. The pure decision helper returns
+          // 'retry' when (a) the error message matches a configured
+          // recoverable pattern AND (b) the attempt cap has not been
+          // reached. Otherwise 'halt' and the runner falls through to
+          // the existing schema-validation-failed halt path.
+          const decision = decideValidatorRetryAction(
+            cause,
+            attempt,
+            validatorRetryConfig,
+          );
+          if (decision.action === 'retry') {
+            // Emit validator-retry-after-failure event so an audit
+            // walk renders the teaching seam without re-running the
+            // stage. The next attempt's stage input carries the
+            // error message as priorValidatorError; the stage adapter
+            // is the consumer of that prompt-shape signal.
+            //
+            // The validator error is truncated at the bound so a
+            // runaway Zod emission cannot inflate the event atom.
+            // The bound matches MAX_VALIDATOR_ERROR_MESSAGE_LEN on
+            // the atom-mint side; substring-truncation with marker
+            // mirrors the auditor-feedback per-finding cap.
+            const TRUNCATION_MARKER = '... [truncated]';
+            const boundedCause = cause.length > MAX_VALIDATOR_ERROR_MESSAGE_LEN
+              ? `${cause.slice(0, MAX_VALIDATOR_ERROR_MESSAGE_LEN - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`
+              : cause;
+            await host.atoms.put(
+              mkPipelineStageEventAtom({
+                pipelineId,
+                stageName: stage.name,
+                principalId: options.principal,
+                correlationId: options.correlationId,
+                now: now(),
+                transition: 'validator-retry-after-failure',
+                durationMs,
+                costUsd: output.cost_usd,
+                attemptIndex: attempt + 1,
+                validatorErrorMessage: boundedCause,
+              }),
+            );
+            // Seed the next attempt's validator-feedback. The
+            // priorAuditFindings stays as it was (a stage that retried
+            // on audit findings and then schema-fails on attempt 2
+            // surfaces BOTH teaching signals on attempt 3); the
+            // unified attempt counter caps total attempts.
+            priorValidatorError = boundedCause;
+            if (attempt >= maxAttempts) {
+              // Defense in depth: decideValidatorRetryAction should
+              // not return 'retry' when previousAttempts >=
+              // max_attempts, but if the config drifted between
+              // policies, the runner enforces the cap mechanically.
+              break;
+            }
+            continue;
+          }
+          // decision.action === 'halt': fall through to the existing
+          // schema-validation halt path. The cause string is the same
+          // one the runner has used since PR #293; audit walks remain
+          // backward-compatible.
           await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
           return await failPipeline(
             host,
@@ -742,10 +932,17 @@ export async function runPipeline(
             options,
             now,
             stage.name,
-            `schema-validation-failed: ${parsed.error.message}`,
+            cause,
             i,
           );
         }
+        // Schema passed: clear priorValidatorError so a downstream
+        // audit-feedback retry on this same stage does not carry
+        // stale validator-error context into the next attempt's
+        // prompt. The auditor-feedback teach-back IS the relevant
+        // signal at that point; mixing validator history into an
+        // audit-retry prompt would confuse the stage adapter.
+        priorValidatorError = '';
       }
 
       // Per-stage budget enforcement. Stage-supplied cap takes precedence;

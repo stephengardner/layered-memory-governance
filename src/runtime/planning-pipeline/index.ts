@@ -97,3 +97,16 @@ export {
   HARDCODED_DEFAULT as AUDITOR_FEEDBACK_REPROMPT_HARDCODED_DEFAULT,
   readAuditorFeedbackRePromptPolicy,
 } from './auditor-feedback-reprompt-config.js';
+
+export {
+  decideValidatorRetryAction,
+  buildValidatorRetryContext,
+} from './plan-stage-validator-retry.js';
+export type {
+  PlanStageValidatorRetryConfig,
+  ValidatorRetryAction,
+} from './plan-stage-validator-retry.js';
+export {
+  HARDCODED_DEFAULT as PLAN_STAGE_VALIDATOR_RETRY_HARDCODED_DEFAULT,
+  readPlanStageValidatorRetryPolicy,
+} from './plan-stage-validator-retry-config.js';

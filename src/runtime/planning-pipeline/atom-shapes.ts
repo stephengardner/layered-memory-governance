@@ -61,12 +61,36 @@ const TRANSITION = z.enum([
   // the per-stage one-event-per-transition contract: a stage that
   // re-prompts once emits exactly one retry-after-findings event.
   'retry-after-findings',
+  // Plan-stage validator-retry loop. Emit 'validator-retry-after-failure'
+  // when the runner re-invokes the same stage with a prior
+  // schema-validation error folded into the prompt context; the
+  // attempt_index discriminates multiple events emitted by one stage
+  // (attempt 1 schema-fails + attempt 2 schema-fails + final halt all
+  // surface as distinct atoms). Sibling of 'retry-after-findings':
+  // teaches back AFTER schema validation but BEFORE persistence + audit,
+  // matching the substrate-side `decideValidatorRetryAction` decision
+  // shape. A stage that retries once on a validator failure emits
+  // exactly one validator-retry-after-failure event.
+  'validator-retry-after-failure',
 ]);
 const CANON_AUDIT_VERDICT = z.enum(['approved', 'issues-found']);
 const AUDIT_STATUS = z.enum(['unchecked', 'clean', 'findings']);
 const MODE = z.enum(['single-pass', 'substrate-deep']);
 
 const MAX_CITED_LIST = 256;
+
+/**
+ * Hard cap on the validator error message stored on a
+ * `validator-retry-after-failure` event atom. Bounds the message so a
+ * deeply-nested Zod error (a multi-issue payload, a refinement chain)
+ * cannot inflate the event atom past sane sizes. The runner truncates
+ * before mint via the same bound; this constant is the mint-side guard
+ * that catches a direct-mint caller bypassing the trim. Exported so
+ * the runner can reference the same constant via the helper rather
+ * than re-declaring it (extracted at N=2 per the duplication-floor
+ * canon).
+ */
+export const MAX_VALIDATOR_ERROR_MESSAGE_LEN = 4096;
 
 const auditFindingSchema = z.object({
   pipelineId: z.string(),
@@ -270,7 +294,8 @@ export interface MkPipelineStageEventAtomInput {
     | 'canon-bound'
     | 'canon-audit-complete'
     | 'agent-turn'
-    | 'retry-after-findings';
+    | 'retry-after-findings'
+    | 'validator-retry-after-failure';
   readonly durationMs: number;
   readonly costUsd: number;
   readonly outputAtomId?: AtomId;
@@ -327,6 +352,18 @@ export interface MkPipelineStageEventAtomInput {
     readonly major: number;
     readonly minor: number;
   };
+  /**
+   * validator-retry-after-failure: the validator (zod) error message
+   * the just-completed attempt produced. Surfaced on the event metadata
+   * so a console projection or audit walk renders the exact error
+   * without re-walking persisted stage-output atoms (which the runner
+   * does NOT write on a validator failure -- the failed payload never
+   * lands on disk, mirroring the existing schema-validation-failed
+   * halt path). Bounded at MAX_VALIDATOR_ERROR_MESSAGE_LEN so a runaway
+   * Zod emission cannot inflate the event atom past sane sizes; the
+   * runner truncates with an explicit marker.
+   */
+  readonly validatorErrorMessage?: string;
 }
 
 export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): Atom {
@@ -394,6 +431,48 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
       }
     }
   }
+  if (input.transition === 'validator-retry-after-failure') {
+    // The validator-retry event MUST carry the attempt index the
+    // runner is about to invoke, mirroring retry-after-findings.
+    // Without it, an audit walk cannot tell two distinct retry events
+    // on the same stage (max_attempts > 2) apart -- the atom-id
+    // discriminator below depends on a defined attempt index for
+    // uniqueness. validatorErrorMessage is required: the event's whole
+    // purpose is to record the validator error the runner is teaching
+    // back; an event with no error message is the canon-broken shape
+    // (a "retry without context" event).
+    if (input.attemptIndex === undefined) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='validator-retry-after-failure' requires attempt_index`,
+      );
+    }
+    if (!Number.isInteger(input.attemptIndex) || input.attemptIndex < 2) {
+      throw new Error(
+        `mkPipelineStageEventAtom: attempt_index must be an integer >= 2 (got ${input.attemptIndex}); `
+          + 'attempt 1 produces the first validator failure, attempt 2 is the first retry.',
+      );
+    }
+    if (input.validatorErrorMessage === undefined
+        || typeof input.validatorErrorMessage !== 'string'
+        || input.validatorErrorMessage.length === 0) {
+      throw new Error(
+        `mkPipelineStageEventAtom: transition='validator-retry-after-failure' requires `
+          + `validator_error_message (non-empty string)`,
+      );
+    }
+    if (input.validatorErrorMessage.length > MAX_VALIDATOR_ERROR_MESSAGE_LEN) {
+      // Defensive bound; the runner truncates at emit time but a
+      // direct mint caller could pass an unbounded value. Fail loud
+      // rather than silently truncating since the atom contract is
+      // "the message is what the validator saw"; if the caller wants
+      // truncation, they invoke the runner-side trim helper.
+      throw new Error(
+        `mkPipelineStageEventAtom: validator_error_message length `
+          + `${input.validatorErrorMessage.length} exceeds MAX_VALIDATOR_ERROR_MESSAGE_LEN `
+          + `${MAX_VALIDATOR_ERROR_MESSAGE_LEN}; truncate at the call site before minting.`,
+      );
+    }
+  }
   if (input.canonAtomIds !== undefined && input.canonAtomIds.length > MAX_CITED_LIST) {
     throw new Error(
       `mkPipelineStageEventAtom: canon_atom_ids capped at ${MAX_CITED_LIST}`,
@@ -411,8 +490,9 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
   // additionally folds in the turn_index so a single stage's multi-turn
   // session produces N distinct event atoms (one per turn) without
   // re-using the same id and triggering an idempotent put-as-overwrite.
-  // Same posture for 'retry-after-findings': max_attempts > 2 means a
-  // stage may emit multiple retry events, each carrying a distinct
+  // Same posture for 'retry-after-findings' and
+  // 'validator-retry-after-failure': max_attempts > 2 means a stage
+  // may emit multiple retry events, each carrying a distinct
   // attempt_index. Other transitions remain
   // {pipeline}-{stage}-{transition}-{correlation}; the per-stage
   // one-event-per-transition contract is preserved.
@@ -420,6 +500,8 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
   if (input.transition === 'agent-turn' && input.turnIndex !== undefined) {
     idTail = `${input.transition}-${input.turnIndex}`;
   } else if (input.transition === 'retry-after-findings' && input.attemptIndex !== undefined) {
+    idTail = `${input.transition}-${input.attemptIndex}`;
+  } else if (input.transition === 'validator-retry-after-failure' && input.attemptIndex !== undefined) {
     idTail = `${input.transition}-${input.attemptIndex}`;
   }
   const id = `pipeline-stage-event-${input.pipelineId}-${input.stageName}-${idTail}-${input.correlationId}` as AtomId;
@@ -472,6 +554,9 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
               minor: input.findingsSummary.minor,
             },
           }
+        : {}),
+      ...(input.validatorErrorMessage !== undefined
+        ? { validator_error_message: input.validatorErrorMessage }
         : {}),
     },
   });

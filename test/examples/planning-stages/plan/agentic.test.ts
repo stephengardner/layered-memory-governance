@@ -65,6 +65,8 @@ function makeStageInput(host: ReturnType<typeof createMemoryHost>): StageInput<u
     verifiedSubActorPrincipalIds: [VERIFIED_SUB_ACTOR],
     operatorIntentContent:
       'add a one-line note to the README explaining what the deep planning pipeline does',
+    priorAuditFindings: [],
+    priorValidatorError: '',
   };
 }
 

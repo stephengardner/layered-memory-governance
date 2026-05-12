@@ -170,16 +170,53 @@ export interface PipelineLiveOpsResult {
  * One stage-event row in the detail view. Mirrors the
  * `pipeline-stage-event` atom directly so the timeline UI can render
  * without re-deriving anything.
+ *
+ * Retry transitions ('retry-after-findings', 'validator-retry-after-failure')
+ * are emitted by the substrate retry loops (auditor-feedback +
+ * plan-stage validator-retry); the UI surfaces them on the timeline so
+ * the operator sees "stage X succeeded on attempt 2/2" rather than
+ * just "stage X succeeded". Each retry event carries attempt_index +
+ * (findings_summary OR validator_error_message) on metadata.
  */
 export interface PipelineStageEvent {
   readonly atom_id: string;
   readonly stage_name: string;
-  readonly transition: 'enter' | 'exit-success' | 'exit-failure' | 'hil-pause' | 'hil-resume';
+  readonly transition:
+    | 'enter'
+    | 'exit-success'
+    | 'exit-failure'
+    | 'hil-pause'
+    | 'hil-resume'
+    | 'retry-after-findings'
+    | 'validator-retry-after-failure';
   readonly at: string;
   readonly duration_ms: number;
   readonly cost_usd: number;
   readonly output_atom_id: string | null;
   readonly principal_id: string;
+  /**
+   * 1-based attempt index emitted by retry transitions. Absent on
+   * non-retry transitions (enter, exit-*, hil-*). The runner enforces
+   * attempt_index >= 2 at mint time: attempt 1 produces the first
+   * audit/validation failure, attempt 2 is the first retry.
+   */
+  readonly attempt_index?: number;
+  /**
+   * Severity-bucketed count of findings on a 'retry-after-findings'
+   * event. The runner builds this from the audit findings list at
+   * emit time. Absent on other transitions.
+   */
+  readonly findings_summary?: {
+    readonly critical: number;
+    readonly major: number;
+    readonly minor: number;
+  };
+  /**
+   * Validator (zod) error message on a 'validator-retry-after-failure'
+   * event. Truncated server-side at MAX_VALIDATOR_ERROR_MESSAGE_LEN.
+   * Absent on other transitions.
+   */
+  readonly validator_error_message?: string;
 }
 
 export interface PipelineAuditFinding {

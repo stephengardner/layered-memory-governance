@@ -95,6 +95,34 @@ export interface StageInput<T> {
    * without a defined-check.
    */
   readonly priorAuditFindings: ReadonlyArray<AuditFinding>;
+  /**
+   * Validator (schema) error message from the PRIOR attempt at this
+   * stage (when the runner is re-invoking the stage after a
+   * recoverable schema-validation failure). Absent / empty on the
+   * first attempt; non-empty on attempts 2+ under the plan-stage
+   * validator-retry loop. Stage adapters fold this into their LLM
+   * prompt under a stable data-block key so the next attempt sees
+   * the validator's exact zod error message and self-corrects.
+   *
+   * The runner only re-invokes the stage when the configured
+   * plan-stage validator-retry policy says so
+   * (pol-plan-stage-validator-retry-default; default floor of
+   * `max_attempts=2, recoverable_error_patterns=['schema-validation-failed']`).
+   * Stages that do not read this field continue to work; the field
+   * is additive on `StageInput<T>` and mirrors the priorAuditFindings
+   * pattern.
+   *
+   * Empty string is the canonical "no prior validator error" signal;
+   * the runner threads `''` rather than `undefined` so adapters that
+   * conditionally inject the prompt-block can do
+   * `priorValidatorError.length > 0` without a defined-check. The
+   * value is the runner-constructed prefix shape
+   * `schema-validation-failed: ${zodError.message}` -- adapters that
+   * want only the zod-error tail can split on the colon, but the
+   * prefix is part of the contract so the policy reader's pattern
+   * match remains substring-stable.
+   */
+  readonly priorValidatorError: string;
 }
 
 export interface StageOutput<T> {
