@@ -22,7 +22,7 @@
  *     module so the two surfaces agree on what counts as "alive".
  */
 
-import { buildIntentOutcome } from './intent-outcome.js';
+import { buildIntentOutcome, type BuildIntentOutcomeOptions } from './intent-outcome.js';
 import type { IntentOutcomeSourceAtom } from './intent-outcome-types.js';
 import { readString } from './projection-helpers.js';
 import type {
@@ -167,27 +167,39 @@ function topNByRecency(
  * Aggregate the live atom set into the Pulse pipeline-state summary.
  *
  * The classification rules:
- *   - `running`                   : pipeline_state in {pending, running}
- *   - `dispatched_pending_merge`  : intent-outcome state ===
- *                                    'intent-dispatched-pending-review'
- *   - `intent_fulfilled`          : intent-outcome state ===
- *                                    'intent-fulfilled' (merged PR observed)
+ *   - `running`                          : pipeline_state in {pending, running}
+ *   - `dispatched_pending_merge`         : intent-outcome state ===
+ *                                           'intent-dispatched-pending-review'
+ *                                           (fresh observation, PR open)
+ *   - `dispatched_observation_stale`     : intent-outcome state ===
+ *                                           'intent-dispatched-observation-stale'
+ *                                           (observation older than threshold;
+ *                                           the substrate gap shipped in 2026-05-11
+ *                                           keeps this from inflating the
+ *                                           pending-merge headline when stale
+ *                                           rows exist in the store)
+ *   - `intent_fulfilled`                 : intent-outcome state ===
+ *                                           'intent-fulfilled' (merged PR observed)
  *
- * The three buckets are mutually exclusive by construction: a pipeline
+ * The four buckets are mutually exclusive by construction: a pipeline
  * is `running` (in flight) OR it has dispatched (and waits on merge OR
- * has merged) OR it's terminal-without-merge (not in any bucket). The
- * summary surfaces the active subset; terminal failures live elsewhere
- * on /pipelines.
+ * has merged OR has a stale observation) OR it's terminal-without-merge
+ * (not in any bucket). The summary surfaces the active subset; terminal
+ * failures live elsewhere on /pipelines.
  *
  * `now` is injected for determinism in tests; the handler passes
- * `Date.now()`.
+ * `Date.now()`. `options.prObservationStalenessMs` is threaded through
+ * to the synthesizer so a deployment can tune the staleness threshold
+ * via `pol-pr-observation-staleness-ms`.
  */
 export function buildPulsePipelineSummary(
   atoms: ReadonlyArray<IntentOutcomeSourceAtom>,
   now: number,
+  options: BuildIntentOutcomeOptions = {},
 ): PulsePipelineSummary {
   const running: BucketedRow[] = [];
   const dispatched: BucketedRow[] = [];
+  const stale: BucketedRow[] = [];
   const fulfilled: BucketedRow[] = [];
   let total = 0;
 
@@ -199,7 +211,7 @@ export function buildPulsePipelineSummary(
     if (atom.type !== 'pipeline') continue;
     if (!isCleanLive(atom)) continue;
     total += 1;
-    const outcome = buildIntentOutcome(atoms, atom.id, now);
+    const outcome = buildIntentOutcome(atoms, atom.id, now, options);
     const lastEventAt = pipelineLastEventAt(lastEventIndex, atom);
 
     // Running bucket reads the pipeline atom's own pipeline_state to
@@ -221,6 +233,8 @@ export function buildPulsePipelineSummary(
     // first.
     if (outcome.state === 'intent-dispatched-pending-review') {
       dispatched.push(makeRow(atom, outcome.title, lastEventAt));
+    } else if (outcome.state === 'intent-dispatched-observation-stale') {
+      stale.push(makeRow(atom, outcome.title, lastEventAt));
     } else if (outcome.state === 'intent-fulfilled') {
       fulfilled.push(makeRow(atom, outcome.title, lastEventAt));
     }
@@ -230,11 +244,13 @@ export function buildPulsePipelineSummary(
     computed_at: new Date(now).toISOString(),
     running: running.length,
     dispatched_pending_merge: dispatched.length,
+    dispatched_observation_stale: stale.length,
     intent_fulfilled: fulfilled.length,
     total,
     samples: {
       running: topNByRecency(running, MAX_PULSE_SAMPLE),
       dispatched_pending_merge: topNByRecency(dispatched, MAX_PULSE_SAMPLE),
+      dispatched_observation_stale: topNByRecency(stale, MAX_PULSE_SAMPLE),
       intent_fulfilled: topNByRecency(fulfilled, MAX_PULSE_SAMPLE),
     },
   };

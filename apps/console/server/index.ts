@@ -94,7 +94,7 @@ import type {
   PipelineSourceAtom,
 } from './pipelines-types';
 import { buildPipelineLifecycle } from './pipeline-lifecycle';
-import { buildIntentOutcome } from './intent-outcome';
+import { buildIntentOutcome, readPrObservationStalenessMs } from './intent-outcome';
 import type { IntentOutcome, IntentOutcomeSourceAtom } from './intent-outcome-types';
 import { buildPipelineErrorState } from './pipeline-error-state';
 import type {
@@ -2398,7 +2398,10 @@ async function handlePipelineLifecycle(pipelineId: string): Promise<PipelineLife
 async function handleIntentOutcome(pipelineId: string): Promise<IntentOutcome | null> {
   const all = await readAllAtoms();
   const sourceAtoms = all as unknown as ReadonlyArray<IntentOutcomeSourceAtom>;
-  const result = buildIntentOutcome(sourceAtoms, pipelineId, Date.now());
+  const prObservationStalenessMs = readPrObservationStalenessMs(sourceAtoms);
+  const result = buildIntentOutcome(sourceAtoms, pipelineId, Date.now(), {
+    prObservationStalenessMs,
+  });
   // 'intent-unknown' WITHOUT a pipeline_atom_id AND without a
   // dispatched_count signal means the synthesizer found literally
   // nothing for this id. Treat that as not-found so the client renders
@@ -2440,7 +2443,10 @@ async function handlePipelineErrorState(pipelineId: string): Promise<PipelineErr
 async function handlePulsePipelineSummary(): Promise<PulsePipelineSummary> {
   const all = await readAllAtoms();
   const sourceAtoms = all as unknown as ReadonlyArray<IntentOutcomeSourceAtom>;
-  return buildPulsePipelineSummary(sourceAtoms, Date.now());
+  const prObservationStalenessMs = readPrObservationStalenessMs(sourceAtoms);
+  return buildPulsePipelineSummary(sourceAtoms, Date.now(), {
+    prObservationStalenessMs,
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -238,16 +238,44 @@ export function buildPolicies(operatorId) {
       reason:
         'Freshness threshold for pr-observation atoms. The plan-observation-refresh tick '
         + 're-observes a PR whose latest observation is older than this many milliseconds, '
-        + 'has pr_state=OPEN, and whose linked plan is still executing. Default 5 minutes is '
-        + 'a sensible indie-floor; an org running tighter latency budgets sets a smaller '
-        + 'value. Closes the substrate gap where a PR that merges or closes leaves its plan '
-        + 'stuck in plan_state=executing because the only observation atom for the PR was '
-        + 'written ONCE at PR-creation time and carries pr_state=OPEN forever.',
+        + 'has pr_state=OPEN, and whose linked plan is in an actionable state (executing OR '
+        + 'recently transitioned to succeeded/abandoned per the widened filter that shipped '
+        + '2026-05-11). Default 5 minutes is a sensible indie-floor; an org running tighter '
+        + 'latency budgets sets a smaller value. Closes the substrate gap where a PR that '
+        + 'merges or closes leaves its plan stuck in plan_state=executing because the only '
+        + 'observation atom for the PR was written ONCE at PR-creation time and carries '
+        + 'pr_state=OPEN forever.',
       fields: {
         // 5 minutes matches the autonomous-loop cadence; the next approval-cycle
         // tick after a PR merges sees the stale observation and refreshes it,
         // which the reconciler then transitions on the same pass.
         freshness_ms: 300_000,
+      },
+    },
+    {
+      id: 'pol-pr-observation-staleness-ms',
+      subject: 'pr-observation-staleness-ms',
+      reason:
+        'Staleness window for pr-observation atoms consumed by the intent-outcome '
+        + 'synthesizer (and downstream by the Pulse pipeline summary). When '
+        + '`now - observed_at` exceeds this many milliseconds AND the observation is '
+        + 'still in a non-terminal pr_state (OPEN), the synthesizer demotes the '
+        + 'pipeline from intent-dispatched-pending-review to '
+        + 'intent-dispatched-observation-stale. Pulse counts the demoted rows in a '
+        + 'separate bucket so the "awaiting merge" headline reflects fresh data only. '
+        + 'Default 1h is intentionally generous (vs the refresh tick\'s 5min target) '
+        + 'to give the refresh tick a wide window to land a fresh atom before the '
+        + 'synthesizer flips the row. Deployments running tighter SLAs lower this; '
+        + 'webhook-driven deployments set the value to "Infinity" to disable staleness '
+        + 'detection and restore pre-2026-05-11 semantics (every observation counts as '
+        + 'authoritative). Closes the substrate gap observed 2026-05-11 where pr '
+        + 'observation atoms stuck at OPEN long after the PR merged on GitHub inflated '
+        + 'the Pulse "awaiting merge" count.',
+      fields: {
+        // 1h matches the synthesizer's DEFAULT_PR_OBSERVATION_STALENESS_MS. Twelve
+        // freshness windows = a wide heal margin; an operator should rarely see
+        // this state because the refresh tick lands fresh atoms long before.
+        staleness_ms: 3_600_000,
       },
     },
     {

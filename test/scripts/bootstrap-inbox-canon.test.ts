@@ -53,7 +53,23 @@ describe('bootstrap-inbox-canon POLICIES', () => {
       'pol-plan-auto-approve-low-stakes',
       'pol-plan-multi-reviewer-approval',
       'pol-pr-observation-freshness-threshold-ms',
+      'pol-pr-observation-staleness-ms',
     ]);
+  });
+
+  it('pol-pr-observation-staleness-ms ships staleness_ms=3_600_000 (1h default)', () => {
+    // Substrate gap (2026-05-11): the staleness window keeps stale
+    // pr-observation atoms from inflating the Pulse 'awaiting merge'
+    // headline when a refresh tick has not yet caught up. Default 1h
+    // is generous vs the 5min freshness target; the synthesizer demote
+    // is reached only when the refresh tick is silent for 12+ cycles.
+    const policies = buildPolicies(OP);
+    const spec = policies.find(
+      (p) => p.id === 'pol-pr-observation-staleness-ms',
+    );
+    expect(spec).toBeDefined();
+    expect(spec!.subject).toBe('pr-observation-staleness-ms');
+    expect(spec!.fields.staleness_ms).toBe(3_600_000);
   });
 
   it('pol-loop-pass-pr-observation-refresh-default ships enabled=true', () => {

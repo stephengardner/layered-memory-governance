@@ -17,15 +17,23 @@ import styles from './PipelineStateTile.module.css';
  * PipelineStateTile -- "what is the autonomous loop doing right now?"
  * at a glance.
  *
- * Renders three counts:
- *   - Running                  : pipelines in flight (pipeline_state
- *                                 pending or running)
- *   - Dispatched, awaiting merge: pipelines with an open PR not yet
- *                                  merged or closed
- *   - Intent fulfilled         : pipelines whose operator-intent
- *                                 produced a merged PR (TRUE-outcome
- *                                 semantics: real merged PR observed,
- *                                 NOT plan_state alone)
+ * Renders four counts:
+ *   - Running                    : pipelines in flight (pipeline_state
+ *                                    pending or running)
+ *   - Dispatched, awaiting merge : pipelines with an open PR not yet
+ *                                    merged or closed AND a fresh
+ *                                    pr-observation atom
+ *   - Observation stale          : pipelines whose latest pr-observation
+ *                                    atom is older than the staleness
+ *                                    threshold (pol-pr-observation-
+ *                                    staleness-ms). The substrate gap
+ *                                    fix shipped 2026-05-11 prevents
+ *                                    these rows from inflating the
+ *                                    awaiting-merge headline.
+ *   - Intent fulfilled           : pipelines whose operator-intent
+ *                                    produced a merged PR (TRUE-outcome
+ *                                    semantics: real merged PR observed,
+ *                                    NOT plan_state alone)
  *
  * Server-side aggregation per canon `dev-indie-floor-org-ceiling`:
  * shipping every pipeline atom on a 2s tick would scale poorly at
@@ -47,7 +55,11 @@ import styles from './PipelineStateTile.module.css';
  */
 const REFRESH_INTERVAL_MS = 2_000;
 
-type BucketKey = 'running' | 'dispatched_pending_merge' | 'intent_fulfilled';
+type BucketKey =
+  | 'running'
+  | 'dispatched_pending_merge'
+  | 'dispatched_observation_stale'
+  | 'intent_fulfilled';
 
 interface BucketConfig {
   readonly key: BucketKey;
@@ -94,6 +106,21 @@ const BUCKETS: ReadonlyArray<BucketConfig> = [
     emptyMessage: 'No PRs awaiting merge.',
   },
   {
+    // Stale observation bucket: rows whose latest pr-observation atom
+    // is older than the canon-policy threshold (pol-pr-observation-
+    // staleness-ms, default 1h). The synthesizer demotes these from
+    // 'awaiting merge' so the headline reflects fresh data only. The
+    // backfill heal script (scripts/backfill-stale-pr-observations.mjs)
+    // OR the next loop tick (pr-observation-refresh widened filter)
+    // should clear this bucket once the substrate fixes catch up.
+    key: 'dispatched_observation_stale',
+    label: 'Observation stale',
+    className: styles.bucketStale,
+    testId: 'pulse-pipeline-tile-observation-stale',
+    onNavigate: () => navigateToPipelinesWithState(null),
+    emptyMessage: 'No stale observations.',
+  },
+  {
     key: 'intent_fulfilled',
     label: 'Intent fulfilled',
     className: styles.bucketFulfilled,
@@ -116,6 +143,8 @@ function samplesForBucket(
       return data.samples.running;
     case 'dispatched_pending_merge':
       return data.samples.dispatched_pending_merge;
+    case 'dispatched_observation_stale':
+      return data.samples.dispatched_observation_stale;
     case 'intent_fulfilled':
       return data.samples.intent_fulfilled;
   }
@@ -127,6 +156,8 @@ function countForBucket(data: PulsePipelineSummary, key: BucketKey): number {
       return data.running;
     case 'dispatched_pending_merge':
       return data.dispatched_pending_merge;
+    case 'dispatched_observation_stale':
+      return data.dispatched_observation_stale;
     case 'intent_fulfilled':
       return data.intent_fulfilled;
   }
@@ -152,7 +183,7 @@ export function PipelineStateTile() {
         <div className={liveOpsStyles.tileTitleBlock}>
           <h3 className={liveOpsStyles.tileTitle}>Pipeline state</h3>
           <p className={liveOpsStyles.tileSubtitle}>
-            Running, awaiting merge, intent fulfilled
+            Running, awaiting merge, observation stale, intent fulfilled
           </p>
         </div>
       </header>
