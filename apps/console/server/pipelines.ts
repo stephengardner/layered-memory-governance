@@ -425,26 +425,25 @@ function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
   ) {
     const fs = findingsSummaryRaw as Record<string, unknown>;
     // Bound + sanitize the per-severity counts: a malformed atom (NaN,
-    // Infinity, negative, fractional) must not surface a malformed
-    // numeric shape on the wire. Coerce to finite non-negative numbers
-    // before projecting; any bucket that fails validation drops the
-    // whole findings_summary so consumers see "absent" rather than
-    // "partial" -- matching the CR-suggested posture (PR #412).
-    const critical = typeof fs['critical'] === 'number'
-      && Number.isFinite(fs['critical'])
-      && fs['critical'] >= 0
-      ? fs['critical']
+    // Infinity, negative, fractional, non-integer) must not surface a
+    // malformed numeric shape on the wire. The substrate mint contract
+    // requires non-negative integers (mkPipelineStageEventAtom validates
+    // Number.isInteger + >= 0 at write time); projection mirrors that
+    // contract so a malformed atom written by a future adapter / migration
+    // path cannot leak a fractional value into the UI. Any bucket that
+    // fails validation drops the whole findings_summary so consumers see
+    // "absent" rather than "partial".
+    const readCount = (value: unknown): number | null => (
+      typeof value === 'number'
+      && Number.isFinite(value)
+      && Number.isInteger(value)
+      && value >= 0
+    )
+      ? value
       : null;
-    const major = typeof fs['major'] === 'number'
-      && Number.isFinite(fs['major'])
-      && fs['major'] >= 0
-      ? fs['major']
-      : null;
-    const minor = typeof fs['minor'] === 'number'
-      && Number.isFinite(fs['minor'])
-      && fs['minor'] >= 0
-      ? fs['minor']
-      : null;
+    const critical = readCount(fs['critical']);
+    const major = readCount(fs['major']);
+    const minor = readCount(fs['minor']);
     if (critical !== null && major !== null && minor !== null) {
       findings_summary = { critical, major, minor };
     }

@@ -596,8 +596,7 @@ describe('getPipelineDetail', () => {
         transition: 'enter',
         at: new Date(NOW - 20 * 60 * 1000).toISOString(),
       }),
-      // Negative + non-finite bucket counts. Each bucket fails
-      // validation; the whole findings_summary drops.
+      // Negative bucket count. Fails validation; findings_summary drops.
       stageEventAtom({
         pipelineId: 'pipeline-malformed-counts',
         stageName: 'plan',
@@ -610,6 +609,46 @@ describe('getPipelineDetail', () => {
     const result = getPipelineDetail(
       [pipeline, ...events],
       'pipeline-malformed-counts',
+    );
+    expect(result).not.toBeNull();
+    const retryEvent = result!.events.find(
+      (e) => e.transition === 'retry-after-findings',
+    );
+    expect(retryEvent).toBeDefined();
+    expect(retryEvent!.findings_summary).toBeUndefined();
+  });
+
+  it('drops findings_summary on fractional bucket count (integer-only contract)', () => {
+    // CR PR #412 follow-up: the substrate mint contract requires non-
+    // negative INTEGER buckets (mkPipelineStageEventAtom validates with
+    // Number.isInteger). Projection mirrors the contract so a future
+    // adapter / migration path writing a fractional value cannot leak
+    // a 0.5 / 1.5 / NaN through the wire shape; the whole
+    // findings_summary drops on any malformed bucket.
+    const pipeline = pipelineAtom({
+      id: 'pipeline-fractional-counts',
+      state: 'completed',
+      createdAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+    });
+    const events = [
+      stageEventAtom({
+        pipelineId: 'pipeline-fractional-counts',
+        stageName: 'plan',
+        transition: 'enter',
+        at: new Date(NOW - 20 * 60 * 1000).toISOString(),
+      }),
+      stageEventAtom({
+        pipelineId: 'pipeline-fractional-counts',
+        stageName: 'plan',
+        transition: 'retry-after-findings',
+        at: new Date(NOW - 19 * 60 * 1000).toISOString(),
+        attemptIndex: 2,
+        findingsSummary: { critical: 0.5, major: 1, minor: 0 },
+      }),
+    ];
+    const result = getPipelineDetail(
+      [pipeline, ...events],
+      'pipeline-fractional-counts',
     );
     expect(result).not.toBeNull();
     const retryEvent = result!.events.find(
