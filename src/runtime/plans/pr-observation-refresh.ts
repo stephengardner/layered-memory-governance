@@ -13,11 +13,11 @@
  * Gap B (added 2026-05-11): a plan can be reaped or transitioned to
  *   succeeded/abandoned by an out-of-band path BEFORE the observation
  *   refresh catches up. Once that happens, the executing-only filter
- *   would skip the observation forever, and any consumer (Console
- *   pulse tile, intent-outcome synthesizer) that reads the stale OPEN
- *   observation classifies the pipeline as 'awaiting merge' indefinitely.
- *   The widened filter ALSO refreshes when the plan is in a terminal
- *   state (succeeded/abandoned) AND the observation is still non-terminal.
+ *   would skip the observation forever, and downstream consumers that
+ *   read the stale non-terminal observation could classify the
+ *   pipeline as still-open indefinitely. The widened filter ALSO
+ *   refreshes when the plan is in a terminal state
+ *   (succeeded/abandoned) AND the observation is still non-terminal.
  *   The 'already-terminal' guard on the observation side keeps this
  *   one-shot: once the refresh writes a MERGED/CLOSED atom, future ticks
  *   skip it via the bump('already-terminal') branch.
