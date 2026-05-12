@@ -152,3 +152,4 @@ _Last updated: 2026-05-06T19:00:00.000Z_
 - If RAG brings knowledge into an agent, LAG governs knowledge across agents. One-sentence position statement; lives in README. _(confidence 1.00)_
 - design/target-architecture.md is the north-star diagram with gap analysis and leverage-ordered roadmap. Read this first when scoping a new phase. _(confidence 1.00)_
 <!-- lag:canon-end -->
+<!-- canon-snapshot: 2026-05-11 -->
