@@ -615,6 +615,31 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
   let atomWritten = false;
   if (existing === null) {
     const priorId = await findPriorObservationId({ host, owner, repo, number, skipId: atomId });
+    // Auto-derive plan_id from the prior observation when the operator
+    // did not pass --plan-id. The Console pipeline-lifecycle projection
+    // (apps/console/server/pipeline-lifecycle.ts:151) filters on
+    // metadata.plan_id === planId; an observation without plan_id is
+    // invisible to /pipelines/<id> and the page renders "no observation
+    // yet" forever. The initial observation (written by autonomous-
+    // dispatch in scripts/invokers/autonomous-dispatch.mjs:423) DOES
+    // carry plan_id, so inheriting from the prior chain keeps the link
+    // intact across every re-observation without requiring the operator
+    // to remember the flag on a manual refresh.
+    let resolvedPlanId = planId;
+    if (!resolvedPlanId && priorId) {
+      try {
+        const priorAtom = await host.atoms.get(priorId);
+        const priorPlanId = priorAtom?.metadata?.plan_id;
+        if (typeof priorPlanId === 'string' && priorPlanId.length > 0) {
+          resolvedPlanId = priorPlanId;
+          console.log(`[pr-landing:observe-only] auto-derived plan_id from prior observation: ${priorPlanId}`);
+        }
+      } catch {
+        // Best-effort derivation; if the prior atom read fails the
+        // observation still ships, it just won't link back to the plan
+        // and the operator can re-run with --plan-id explicitly.
+      }
+    }
     const atom = mkPrObservationAtom({
       atomId,
       principal,
@@ -627,7 +652,7 @@ async function runObserveOnly({ host, principal, review, owner, repo, number, li
       observedAt: nowIso,
       origin,
       priorId,
-      ...(planId ? { planId } : {}),
+      ...(resolvedPlanId ? { planId: resolvedPlanId } : {}),
     });
     // Race guard: two observe-only runs can both see existing===null
     // and then contend on put(). The loser's put throws ConflictError;
