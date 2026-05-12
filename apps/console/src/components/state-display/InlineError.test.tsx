@@ -81,6 +81,26 @@ describe('InlineError', () => {
     expect(html).not.toContain('data-testid');
   });
 
+  it('honors the optional `label` prop for mutation-error callsites', () => {
+    /*
+     * The label seam lets mutation-error callers ("Could not file the
+     * intent:", "Could not propose the atom:", "Could not transition
+     * the kill switch:") share the InlineError visual shape with
+     * query-error callers without forking the component. Pass a
+     * custom label and the rest of the structure (icon, role,
+     * aria-live, detail code-block) stays identical.
+     */
+    const html = render(
+      <InlineError
+        message="rate limit"
+        label="Could not file the intent:"
+      />,
+    );
+    expect(html).toContain('Could not file the intent:');
+    expect(html).not.toContain('Failed to load:');
+    expect(html).toContain('rate limit');
+  });
+
   it('renders an empty-string message without crashing', () => {
     /*
      * `toErrorMessage(new Error(''))` returns the empty string per

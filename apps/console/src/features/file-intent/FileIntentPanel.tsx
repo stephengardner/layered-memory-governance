@@ -3,8 +3,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, Loader2, Send, Sparkles, Target, Zap } from 'lucide-react';
 import { ErrorState } from '@/components/state-display/StateDisplay';
+import { InlineError } from '@/components/state-display/InlineError';
 import { useCurrentActorId } from '@/hooks/useCurrentActorId';
 import { requireActorId } from '@/services/session.service';
+import { toErrorMessage } from '@/services/errors';
 import {
   BLAST_RADIUS_VALUES,
   DEFAULT_EXPIRES,
@@ -338,10 +340,11 @@ export function FileIntentPanel() {
         </label>
 
         {mutation.isError && !showSuccessToast && (
-          <div className={styles.error} data-testid="file-intent-error">
-            <span className={styles.errorTitle}>Could not file the intent</span>
-            <span className={styles.errorMessage}>{mutation.error.message}</span>
-          </div>
+          <InlineError
+            message={toErrorMessage(mutation.error)}
+            label="Could not file the intent:"
+            testId="file-intent-error"
+          />
         )}
 
         <div className={styles.actions}>

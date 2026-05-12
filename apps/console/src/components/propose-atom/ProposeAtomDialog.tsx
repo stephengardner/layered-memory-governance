@@ -5,6 +5,8 @@ import { X, Send, CheckCircle2 } from 'lucide-react';
 import { proposeAtom, type AtomType } from '@/services/canon.service';
 import { requireActorId } from '@/services/session.service';
 import { useCurrentActorId } from '@/hooks/useCurrentActorId';
+import { toErrorMessage } from '@/services/errors';
+import { InlineError } from '@/components/state-display/InlineError';
 import styles from './ProposeAtomDialog.module.css';
 
 interface Props {
@@ -185,9 +187,11 @@ export function ProposeAtomDialog({ open, onClose }: Props) {
                   </label>
 
                   {mutation.isError && (
-                    <div className={styles.error}>
-                      {(mutation.error as Error).message}
-                    </div>
+                    <InlineError
+                      message={toErrorMessage(mutation.error)}
+                      label="Could not propose the atom:"
+                      testId="propose-atom-error"
+                    />
                   )}
 
                   <div className={styles.actions}>

@@ -207,12 +207,11 @@
   border-top: 1px dashed var(--border-subtle);
 }
 
-.error {
-  padding: var(--space-2) var(--space-3);
-  background: color-mix(in srgb, var(--status-danger) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--status-danger) 30%, transparent);
-  border-radius: var(--radius-sm);
-  color: var(--status-danger);
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-}
+/*
+ * Mutation-error display: route through the shared InlineError
+ * primitive (apps/console/src/components/state-display/InlineError)
+ * so a transition failure reads the same as every other in-card
+ * error in the console -- no bespoke `.error` rule, no drift between
+ * surfaces. The old class lived here; it was the single residual
+ * bespoke error-style in this module.
+ */
