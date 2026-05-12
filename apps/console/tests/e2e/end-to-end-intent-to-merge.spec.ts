@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { writeFile, unlink, mkdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 /**
  * End-to-end pipeline coverage: intent -> dispatch -> PR -> merge -> fulfilled.
@@ -65,9 +66,13 @@ const DEFAULT_LAG = resolve(REPO_ROOT, '.lag');
 const LAG_DIR = process.env['LAG_CONSOLE_LAG_DIR'] ?? DEFAULT_LAG;
 const ATOMS_DIR = resolve(LAG_DIR, 'atoms');
 
-// Stable nonce derived from Date.now so parallel runs cannot collide.
-// Kept short so atom filenames stay readable in case of a debug dump.
-const NONCE = `e2e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+// Stable nonce derived from Date.now + a 4-hex slice of crypto.randomUUID
+// so parallel runs cannot collide. crypto over Math.random per
+// CodeQL js/insecure-randomness; this is a test-only id, not a security
+// context, but we keep the strict-randomness floor uniform across the
+// repo. Kept short so atom filenames stay readable in case of a debug
+// dump.
+const NONCE = `e2e${Date.now().toString(36)}${randomUUID().replace(/-/g, '').slice(0, 4)}`;
 const PIPELINE_ID = `pipeline-e2e-${NONCE}`;
 const SESSION_ID = `e2e-${NONCE}`;
 const PLAN_ID = `plan-e2e-${NONCE}`;
