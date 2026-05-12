@@ -387,6 +387,14 @@ describe('runIntentAutoApprovePass', () => {
     expect(events[0]?.details['intent_principal_id']).toBe('rogue-bot');
   });
 
+  // Note: INTENT_MISSING_OR_WRONG_TYPE guards a race between
+  // findIntentInProvenance (which already verifies type ===
+  // 'operator-intent') and the subsequent host.atoms.get for envelope
+  // read. Deterministic in-memory tests cannot trigger the second
+  // fetch to return null while the first found a match; the branch
+  // remains as defensive production-race protection rather than a
+  // covered test path.
+
   // 6. Plan confidence below envelope.min_plan_confidence -> skipped + observable
   it('T6: plan confidence below min_plan_confidence -> observable skip, not rejected', async () => {
     const host = createMemoryHost();
@@ -712,34 +720,27 @@ describe('runIntentAutoApprovePass', () => {
     expect(result.rejectedByReason[RejectReason.PRINCIPAL_NOT_WHITELISTED]).toBe(0);
   });
 
-  // 17. Regression: the live atom pair that exposed the
-  // eligible-but-not-approved diagnostic gap. A fresh, clean, signed
-  // intent (apex-agent, docs envelope, code-author allowlist) backing a
-  // 0.92-confidence docs-radius code-author plan MUST approve. Pinned
-  // against the literal fields of intent-2576b3cdc765 + the
-  // plan-append-one-line-file-intent-ui-pointer atom that the operator
-  // reported sitting idle. Approving a fresh envelope match is the
-  // primary contract of this tick; this test is the rampart against the
-  // class of bug where a rung silently rejects a pair that meets every
-  // documented criterion.
-  it('T17: regression - fresh apex-agent docs intent + 0.92 code-author plan approves', async () => {
+  // 17. Regression: a fresh envelope-matching intent + plan pair must
+  // approve. Rampart against the class of bug where a rung silently
+  // rejects a pair that meets every documented envelope criterion.
+  it('T17: regression - fresh intent + 0.92 plan approves', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom({
-      allowed_sub_actors: ['code-author', 'auditor-actor'],
+      allowed_sub_actors: ['sub-actor-A', 'auditor-actor'],
     }));
     await host.atoms.put(intentCreationPolicyAtom({
-      allowed_principal_ids: ['apex-agent', 'operator-principal'],
+      allowed_principal_ids: ['principal-A', 'principal-B'],
     }));
-    await host.atoms.put(intentAtom('intent-livepair', {
-      principal_id: 'apex-agent',
+    await host.atoms.put(intentAtom('intent-regression', {
+      principal_id: 'principal-A',
       max_blast_radius: 'docs',
       min_plan_confidence: 0.9,
-      allowed_sub_actors: ['code-author'],
+      allowed_sub_actors: ['sub-actor-A'],
       expires_at: FUTURE_EXPIRY,
     }));
-    await host.atoms.put(planAtom('plan-livepair', 'intent-livepair', {
+    await host.atoms.put(planAtom('plan-regression', 'intent-regression', {
       confidence: 0.92,
-      sub_actor: 'code-author',
+      sub_actor: 'sub-actor-A',
       implied_blast_radius: 'docs',
     }));
 
@@ -749,8 +750,8 @@ describe('runIntentAutoApprovePass', () => {
     expect(result.rejected).toBe(0);
     expect(result.skipped).toBe(0);
 
-    const plan = await host.atoms.get('plan-livepair' as AtomId);
+    const plan = await host.atoms.get('plan-regression' as AtomId);
     expect(plan?.plan_state).toBe('approved');
-    expect((plan?.metadata as Record<string, unknown>)?.approved_intent_id).toBe('intent-livepair');
+    expect((plan?.metadata as Record<string, unknown>)?.approved_intent_id).toBe('intent-regression');
   });
 });
