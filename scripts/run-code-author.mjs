@@ -40,9 +40,10 @@ import {
   loadCodeAuthorFence,
   CodeAuthorFenceError,
 } from '../dist/actors/code-author/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const CODE_AUTHOR_ID = 'code-author';
 
 function parseArgs(argv) {

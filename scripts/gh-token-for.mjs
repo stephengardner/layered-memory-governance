@@ -32,9 +32,10 @@ import {
 import {
   fetchInstallationToken,
 } from '../dist/external/github-app/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 async function main() {
   const role = process.argv[2];

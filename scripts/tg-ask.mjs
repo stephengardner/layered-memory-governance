@@ -26,9 +26,10 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { askQuestion } from '../dist/questions/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const OUTBOX_DIR = join(STATE_DIR, 'tg-queue', 'outbox');
 
 const OPERATOR_ID = process.env.LAG_OPERATOR_ID;

@@ -32,9 +32,10 @@ import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { LoopRunner } from '../dist/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const CANON_FILE = resolve(REPO_ROOT, 'CLAUDE.md');
 
 const OPERATOR_ID = process.env.LAG_OPERATOR_ID;

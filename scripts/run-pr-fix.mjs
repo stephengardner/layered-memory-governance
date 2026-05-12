@@ -86,9 +86,10 @@ import {
 import { FileBlobStore } from '../dist/examples/blob-stores/file/index.js';
 import { RegexRedactor } from '../dist/examples/redactors/regex-default/index.js';
 import { GitWorktreeProvider } from '../dist/examples/workspace-providers/git-worktree/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const STOP_SENTINEL = resolve(STATE_DIR, 'STOP');
 const DEFAULT_BLOB_ROOT = resolve(STATE_DIR, 'blobs');
 const DEFAULT_WORKSPACE_ROOT = resolve(tmpdir(), 'lag-pr-fix-workspaces');

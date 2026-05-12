@@ -35,9 +35,10 @@ import {
   buildPolicies,
   policyAtom,
 } from './lib/telegram-plan-trigger-canon-policies.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 const argv = process.argv.slice(2);
 const DRY_RUN = argv.includes('--dry-run');

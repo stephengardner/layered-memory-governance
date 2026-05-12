@@ -53,9 +53,10 @@ import {
   buildPolicyAtom as buildPlanningPipelinePolicyAtom,
   buildPrincipal as buildPlanningPipelinePrincipal,
 } from './lib/planning-pipeline-principals.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const BOOTSTRAP_TIME = '2026-04-21T17:00:00.000Z';
 const CLAUDE_AGENT_ID = process.env.LAG_AGENT_ID || 'claude-agent';
 

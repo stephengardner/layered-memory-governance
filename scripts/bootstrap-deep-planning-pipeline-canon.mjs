@@ -41,17 +41,16 @@ import {
   buildAtomFromSpec,
   buildDeepPlanningPipelineSpecs,
 } from './lib/deep-planning-pipeline-canon-atoms.mjs';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-// Honor LAG_STATE_DIR so a deployment that points the rest of the
-// substrate at a different state path (e.g. scripts/invokers/autonomous-dispatch.mjs
-// already reads this env var) does not silently fork its canon between
-// the env-pointed dir and REPO_ROOT/.lag. Indie-floor default
-// (env unset) is the in-repo path; org-ceiling deployments set
-// LAG_STATE_DIR once and every bootstrap + runtime path agrees.
-const STATE_DIR = process.env.LAG_STATE_DIR
-  ? resolve(process.env.LAG_STATE_DIR)
-  : resolve(REPO_ROOT, '.lag');
+// Honor LAG_STATE_DIR via resolveStateDir so a deployment that points
+// the rest of the substrate at a different state path does not silently
+// fork its canon between the env-pointed dir and REPO_ROOT/.lag.
+// Indie-floor default (env unset) is the in-repo path; org-ceiling
+// deployments set LAG_STATE_DIR once and every bootstrap + runtime
+// path agrees.
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 const argv = process.argv.slice(2);
 const DRY_RUN = argv.includes('--dry-run');

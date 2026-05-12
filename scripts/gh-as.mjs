@@ -33,9 +33,10 @@ import {
   fetchInstallationToken,
 } from '../dist/external/github-app/index.js';
 import { createFileHost } from '../dist/adapters/file/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 
 // Argv tokens that might carry secrets (tokens, passwords, keys). When
 // one of these flags appears, the value immediately following it is

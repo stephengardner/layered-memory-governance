@@ -35,6 +35,7 @@ import {
 import { loadLlmToolPolicy } from '../dist/llm-tool-policy.js';
 import { askQuestion } from '../dist/runtime/questions/index.js';
 import { runPlanApprovalTick } from '../dist/actor-message/index.js';
+import { resolveStateDir } from './lib/resolve-state-dir.mjs';
 
 const DEFAULT_CLASSIFY_MODEL = 'claude-opus-4-7';
 const DEFAULT_DRAFT_MODEL = 'claude-opus-4-7';
@@ -44,7 +45,7 @@ const INSTANCE_JUDGE_TIMEOUT_MS = 1_800_000;
 const JUDGE_CALLS_PER_ITERATION = 2;
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const STATE_DIR = resolve(REPO_ROOT, '.lag');
+const STATE_DIR = resolveStateDir(REPO_ROOT);
 const STOP_SENTINEL = resolve(STATE_DIR, 'STOP');
 
 function parseArgs(argv) {
