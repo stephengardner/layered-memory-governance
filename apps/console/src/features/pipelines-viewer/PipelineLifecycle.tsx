@@ -645,9 +645,17 @@ function MergeRow({ data }: { data: PipelineLifecycleData }) {
     );
   }
   if (!merge && obs) {
-    // Pre-merge: surface mergeStateStatus + mergeable from the latest
+    // Pre-merge: surface mergeStateStatus + conflicts from the latest
     // pr-observation so the operator knows where the PR is in the
     // gate ladder.
+    //
+    // The GitHub `mergeable` boolean answers "are there merge conflicts?"
+    // -- NOT "is this ready to merge?". mergeStateStatus is the
+    // authoritative ready-to-merge signal (CLEAN vs BLOCKED / BEHIND /
+    // DIRTY / UNSTABLE). Showing "Mergeable: true" next to "Merge state:
+    // BLOCKED" reads as a contradiction; relabel to "Conflicts" with
+    // human-friendly values so the two fields answer two distinct
+    // questions instead of looking like a substrate bug.
     const mss = obs.merge_state_status;
     const tone: 'success' | 'warning' | 'danger' | 'info' = mss === 'CLEAN'
       ? 'success'
@@ -656,6 +664,11 @@ function MergeRow({ data }: { data: PipelineLifecycleData }) {
         : mss === 'DIRTY'
           ? 'danger'
           : 'info';
+    const conflictsLabel = obs.mergeable === null
+      ? 'unknown'
+      : obs.mergeable
+        ? 'none'
+        : 'present';
     return (
       <Row
         testId="pipeline-lifecycle-merge"
@@ -667,8 +680,8 @@ function MergeRow({ data }: { data: PipelineLifecycleData }) {
           <div className={styles.metaLine}>
             <span className={styles.metaLabel}>PR state</span>
             <code className={styles.metaCode}>{obs.pr_state ?? 'unknown'}</code>
-            <span className={styles.metaLabel}>Mergeable</span>
-            <code className={styles.metaCode}>{obs.mergeable === null ? 'unknown' : String(obs.mergeable)}</code>
+            <span className={styles.metaLabel}>Conflicts</span>
+            <code className={styles.metaCode}>{conflictsLabel}</code>
           </div>
         }
       />
