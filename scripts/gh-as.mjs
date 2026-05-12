@@ -124,7 +124,13 @@ async function main() {
   // override (walk-up skipped). Indie-floor default is unchanged: a
   // single-checkout repo with creds at `<repoRoot>/.lag/apps/` hits
   // on the first candidate and skips the walk.
-  const credsStateDir = resolveBotCredsStateDir(STATE_DIR, role);
+  let credsStateDir;
+  try {
+    credsStateDir = resolveBotCredsStateDir(STATE_DIR, role);
+  } catch (err) {
+    console.error(`[gh-as] ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
   const store = createCredentialsStore(credsStateDir);
   const loaded = await store.load(role);
   if (loaded === null) {

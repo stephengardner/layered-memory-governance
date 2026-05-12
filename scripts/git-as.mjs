@@ -146,7 +146,13 @@ async function main() {
   // `.lag/apps/<role>.json`, look for the creds in the nearest
   // ancestor `.lag/`. Honors `LAG_STATE_DIR` as an explicit operator
   // override (walk-up skipped). Indie-floor default unchanged.
-  const credsStateDir = resolveBotCredsStateDir(STATE_DIR, role);
+  let credsStateDir;
+  try {
+    credsStateDir = resolveBotCredsStateDir(STATE_DIR, role);
+  } catch (err) {
+    console.error(`[git-as] ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
   const store = createCredentialsStore(credsStateDir);
   let loaded;
   try {
