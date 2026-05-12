@@ -1,28 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
+import {
+  readPinnedPlans,
+  writePinnedPlans,
+  RESOLVED_PINNED_PLANS_STORAGE_KEY,
+} from './pinnedPlansStorage';
 
-const STORAGE_KEY = 'lag-pinned-plans';
-
-function readFromStorage(): string[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((v): v is string => typeof v === 'string');
-  } catch {
-    return [];
-  }
-}
-
-function writeToStorage(ids: string[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
-  } catch {
-    /* storage unavailable; in-memory state remains correct for this tab */
-  }
-}
+/*
+ * Storage seam: route every read + write through `storage.service`
+ * per apps/console/CLAUDE.md principle 10 (no direct platform
+ * storage in features). The pure helpers live in `pinnedPlansStorage`
+ * so the persistence shape (key namespace, sanitisation) is
+ * testable without a React render context; this hook composes them
+ * with React state + the cross-tab `storage` event.
+ *
+ * The cross-tab `storage` event subscription remains because the
+ * StorageEvent is a DOM event, not data fetching -- principle 4 is
+ * not violated. `event.key` is the RESOLVED key the browser
+ * dispatches (already prefixed), so we compare against the same
+ * prefixed value the service writes.
+ */
 
 export interface UsePinnedPlans {
   pinnedIds: string[];
@@ -33,13 +29,13 @@ export interface UsePinnedPlans {
 }
 
 export function usePinnedPlans(): UsePinnedPlans {
-  const [pinnedIds, setPinnedIds] = useState<string[]>(() => readFromStorage());
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => readPinnedPlans());
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onStorage = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY) return;
-      setPinnedIds(readFromStorage());
+      if (event.key !== RESOLVED_PINNED_PLANS_STORAGE_KEY) return;
+      setPinnedIds(readPinnedPlans());
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
@@ -49,7 +45,7 @@ export function usePinnedPlans(): UsePinnedPlans {
     setPinnedIds((prev) => {
       if (prev.includes(id)) return prev;
       const next = [...prev, id];
-      writeToStorage(next);
+      writePinnedPlans(next);
       return next;
     });
   }, []);
@@ -58,7 +54,7 @@ export function usePinnedPlans(): UsePinnedPlans {
     setPinnedIds((prev) => {
       if (!prev.includes(id)) return prev;
       const next = prev.filter((x) => x !== id);
-      writeToStorage(next);
+      writePinnedPlans(next);
       return next;
     });
   }, []);
@@ -68,7 +64,7 @@ export function usePinnedPlans(): UsePinnedPlans {
       const next = prev.includes(id)
         ? prev.filter((x) => x !== id)
         : [...prev, id];
-      writeToStorage(next);
+      writePinnedPlans(next);
       return next;
     });
   }, []);
