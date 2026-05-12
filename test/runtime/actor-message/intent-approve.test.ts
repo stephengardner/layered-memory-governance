@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   RADIUS_RANK,
+  RejectReason,
   SkipReason,
   isBlastRadiusWithin,
   findIntentInProvenance,
@@ -311,8 +312,8 @@ describe('runIntentAutoApprovePass', () => {
     expect(plan?.plan_state).toBe('proposed');
   });
 
-  // 3. Expired intent -> rejected++, plan stays proposed
-  it('T3: expired intent -> rejected, plan stays proposed', async () => {
+  // 3. Expired intent -> rejected++, plan stays proposed, audit event with reason
+  it('T3: expired intent -> rejected + audit event, plan stays proposed', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -322,14 +323,26 @@ describe('runIntentAutoApprovePass', () => {
     const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
 
     expect(result.rejected).toBe(1);
+    expect(result.rejectedByReason[RejectReason.EXPIRED_INTENT]).toBe(1);
     expect(result.approved).toBe(0);
 
     const plan = await host.atoms.get('plan-exp' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    // Visibility win: a rejected plan now produces an audit event with the
+    // typed reason so a dogfeed inspecting WHY can find out without
+    // re-reading the intent atom's expires_at field. Mirrors the
+    // observability discipline already in place for skips.
+    const events = await host.auditor.query({ kind: ['plan.rejected-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(RejectReason.EXPIRED_INTENT);
+    expect(events[0]?.details['plan_id']).toBe('plan-exp');
+    expect(events[0]?.details['intent_id']).toBe('intent-exp');
+    expect(events[0]?.details['intent_expires_at']).toBe(PAST_EXPIRY);
   });
 
-  // 4. Compromised intent (taint !== 'clean') -> rejected++, plan stays proposed
-  it('T4: tainted intent -> rejected, plan stays proposed', async () => {
+  // 4. Compromised intent (taint !== 'clean') -> rejected++, plan stays proposed, audit event with reason
+  it('T4: tainted intent -> rejected + audit event, plan stays proposed', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -339,14 +352,20 @@ describe('runIntentAutoApprovePass', () => {
     const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
 
     expect(result.rejected).toBe(1);
+    expect(result.rejectedByReason[RejectReason.TAINTED_INTENT]).toBe(1);
     expect(result.approved).toBe(0);
 
     const plan = await host.atoms.get('plan-taint' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.rejected-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(RejectReason.TAINTED_INTENT);
+    expect(events[0]?.details['intent_taint']).toBe('tainted');
   });
 
-  // 5. Non-whitelisted principal -> rejected++
-  it('T5: intent from non-whitelisted principal -> rejected', async () => {
+  // 5. Non-whitelisted principal -> rejected++, audit event with reason
+  it('T5: intent from non-whitelisted principal -> rejected + audit event', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom({ allowed_principal_ids: ['operator-principal'] }));
@@ -356,10 +375,16 @@ describe('runIntentAutoApprovePass', () => {
     const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
 
     expect(result.rejected).toBe(1);
+    expect(result.rejectedByReason[RejectReason.PRINCIPAL_NOT_WHITELISTED]).toBe(1);
     expect(result.approved).toBe(0);
 
     const plan = await host.atoms.get('plan-badprincipal' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.rejected-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(RejectReason.PRINCIPAL_NOT_WHITELISTED);
+    expect(events[0]?.details['intent_principal_id']).toBe('rogue-bot');
   });
 
   // 6. Plan confidence below envelope.min_plan_confidence -> skipped + observable
@@ -680,5 +705,52 @@ describe('runIntentAutoApprovePass', () => {
     expect(result.skippedByReason[SkipReason.RADIUS_UNKNOWN]).toBe(0);
     expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_UNKNOWN]).toBe(0);
     expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE]).toBe(0);
+    // rejectedByReason zero-init contract: every key present, all zero.
+    expect(result.rejectedByReason[RejectReason.INTENT_MISSING_OR_WRONG_TYPE]).toBe(0);
+    expect(result.rejectedByReason[RejectReason.TAINTED_INTENT]).toBe(0);
+    expect(result.rejectedByReason[RejectReason.EXPIRED_INTENT]).toBe(0);
+    expect(result.rejectedByReason[RejectReason.PRINCIPAL_NOT_WHITELISTED]).toBe(0);
+  });
+
+  // 17. Regression: the live atom pair that exposed the
+  // eligible-but-not-approved diagnostic gap. A fresh, clean, signed
+  // intent (apex-agent, docs envelope, code-author allowlist) backing a
+  // 0.92-confidence docs-radius code-author plan MUST approve. Pinned
+  // against the literal fields of intent-2576b3cdc765 + the
+  // plan-append-one-line-file-intent-ui-pointer atom that the operator
+  // reported sitting idle. Approving a fresh envelope match is the
+  // primary contract of this tick; this test is the rampart against the
+  // class of bug where a rung silently rejects a pair that meets every
+  // documented criterion.
+  it('T17: regression - fresh apex-agent docs intent + 0.92 code-author plan approves', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom({
+      allowed_sub_actors: ['code-author', 'auditor-actor'],
+    }));
+    await host.atoms.put(intentCreationPolicyAtom({
+      allowed_principal_ids: ['apex-agent', 'operator-principal'],
+    }));
+    await host.atoms.put(intentAtom('intent-livepair', {
+      principal_id: 'apex-agent',
+      max_blast_radius: 'docs',
+      min_plan_confidence: 0.9,
+      allowed_sub_actors: ['code-author'],
+      expires_at: FUTURE_EXPIRY,
+    }));
+    await host.atoms.put(planAtom('plan-livepair', 'intent-livepair', {
+      confidence: 0.92,
+      sub_actor: 'code-author',
+      implied_blast_radius: 'docs',
+    }));
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(1);
+    expect(result.rejected).toBe(0);
+    expect(result.skipped).toBe(0);
+
+    const plan = await host.atoms.get('plan-livepair' as AtomId);
+    expect(plan?.plan_state).toBe('approved');
+    expect((plan?.metadata as Record<string, unknown>)?.approved_intent_id).toBe('intent-livepair');
   });
 });

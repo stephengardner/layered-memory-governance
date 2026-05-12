@@ -109,6 +109,45 @@ function emptySkippedByReason(): Record<SkipReason, number> {
   };
 }
 
+/**
+ * Typed reasons a plan can be rejected during the intent-approve tick.
+ *
+ * Where {@link SkipReason} names envelope mismatches (a fresh intent
+ * with a plan that does not match yet), RejectReason names
+ * authorization failures: the intent itself is unusable for autonomous
+ * approval. Each rejection emits one `plan.rejected-by-intent` audit
+ * event so an operator can see WHY a plan was rejected rather than
+ * inferring it from a bare counter.
+ *
+ * Mirrors the rejection reasons in the pipeline-stage path's evaluator
+ * (`src/runtime/planning-pipeline/auto-approve.ts`), keeping the
+ * single-pass and pipeline tracks in lock-step.
+ */
+export const RejectReason = {
+  /** Intent atom missing or wrong type (concurrent delete / wrong-type id). */
+  INTENT_MISSING_OR_WRONG_TYPE: 'intent_missing_or_wrong_type',
+  /** Intent atom has non-clean taint (compromised or revoked). */
+  TAINTED_INTENT: 'tainted_intent',
+  /** Intent's metadata.expires_at parses to a past timestamp. */
+  EXPIRED_INTENT: 'expired_intent',
+  /** Intent.principal_id not in pol-operator-intent-creation allowlist. */
+  PRINCIPAL_NOT_WHITELISTED: 'principal_not_whitelisted',
+} as const;
+
+export type RejectReason = typeof RejectReason[keyof typeof RejectReason];
+
+/** Per-reason reject counts. Every key is always present (zero-initialized). */
+export type RejectedByReason = Readonly<Record<RejectReason, number>>;
+
+function emptyRejectedByReason(): Record<RejectReason, number> {
+  return {
+    [RejectReason.INTENT_MISSING_OR_WRONG_TYPE]: 0,
+    [RejectReason.TAINTED_INTENT]: 0,
+    [RejectReason.EXPIRED_INTENT]: 0,
+    [RejectReason.PRINCIPAL_NOT_WHITELISTED]: 0,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Result shape
 // ---------------------------------------------------------------------------
@@ -117,6 +156,8 @@ export interface IntentAutoApproveResult {
   readonly scanned: number;
   readonly approved: number;
   readonly rejected: number;
+  /** Per-reason breakdown of `rejected`. Sum equals `rejected`. */
+  readonly rejectedByReason: RejectedByReason;
   /** Plans that matched an intent but failed an envelope check. */
   readonly skipped: number;
   /** Per-reason breakdown of `skipped`. Sum equals `skipped`. */
@@ -243,6 +284,7 @@ export async function runIntentAutoApprovePass(
       scanned: 0,
       approved: 0,
       rejected: 0,
+      rejectedByReason: emptyRejectedByReason(),
       skipped: 0,
       skippedByReason: emptySkippedByReason(),
       stale: 0,
@@ -257,6 +299,7 @@ export async function runIntentAutoApprovePass(
       scanned: 0,
       approved: 0,
       rejected: 0,
+      rejectedByReason: emptyRejectedByReason(),
       skipped: 0,
       skippedByReason: emptySkippedByReason(),
       stale: 0,
@@ -302,6 +345,7 @@ export async function runIntentAutoApprovePass(
   let rejected = 0;
   let skipped = 0;
   const skippedByReason = emptySkippedByReason();
+  const rejectedByReason = emptyRejectedByReason();
 
   /**
    * Record a skip: emit one audit event, increment the per-reason
@@ -331,6 +375,46 @@ export async function runIntentAutoApprovePass(
     });
   };
 
+  /**
+   * Record a reject: emit one audit event, increment the per-reason
+   * counter, and bump the total. Symmetric with `recordSkip` so every
+   * non-approval path through this tick produces a queryable audit
+   * trail. Without this, a rejected plan increments only a bare
+   * `rejected` counter in the result and the operator inspecting why
+   * an envelope-matching plan never approved has no surfaced reason to
+   * read.
+   *
+   * The plan's principal_id (not the intent's) is the audit principal:
+   * authorship matters for the audit chain, and a malformed or
+   * unauthenticated intent atom may carry an unreliable principal_id.
+   * The intent's principal_id is recorded in the details bag for
+   * downstream filtering.
+   */
+  const recordReject = async (
+    plan: Atom,
+    intent: Atom | null,
+    intentIdHint: AtomId,
+    reason: RejectReason,
+    extra: Readonly<Record<string, unknown>> = {},
+  ): Promise<void> => {
+    rejectedByReason[reason] += 1;
+    rejected += 1;
+    const intentIdForAudit = intent !== null ? intent.id : intentIdHint;
+    await host.auditor.log({
+      kind: 'plan.rejected-by-intent',
+      principal_id: plan.principal_id,
+      timestamp: nowFn() as Time,
+      refs: { atom_ids: [plan.id, intentIdForAudit] },
+      details: {
+        plan_id: String(plan.id),
+        intent_id: String(intentIdForAudit),
+        intent_principal_id: intent !== null ? String(intent.principal_id) : null,
+        reason,
+        ...extra,
+      },
+    });
+  };
+
   for (const plan of candidates) {
     // Walk provenance.derived_from for a direct operator-intent citation.
     const intentId = await findIntentInProvenance(host, plan);
@@ -342,23 +426,31 @@ export async function runIntentAutoApprovePass(
     const intent = await host.atoms.get(intentId);
     // Intent atom missing or wrong type -> reject (unexpected).
     if (!intent || intent.type !== 'operator-intent') {
-      rejected++;
+      await recordReject(plan, intent, intentId, RejectReason.INTENT_MISSING_OR_WRONG_TYPE, {
+        observed_type: intent !== null ? String(intent.type) : null,
+      });
       continue;
     }
     // Tainted intent -> reject.
     if (intent.taint !== 'clean') {
-      rejected++;
+      await recordReject(plan, intent, intentId, RejectReason.TAINTED_INTENT, {
+        intent_taint: String(intent.taint),
+      });
       continue;
     }
     // Expired intent -> reject.
     const expiresRaw = (intent.metadata as Record<string, unknown>)?.expires_at;
     if (typeof expiresRaw === 'string' && Date.parse(expiresRaw) < nowMs) {
-      rejected++;
+      await recordReject(plan, intent, intentId, RejectReason.EXPIRED_INTENT, {
+        intent_expires_at: expiresRaw,
+      });
       continue;
     }
     // Principal not in operator-intent-creation allowlist -> reject.
     if (!creationPolicy.allowed_principal_ids.includes(String(intent.principal_id))) {
-      rejected++;
+      await recordReject(plan, intent, intentId, RejectReason.PRINCIPAL_NOT_WHITELISTED, {
+        intent_principal_id: String(intent.principal_id),
+      });
       continue;
     }
 
@@ -472,6 +564,7 @@ export async function runIntentAutoApprovePass(
     scanned: candidates.length,
     approved,
     rejected,
+    rejectedByReason,
     skipped,
     skippedByReason,
     stale: 0,
