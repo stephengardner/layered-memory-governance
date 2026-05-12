@@ -6,16 +6,42 @@
  * the classification + heal-atom-construction logic. The full
  * integration that actually spawns gh-as is exercised by the dogfeed
  * validation step (run with --apply on the live store).
+ *
+ * Imports the shebang-free lib module (scripts/lib/backfill-stale-pr-
+ * observations.mjs) per canon feedback_shebang_import_from_tests:
+ * vitest on Windows-CI cannot strip shebangs from `.mjs` files imported
+ * by `.test.ts`. The main entrypoint re-exports the helpers for
+ * direct callers.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_STALENESS_MS,
-  buildHealAtom,
+  buildHealAtom as buildHealAtomImpl,
   parseArgs,
   resolveStalenessMs,
-} from '../../scripts/backfill-stale-pr-observations.mjs';
+} from '../../scripts/lib/backfill-stale-pr-observations.mjs';
+
+/**
+ * Stub mkPrObservationAtomId for tests: deterministic format so the
+ * suite can pin the contract without dragging in the dist tree. The
+ * production wrapper at scripts/backfill-stale-pr-observations.mjs
+ * supplies the canonical generator.
+ */
+function mkAtomIdStub(owner: string, repo: string, number: number, headSha: string, observedAt: string): string {
+  const shaSuffix = String(headSha).slice(0, 12);
+  const minute = String(observedAt).slice(0, 16).replace(/[^0-9]/g, '');
+  return `pr-observation-${owner}-${repo}-${number}-${shaSuffix}-${minute}`;
+}
+
+function buildHealAtom(inputs: {
+  stale: unknown;
+  live: { state: 'MERGED' | 'CLOSED' | 'OPEN'; mergedAt: string | null; mergeCommitSha: string | null; headSha: string };
+  nowIso: string;
+}): ReturnType<typeof buildHealAtomImpl> {
+  return buildHealAtomImpl({ ...inputs, mkPrObservationAtomId: mkAtomIdStub });
+}
 
 describe('parseArgs', () => {
   it('returns sensible defaults for empty argv', () => {

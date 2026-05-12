@@ -17,15 +17,23 @@ import styles from './PipelineStateTile.module.css';
  * PipelineStateTile -- "what is the autonomous loop doing right now?"
  * at a glance.
  *
- * Renders three counts:
- *   - Running                  : pipelines in flight (pipeline_state
- *                                 pending or running)
- *   - Dispatched, awaiting merge: pipelines with an open PR not yet
- *                                  merged or closed
- *   - Intent fulfilled         : pipelines whose operator-intent
- *                                 produced a merged PR (TRUE-outcome
- *                                 semantics: real merged PR observed,
- *                                 NOT plan_state alone)
+ * Renders four counts:
+ *   - Running                    : pipelines in flight (pipeline_state
+ *                                    pending or running)
+ *   - Dispatched, awaiting merge : pipelines with an open PR not yet
+ *                                    merged or closed AND a fresh
+ *                                    pr-observation atom
+ *   - Observation stale          : pipelines whose latest pr-observation
+ *                                    atom is older than the staleness
+ *                                    threshold (pol-pr-observation-
+ *                                    staleness-ms). The substrate gap
+ *                                    fix shipped 2026-05-11 prevents
+ *                                    these rows from inflating the
+ *                                    awaiting-merge headline.
+ *   - Intent fulfilled           : pipelines whose operator-intent
+ *                                    produced a merged PR (TRUE-outcome
+ *                                    semantics: real merged PR observed,
+ *                                    NOT plan_state alone)
  *
  * Server-side aggregation per canon `dev-indie-floor-org-ceiling`:
  * shipping every pipeline atom on a 2s tick would scale poorly at

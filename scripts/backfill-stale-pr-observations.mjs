@@ -52,292 +52,50 @@
  *   1 - fatal error (couldn't read atoms, unrecoverable GitHub failure,
  *       malformed canon)
  *
- * Output: a JSON summary on stdout for parseability:
- *   {
- *     scanned,                       // total pr-observation atoms inspected
- *     stale,                         // observations older than staleness window
- *     terminal_on_github,            // PRs that GitHub reports MERGED/CLOSED
- *     refreshed,                     // heal atoms written (or would write in dry-run)
- *     skipped_malformed,             // atoms with bad metadata
- *     skipped_already_fresh,         // observation is fresh (under threshold)
- *     skipped_already_terminal,      // observation already shows MERGED/CLOSED
- *     skipped_pr_still_open,         // GitHub reports OPEN -- no heal needed
- *     skipped_pr_query_failed,       // GitHub query errored or timed out
- *     refreshed_atoms: [ {pr_number, before_state, after_state, atom_id }, ... ]
- *   }
+ * Output: a JSON summary on stdout for parseability. See the lib
+ * module for the schema.
+ *
+ * Pure helpers (parseArgs, resolveStalenessMs, queryPrState,
+ * buildHealAtom) live at scripts/lib/backfill-stale-pr-observations.mjs
+ * so the test runner imports a shebang-free module (vitest on
+ * Windows-CI fails to strip shebangs from imported `.mjs` files;
+ * canon feedback_shebang_import_from_tests).
  */
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execa } from 'execa';
 
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { mkPrObservationAtomId } from '../dist/runtime/atoms/pr-observation-id.js';
+import {
+  DEFAULT_STALENESS_MS,
+  DEFAULT_PR_TIMEOUT_MS,
+  buildHealAtom as buildHealAtomImpl,
+  parseArgs,
+  queryPrState,
+  resolveStalenessMs,
+} from './lib/backfill-stale-pr-observations.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
 
-/** Default staleness window: 1 hour. Matches the synthesizer default. */
-export const DEFAULT_STALENESS_MS = 60 * 60 * 1_000;
-
-/** Default per-PR GitHub query timeout: 10 seconds. */
-export const DEFAULT_PR_TIMEOUT_MS = 10_000;
+// Re-export the pure helpers so callers (and tests, which import the
+// shebang-free lib module directly) can pin the same contract.
+export { DEFAULT_STALENESS_MS, DEFAULT_PR_TIMEOUT_MS, parseArgs, queryPrState, resolveStalenessMs };
 
 /**
- * Parse argv into a structured options bag. Exposed for unit testing
- * so the tests can pin the contract without spawning a subprocess.
- *
- * @param {ReadonlyArray<string>} argv  argv slice WITHOUT `node script.mjs`
- * @returns {{
- *   apply: boolean,
- *   rootDir: string | undefined,
- *   stalenessMsOverride: number | undefined,
- *   prTimeoutMs: number,
- *   bot: string,
- * }}
- */
-export function parseArgs(argv) {
-  const args = {
-    apply: argv.includes('--apply'),
-    rootDir: undefined,
-    stalenessMsOverride: undefined,
-    prTimeoutMs: DEFAULT_PR_TIMEOUT_MS,
-    bot: 'lag-ceo',
-  };
-  const rootIdx = argv.findIndex((a) => a === '--root');
-  if (rootIdx >= 0 && argv[rootIdx + 1]) {
-    args.rootDir = argv[rootIdx + 1];
-  } else if (process.env.LAG_ROOT) {
-    args.rootDir = process.env.LAG_ROOT;
-  }
-  const stalenessIdx = argv.findIndex((a) => a === '--staleness-ms');
-  if (stalenessIdx >= 0 && argv[stalenessIdx + 1]) {
-    const v = Number(argv[stalenessIdx + 1]);
-    if (Number.isFinite(v) && v > 0) {
-      args.stalenessMsOverride = v;
-    }
-  }
-  const timeoutIdx = argv.findIndex((a) => a === '--pr-timeout-ms');
-  if (timeoutIdx >= 0 && argv[timeoutIdx + 1]) {
-    const v = Number(argv[timeoutIdx + 1]);
-    if (Number.isFinite(v) && v > 0) {
-      args.prTimeoutMs = v;
-    }
-  }
-  const botIdx = argv.findIndex((a) => a === '--bot');
-  if (botIdx >= 0 && argv[botIdx + 1]) {
-    args.bot = argv[botIdx + 1];
-  }
-  return args;
-}
-
-/**
- * Read the staleness window from the canon atom set. Returns the
- * configured ms value, the override (when supplied), or
- * DEFAULT_STALENESS_MS.
- *
- * Pure: takes the atom array and returns a number. Exposed for tests.
- *
- * Mirrors the framework-side `readPrObservationStalenessMs` in the
- * Console synthesizer (apps/console/server/intent-outcome.ts).
- *
- * @param {ReadonlyArray<unknown>} atoms
- * @param {number | undefined} override
- * @returns {number}
- */
-export function resolveStalenessMs(atoms, override) {
-  if (Number.isFinite(override) && override > 0) return override;
-  for (const atom of atoms) {
-    if (!atom || typeof atom !== 'object') continue;
-    if (atom.type !== 'directive') continue;
-    if (atom.layer !== undefined && atom.layer !== 'L3') continue;
-    if (atom.taint && atom.taint !== 'clean') continue;
-    if (atom.superseded_by && atom.superseded_by.length > 0) continue;
-    const meta = atom.metadata ?? {};
-    const policy = meta.policy;
-    if (!policy) continue;
-    if (policy.subject !== 'pr-observation-staleness-ms') continue;
-    const raw = policy.staleness_ms ?? policy.value;
-    if (raw === 'Infinity') return Number.POSITIVE_INFINITY;
-    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) continue;
-    return raw;
-  }
-  return DEFAULT_STALENESS_MS;
-}
-
-/**
- * Query GitHub for the live PR state. Returns null on timeout or
- * subprocess error so a single stuck PR does not halt the script.
- *
- * Per-PR timeout is enforced by killing the subprocess after the
- * configured budget.
- *
- * @param {{ owner: string, repo: string, number: number }} pr
- * @param {{ bot: string, prTimeoutMs: number }} opts
- * @returns {Promise<{ state: 'MERGED' | 'CLOSED' | 'OPEN', mergedAt: string | null, mergeCommitSha: string | null, headSha: string } | null>}
- */
-export async function queryPrState(pr, opts) {
-  const { bot, prTimeoutMs } = opts;
-  const ghAsPath = resolve(__dirname, 'gh-as.mjs');
-  try {
-    const result = await execa('node', [
-      ghAsPath,
-      bot,
-      'pr',
-      'view',
-      String(pr.number),
-      '--repo', `${pr.owner}/${pr.repo}`,
-      '--json',
-      'state,mergedAt,mergeCommit,headRefOid',
-    ], {
-      timeout: prTimeoutMs,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      reject: false,
-    });
-    if (result.exitCode !== 0) return null;
-    const raw = (result.stdout ?? '').toString().trim();
-    if (raw.length === 0) return null;
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.state !== 'string') return null;
-    const state = parsed.state.toUpperCase();
-    if (state !== 'MERGED' && state !== 'CLOSED' && state !== 'OPEN') {
-      return null;
-    }
-    return {
-      state,
-      mergedAt: typeof parsed.mergedAt === 'string' ? parsed.mergedAt : null,
-      mergeCommitSha: parsed.mergeCommit && typeof parsed.mergeCommit.oid === 'string'
-        ? parsed.mergeCommit.oid
-        : null,
-      headSha: typeof parsed.headRefOid === 'string' && parsed.headRefOid.length > 0
-        ? parsed.headRefOid
-        : '',
-    };
-  } catch {
-    // Timeout, JSON parse error, missing gh-as -- all treat as "couldn't
-    // query". The script reports the skip in the summary; the operator
-    // re-runs after fixing the transport issue.
-    return null;
-  }
-}
-
-/**
- * Build the fresh pr-observation atom that supersedes the stale one.
- *
- * Pure: takes structured inputs and returns the atom object. Exposed
- * for tests so a backfill heal can be verified without spawning the
- * full script.
+ * Production-mode buildHealAtom: thin wrapper that supplies the canonical
+ * mkPrObservationAtomId from the dist tree. Tests import the lib version
+ * directly and inject a stub generator.
  *
  * @param {{
  *   stale: any,
  *   live: { state: 'MERGED' | 'CLOSED' | 'OPEN', mergedAt: string | null, mergeCommitSha: string | null, headSha: string },
  *   nowIso: string,
  * }} inputs
- * @returns {object}
  */
 export function buildHealAtom(inputs) {
-  const { stale, live, nowIso } = inputs;
-  const staleMeta = stale.metadata ?? {};
-  const pr = staleMeta.pr;
-  const planId = staleMeta.plan_id;
-  // headSha priority: live > staleMeta.head_sha > 'unknown'. Empty
-  // string is the seam between "we know nothing" and the atom-id
-  // generator; the generator slices the first 12 chars so an empty
-  // input collapses to a stable 'unknown' bucket.
-  const headSha = live.headSha.length > 0
-    ? live.headSha
-    : (typeof staleMeta.head_sha === 'string' && staleMeta.head_sha.length > 0
-      ? staleMeta.head_sha
-      : 'unknown');
-  const atomId = mkPrObservationAtomId(
-    pr.owner,
-    pr.repo,
-    pr.number,
-    headSha,
-    nowIso,
-  );
-  // Note: backfill-heal carries `partial: true` and `partial_surfaces:
-  // ['all']` because the gh pr view query gives state + mergedAt +
-  // mergeCommitSha but NOT the full review-tree (counts, reviews,
-  // check-runs). A later full re-observation (run-pr-landing.mjs
-  // --observe-only) hydrates those surfaces.
-  return {
-    schema_version: 1,
-    id: atomId,
-    content: [
-      `**pr-observation heal for ${pr.owner}/${pr.repo}#${pr.number}** (substrate backfill)`,
-      '',
-      `observed_at: ${nowIso}`,
-      `head_sha: \`${headSha}\``,
-      `pr_state: ${live.state}`,
-      live.mergedAt ? `merged_at: ${live.mergedAt}` : null,
-      live.mergeCommitSha ? `merge_commit_sha: \`${live.mergeCommitSha}\`` : null,
-      `plan_id: ${planId ?? '(none)'}`,
-      'partial: true (backfill heal; full review tree not re-queried)',
-      '',
-      'Backfill rationale: the prior observation atom for this PR was',
-      'older than the staleness window AND GitHub reports the PR in a',
-      'terminal state. This atom supersedes the stale row so consumers',
-      `(intent-outcome synthesizer, Pulse tile) see the live state.`,
-    ].filter((line) => line !== null).join('\n'),
-    type: 'observation',
-    layer: 'L1',
-    provenance: {
-      kind: 'agent-observed',
-      source: {
-        agent_id: 'backfill-stale-pr-observations',
-        tool: 'backfill-stale-pr-observations',
-      },
-      // Chain through the stale atom AND the original plan so an audit
-      // walk lands on both. The stale atom is the prior observation;
-      // chaining to it preserves the supersession history.
-      derived_from: [
-        stale.id,
-        ...(typeof planId === 'string' ? [planId] : []),
-      ],
-    },
-    confidence: 0.85,
-    created_at: nowIso,
-    last_reinforced_at: nowIso,
-    expires_at: null,
-    supersedes: [stale.id],
-    superseded_by: [],
-    scope: 'project',
-    signals: {
-      agrees_with: [],
-      conflicts_with: [],
-      validation_status: 'unchecked',
-      last_validated_at: null,
-    },
-    principal_id: 'pr-landing-agent',
-    taint: 'clean',
-    metadata: {
-      kind: 'pr-observation',
-      pr: { owner: pr.owner, repo: pr.repo, number: pr.number },
-      head_sha: headSha,
-      observed_at: nowIso,
-      pr_state: live.state,
-      ...(planId ? { plan_id: planId } : {}),
-      partial: true,
-      partial_surfaces: ['all'],
-      counts: {
-        line_comments: 0,
-        body_nits: 0,
-        submitted_reviews: 0,
-        check_runs: 0,
-        legacy_statuses: 0,
-      },
-      mergeable: null,
-      merge_state_status: null,
-      ...(live.mergedAt ? { merged_at: live.mergedAt } : {}),
-      ...(live.mergeCommitSha ? { merge_commit_sha: live.mergeCommitSha } : {}),
-      backfill: {
-        reason: 'staleness-window-exceeded-pr-terminal-on-github',
-        superseded_atom_id: stale.id,
-        backfilled_at: nowIso,
-      },
-    },
-  };
+  return buildHealAtomImpl({ ...inputs, mkPrObservationAtomId });
 }
 
 async function main() {
@@ -374,7 +132,7 @@ async function main() {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
 
-  // Pass 1: dedupe — for each PR (owner/repo#number), find the LATEST
+  // Pass 1: dedupe -- for each PR (owner/repo#number), find the LATEST
   // observation by created_at. We only consider that latest atom; an
   // older atom in the chain is already-superseded by the latest, and
   // healing an older one would create a new latest atom referring to
