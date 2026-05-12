@@ -308,6 +308,7 @@ const cases: readonly SubpathCase[] = [
       'FALLBACK_PLAN_APPROVAL',
       'RADIUS_RANK',
       'RateLimitedError',
+      'RejectReason',
       'ResetAuthorityError',
       'ResetShapeError',
       'SkipReason',

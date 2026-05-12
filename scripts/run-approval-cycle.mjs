@@ -384,7 +384,20 @@ async function runOnePass(host, registry, args) {
     const skippedFragment = skipped > 0
       ? ` skipped=${skipped}${skipBreakdown ? ` (${skipBreakdown})` : ''}`
       : '';
-    console.log(`[approval-cycle] intent-approve     scanned=${intentResult.scanned} approved=${intentResult.approved} rejected=${intentResult.rejected ?? 0}${skippedFragment}${intentResult.halted ? ' [HALTED by kill-switch]' : ''}`);
+    // Same shape for rejections: surface WHY a plan was rejected rather
+    // than a bare counter that hides the cause from the operator. The
+    // recordReject emit path produces audit events; this fragment is the
+    // at-a-glance signal on stdout for dogfeeds running --once.
+    const rejected = intentResult.rejected ?? 0;
+    const rejectedByReason = intentResult.rejectedByReason ?? {};
+    const rejectBreakdown = Object.entries(rejectedByReason)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${k}=${n}`)
+      .join(' ');
+    const rejectedFragment = rejected > 0 && rejectBreakdown
+      ? ` rejected=${rejected} (${rejectBreakdown})`
+      : ` rejected=${rejected}`;
+    console.log(`[approval-cycle] intent-approve     scanned=${intentResult.scanned} approved=${intentResult.approved}${rejectedFragment}${skippedFragment}${intentResult.halted ? ' [HALTED by kill-switch]' : ''}`);
     if (intentResult.halted) return firstError;
   } catch (err) {
     console.error(`[approval-cycle] intent-approve FAILED: ${err?.message ?? err}`);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   RADIUS_RANK,
+  RejectReason,
   SkipReason,
   isBlastRadiusWithin,
   findIntentInProvenance,
@@ -311,8 +312,8 @@ describe('runIntentAutoApprovePass', () => {
     expect(plan?.plan_state).toBe('proposed');
   });
 
-  // 3. Expired intent -> rejected++, plan stays proposed
-  it('T3: expired intent -> rejected, plan stays proposed', async () => {
+  // 3. Expired intent -> rejected++, plan stays proposed, audit event with reason
+  it('T3: expired intent -> rejected + audit event, plan stays proposed', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -322,14 +323,26 @@ describe('runIntentAutoApprovePass', () => {
     const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
 
     expect(result.rejected).toBe(1);
+    expect(result.rejectedByReason[RejectReason.EXPIRED_INTENT]).toBe(1);
     expect(result.approved).toBe(0);
 
     const plan = await host.atoms.get('plan-exp' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    // Visibility win: a rejected plan now produces an audit event with the
+    // typed reason so a dogfeed inspecting WHY can find out without
+    // re-reading the intent atom's expires_at field. Mirrors the
+    // observability discipline already in place for skips.
+    const events = await host.auditor.query({ kind: ['plan.rejected-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(RejectReason.EXPIRED_INTENT);
+    expect(events[0]?.details['plan_id']).toBe('plan-exp');
+    expect(events[0]?.details['intent_id']).toBe('intent-exp');
+    expect(events[0]?.details['intent_expires_at']).toBe(PAST_EXPIRY);
   });
 
-  // 4. Compromised intent (taint !== 'clean') -> rejected++, plan stays proposed
-  it('T4: tainted intent -> rejected, plan stays proposed', async () => {
+  // 4. Compromised intent (taint !== 'clean') -> rejected++, plan stays proposed, audit event with reason
+  it('T4: tainted intent -> rejected + audit event, plan stays proposed', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom());
@@ -339,14 +352,20 @@ describe('runIntentAutoApprovePass', () => {
     const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
 
     expect(result.rejected).toBe(1);
+    expect(result.rejectedByReason[RejectReason.TAINTED_INTENT]).toBe(1);
     expect(result.approved).toBe(0);
 
     const plan = await host.atoms.get('plan-taint' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.rejected-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(RejectReason.TAINTED_INTENT);
+    expect(events[0]?.details['intent_taint']).toBe('tainted');
   });
 
-  // 5. Non-whitelisted principal -> rejected++
-  it('T5: intent from non-whitelisted principal -> rejected', async () => {
+  // 5. Non-whitelisted principal -> rejected++, audit event with reason
+  it('T5: intent from non-whitelisted principal -> rejected + audit event', async () => {
     const host = createMemoryHost();
     await host.atoms.put(intentApprovePolicyAtom());
     await host.atoms.put(intentCreationPolicyAtom({ allowed_principal_ids: ['operator-principal'] }));
@@ -356,11 +375,25 @@ describe('runIntentAutoApprovePass', () => {
     const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
 
     expect(result.rejected).toBe(1);
+    expect(result.rejectedByReason[RejectReason.PRINCIPAL_NOT_WHITELISTED]).toBe(1);
     expect(result.approved).toBe(0);
 
     const plan = await host.atoms.get('plan-badprincipal' as AtomId);
     expect(plan?.plan_state).toBe('proposed');
+
+    const events = await host.auditor.query({ kind: ['plan.rejected-by-intent'] }, 10);
+    expect(events.length).toBe(1);
+    expect(events[0]?.details['reason']).toBe(RejectReason.PRINCIPAL_NOT_WHITELISTED);
+    expect(events[0]?.details['intent_principal_id']).toBe('rogue-bot');
   });
+
+  // Note: INTENT_MISSING_OR_WRONG_TYPE guards a race between
+  // findIntentInProvenance (which already verifies type ===
+  // 'operator-intent') and the subsequent host.atoms.get for envelope
+  // read. Deterministic in-memory tests cannot trigger the second
+  // fetch to return null while the first found a match; the branch
+  // remains as defensive production-race protection rather than a
+  // covered test path.
 
   // 6. Plan confidence below envelope.min_plan_confidence -> skipped + observable
   it('T6: plan confidence below min_plan_confidence -> observable skip, not rejected', async () => {
@@ -680,5 +713,45 @@ describe('runIntentAutoApprovePass', () => {
     expect(result.skippedByReason[SkipReason.RADIUS_UNKNOWN]).toBe(0);
     expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_UNKNOWN]).toBe(0);
     expect(result.skippedByReason[SkipReason.DELEGATION_RADIUS_EXCEEDS_ENVELOPE]).toBe(0);
+    // rejectedByReason zero-init contract: every key present, all zero.
+    expect(result.rejectedByReason[RejectReason.INTENT_MISSING_OR_WRONG_TYPE]).toBe(0);
+    expect(result.rejectedByReason[RejectReason.TAINTED_INTENT]).toBe(0);
+    expect(result.rejectedByReason[RejectReason.EXPIRED_INTENT]).toBe(0);
+    expect(result.rejectedByReason[RejectReason.PRINCIPAL_NOT_WHITELISTED]).toBe(0);
+  });
+
+  // 17. Regression: a fresh envelope-matching intent + plan pair must
+  // approve. Rampart against the class of bug where a rung silently
+  // rejects a pair that meets every documented envelope criterion.
+  it('T17: regression - fresh intent + 0.92 plan approves', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(intentApprovePolicyAtom({
+      allowed_sub_actors: ['sub-actor-A', 'auditor-actor'],
+    }));
+    await host.atoms.put(intentCreationPolicyAtom({
+      allowed_principal_ids: ['principal-A', 'principal-B'],
+    }));
+    await host.atoms.put(intentAtom('intent-regression', {
+      principal_id: 'principal-A',
+      max_blast_radius: 'docs',
+      min_plan_confidence: 0.9,
+      allowed_sub_actors: ['sub-actor-A'],
+      expires_at: FUTURE_EXPIRY,
+    }));
+    await host.atoms.put(planAtom('plan-regression', 'intent-regression', {
+      confidence: 0.92,
+      sub_actor: 'sub-actor-A',
+      implied_blast_radius: 'docs',
+    }));
+
+    const result = await runIntentAutoApprovePass(host, { now: () => NOW_ISO });
+
+    expect(result.approved).toBe(1);
+    expect(result.rejected).toBe(0);
+    expect(result.skipped).toBe(0);
+
+    const plan = await host.atoms.get('plan-regression' as AtomId);
+    expect(plan?.plan_state).toBe('approved');
+    expect((plan?.metadata as Record<string, unknown>)?.approved_intent_id).toBe('intent-regression');
   });
 });
