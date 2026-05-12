@@ -19,20 +19,24 @@ import styles from './InlineError.module.css';
  *   - inline flex layout, single line. No card chrome, no spinner,
  *     no centered padding stack -- those belong to ErrorState.
  *
- * Follow-up to PR #300, which unified the canonical ErrorState across
- * top-level views. The five sub-block callsites (CanonCard.ReferencedBy,
- * WhyThisAtom, CascadeIfTainted, AtomDetailView.ReferencedByBlock,
- * PrincipalsView.statsQuery) all need a quieter shape than ErrorState
- * because they render inside an expanded card or beside a primary
- * count; a centered danger-toned card would visually dominate the
- * surface they sit inside.
+ * `label` overrides the default "Failed to load:" prefix so the same
+ * primitive can carry mutation-failure semantics ("Could not file the
+ * intent:") without forking the visual chrome. The label is the
+ * sole textual seam; the icon + status-danger ink + single-line shape
+ * stay identical so a forms-error and a query-error read alike.
  */
 interface Props {
   readonly message: string;
   readonly testId?: string;
+  /**
+   * Optional label that replaces the default "Failed to load:" prefix.
+   * Use for mutation failures whose copy reads "Could not <verb>:" or
+   * similar. Pure cosmetic; the rest of the visual shape is preserved.
+   */
+  readonly label?: string;
 }
 
-export function InlineError({ message, testId }: Props) {
+export function InlineError({ message, testId, label = 'Failed to load:' }: Props) {
   return (
     <p
       className={styles.inlineError}
@@ -46,7 +50,7 @@ export function InlineError({ message, testId }: Props) {
         aria-hidden="true"
         className={styles.icon}
       />
-      <span className={styles.label}>Failed to load:</span>
+      <span className={styles.label}>{label}</span>
       <code className={styles.detail}>{message}</code>
     </p>
   );
