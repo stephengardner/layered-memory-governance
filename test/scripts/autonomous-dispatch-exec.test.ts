@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
   EMBEDDED_ATOMS_HEADING,
+  FALLBACK_DISPATCH_ROLE,
   buildAuthedGitInvocation,
   isTransientPrCreationGatewayError,
   looksLikeGitPush,
@@ -32,6 +33,7 @@ import {
   parsePlanIdFromPrBody,
   parseRepoSlug,
   probeOrphanedPrByBranch,
+  resolveDispatchBotRole,
   truncatePlanIdLabel,
   verifyDispatchRepoIdentity,
 } from '../../scripts/lib/autonomous-dispatch-exec.mjs';
@@ -1120,5 +1122,113 @@ describe('verifyDispatchRepoIdentity', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable: result.ok was true');
     expect(result.reason).toContain('gitRemoteUrlReader must be a function');
+  });
+});
+
+describe('resolveDispatchBotRole', () => {
+  it('env override wins over canon and fallback', () => {
+    const r = resolveDispatchBotRole({
+      env: 'lag-cto',
+      canon: 'lag-ceo',
+      fallback: 'lag-pr-landing',
+    });
+    expect(r).toEqual({ role: 'lag-cto', source: 'env' });
+  });
+
+  it('canon wins when env is undefined', () => {
+    const r = resolveDispatchBotRole({
+      env: undefined,
+      canon: 'lag-ceo',
+      fallback: 'lag-pr-landing',
+    });
+    expect(r).toEqual({ role: 'lag-ceo', source: 'canon' });
+  });
+
+  it('canon wins when env is empty string', () => {
+    const r = resolveDispatchBotRole({
+      env: '',
+      canon: 'lag-ceo',
+      fallback: 'lag-pr-landing',
+    });
+    expect(r).toEqual({ role: 'lag-ceo', source: 'canon' });
+  });
+
+  it('canon wins when env is whitespace-only', () => {
+    const r = resolveDispatchBotRole({
+      env: '   ',
+      canon: 'lag-ceo',
+      fallback: 'lag-pr-landing',
+    });
+    expect(r).toEqual({ role: 'lag-ceo', source: 'canon' });
+  });
+
+  it('canon wins when env is null', () => {
+    const r = resolveDispatchBotRole({
+      env: null,
+      canon: 'lag-ceo',
+      fallback: 'lag-pr-landing',
+    });
+    expect(r).toEqual({ role: 'lag-ceo', source: 'canon' });
+  });
+
+  it('fallback wins when env unset AND canon unset', () => {
+    const r = resolveDispatchBotRole({
+      env: undefined,
+      canon: null,
+      fallback: 'lag-ceo',
+    });
+    expect(r).toEqual({ role: 'lag-ceo', source: 'fallback' });
+  });
+
+  it('fallback wins when canon is empty', () => {
+    const r = resolveDispatchBotRole({
+      env: undefined,
+      canon: '',
+      fallback: 'lag-ceo',
+    });
+    expect(r).toEqual({ role: 'lag-ceo', source: 'fallback' });
+  });
+
+  it('trims whitespace off the resolved env value', () => {
+    const r = resolveDispatchBotRole({
+      env: '  lag-cto  ',
+      canon: 'lag-ceo',
+      fallback: 'lag-pr-landing',
+    });
+    expect(r).toEqual({ role: 'lag-cto', source: 'env' });
+  });
+
+  it('trims whitespace off the resolved canon value', () => {
+    const r = resolveDispatchBotRole({
+      env: undefined,
+      canon: '  lag-ceo  ',
+      fallback: 'lag-pr-landing',
+    });
+    expect(r).toEqual({ role: 'lag-ceo', source: 'canon' });
+  });
+
+  it('throws when all three rungs are blank (substrate misconfiguration)', () => {
+    expect(() => resolveDispatchBotRole({
+      env: undefined,
+      canon: null,
+      fallback: '',
+    })).toThrow(/could not be resolved/);
+  });
+
+  it('throws when fallback is undefined and other rungs blank', () => {
+    expect(() => resolveDispatchBotRole({
+      env: undefined,
+      canon: undefined,
+      fallback: undefined,
+    })).toThrow(/could not be resolved/);
+  });
+
+  it('exports a non-empty FALLBACK_DISPATCH_ROLE so the indie-floor path always resolves', () => {
+    expect(typeof FALLBACK_DISPATCH_ROLE).toBe('string');
+    expect(FALLBACK_DISPATCH_ROLE.length).toBeGreaterThan(0);
+    // The exported fallback must be the lag-ceo operator-proxy role
+    // for this deployment per the JSDoc; a change here is a
+    // deployment-policy decision and the test guards the literal.
+    expect(FALLBACK_DISPATCH_ROLE).toBe('lag-ceo');
   });
 });

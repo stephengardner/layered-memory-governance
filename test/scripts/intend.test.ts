@@ -4,6 +4,7 @@ import {
   buildIntentAtom,
   computeExpiresAt,
   buildCtoSpawnArgs,
+  resolvePipelineMode,
   shellQuote,
 } from '../../scripts/lib/intend.mjs';
 
@@ -187,6 +188,104 @@ describe('buildCtoSpawnArgs', () => {
   it('rejects unknown mode values to surface typos at the boundary', () => {
     expect(() => buildCtoSpawnArgs({ ...baseSpec, mode: 'subastrate-deep' })).toThrow(/mode/);
     expect(() => buildCtoSpawnArgs({ ...baseSpec, mode: '' })).toThrow(/mode/);
+  });
+});
+
+describe('resolvePipelineMode', () => {
+  it('env override wins over canon and fallback (substrate-deep)', () => {
+    const r = resolvePipelineMode({
+      env: 'substrate-deep',
+      canon: 'single-pass',
+      fallback: 'single-pass',
+    });
+    expect(r).toEqual({ mode: 'substrate-deep', source: 'env' });
+  });
+
+  it('env override wins over canon and fallback (single-pass)', () => {
+    const r = resolvePipelineMode({
+      env: 'single-pass',
+      canon: 'substrate-deep',
+      fallback: 'substrate-deep',
+    });
+    expect(r).toEqual({ mode: 'single-pass', source: 'env' });
+  });
+
+  it('canon wins when env is undefined', () => {
+    const r = resolvePipelineMode({
+      env: undefined,
+      canon: 'substrate-deep',
+      fallback: 'single-pass',
+    });
+    expect(r).toEqual({ mode: 'substrate-deep', source: 'canon' });
+  });
+
+  it('canon wins when env is empty string', () => {
+    const r = resolvePipelineMode({
+      env: '',
+      canon: 'substrate-deep',
+      fallback: 'single-pass',
+    });
+    expect(r).toEqual({ mode: 'substrate-deep', source: 'canon' });
+  });
+
+  it('canon wins when env is null', () => {
+    const r = resolvePipelineMode({
+      env: null,
+      canon: 'substrate-deep',
+      fallback: 'single-pass',
+    });
+    expect(r).toEqual({ mode: 'substrate-deep', source: 'canon' });
+  });
+
+  it('fallback wins when env unset AND canon unset', () => {
+    const r = resolvePipelineMode({
+      env: undefined,
+      canon: undefined,
+      fallback: 'substrate-deep',
+    });
+    expect(r).toEqual({ mode: 'substrate-deep', source: 'fallback' });
+  });
+
+  it('fallback wins when canon is malformed (unknown mode string)', () => {
+    const r = resolvePipelineMode({
+      env: undefined,
+      canon: 'subastrate-deep',
+      fallback: 'substrate-deep',
+    });
+    expect(r).toEqual({ mode: 'substrate-deep', source: 'fallback' });
+  });
+
+  it('fallback wins when canon is null', () => {
+    const r = resolvePipelineMode({
+      env: undefined,
+      canon: null,
+      fallback: 'substrate-deep',
+    });
+    expect(r).toEqual({ mode: 'substrate-deep', source: 'fallback' });
+  });
+
+  it('rejects an unknown env override loudly (typo not silently dropped)', () => {
+    expect(() => resolvePipelineMode({
+      env: 'subastrate-deep',
+      canon: 'single-pass',
+      fallback: 'substrate-deep',
+    })).toThrow(/LAG_PIPELINE_MODE/);
+  });
+
+  it('rejects an unknown fallback (caller pinned the wrong literal)', () => {
+    expect(() => resolvePipelineMode({
+      env: undefined,
+      canon: undefined,
+      fallback: 'subastrate-deep',
+    })).toThrow(/fallback/);
+  });
+
+  it('rejects a missing fallback when env+canon both unset', () => {
+    expect(() => resolvePipelineMode({
+      env: undefined,
+      canon: undefined,
+      fallback: undefined,
+    })).toThrow(/fallback/);
   });
 });
 

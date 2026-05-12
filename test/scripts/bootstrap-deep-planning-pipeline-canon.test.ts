@@ -40,6 +40,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_DISPATCH_INVOKER_ROLE,
   DEFAULT_PIPELINE_STAGES,
   DEFAULT_PIPELINE_MODE,
   DEFAULT_STAGE_IMPLEMENTATION_MODES,
@@ -50,6 +51,7 @@ import {
 } from '../../scripts/lib/deep-planning-pipeline-canon-atoms.mjs';
 import { createMemoryHost } from '../../src/adapters/memory/index.js';
 import {
+  readDispatchInvokerDefaultPolicy,
   readPipelineDefaultModePolicy,
   readPipelineStageHilPolicy,
   readPipelineStageImplementationsPolicy,
@@ -65,6 +67,7 @@ describe('bootstrap-deep-planning-pipeline-canon specs', () => {
     // after operator promotion via /decide; this module seeds policy + ordering only.
     const ids = buildDeepPlanningPipelineSpecs(OP).map((s) => s.id).sort();
     expect(ids).toEqual([
+      'pol-dispatch-invoker-default',
       'pol-pipeline-stage-hil-brainstorm-stage',
       'pol-pipeline-stage-hil-dispatch-stage',
       'pol-pipeline-stage-hil-plan-stage',
@@ -99,8 +102,18 @@ describe('bootstrap-deep-planning-pipeline-canon specs', () => {
     expect(PIPELINE_STAGE_HIL_DEFAULTS['dispatch-stage']).toBe('on-critical-finding');
   });
 
-  it('default mode is single-pass per dev-indie-floor-org-ceiling', () => {
-    expect(DEFAULT_PIPELINE_MODE).toBe('single-pass');
+  it('default mode is substrate-deep (this deployment opted in to the audit chain)', () => {
+    // The framework directive dev-deep-planning-pipeline teaches
+    // single-pass as the indie-floor default; this deployment chose
+    // substrate-deep so every plan flows through the brainstorm + spec
+    // + plan + review + dispatch audit chain. A fresh LAG deployment
+    // that wants the indie default re-writes DEFAULT_PIPELINE_MODE and
+    // rebootstraps.
+    expect(DEFAULT_PIPELINE_MODE).toBe('substrate-deep');
+  });
+
+  it('default dispatch-invoker role is lag-ceo (operator-proxy in this deployment)', () => {
+    expect(DEFAULT_DISPATCH_INVOKER_ROLE).toBe('lag-ceo');
   });
 
   it('default per-stage implementation modes are single-shot for every stage', () => {
@@ -179,7 +192,7 @@ describe('bootstrap-deep-planning-pipeline-canon atom shapes', () => {
     },
   );
 
-  it('pol-planning-pipeline-default-mode round-trips to single-pass', async () => {
+  it('pol-planning-pipeline-default-mode round-trips to substrate-deep', async () => {
     const host = createMemoryHost();
     const atom = findAtom(
       buildDeepPlanningPipelineAtoms(OP),
@@ -189,10 +202,29 @@ describe('bootstrap-deep-planning-pipeline-canon atom shapes', () => {
     expect(atom.layer).toBe('L3');
     const policy = readPolicyBlock(atom);
     expect(policy.subject).toBe('planning-pipeline-default-mode');
-    expect(policy.mode).toBe('single-pass');
+    expect(policy.mode).toBe('substrate-deep');
     await host.atoms.put(atom);
     const result = await readPipelineDefaultModePolicy(host);
-    expect(result.mode).toBe('single-pass');
+    expect(result.mode).toBe('substrate-deep');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode');
+  });
+
+  it('pol-dispatch-invoker-default round-trips to lag-ceo with the policy reader', async () => {
+    const host = createMemoryHost();
+    const atom = findAtom(
+      buildDeepPlanningPipelineAtoms(OP),
+      'pol-dispatch-invoker-default',
+    );
+    expect(atom.type).toBe('directive');
+    expect(atom.layer).toBe('L3');
+    expect(atom.principal_id).toBe(OP);
+    const policy = readPolicyBlock(atom);
+    expect(policy.subject).toBe('dispatch-invoker-default');
+    expect(policy.role).toBe('lag-ceo');
+    await host.atoms.put(atom);
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBe('lag-ceo');
+    expect(result.atomId).toBe('pol-dispatch-invoker-default');
   });
 
   it('pol-planning-pipeline-stage-implementations-default round-trips to single-shot for every stage', async () => {
@@ -221,10 +253,11 @@ describe('bootstrap-deep-planning-pipeline-canon atom shapes', () => {
     // The substrate-shape directive `dev-deep-planning-pipeline` lived here as
     // an L0 stub before promotion; after the operator ratified it via /decide,
     // it moved to scripts/bootstrap-operator-directives.mjs (see that file's
-    // ATOMS array). The 8 atoms below are the policy + ordering atoms the
-    // pipeline substrate needs at the seed-time of any deployment.
+    // ATOMS array). The 9 atoms below are the policy + ordering atoms the
+    // pipeline substrate needs at the seed-time of any deployment (8
+    // pipeline-stage policies + 1 dispatch-invoker default).
     const atoms = buildDeepPlanningPipelineAtoms(OP);
-    expect(atoms.length).toBe(8);
+    expect(atoms.length).toBe(9);
     for (const atom of atoms) {
       expect(atom.provenance.kind).toBe('operator-seeded');
       expect(atom.provenance.derived_from.length).toBeGreaterThan(0);

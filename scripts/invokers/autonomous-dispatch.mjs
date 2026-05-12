@@ -13,15 +13,32 @@
  *   - gitIdentity: derived from <stateDir>/apps/<role>.json (the same
  *                  noreply identity GitHub minted for the App)
  *   - model:       LAG_DRAFTER_MODEL env, defaults to claude-opus-4-7
- *   - role:        LAG_DISPATCH_BOT_ROLE env. Required (no default).
- *                  Defaulting to a specific role like 'lag-ceo' inside
- *                  framework-adjacent code would bake this org's
- *                  principal taxonomy into the canonical invoker;
- *                  downstream consumers would silently inherit our
- *                  default unless they remembered to override on every
- *                  run. Mirrors the bootstrap-script discipline for
- *                  LAG_OPERATOR_ID. Operators wire their own role at
- *                  deployment time; .env.example documents the var.
+ *   - role:        resolved via the substrate-pure three-rung ladder
+ *                  (env override -> canon policy -> hardcoded fallback)
+ *                  so an indie-floor deployment that has not yet wired
+ *                  LAG_DISPATCH_BOT_ROLE OR seeded the
+ *                  pol-dispatch-invoker-default canon atom still gets a
+ *                  working dispatch. Ladder details, in priority order:
+ *                    1. LAG_DISPATCH_BOT_ROLE env -- one-shot override
+ *                       for an operator who needs to dispatch under a
+ *                       non-default role for a single run.
+ *                    2. readDispatchInvokerDefaultPolicy(host) canon
+ *                       result -- the deployment's chosen role lives in
+ *                       a pol-dispatch-invoker-default atom; an
+ *                       org-ceiling deployment with multiple bot roles
+ *                       picks per-deployment via a canon edit, not an
+ *                       env-var-on-every-shell.
+ *                    3. FALLBACK_DISPATCH_ROLE constant ('lag-ceo' --
+ *                       the operator-proxy role in the
+ *                       layered-autonomous-governance deployment).
+ *                       Reached on a fresh checkout that has not yet
+ *                       bootstrapped the canon atom AND has not set
+ *                       the env var. Documented in .env.example as the
+ *                       indie-floor default.
+ *                  All-three-rung failure (env unset + canon unset +
+ *                  fallback constant somehow blanked) still fails loud
+ *                  to surface a misconfigured deployment rather than
+ *                  silently dispatching under no identity.
  *   - dispatchPrincipal: LAG_DISPATCH_PRINCIPAL_ID env, defaults to
  *                  `role` for backward-compat. Distinct from the role:
  *                  `role` drives cred provisioning in
@@ -67,9 +84,11 @@ import { fileURLToPath } from 'node:url';
 import { spawnNode } from '../lib/spawn-node.mjs';
 import {
   buildAuthedGitInvocation,
+  FALLBACK_DISPATCH_ROLE,
   isTransientPrCreationGatewayError,
   parseRepoSlug,
   probeOrphanedPrByBranch,
+  resolveDispatchBotRole,
   truncatePlanIdLabel,
   verifyDispatchRepoIdentity,
 } from '../lib/autonomous-dispatch-exec.mjs';
@@ -86,24 +105,40 @@ export default async function register(host, registry) {
   const { InstallationTokenCache } = await import('../../dist/external/github-app/app-auth.js');
   const { GitWorktreeProvider } = await import('../../dist/examples/workspace-providers/git-worktree/index.js');
 
-  // LAG_DISPATCH_BOT_ROLE is required: defaulting to a specific
-  // principal id (e.g. 'lag-ceo') in the canonical invoker would
-  // bake this org's principal taxonomy into framework-adjacent
-  // code; downstream consumers would inherit the default unless
-  // they remembered to set the env var on every run. Mirrors the
-  // bootstrap-script discipline for LAG_OPERATOR_ID. Operators
-  // wire their own role at deployment time.
-  const role = process.env.LAG_DISPATCH_BOT_ROLE;
-  if (typeof role !== 'string' || role.trim().length === 0) {
-    throw new Error(
-      '[autonomous-dispatch] LAG_DISPATCH_BOT_ROLE is required (no default '
-      + 'is supplied so the canonical invoker stays substrate-pure). '
-      + 'Set it to the bot role whose App credentials live at '
-      + '<stateDir>/apps/<role>.json (provisioned via bin/lag-actors.js). '
-      + 'In this repo the operator-proxy role is "lag-ceo"; see .env.example '
-      + 'for the canonical env block and the substrate-purity rationale.',
+  // Resolve dispatch bot role via the substrate-pure three-rung
+  // ladder: env override -> canon policy -> hardcoded fallback. See
+  // the file-header JSDoc for the rationale; the operator's
+  // "default-correct without env-var workaround" directive is the
+  // load-bearing constraint. Canon-read happens before the heavy
+  // adapter wiring so a misconfigured deployment surfaces here, not
+  // three async steps deep.
+  //
+  // Canon-read failure (dist not built, host wedged) is logged-and-
+  // continued rather than fatal: the env override may still be
+  // present, and the fallback always succeeds. Aborting on a canon-
+  // read failure would couple the dispatch path to a healthy dist/
+  // build for the env-override case which already bypasses canon.
+  let canonRole = null;
+  try {
+    const { readDispatchInvokerDefaultPolicy } = await import('../../dist/runtime/planning-pipeline/policy.js');
+    const canonResult = await readDispatchInvokerDefaultPolicy(host);
+    if (typeof canonResult?.atomId === 'string' && canonResult.atomId.length > 0) {
+      canonRole = canonResult.role ?? null;
+    }
+  } catch (err) {
+    console.error(
+      `[autonomous-dispatch] WARNING: could not read canon dispatch invoker policy: `
+      + `${err?.message ?? err}; falling through to env + fallback.`,
     );
+    canonRole = null;
   }
+  const resolved = resolveDispatchBotRole({
+    env: process.env.LAG_DISPATCH_BOT_ROLE,
+    canon: canonRole,
+    fallback: FALLBACK_DISPATCH_ROLE,
+  });
+  const role = resolved.role;
+  console.error(`[autonomous-dispatch] dispatch bot role: ${role} (source=${resolved.source})`);
   const repoDir = resolve(process.env.LAG_REPO_DIR ?? process.cwd());
   const stateDir = resolve(process.env.LAG_STATE_DIR ?? join(repoDir, '.lag'));
   // Default to Opus 4.7 for drafter calls. Opus has a 1M context window and

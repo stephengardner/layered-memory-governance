@@ -73,13 +73,22 @@ export const PIPELINE_STAGE_HIL_DEFAULTS = Object.freeze({
 });
 
 /**
- * Indie-floor default pipeline mode. The solo developer running a
- * one-line README fix is not paying the brainstorm + spec + review
- * tax; an org-ceiling deployment that has decided every plan goes
- * through the deep pipeline flips this via a higher-priority canon
- * atom rather than a code change.
+ * Default pipeline mode seeded by this repo's bootstrap. The
+ * `layered-autonomous-governance` deployment chose `substrate-deep`
+ * as its standing default because every plan in this repo wants the
+ * brainstorm + spec + plan + review + dispatch audit chain that the
+ * deep pipeline provides; the spec/review stages also close the
+ * `dev-drafter-citation-verification-required` gap at the substrate
+ * level.
+ *
+ * Framework note: the framework directive `dev-deep-planning-pipeline`
+ * teaches `single-pass` as the indie-floor default for solo developers
+ * running typo fixes. A fresh LAG deployment that wants the indie
+ * default re-writes this constant + rebootstraps; the existing
+ * arbitration stack honors per-deployment policy without a framework
+ * change.
  */
-export const DEFAULT_PIPELINE_MODE = 'single-pass';
+export const DEFAULT_PIPELINE_MODE = 'substrate-deep';
 
 /**
  * Indie-floor default per-stage adapter mode. Every stage ships at
@@ -100,6 +109,24 @@ export const DEFAULT_STAGE_IMPLEMENTATION_MODES = Object.freeze({
   'review-stage': 'single-shot',
   'dispatch-stage': 'single-shot',
 });
+
+/**
+ * Default dispatch-invoker bot role seeded by this repo's bootstrap.
+ * The `layered-autonomous-governance` deployment provisions three bot
+ * roles (lag-ceo / lag-cto / lag-pr-landing) via the lag-actors CLI;
+ * `lag-ceo` is the operator-proxy role this deployment uses for
+ * autonomous code-author dispatches. A fresh LAG deployment with a
+ * different role taxonomy re-writes this constant + rebootstraps.
+ *
+ * Substrate-pure intent: the canon atom (not the env var) is the
+ * source of truth for THIS deployment's chosen role, so the
+ * autonomous-dispatch invoker reads it via
+ * `readDispatchInvokerDefaultPolicy` and falls through to the
+ * registrar's exported `FALLBACK_DISPATCH_ROLE` only on a fresh
+ * checkout that has not bootstrapped yet. Mirrors the canon-vs-env
+ * resolution shape of `pol-planning-pipeline-default-mode`.
+ */
+export const DEFAULT_DISPATCH_INVOKER_ROLE = 'lag-ceo';
 
 function ensureOperatorId(operatorId, label) {
   if (typeof operatorId !== 'string' || operatorId.length === 0) {
@@ -208,25 +235,33 @@ export function buildDeepPlanningPipelineSpecs(operatorId) {
       type: 'directive',
       layer: 'L3',
       content:
-        `Default pipeline mode is '${DEFAULT_PIPELINE_MODE}' per dev-indie-floor-org-ceiling. A solo `
-        + 'developer running a typo-fix should not pay the brainstorm + spec + review tax; '
-        + 'invoking with --mode=substrate-deep activates the multi-stage path explicitly. An '
-        + 'org-ceiling deployment that has decided every plan goes through the deep pipeline '
-        + 'flips this default via a higher-priority canon atom (e.g. a project-scope atom '
-        + "setting mode='substrate-deep'); raising the dial is a canon edit, not a code change.",
+        `Default pipeline mode for this deployment is '${DEFAULT_PIPELINE_MODE}'. The `
+        + 'layered-autonomous-governance repo is an org-ceiling deployment that has decided '
+        + 'every plan flows through the brainstorm + spec + plan + review + dispatch audit '
+        + 'chain so the cited target_paths + sub-actor delegation + canon ids in every plan '
+        + 'are verified before dispatch (closing the dev-drafter-citation-verification-required '
+        + 'gap at the substrate level). The framework directive dev-deep-planning-pipeline '
+        + "teaches 'single-pass' as the indie-floor default for solo developers running typo "
+        + 'fixes; this deployment chose substrate-deep per dev-substrate-not-prescription. '
+        + "Operator override per run: `LAG_PIPELINE_MODE=single-pass node scripts/intend.mjs "
+        + '--trigger` for a one-shot back to single-pass. Fresh deployments that want the '
+        + 'indie default re-seed this atom via their own bootstrap.',
       policy: {
         subject: 'planning-pipeline-default-mode',
         mode: DEFAULT_PIPELINE_MODE,
       },
       alternatives_rejected: [
-        'Default to substrate-deep so every plan gets the spec/review pipeline; breaks indie-floor cost story',
-        'Hardcode the default in run-cto-actor.mjs argv handling rather than a canon policy atom',
-        'Ship without a default-mode policy and rely solely on the --mode flag',
+        "Default to 'single-pass' (framework indie-floor); cheaper but skips the spec + review audit chain this deployment wants for every plan",
+        'Hardcode substrate-deep in run-cto-actor.mjs argv handling rather than a canon policy atom; loses the canon-edit knob and forces a code change to flip the dial',
+        'Ship without a default-mode policy and rely solely on the --mode flag or LAG_PIPELINE_MODE env override; couples a deployment-wide policy to a per-invocation env var (substrate-must-be-default-correct-without-env-var-workarounds)',
       ],
       what_breaks_if_revisit:
-        'Sound at 3 months: a deployment that wants substrate-deep by default writes a '
-        + 'higher-priority canon atom; arbitration resolves it via the existing source-rank '
-        + 'formula. The default-mode atom is a feature flag with a deterministic default.',
+        'Sound at 3 months: the default-mode atom is a feature flag with a deterministic '
+        + "value. A deployment that wants 'single-pass' by default re-seeds this atom or "
+        + 'writes a higher-priority override; arbitration resolves it via the existing '
+        + 'source-rank formula. intend.mjs reads this atom via readPipelineDefaultModePolicy '
+        + 'and threads the resolved mode through buildCtoSpawnArgs, so a value change here '
+        + 'flows through to every subsequent --trigger without a code edit.',
       derived_from: sharedDerivedFrom,
     },
     {
@@ -282,6 +317,41 @@ export function buildDeepPlanningPipelineSpecs(operatorId) {
         + 'edit). Switching a deployment to agentic-by-default is a higher-priority pol- atom '
         + 'visible in the diff. The wiring layer fail-loud on a stage whose declared adapter is '
         + 'not registered prevents silent drift between policy and implementation.',
+      derived_from: sharedDerivedFrom,
+    },
+    {
+      id: 'pol-dispatch-invoker-default',
+      type: 'directive',
+      layer: 'L3',
+      content:
+        `Default dispatch-invoker bot role for this deployment is '${DEFAULT_DISPATCH_INVOKER_ROLE}'. `
+        + 'scripts/invokers/autonomous-dispatch.mjs is the canonical SubActorRegistry registrar '
+        + 'that intend.mjs --trigger spawns at the end of the planning pipeline; the registrar '
+        + 'mints App-installation tokens from <stateDir>/apps/<role>.json (provisioned via '
+        + "bin/lag-actors.js). 'lag-ceo' is the operator-proxy role in the "
+        + 'layered-autonomous-governance deployment; an org-ceiling deployment that provisioned '
+        + 'a dedicated lag-code-author bot would re-seed this atom to that role. '
+        + 'Operator override per run: `LAG_DISPATCH_BOT_ROLE=lag-cto node scripts/run-approval-cycle.mjs` '
+        + 'for a one-shot under a different bot. The hardcoded fallback constant '
+        + '(scripts/lib/autonomous-dispatch-exec.mjs FALLBACK_DISPATCH_ROLE) provides indie-floor '
+        + 'graceful degradation on fresh checkouts that have not yet bootstrapped canon.',
+      policy: {
+        subject: 'dispatch-invoker-default',
+        role: DEFAULT_DISPATCH_INVOKER_ROLE,
+      },
+      alternatives_rejected: [
+        "Default to a generic identifier like 'dispatch-bot'; loses the human-readable role taxonomy and breaks deployments that provisioned multiple bot roles by category",
+        'Require LAG_DISPATCH_BOT_ROLE env on every invocation with no canon or fallback; couples a deployment-wide policy to a per-invocation env var (substrate-must-be-default-correct-without-env-var-workarounds)',
+        'Hardcode the role in scripts/invokers/autonomous-dispatch.mjs without a canon seam; bakes this org\'s principal taxonomy into the canonical invoker (dev-substrate-not-prescription)',
+      ],
+      what_breaks_if_revisit:
+        "Sound at 3 months: the role field is a deterministic literal a deployment edits via "
+        + 'canon when it provisions a different bot. The registrar reads this atom via '
+        + 'readDispatchInvokerDefaultPolicy and threads it through resolveDispatchBotRole '
+        + '(scripts/lib/autonomous-dispatch-exec.mjs), so a value change here flows through to '
+        + 'every dispatch without a code edit. Removing this atom returns the registrar to its '
+        + 'three-rung ladder fallback (env -> hardcoded constant); removing the constant too '
+        + 'fails-loud at register time.',
       derived_from: sharedDerivedFrom,
     },
   ];

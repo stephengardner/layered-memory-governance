@@ -47,6 +47,15 @@ const STATE_DIR = resolve(REPO_ROOT, '.lag');
 
 const argv = process.argv.slice(2);
 const DRY_RUN = argv.includes('--dry-run');
+// --force-update is the heal lever for deployments whose existing
+// canon atoms have drifted from the bootstrap module (e.g. an upstream
+// substrate change flipped DEFAULT_PIPELINE_MODE from single-pass to
+// substrate-deep; the operator's local atom is now stale). Default
+// posture is fail-loud on drift -- the operator has to opt in to
+// overwriting an existing atom by passing the flag explicitly.
+// Mirrors --apply on the backfill scripts: the noisy default is the
+// safe one.
+const FORCE_UPDATE = argv.includes('--force-update');
 
 const OPERATOR_ID = process.env.LAG_OPERATOR_ID;
 if (!OPERATOR_ID) {
@@ -124,6 +133,7 @@ async function main() {
   await mkdir(STATE_DIR, { recursive: true });
   const host = await createFileHost({ rootDir: STATE_DIR });
   let written = 0;
+  let updated = 0;
   let ok = 0;
   for (const spec of specs) {
     const expected = buildAtomFromSpec(spec, OPERATOR_ID);
@@ -136,13 +146,32 @@ async function main() {
     }
     const diffs = diffAtom(existing, expected);
     if (diffs.length > 0) {
-      console.error(`[bootstrap-deep-planning-pipeline-canon] DRIFT on ${expected.id}:\n  ${diffs.join('\n  ')}`);
+      if (FORCE_UPDATE) {
+        // Operator-authorized overwrite. Log the diffs first so the
+        // PR / audit log captures what was healed (a silent overwrite
+        // would lose the prior state's provenance). The
+        // host.atoms.put call re-writes the atom file in place.
+        console.error(
+          `[bootstrap-deep-planning-pipeline-canon] --force-update healing ${expected.id}:\n  ${diffs.join('\n  ')}`,
+        );
+        await host.atoms.put(expected);
+        updated += 1;
+        continue;
+      }
+      console.error(
+        `[bootstrap-deep-planning-pipeline-canon] DRIFT on ${expected.id}:\n  ${diffs.join('\n  ')}\n`
+        + `  Re-run with --force-update to overwrite. The flag exists for `
+        + `operator-authorized heal after the bootstrap module changed.`,
+      );
       process.exitCode = 1;
       return;
     }
     ok += 1;
   }
-  console.log(`[bootstrap-deep-planning-pipeline-canon] done. ${written} written, ${ok} already in sync.`);
+  console.log(
+    `[bootstrap-deep-planning-pipeline-canon] done. ${written} written, `
+    + `${updated} updated (force), ${ok} already in sync.`,
+  );
 }
 
 await main();

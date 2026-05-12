@@ -33,10 +33,31 @@ export interface PipelineStageHilPolicyResult {
 
 export interface PipelineDefaultModePolicyResult {
   readonly mode: 'single-pass' | 'substrate-deep';
+  /**
+   * Atom id when canon resolved this result, or `null` when the reader
+   * fell through to its built-in default. Callers that want to layer
+   * env override -> canon -> fallback (intend.mjs's resolvePipelineMode)
+   * read `atomId === null` as "canon did not resolve" and propagate to
+   * their own fallback, instead of treating the built-in single-pass
+   * as if canon had explicitly stated it.
+   */
+  readonly atomId: string | null;
 }
 
 export interface PipelineStageCostCapPolicyResult {
   readonly cap_usd: number | null;
+}
+
+export interface DispatchInvokerDefaultPolicyResult {
+  /**
+   * Bot role whose App credentials drive the autonomous dispatch path.
+   * Resolved from canon (subject 'dispatch-invoker-default', field
+   * 'role'). `null` when no atom resolves so the caller layers env
+   * override -> canon -> documented fallback without treating a
+   * built-in default as if canon had stated it.
+   */
+  readonly role: string | null;
+  readonly atomId: string | null;
 }
 
 export interface PipelineStageTimeoutPolicyResult {
@@ -194,9 +215,43 @@ export async function readPipelineDefaultModePolicy(
     const policy = readPolicy(atom);
     if (policy?.subject !== 'planning-pipeline-default-mode') continue;
     const raw = policy.mode;
-    if (raw === 'substrate-deep' || raw === 'single-pass') return { mode: raw };
+    if (raw === 'substrate-deep' || raw === 'single-pass') {
+      return { mode: raw, atomId: String(atom.id) };
+    }
   }
-  return { mode: 'single-pass' };
+  return { mode: 'single-pass', atomId: null };
+}
+
+/**
+ * Read the default dispatch-invoker bot role from canon. Resolved from
+ * a directive atom whose `metadata.policy.subject` is
+ * 'dispatch-invoker-default'; the `role` field must be a non-empty
+ * string. Returns `role: null, atomId: null` when no atom resolves so
+ * the caller can layer env override -> canon -> documented fallback
+ * without conflating "canon did not resolve" with "canon explicitly
+ * said X". Substrate-pure mechanism: the reader knows nothing about
+ * the specific role names a deployment uses; the role taxonomy lives
+ * in the canon atom's content per dev-substrate-not-prescription.
+ *
+ * Trims `role` before validation so a quoted policy value with leading
+ * or trailing whitespace does not leak into downstream path
+ * resolution; whitespace-only values fail-closed (treated as
+ * unresolved canon) rather than reporting canon-resolved data for an
+ * effectively empty role.
+ */
+export async function readDispatchInvokerDefaultPolicy(
+  host: Host,
+): Promise<DispatchInvokerDefaultPolicyResult> {
+  for await (const atom of iteratePolicyAtoms(host)) {
+    const policy = readPolicy(atom);
+    if (policy?.subject !== 'dispatch-invoker-default') continue;
+    const raw = policy.role;
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    if (trimmed.length > 0) {
+      return { role: trimmed, atomId: String(atom.id) };
+    }
+  }
+  return { role: null, atomId: null };
 }
 
 export async function readPipelineStageCostCapPolicy(

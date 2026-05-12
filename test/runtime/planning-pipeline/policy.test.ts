@@ -3,6 +3,7 @@ import {
   readPipelineStagesPolicy,
   readPipelineStageHilPolicy,
   readPipelineDefaultModePolicy,
+  readDispatchInvokerDefaultPolicy,
   readPipelineStageCostCapPolicy,
   readPipelineStageTimeoutPolicy,
   readPipelineCostCapPolicy,
@@ -239,13 +240,14 @@ describe('readPipelineStageHilPolicy', () => {
 });
 
 describe('readPipelineDefaultModePolicy', () => {
-  it('returns "single-pass" when no atom is present (indie floor)', async () => {
+  it('returns "single-pass" with atomId null when no atom is present (indie floor)', async () => {
     const host = createMemoryHost();
     const result = await readPipelineDefaultModePolicy(host);
     expect(result.mode).toBe('single-pass');
+    expect(result.atomId).toBeNull();
   });
 
-  it('returns "substrate-deep" when policy atom configures it', async () => {
+  it('returns "substrate-deep" with the resolving atomId when policy atom configures it', async () => {
     const host = createMemoryHost();
     await host.atoms.put(
       policyAtom('pol-planning-pipeline-default-mode', {
@@ -255,9 +257,10 @@ describe('readPipelineDefaultModePolicy', () => {
     );
     const result = await readPipelineDefaultModePolicy(host);
     expect(result.mode).toBe('substrate-deep');
+    expect(result.atomId).toBe('pol-planning-pipeline-default-mode');
   });
 
-  it('returns "single-pass" when mode is malformed', async () => {
+  it('returns "single-pass" with atomId null when mode is malformed (no canon resolution)', async () => {
     const host = createMemoryHost();
     await host.atoms.put(
       policyAtom('pol-planning-pipeline-default-mode', {
@@ -267,6 +270,106 @@ describe('readPipelineDefaultModePolicy', () => {
     );
     const result = await readPipelineDefaultModePolicy(host);
     expect(result.mode).toBe('single-pass');
+    expect(result.atomId).toBeNull();
+  });
+});
+
+describe('readDispatchInvokerDefaultPolicy', () => {
+  it('returns role null + atomId null when no canon atom is present', async () => {
+    const host = createMemoryHost();
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBeNull();
+    expect(result.atomId).toBeNull();
+  });
+
+  it('returns the configured role + resolving atomId when policy atom configures it', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-dispatch-invoker-default', {
+        subject: 'dispatch-invoker-default',
+        role: 'lag-ceo',
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBe('lag-ceo');
+    expect(result.atomId).toBe('pol-dispatch-invoker-default');
+  });
+
+  it('returns null when role is missing on the policy atom', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-dispatch-invoker-default', {
+        subject: 'dispatch-invoker-default',
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBeNull();
+    expect(result.atomId).toBeNull();
+  });
+
+  it('returns null when role is an empty string', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-dispatch-invoker-default', {
+        subject: 'dispatch-invoker-default',
+        role: '',
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBeNull();
+    expect(result.atomId).toBeNull();
+  });
+
+  it('returns null when role is whitespace-only (fail-closed on blank)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-dispatch-invoker-default', {
+        subject: 'dispatch-invoker-default',
+        role: '   ',
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBeNull();
+    expect(result.atomId).toBeNull();
+  });
+
+  it('trims whitespace off a quoted role value (substrate-pure normalization)', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-dispatch-invoker-default', {
+        subject: 'dispatch-invoker-default',
+        role: '  lag-ceo  ',
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBe('lag-ceo');
+    expect(result.atomId).toBe('pol-dispatch-invoker-default');
+  });
+
+  it('returns null when role is not a string', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-dispatch-invoker-default', {
+        subject: 'dispatch-invoker-default',
+        role: 42,
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBeNull();
+    expect(result.atomId).toBeNull();
+  });
+
+  it('only matches atoms with the dispatch-invoker-default subject', async () => {
+    const host = createMemoryHost();
+    await host.atoms.put(
+      policyAtom('pol-other', {
+        subject: 'some-other-subject',
+        role: 'lag-ceo',
+      }),
+    );
+    const result = await readDispatchInvokerDefaultPolicy(host);
+    expect(result.role).toBeNull();
+    expect(result.atomId).toBeNull();
   });
 });
 

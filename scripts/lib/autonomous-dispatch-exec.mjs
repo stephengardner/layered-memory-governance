@@ -9,6 +9,57 @@ import {
   buildReadOnlyEnv,
 } from './git-as-push-auth.mjs';
 
+/**
+ * Documented indie-floor fallback role for the
+ * layered-autonomous-governance deployment. Reached when env override
+ * is unset AND no canon pol-dispatch-invoker-default atom resolves
+ * (fresh checkout, bootstrap not yet run). `lag-ceo` is the
+ * operator-proxy role provisioned in this repo via the lag-actors CLI;
+ * a fresh deployment that wants a different default writes a canon
+ * atom OR re-seeds via its own bootstrap script. Exported so the
+ * registrar imports one canonical literal and the test suite can
+ * assert against the same source of truth.
+ */
+export const FALLBACK_DISPATCH_ROLE = 'lag-ceo';
+
+/**
+ * Resolve the dispatch bot role from the substrate-pure three-rung
+ * ladder: env override -> canon policy -> hardcoded fallback. Pure
+ * function: no host access, no IO, no env reads inside. The caller
+ * resolves env + canon separately and threads the values in so the
+ * rung priority is unit-testable without spawning the registrar.
+ *
+ * Returns `{ role: string, source: 'env' | 'canon' | 'fallback' }`
+ * on a resolved value; throws when every rung is blank so a
+ * misconfigured deployment fails loud rather than silently dispatching
+ * under an empty role (which would cascade into a credential-load
+ * failure deeper in the stack with a less-actionable error).
+ *
+ * Trims the chosen rung so a quoted env like `"lag-ceo "` does not
+ * leak whitespace into `<stateDir>/apps/<role>.json` path resolution
+ * later in the registrar.
+ */
+export function resolveDispatchBotRole(spec) {
+  const { env, canon, fallback } = spec;
+  if (typeof env === 'string' && env.trim().length > 0) {
+    return { role: env.trim(), source: 'env' };
+  }
+  if (typeof canon === 'string' && canon.trim().length > 0) {
+    return { role: canon.trim(), source: 'canon' };
+  }
+  if (typeof fallback === 'string' && fallback.trim().length > 0) {
+    return { role: fallback.trim(), source: 'fallback' };
+  }
+  throw new Error(
+    '[autonomous-dispatch] dispatch bot role could not be resolved from any of: '
+    + 'LAG_DISPATCH_BOT_ROLE env, pol-dispatch-invoker-default canon atom, '
+    + 'or FALLBACK_DISPATCH_ROLE constant. This is a substrate misconfiguration '
+    + '-- the fallback constant should never be blank. See .env.example for '
+    + 'the canonical env block and run scripts/bootstrap-deep-planning-pipeline-canon.mjs '
+    + 'to seed the canon atom.',
+  );
+}
+
 // GitHub label names are capped at 50 characters. Plan-atom ids in
 // this codebase routinely exceed that (e.g. 91 chars for pipeline-
 // generated plans like
