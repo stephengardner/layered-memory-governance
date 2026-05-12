@@ -19,6 +19,7 @@ import {
   resolvePipelineMode,
   shellQuote,
 } from './lib/intend.mjs';
+import { runPreflight, formatPreflightError } from './lib/intend-preflight.mjs';
 import { spawnNode } from './lib/spawn-node.mjs';
 
 /**
@@ -38,7 +39,7 @@ async function main() {
   const parsed = parseIntendArgs(process.argv.slice(2));
   if (!parsed.ok) {
     console.error(`[intend] ${parsed.reason}`);
-    console.error('usage: node scripts/intend.mjs --request "<text>" --scope <tooling|docs|framework|canon> --blast-radius <none|docs|tooling|framework|l3-canon-proposal> --sub-actors <code-author[,auditor-actor]> [--min-confidence 0.75] [--expires-in 24h] [--dry-run] [--trigger]');
+    console.error('usage: node scripts/intend.mjs --request "<text>" --scope <tooling|docs|framework|canon> --blast-radius <none|docs|tooling|framework|l3-canon-proposal> --sub-actors <code-author[,auditor-actor]> [--min-confidence 0.75] [--expires-in 24h] [--dry-run] [--trigger] [--force-paths] [--skip-preflight]');
     process.exit(2);
   }
   const args = parsed.args;
@@ -50,6 +51,40 @@ async function main() {
   if (!operatorPrincipalId) {
     console.error('[intend] LAG_OPERATOR_ID is not set. Export the operator principal id first.');
     process.exit(2);
+  }
+
+  // Pre-flight path validator: walk the request body for path-shaped tokens
+  // that cite existing repo paths and halt loud BEFORE writing any atom if
+  // any cited path is unreachable from the repo root. Closes the "CTO draws
+  // plans from imagination" gap by halting at the only point operator text
+  // crosses into the substrate; the brainstorm + spec stages have no Read
+  // tool at draft time, so an unreachable citation today turns into a
+  // critical-audit-finding at spec-stage after burning ~5min of LLM budget.
+  //
+  // Bypass mechanisms: --force-paths (legitimate CREATE intents where the
+  // path is intentionally new) and --skip-preflight (operator judgment that
+  // the preflight is wrong). Both echo to stdout so the audit trail captures
+  // the deliberate override. Exit code 2 mirrors the other argument-error
+  // exits; intend.mjs's argument-validation failures exit 2 so the preflight
+  // gate is consistent with that convention. (Exit 1 is reserved for the
+  // catch-all main().catch handler, exit 3 for .lag/STOP kill-switch.)
+  const preflight = await runPreflight({
+    request: args.request,
+    repoRoot: REPO_ROOT,
+    forcePaths: args.forcePaths,
+    skipPreflight: args.skipPreflight,
+  });
+  if (!preflight.ok) {
+    console.error(formatPreflightError(preflight.missing));
+    process.exit(2);
+  }
+  if (preflight.skipped) {
+    console.warn('[intend] pre-flight SKIPPED via --skip-preflight; substrate-purity warning: unreachable citations will still halt the pipeline at spec-stage.');
+  } else if (preflight.forced && preflight.warnings.length > 0) {
+    const lines = preflight.warnings.map(w => `  - ${w.token} (line ${w.lineNumber})`);
+    console.warn(
+      `[intend] pre-flight WARNING via --force-paths: ${preflight.warnings.length} cited path(s) do not exist:\n${lines.join('\n')}\nProceeding because --force-paths was set; the pipeline will treat these as CREATE targets.`,
+    );
   }
   const now = new Date();
   const expiresAt = computeExpiresAt(args.expiresIn, now);

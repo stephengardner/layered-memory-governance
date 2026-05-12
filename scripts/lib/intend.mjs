@@ -24,6 +24,8 @@ export function parseIntendArgs(argv) {
     dryRun: false,
     trigger: false,
     invokersPath: null,
+    forcePaths: false,
+    skipPreflight: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -37,6 +39,8 @@ export function parseIntendArgs(argv) {
     else if (a === '--dry-run') { args.dryRun = true; }
     else if (a === '--trigger') { args.trigger = true; }
     else if (a === '--invokers' && i + 1 < argv.length) { args.invokersPath = argv[++i]; }
+    else if (a === '--force-paths') { args.forcePaths = true; }
+    else if (a === '--skip-preflight') { args.skipPreflight = true; }
     else { return { ok: false, reason: `unknown or misplaced argument: ${a}` }; }
   }
   if (!args.request) return { ok: false, reason: '--request is required' };

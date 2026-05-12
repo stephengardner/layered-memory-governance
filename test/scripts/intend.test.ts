@@ -71,6 +71,44 @@ describe('parseIntendArgs', () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.args.invokersPath).toBe(null);
   });
+
+  it('accepts --force-paths bypass flag', () => {
+    const r = parseIntendArgs([
+      '--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling',
+      '--sub-actors', 'code-author',
+      '--force-paths',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.forcePaths).toBe(true);
+      expect(r.args.skipPreflight).toBe(false);
+    }
+  });
+
+  it('accepts --skip-preflight bypass flag', () => {
+    const r = parseIntendArgs([
+      '--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling',
+      '--sub-actors', 'code-author',
+      '--skip-preflight',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.skipPreflight).toBe(true);
+      expect(r.args.forcePaths).toBe(false);
+    }
+  });
+
+  it('defaults both bypass flags to false', () => {
+    const r = parseIntendArgs([
+      '--request', 'x', '--scope', 'tooling', '--blast-radius', 'tooling',
+      '--sub-actors', 'code-author',
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.args.forcePaths).toBe(false);
+      expect(r.args.skipPreflight).toBe(false);
+    }
+  });
 });
 
 describe('shellQuote', () => {
