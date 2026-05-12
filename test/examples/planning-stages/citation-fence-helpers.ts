@@ -190,5 +190,7 @@ export function mkPromptContractStageInput<TIn>(args: {
     verifiedCitedAtomIds: args.verifiedCitedAtomIds,
     verifiedSubActorPrincipalIds: args.verifiedSubActorPrincipalIds ?? [],
     operatorIntentContent: args.operatorIntentContent ?? '',
+    priorAuditFindings: [],
+    priorValidatorError: '',
   };
 }

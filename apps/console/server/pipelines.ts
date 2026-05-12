@@ -382,6 +382,12 @@ function currentStageFromSummaries(
  * and projected into the `agent_turns` array on the detail payload;
  * they DO NOT belong on the per-stage `events` strip (which models
  * the canonical enter/exit/pause/resume lifecycle).
+ *
+ * Retry transitions ('retry-after-findings',
+ * 'validator-retry-after-failure') ARE surfaced on the events strip
+ * so the operator sees the teaching-seam emit between attempts; their
+ * transition-specific payload (attempt_index + findings_summary OR
+ * validator_error_message) is carried through to the wire shape.
  */
 function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
   const meta = readMeta(atom);
@@ -394,9 +400,42 @@ function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
     && transitionRaw !== 'exit-failure'
     && transitionRaw !== 'hil-pause'
     && transitionRaw !== 'hil-resume'
+    && transitionRaw !== 'retry-after-findings'
+    && transitionRaw !== 'validator-retry-after-failure'
   ) {
     return null;
   }
+  // Pull retry-specific payload when applicable. The runner stamps
+  // attempt_index on both retry transitions; findings_summary lands
+  // only on retry-after-findings and validator_error_message lands
+  // only on validator-retry-after-failure. The wire shape carries
+  // each as optional fields so console renderers can branch on
+  // presence rather than transition string alone.
+  const attemptIndexRaw = meta['attempt_index'];
+  const attempt_index = typeof attemptIndexRaw === 'number'
+    && Number.isInteger(attemptIndexRaw)
+    && attemptIndexRaw >= 2
+    ? attemptIndexRaw
+    : undefined;
+  let findings_summary: PipelineStageEvent['findings_summary'];
+  const findingsSummaryRaw = meta['findings_summary'];
+  if (
+    findingsSummaryRaw !== null
+    && typeof findingsSummaryRaw === 'object'
+  ) {
+    const fs = findingsSummaryRaw as Record<string, unknown>;
+    const critical = typeof fs['critical'] === 'number' ? fs['critical'] : null;
+    const major = typeof fs['major'] === 'number' ? fs['major'] : null;
+    const minor = typeof fs['minor'] === 'number' ? fs['minor'] : null;
+    if (critical !== null && major !== null && minor !== null) {
+      findings_summary = { critical, major, minor };
+    }
+  }
+  const validatorErrorMessageRaw = meta['validator_error_message'];
+  const validator_error_message = typeof validatorErrorMessageRaw === 'string'
+    && validatorErrorMessageRaw.length > 0
+    ? validatorErrorMessageRaw
+    : undefined;
   return {
     atom_id: atom.id,
     stage_name: stageName,
@@ -406,6 +445,9 @@ function eventFromAtom(atom: PipelineSourceAtom): PipelineStageEvent | null {
     cost_usd: readNumber(meta, 'cost_usd'),
     output_atom_id: readString(meta, 'output_atom_id'),
     principal_id: atom.principal_id,
+    ...(attempt_index !== undefined ? { attempt_index } : {}),
+    ...(findings_summary !== undefined ? { findings_summary } : {}),
+    ...(validator_error_message !== undefined ? { validator_error_message } : {}),
   };
 }
 

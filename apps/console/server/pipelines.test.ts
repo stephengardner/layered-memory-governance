@@ -68,11 +68,25 @@ function pipelineAtom(opts: {
 function stageEventAtom(opts: {
   pipelineId: string;
   stageName: string;
-  transition: 'enter' | 'exit-success' | 'exit-failure' | 'hil-pause' | 'hil-resume';
+  transition:
+    | 'enter'
+    | 'exit-success'
+    | 'exit-failure'
+    | 'hil-pause'
+    | 'hil-resume'
+    | 'retry-after-findings'
+    | 'validator-retry-after-failure';
   at: string;
   durationMs?: number;
   costUsd?: number;
   outputAtomId?: string;
+  attemptIndex?: number;
+  validatorErrorMessage?: string;
+  findingsSummary?: {
+    readonly critical: number;
+    readonly major: number;
+    readonly minor: number;
+  };
 }): PipelineSourceAtom {
   return {
     id: `pipeline-stage-event-${opts.pipelineId}-${opts.stageName}-${opts.transition}-corr-1`,
@@ -88,6 +102,13 @@ function stageEventAtom(opts: {
       duration_ms: opts.durationMs ?? 0,
       cost_usd: opts.costUsd ?? 0,
       ...(opts.outputAtomId ? { output_atom_id: opts.outputAtomId } : {}),
+      ...(opts.attemptIndex !== undefined ? { attempt_index: opts.attemptIndex } : {}),
+      ...(opts.validatorErrorMessage !== undefined
+        ? { validator_error_message: opts.validatorErrorMessage }
+        : {}),
+      ...(opts.findingsSummary !== undefined
+        ? { findings_summary: opts.findingsSummary }
+        : {}),
     },
   };
 }
@@ -556,6 +577,107 @@ describe('getPipelineDetail', () => {
       'pipeline-pause',
     );
     expect(result2!.stages[0]!.state).toBe('running');
+  });
+
+  it('surfaces validator-retry-after-failure transition on events strip', () => {
+    // Plan-stage validator-retry loop projection: when the runner
+    // emits 'validator-retry-after-failure' between two attempts,
+    // the projection surfaces it on the events strip with the
+    // attempt_index + validator_error_message carried through to
+    // the wire shape. The console renderer (PipelineDetailView)
+    // uses these fields to label the retry event.
+    const pipeline = pipelineAtom({
+      id: 'pipeline-validator-retry',
+      state: 'completed',
+      createdAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+    });
+    const events = [
+      stageEventAtom({
+        pipelineId: 'pipeline-validator-retry',
+        stageName: 'plan',
+        transition: 'enter',
+        at: new Date(NOW - 20 * 60 * 1000).toISOString(),
+      }),
+      stageEventAtom({
+        pipelineId: 'pipeline-validator-retry',
+        stageName: 'plan',
+        transition: 'validator-retry-after-failure',
+        at: new Date(NOW - 19 * 60 * 1000).toISOString(),
+        attemptIndex: 2,
+        validatorErrorMessage:
+          'schema-validation-failed: plans[0].target_paths partial',
+      }),
+      stageEventAtom({
+        pipelineId: 'pipeline-validator-retry',
+        stageName: 'plan',
+        transition: 'exit-success',
+        at: new Date(NOW - 18 * 60 * 1000).toISOString(),
+        durationMs: 60 * 1000,
+        costUsd: 0.05,
+      }),
+    ];
+    const result = getPipelineDetail(
+      [pipeline, ...events],
+      'pipeline-validator-retry',
+    );
+    expect(result).not.toBeNull();
+    const retryEvent = result!.events.find(
+      (e) => e.transition === 'validator-retry-after-failure',
+    );
+    expect(retryEvent).toBeDefined();
+    expect(retryEvent!.attempt_index).toBe(2);
+    expect(retryEvent!.validator_error_message).toContain('schema-validation-failed');
+  });
+
+  it('surfaces retry-after-findings transition on events strip', () => {
+    // Auditor-feedback re-prompt loop projection (PR #397 sibling):
+    // the projection surfaces retry-after-findings on the events
+    // strip with attempt_index + findings_summary on the wire shape.
+    // The console renderer uses these to label the retry event.
+    const pipeline = pipelineAtom({
+      id: 'pipeline-auditor-retry',
+      state: 'completed',
+      createdAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+    });
+    const events = [
+      stageEventAtom({
+        pipelineId: 'pipeline-auditor-retry',
+        stageName: 'plan',
+        transition: 'enter',
+        at: new Date(NOW - 20 * 60 * 1000).toISOString(),
+      }),
+      stageEventAtom({
+        pipelineId: 'pipeline-auditor-retry',
+        stageName: 'plan',
+        transition: 'retry-after-findings',
+        at: new Date(NOW - 19 * 60 * 1000).toISOString(),
+        attemptIndex: 2,
+        findingsSummary: { critical: 1, major: 0, minor: 0 },
+      }),
+      stageEventAtom({
+        pipelineId: 'pipeline-auditor-retry',
+        stageName: 'plan',
+        transition: 'exit-success',
+        at: new Date(NOW - 18 * 60 * 1000).toISOString(),
+        durationMs: 60 * 1000,
+        costUsd: 0.05,
+      }),
+    ];
+    const result = getPipelineDetail(
+      [pipeline, ...events],
+      'pipeline-auditor-retry',
+    );
+    expect(result).not.toBeNull();
+    const retryEvent = result!.events.find(
+      (e) => e.transition === 'retry-after-findings',
+    );
+    expect(retryEvent).toBeDefined();
+    expect(retryEvent!.attempt_index).toBe(2);
+    expect(retryEvent!.findings_summary).toEqual({
+      critical: 1,
+      major: 0,
+      minor: 0,
+    });
   });
 
   it('drops superseded and tainted atoms', () => {
