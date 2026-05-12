@@ -59,6 +59,7 @@ export {
   readPipelineStagesPolicy,
   readPipelineStageHilPolicy,
   readPipelineDefaultModePolicy,
+  readDispatchInvokerDefaultPolicy,
   readPipelineStageCostCapPolicy,
   readPipelineStageImplementationsPolicy,
 } from './policy.js';
@@ -67,6 +68,7 @@ export type {
   PipelineStagesPolicyResult,
   PipelineStageHilPolicyResult,
   PipelineDefaultModePolicyResult,
+  DispatchInvokerDefaultPolicyResult,
   PipelineStageCostCapPolicyResult,
   PipelineStageImplementationsPolicyResult,
   PipelineStageImplementationMode,

@@ -80,6 +80,58 @@ function requireNonEmptyString(name, value) {
 }
 
 /**
+ * Resolve the pipeline mode for a `--trigger` spawn from the three-rung
+ * source ladder:
+ *
+ *   1. env wins        -- LAG_PIPELINE_MODE override authored at the
+ *                         shell. An operator who needs to one-shot a
+ *                         non-default mode for a single run does NOT
+ *                         have to edit canon.
+ *   2. canon           -- `readPipelineDefaultModePolicy(host)` result.
+ *                         The canon policy is the deployment's stated
+ *                         default; substrate-pure callers configure the
+ *                         policy atom at deployment time rather than
+ *                         carrying a per-run env var.
+ *   3. fallback        -- documented indie-floor default supplied by
+ *                         the caller. Reached only when env is unset
+ *                         AND canon resolution failed (no atom, malformed
+ *                         atom, host-read error suppressed upstream).
+ *
+ * The result is ALWAYS one of PIPELINE_MODE_VALUES; an env value that
+ * fails validation is rejected loudly (not silently dropped to canon),
+ * because a silent drop would erase the operator's intent without a
+ * signal. A null/undefined canon value falls through to the fallback;
+ * the function does not validate the fallback because the caller is
+ * expected to pin a literal from the allow-list at the call site.
+ *
+ * Pure: no host access, no IO, no env reads inside. The caller
+ * resolves env + canon separately and threads the values in, which
+ * makes the rung priority unit-testable without spawning a subprocess
+ * or mocking process.env at the module-load boundary.
+ */
+export function resolvePipelineMode(spec) {
+  const { env, canon, fallback } = spec;
+  if (typeof env === 'string' && env.length > 0) {
+    if (!PIPELINE_MODE_VALUES.includes(env)) {
+      throw new Error(
+        `resolvePipelineMode: env override LAG_PIPELINE_MODE=${JSON.stringify(env)} `
+        + `is not one of ${PIPELINE_MODE_VALUES.join('|')}. Set a valid value or unset the env var.`,
+      );
+    }
+    return { mode: env, source: 'env' };
+  }
+  if (typeof canon === 'string' && PIPELINE_MODE_VALUES.includes(canon)) {
+    return { mode: canon, source: 'canon' };
+  }
+  if (typeof fallback !== 'string' || !PIPELINE_MODE_VALUES.includes(fallback)) {
+    throw new Error(
+      `resolvePipelineMode: fallback ${JSON.stringify(fallback)} must be one of ${PIPELINE_MODE_VALUES.join('|')}`,
+    );
+  }
+  return { mode: fallback, source: 'fallback' };
+}
+
+/**
  * Build the argv array intend.mjs --trigger spawns onto run-cto-actor.mjs.
  * Pinning this here (rather than inline in scripts/intend.mjs) lets a
  * regression test assert that --invokers is always present for the
@@ -93,14 +145,13 @@ function requireNonEmptyString(name, value) {
  * works end-to-end.
  *
  * Optional `mode` ('single-pass' | 'substrate-deep'): the pipeline mode
- * the spawned run-cto-actor should run under. Indie-floor default per
- * `dec-default-pipeline-mode-single-pass` is single-pass, so the caller
- * omits this and run-cto-actor's own default applies. Deployments that
- * want every trigger to flow through the 5-stage substrate-deep pipeline
- * set `LAG_PIPELINE_MODE=substrate-deep` in their environment; the
- * caller threads that into `mode` here. The flag is ALWAYS appended
- * when supplied so a downstream LAG_PIPELINE_MODE override is visible
- * in operator-action atom argv.
+ * the spawned run-cto-actor should run under. Substrate-pure callers
+ * resolve this via `resolvePipelineMode` (env -> canon -> fallback)
+ * and ALWAYS pass the resolved value through. The flag is appended
+ * when supplied so the resolved mode is visible in operator-action
+ * atom argv; an unsupported value fails loud at the boundary instead
+ * of silently dropping to run-cto-actor's own default (a typo like
+ * `subastrate-deep` surfaces here, not three stages deep).
  */
 export function buildCtoSpawnArgs(spec) {
   const { runCtoActorPath, request, atomId, invokersPath, mode } = spec;

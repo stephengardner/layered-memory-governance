@@ -11,8 +11,25 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createFileHost } from '../dist/adapters/file/index.js';
-import { parseIntendArgs, computeExpiresAt, buildIntentAtom, buildCtoSpawnArgs, shellQuote } from './lib/intend.mjs';
+import {
+  parseIntendArgs,
+  computeExpiresAt,
+  buildIntentAtom,
+  buildCtoSpawnArgs,
+  resolvePipelineMode,
+  shellQuote,
+} from './lib/intend.mjs';
 import { spawnNode } from './lib/spawn-node.mjs';
+
+/**
+ * Documented indie-floor default reached when env LAG_PIPELINE_MODE is
+ * unset AND no canon pol-planning-pipeline-default-mode atom resolves.
+ * `substrate-deep` is the operator-stated default for this deployment;
+ * a deployment that prefers single-pass writes the canon policy atom
+ * (the framework bootstrap seeds it), so the fallback only fires on
+ * deployments that have not bootstrapped pipeline canon at all.
+ */
+const FALLBACK_PIPELINE_MODE = 'substrate-deep';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolve(REPO_ROOT, '.lag');
@@ -126,23 +143,63 @@ async function main() {
     ? resolve(args.invokersPath)
     : defaultInvokersPath;
   const runCtoActorPath = resolve(REPO_ROOT, 'scripts/run-cto-actor.mjs');
-  // Pipeline-mode override: indie-floor default is single-pass per
-  // dec-default-pipeline-mode-single-pass, so a zero-env `intend
-  // --trigger` runs single-pass through CTO. Deployments that want
-  // every trigger to flow through the 5-stage substrate-deep pipeline
-  // export `LAG_PIPELINE_MODE=substrate-deep` in their environment;
-  // operators reading this can flip the dial back to single-pass for a
-  // one-shot by `LAG_PIPELINE_MODE= node scripts/intend.mjs --trigger`.
-  // The flag passes through to run-cto-actor verbatim; an unsupported
-  // value fails-loud at buildCtoSpawnArgs rather than silently falling
-  // back, so a typo (`subastrate-deep`) surfaces at the boundary.
-  const pipelineMode = process.env.LAG_PIPELINE_MODE;
+  // Pipeline-mode resolution: substrate-pure source ladder per the
+  // operator's standing "default-correct without env-var workaround"
+  // directive. Three rungs, in priority order:
+  //
+  //   1. LAG_PIPELINE_MODE env override -- one-shot operator escape
+  //      hatch. A typo (`subastrate-deep`) is rejected loudly so an
+  //      invalid env value never silently falls back to canon and
+  //      erases the operator's intent.
+  //   2. Canon pol-planning-pipeline-default-mode atom -- deployment's
+  //      stated default via `readPipelineDefaultModePolicy`. An
+  //      org-ceiling deployment that wants substrate-deep on every
+  //      trigger writes the canon atom; a solo developer who wants
+  //      single-pass writes the inverse atom.
+  //   3. Fallback FALLBACK_PIPELINE_MODE -- documented indie-floor
+  //      default when env is unset AND no canon atom resolves (fresh
+  //      checkout, bootstrap not run yet). The substrate-deep default
+  //      keeps the brainstorm/spec/plan/review/dispatch audit chain
+  //      load-bearing for new deployments that have not flipped the
+  //      dial yet.
+  //
+  // The resolved mode is ALWAYS appended to argv so operator-action
+  // audit-trails surface the value rather than relying on
+  // run-cto-actor's downstream default; an explicit visible mode
+  // beats an implicit hidden default.
+  let canonMode = null;
+  try {
+    const { readPipelineDefaultModePolicy } = await import('../dist/runtime/planning-pipeline/policy.js');
+    const policy = await readPipelineDefaultModePolicy(host);
+    // atomId === null signals "reader fell through to its built-in
+    // default", not "canon explicitly stated this mode". Only treat
+    // the result as canon-resolved when atomId is a string; this
+    // preserves the env-override -> canon -> fallback rung priority
+    // for fresh deployments that have not bootstrapped pipeline canon.
+    if (typeof policy?.atomId === 'string' && policy.atomId.length > 0) {
+      canonMode = policy.mode ?? null;
+    }
+  } catch (err) {
+    // A dist/ that has not been built yet (LAG_INTEND_SKIP_BUILD=1 on
+    // a fresh checkout, or this script running before `npm run build`)
+    // would leave the canon reader unimportable. Surface as a warning
+    // and fall through to the env/fallback rungs rather than aborting
+    // a trigger -- the operator's env override may still be present.
+    console.error(`[intend] WARNING: could not read canon pipeline mode policy: ${err?.message ?? err}; falling through to env + fallback.`);
+    canonMode = null;
+  }
+  const resolved = resolvePipelineMode({
+    env: process.env.LAG_PIPELINE_MODE,
+    canon: canonMode,
+    fallback: FALLBACK_PIPELINE_MODE,
+  });
+  console.log(`[intend] pipeline mode: ${resolved.mode} (source=${resolved.source})`);
   const ctoSpawnArgs = buildCtoSpawnArgs({
     runCtoActorPath,
     request: args.request,
     atomId: atom.id,
     invokersPath,
-    ...(pipelineMode ? { mode: pipelineMode } : {}),
+    mode: resolved.mode,
   });
 
   if (args.trigger) {
