@@ -256,25 +256,22 @@ export async function readPipelineStageHilPolicy(
 
 /**
  * Read the default pipeline mode from canon. Resolution applies the
- * substrate's standard arbitration: principal scope beats feature beats
- * project (scope depth), and at the same depth the most-recently-written
- * atom wins (created_at recency tiebreak). Without this, a deployment
- * that writes a principal-scoped override (e.g. apex-agent gets
- * substrate-deep while the project default stays single-pass) would
- * silently fall through to whichever atom happened to come first off
- * disk -- arbitration would not happen and the override would not
- * reliably take effect.
+ * substrate's standard arbitration: higher scope-depth wins (a
+ * principal-scoped atom beats a project-scoped atom), and at the same
+ * depth the most-recently-written atom wins (`created_at` recency
+ * tiebreak). Without this, a deployment that writes a more-specific
+ * override would silently fall through to whichever atom happened to
+ * come first off disk.
  *
  * The `ctx` parameter is optional and defaults to `{ scope: 'project' }`
- * so existing callers (intend.mjs and bootstrap tests) keep their
- * project-wide semantics without an API change. Callers that resolve
- * the mode for a specific principal pass `{ scope: 'principal:<id>' }`
- * and pick up a higher-priority principal-scoped atom when one exists.
+ * so callers that resolve a deployment-wide default keep their semantics
+ * without an API change. Callers that resolve the mode for a specific
+ * principal pass `{ scope: 'principal:<id>' }` and pick up a
+ * higher-priority principal-scoped atom when one exists.
  *
  * Returns `mode: 'single-pass'` with `atomId: null` when no atom
  * resolves so callers can distinguish "canon did not resolve" from
- * "canon explicitly stated single-pass" -- the indie-floor fallback per
- * dev-default-pipeline-mode-single-pass.
+ * "canon explicitly stated single-pass".
  */
 export async function readPipelineDefaultModePolicy(
   host: Host,
