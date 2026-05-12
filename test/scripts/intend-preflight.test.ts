@@ -110,11 +110,28 @@ describe('isRepoRootBareName', () => {
 });
 
 describe('lineDeclaresCreateIntent', () => {
-  it('detects create verbs', () => {
+  it('detects explicit "create <resource>" intent', () => {
     expect(lineDeclaresCreateIntent('please create a new file at foo/bar.ts')).toBe(true);
     expect(lineDeclaresCreateIntent('add new file foo/bar.ts')).toBe(true);
     expect(lineDeclaresCreateIntent('introduce a new module x/y.ts')).toBe(true);
     expect(lineDeclaresCreateIntent('generate a fixture at test/fixture.json')).toBe(true);
+    expect(lineDeclaresCreateIntent('add a component button.tsx')).toBe(true);
+    expect(lineDeclaresCreateIntent('create the directory src/lib')).toBe(true);
+  });
+
+  it('detects bare "new <resource>" without leading verb', () => {
+    expect(lineDeclaresCreateIntent('new file foo/bar.ts')).toBe(true);
+    expect(lineDeclaresCreateIntent('a new component header.tsx')).toBe(true);
+  });
+
+  it('does NOT false-positive on generic "add X" edits (narrow heuristic)', () => {
+    // The original "add" heuristic was too broad: "update apps/x.ts to add
+    // logging" should NOT skip the preflight because the operator is editing
+    // an existing file, not creating a new one. Per CR PR #410 review.
+    expect(lineDeclaresCreateIntent('update apps/console/README.md to add X')).toBe(false);
+    expect(lineDeclaresCreateIntent('add logging to apps/x.ts')).toBe(false);
+    expect(lineDeclaresCreateIntent('add a hover tooltip')).toBe(false);
+    expect(lineDeclaresCreateIntent('add the version chip')).toBe(false);
   });
 
   it('does not false-positive on substrings (address, newsletter)', () => {
@@ -123,9 +140,6 @@ describe('lineDeclaresCreateIntent', () => {
   });
 
   it('returns false on lines without create-shaped verbs', () => {
-    expect(lineDeclaresCreateIntent('update apps/console/README.md to add X')).toBe(true);
-    // Note: 'add' is a create-shaped verb. Test that purely citation lines
-    // without those verbs return false.
     expect(lineDeclaresCreateIntent('see apps/console/README.md for context')).toBe(false);
     expect(lineDeclaresCreateIntent('the file is apps/console/server/index.ts')).toBe(false);
   });
@@ -145,6 +159,19 @@ describe('resolveCitedPath', () => {
   it('throws on empty inputs', () => {
     expect(() => resolveCitedPath('', '/repo')).toThrow(/token/);
     expect(() => resolveCitedPath('foo.ts', '')).toThrow(/repoRoot/);
+  });
+
+  it('rejects tokens that escape repoRoot via ..', () => {
+    // Per CR PR #410: `../outside.md` resolves to a sibling of repoRoot.
+    // Without the escape guard, an external file would pass the existence
+    // check and violate the substrate's repo-scoped validation contract.
+    expect(() => resolveCitedPath('../outside.md', '/repo')).toThrow(/escapes/);
+    expect(() => resolveCitedPath('../../far/outside.md', '/repo')).toThrow(/escapes/);
+  });
+
+  it('allows tokens nested deeply inside repoRoot', () => {
+    // The escape guard must not false-positive on deeply nested paths.
+    expect(() => resolveCitedPath('a/b/c/d/e/f.ts', '/repo')).not.toThrow();
   });
 });
 
@@ -263,6 +290,23 @@ describe('runPreflight', () => {
     expect(result.checked.some(c => c.token === 'apps/console/server/index.ts' && c.status === 'exists')).toBe(true);
   });
 
+  it('treats escape-resolved paths as preflight failures (errCode EESCAPE)', async () => {
+    // Per CR PR #410: a captured token like `../outside.md` must NOT pass
+    // even if the external file exists; the substrate's repo-scoped
+    // validation contract is that cited paths exist AT repo root, not
+    // anywhere on the filesystem.
+    const root = await makeRepoFixture([]);
+    const result = await runPreflight({
+      request: 'Update ../outside.md to reference the dep',
+      repoRoot: root,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.missing).toHaveLength(1);
+    expect(result.missing[0]?.errCode).toBe('EESCAPE');
+    expect(result.missing[0]?.token).toBe('../outside.md');
+  });
+
   it('throws on non-string request', async () => {
     await expect(runPreflight({ request: null as unknown as string, repoRoot: '/r' }))
       .rejects.toThrow(/request/);
@@ -300,6 +344,14 @@ describe('formatPreflightError', () => {
       { token: 'a.md', line: 'a.md', lineNumber: 1, absolute: '/r/a.md', errCode: 'EACCES' },
     ]);
     expect(out).toContain('fs.access error EACCES');
+  });
+
+  it('formats EESCAPE with a substrate-purity-aware message', () => {
+    const out = formatPreflightError([
+      { token: '../outside.md', line: '../outside.md', lineNumber: 1, absolute: '../outside.md', errCode: 'EESCAPE' },
+    ]);
+    expect(out).toContain('../outside.md');
+    expect(out).toContain('escapes repo root');
   });
 
   it('throws on empty missing array (programmer error guard)', () => {

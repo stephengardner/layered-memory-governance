@@ -21,7 +21,7 @@
 // re-fires the original gap. We err toward halting when in doubt.
 
 import { access } from 'node:fs/promises';
-import { resolve as resolvePath } from 'node:path';
+import { resolve as resolvePath, relative as relativePath, isAbsolute, sep as pathSep } from 'node:path';
 
 /**
  * Filesystem-shaped token regex. Captures groups like
@@ -114,25 +114,45 @@ export function isRepoRootBareName(name) {
 }
 
 /**
- * Verb heuristic: when a line in the request body says "create" / "new" /
- * "add" near a path token, the operator is declaring an intent to CREATE
- * that file, not citing an existing one. Skipping the check for that path
- * avoids false-positives on a legitimate "add new file foo/bar.ts" request.
+ * Verb heuristic: when a line in the request body explicitly declares an
+ * intent to create a new file/module/component near a path token, the
+ * operator is declaring intent to CREATE that file, not citing an existing
+ * one. Skipping the check for that path avoids false-positives on a
+ * legitimate "add new file foo/bar.ts" request.
  *
- * Conservative: the check looks for the verbs on the SAME line as the path.
- * Multi-line requests where the verb is two paragraphs above the path will
- * still trigger the preflight; the operator's recourse is --force-paths.
- * Anchoring to the line scope keeps the heuristic local and predictable.
+ * NARROW match shape: the bare verb 'add' is intentionally NOT a sole
+ * trigger -- a request like "update apps/x.ts to add logging" should still
+ * preflight `apps/x.ts` because the verb is editing an existing file, not
+ * declaring a new one. Per CR PR #410 review (2026-05-12), the heuristic
+ * requires either:
+ *   (a) an explicit "new <resource-noun>" phrase (file/module/component/...)
+ *   (b) a "create/add/introduce/generate <new>? <resource-noun>" phrase
+ * Both shapes mean the operator is declaring a CREATE intent, not an edit.
+ *
+ * Resource-noun list is conservative + concrete: only nouns where "add a
+ * <noun>" unambiguously means "create a new <noun>". Generic targets like
+ * "add a feature" or "add tests" are intentionally ambiguous (could be
+ * editing existing test file, could be a new one) and the preflight halts
+ * in that case so the operator either renames the cited path or invokes
+ * --force-paths.
  *
  * Exported for direct unit testing. The caller treats a true return as
  * "skip this path's existence check" rather than "fail the preflight".
  */
+const CREATE_RESOURCE_NOUNS = '(?:file|files|module|modules|component|components|fixture|fixtures|test|tests|doc|docs|document|documents|page|pages|directory|directories|dir|folder|folders|script|scripts|adapter|adapters|helper|helpers)';
+
 export function lineDeclaresCreateIntent(line) {
-  // Word-boundary matched verbs so 'created', 'adding', 'creates' all match,
-  // but 'newsletter', 'address', 'broadcast' (containing 'add' as a substring)
-  // do not. Case-insensitive because operator prose is mixed-case.
-  return /\b(?:create(?:s|d|ing)?|new(?:ly)?|add(?:s|ed|ing)?|introduce(?:s|d|ing)?|generate(?:s|d|ing)?)\b/i
-    .test(line);
+  // Word-boundary matched verbs so 'created', 'adding', 'creates' all
+  // match. The bare `\bnew\s+(?:noun)\b` branch catches "new file foo/bar.ts"
+  // without a leading verb. The
+  // `\b(create|add|introduce|generate)(?:s|d|ing)?\s+(?:a\s+|an\s+)?(?:new\s+)?(noun)\b`
+  // branch catches "add a new file" / "create a fixture" / "introduce module".
+  // Case-insensitive because operator prose is mixed-case.
+  const re = new RegExp(
+    `\\b(?:create|add|introduce|generate)(?:s|d|ing)?\\s+(?:a\\s+|an\\s+|the\\s+)?(?:new\\s+)?${CREATE_RESOURCE_NOUNS}\\b|\\bnew\\s+${CREATE_RESOURCE_NOUNS}\\b`,
+    'i',
+  );
+  return re.test(line);
 }
 
 /**
@@ -199,6 +219,14 @@ export function extractCitedPaths(text) {
  * paths resolve relative to the root as written.
  *
  * Returns the absolute path the existence check will probe.
+ *
+ * Repo-root boundary enforcement: a captured token like `../outside.md`
+ * resolves to a path that escapes `repoRoot`. The preflight's contract is
+ * "cited paths exist AT repo root" -- an external file would pass the
+ * filesystem check but violate the substrate's repo-scoped validation.
+ * Throws when the resolved path escapes the root so the caller surfaces
+ * the violation rather than silently accepting an external file. Per CR
+ * PR #410 review (2026-05-12).
  */
 export function resolveCitedPath(token, repoRoot) {
   if (typeof token !== 'string' || token.length === 0) {
@@ -207,7 +235,16 @@ export function resolveCitedPath(token, repoRoot) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
     throw new Error('resolveCitedPath: repoRoot must be a non-empty string');
   }
-  return resolvePath(repoRoot, token);
+  const absolute = resolvePath(repoRoot, token);
+  const rel = relativePath(resolvePath(repoRoot), absolute);
+  // Empty rel === path equals repoRoot itself (degenerate but legal); any
+  // non-empty rel starting with `..` is an escape. `isAbsolute(rel)` covers
+  // the cross-drive case on Windows where node:path returns an absolute
+  // relative path when the target is on a different drive than repoRoot.
+  if (rel === '..' || rel.startsWith(`..${pathSep}`) || rel.startsWith('../') || isAbsolute(rel)) {
+    throw new Error(`resolveCitedPath: token escapes repoRoot: ${token}`);
+  }
+  return absolute;
 }
 
 /**
@@ -258,15 +295,29 @@ export async function runPreflight(opts) {
   const missing = [];
   const checked = [];
   for (const { token, line, lineNumber } of cited) {
-    // Verb heuristic: when the same line mentions create/new/add, skip the
-    // existence check. The operator is declaring an intent to create the
+    // Verb heuristic: when the same line declares an explicit CREATE intent
+    // (e.g. "add new file foo.ts", "introduce a component bar.tsx"), skip
+    // the existence check. The operator is declaring intent to create the
     // file, not asserting it exists. False-positive bias is on halt-then-
-    // bypass; the heuristic SHOULD be slightly conservative.
+    // bypass; the heuristic is intentionally narrow (requires a resource
+    // noun, not bare verb-adjacency) so generic edits ("add logging to x.ts")
+    // still preflight.
     if (lineDeclaresCreateIntent(line)) {
       checked.push({ token, line, lineNumber, status: 'skipped-create-intent' });
       continue;
     }
-    const absolute = resolveCitedPath(token, repoRoot);
+    // Resolve into absolute path; resolveCitedPath throws if the cited
+    // token escapes repoRoot (e.g. `../outside.md`). Treat the escape as
+    // a missing-path failure with errCode 'EESCAPE' so the operator sees
+    // a structured error instead of an unhandled rejection.
+    let absolute;
+    try {
+      absolute = resolveCitedPath(token, repoRoot);
+    } catch (escapeErr) {
+      const message = escapeErr instanceof Error ? escapeErr.message : String(escapeErr);
+      missing.push({ token, line, lineNumber, absolute: token, errCode: 'EESCAPE', message });
+      continue;
+    }
     try {
       await fsAccess(absolute);
       checked.push({ token, line, lineNumber, status: 'exists', absolute });
@@ -322,9 +373,11 @@ export function formatPreflightError(missing) {
     '[intend] pre-flight FAILED: request body cites the following paths that do not exist at repo root:',
   ];
   for (const m of missing) {
-    lines.push(
-      `  - ${m.token} (line ${m.lineNumber}: ${m.errCode === 'ENOENT' ? 'no such file or directory' : `fs.access error ${m.errCode}`})`,
-    );
+    let detail;
+    if (m.errCode === 'ENOENT') detail = 'no such file or directory';
+    else if (m.errCode === 'EESCAPE') detail = 'cited path escapes repo root (e.g. starts with `..` or is on another drive)';
+    else detail = `fs.access error ${m.errCode}`;
+    lines.push(`  - ${m.token} (line ${m.lineNumber}: ${detail})`);
   }
   lines.push(
     '',
