@@ -668,10 +668,17 @@ export function buildSummary(input: {
       return pieces.join(', ');
     }
     case 'intent-dispatch-failed': {
-      const head = `Pipeline ran ${dur}, dispatched ${input.dispatchedCount} ${input.dispatchedCount === 1 ? 'PR' : 'PRs'}`;
+      // When skipReason is set the dispatch-record's "dispatched" count
+      // is misleading: the runtime invoked the executor but the executor
+      // returned noop (e.g. drafter-emitted-empty-diff per the
+      // code-author-executor silent-skip path). No PR exists. Phrasing
+      // it as "dispatched 1 PR - drafter-emitted-empty-diff" is the
+      // failure mode that lets a green-looking metric mask a no-ship
+      // outcome. Surface the truth: no PR was opened, here is why.
       if (input.skipReason) {
-        return `${head} - ${input.skipReason}`;
+        return `Pipeline ran ${dur}, no PR opened: ${input.skipReason}`;
       }
+      const head = `Pipeline ran ${dur}, dispatched ${input.dispatchedCount} ${input.dispatchedCount === 1 ? 'PR' : 'PRs'}`;
       return `${head} (no merged artifact)`;
     }
     case 'intent-paused': {
