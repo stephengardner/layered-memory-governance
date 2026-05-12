@@ -175,7 +175,7 @@ export function PipelineStateTile() {
         <div className={liveOpsStyles.tileTitleBlock}>
           <h3 className={liveOpsStyles.tileTitle}>Pipeline state</h3>
           <p className={liveOpsStyles.tileSubtitle}>
-            Running, awaiting merge, intent fulfilled
+            Running, awaiting merge, observation stale, intent fulfilled
           </p>
         </div>
       </header>

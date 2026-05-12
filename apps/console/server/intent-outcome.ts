@@ -260,7 +260,11 @@ export function readPrObservationStalenessMs(
 ): number {
   for (const atom of atoms) {
     if (atom.type !== 'directive') continue;
-    if (atom.layer !== undefined && atom.layer !== 'L3') continue;
+    // Strict L3-only: an atom without an explicit `layer === 'L3'`
+    // cannot influence the staleness policy. The framework reader at
+    // canon-policy-cadence.ts requires this so a non-canon-shaped atom
+    // (no layer, or layer=L0/L1) cannot impersonate a policy directive.
+    if (atom.layer !== 'L3') continue;
     if (atom.taint && atom.taint !== 'clean') continue;
     if (atom.superseded_by && atom.superseded_by.length > 0) continue;
     const meta = (atom.metadata ?? {}) as Record<string, unknown>;
