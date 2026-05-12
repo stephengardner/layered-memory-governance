@@ -34,6 +34,7 @@ import {
 } from '../dist/external/github-app/index.js';
 import { createFileHost } from '../dist/adapters/file/index.js';
 import { resolveStateDir } from './lib/resolve-state-dir.mjs';
+import { resolveBotCredsStateDir } from './lib/resolve-bot-creds-state-dir.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STATE_DIR = resolveStateDir(REPO_ROOT);
@@ -116,7 +117,21 @@ async function main() {
   // block it at the boundary so the author splits before push.
   checkPrFileLimitOrExit(ghArgs);
 
-  const store = createCredentialsStore(STATE_DIR);
+  // Walk-up resolution for sub-agent worktrees: when this wrapper is
+  // invoked from a freshly-spawned worktree without its own
+  // `.lag/apps/<role>.json`, look for the creds in the nearest
+  // ancestor `.lag/`. Honors `LAG_STATE_DIR` as an explicit operator
+  // override (walk-up skipped). Indie-floor default is unchanged: a
+  // single-checkout repo with creds at `<repoRoot>/.lag/apps/` hits
+  // on the first candidate and skips the walk.
+  let credsStateDir;
+  try {
+    credsStateDir = resolveBotCredsStateDir(STATE_DIR, role);
+  } catch (err) {
+    console.error(`[gh-as] ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(2);
+  }
+  const store = createCredentialsStore(credsStateDir);
   const loaded = await store.load(role);
   if (loaded === null) {
     console.error(`[gh-as] no credentials for role '${role}'. Run: node bin/lag-actors.js sync`);
