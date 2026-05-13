@@ -155,7 +155,9 @@ Threading: each cross-stage re-prompt atom carries `provenance.derived_from` of 
 - `dev-indie-floor-org-ceiling` (indie default + org dials)
 - `dev-governance-before-autonomy` (deterministic re-prompt rules first, then raise the autonomy dial)
 - `inv-kill-switch-first` (re-prompt loops still respect STOP)
-- The "agent-to-agent deliberation preserves context" pattern (operator-stated 2026-05-12 in `feedback_agent_to_agent_deliberation_preserves_context.md` memory; not yet a canon directive). Phase 2 is the substrate mechanism that supports this pattern; if and when the operator promotes the pattern to L3 canon, this spec is the implementation reference. Until then, treat this as a local design choice that aligns with the memory-recorded preference rather than a load-bearing canon citation.
+## Related (non-canon)
+
+Phase 2 implements an operator-stated preference (recorded 2026-05-12 as an auto-memory entry, not in canon.md): when a pipeline stage fails, the agents handling adjacent stages should converse back-and-forth with the FULL thread context preserved across turns rather than starting fresh. This spec is the substrate mechanism that supports that preference; promoting it to L3 canon is the operator's call via `/decide` and is not required for Phase 2 to land. The mechanism stands on the canon citations above; the operator preference is supporting context.
 
 ## Out of scope
 
