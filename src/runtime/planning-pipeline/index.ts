@@ -110,3 +110,10 @@ export {
   HARDCODED_DEFAULT as PLAN_STAGE_VALIDATOR_RETRY_HARDCODED_DEFAULT,
   readPlanStageValidatorRetryPolicy,
 } from './plan-stage-validator-retry-config.js';
+
+export {
+  DERIVE_FROM_PIPELINE_COMPOSITION,
+  HARDCODED_DEFAULT as CROSS_STAGE_REPROMPT_HARDCODED_DEFAULT,
+  readCrossStageRePromptPolicy,
+} from './cross-stage-reprompt-config.js';
+export type { CrossStageRePromptConfig } from './cross-stage-reprompt-config.js';
