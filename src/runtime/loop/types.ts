@@ -111,6 +111,12 @@ export const DEFAULT_HALF_LIVES: Readonly<Record<AtomType, number>> = Object.fre
   'pipeline-audit-finding': 365 * 24 * 60 * 60 * 1000,   // ~1 year
   'pipeline-failed': 365 * 24 * 60 * 60 * 1000,          // ~1 year
   'pipeline-resume': 365 * 24 * 60 * 60 * 1000,          // ~1 year
+  // Cross-stage re-prompt visibility atoms carry the same long
+  // half-life as the rest of the pipeline subgraph: they are audit
+  // records of the deliberation thread between stages and are
+  // bounded operationally by the pipeline reaper's cascade rather
+  // than the decay axis.
+  'pipeline-cross-stage-reprompt': 365 * 24 * 60 * 60 * 1000,  // ~1 year
   // Pipeline-abandoned atoms are operator-initiated terminal records
   // for a pipeline run; same retention shape as the pipeline-failed
   // and pipeline-resume audit atoms (long half-life so the audit

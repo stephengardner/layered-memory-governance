@@ -142,6 +142,12 @@ const TYPE_HEADINGS: Readonly<Record<AtomType, string>> = {
   'pipeline-audit-finding': 'Pipeline Audit Findings',
   'pipeline-failed': 'Pipeline Failures',
   'pipeline-resume': 'Pipeline Resumes',
+  // Cross-stage re-prompt visibility records emitted by the planning
+  // pipeline runner when an auditor finding directs the runner to
+  // re-invoke an upstream stage. L0 audit; never reaches the rendered
+  // canon target since the applier filters to L3. Heading exists for
+  // deterministic ordering when a debug tool dumps non-L3 atoms.
+  'pipeline-cross-stage-reprompt': 'Pipeline Cross-Stage Reprompts',
   // Operator-initiated terminal record; same posture as pipeline-failed
   // (L0 audit, never reaches the rendered canon target since the
   // applier filters to L3). Heading exists for deterministic ordering
