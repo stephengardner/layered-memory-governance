@@ -62,7 +62,7 @@ Default behavior unchanged: omit `reprompt_target` -> intra-stage re-prompt (cur
    - Jump back to the target upstream stage.
    - The upstream stage's StageInput carries `priorAuditFindings` populated with the cross-stage findings.
    - From the upstream stage forward, run every stage between target and current stage again (fresh outputs).
-   - All re-runs respect the unified `attempt` counter the runner already maintains; max(intra-stage cap, cross-stage cap) is the total budget.
+   - All re-runs respect the runner's unified pipeline-attempt counter. The counter is shared across intra-stage re-prompts, cross-stage re-prompts, and validator retries: `total_attempts_remaining = max(intra-stage cap, cross-stage cap, validator cap)` minus attempts already consumed regardless of which mechanism triggered them. With the indie default `max_attempts=2` set on every mechanism, the pipeline budget is 2 total attempts per stage (not 6); a drafter-refusal that fires the cross-stage path consumes 1 of the same 2 attempts an intra-stage retry would have consumed.
 
 3. New canon policy `pol-cross-stage-reprompt-default`:
    ```json
@@ -72,10 +72,12 @@ Default behavior unchanged: omit `reprompt_target` -> intra-stage re-prompt (cur
      "kind": "cross-stage-reprompt",
      "max_attempts": 2,
      "severities_to_reprompt": ["critical"],
-     "allowed_targets": ["brainstorm-stage", "spec-stage", "plan-stage"]
+     "allowed_targets": "derive-from-pipeline-composition"
    }
    ```
-   Indie default: max 2 cross-stage re-prompts per pipeline run. `allowed_targets` lists stages that can be re-prompted from downstream; review-stage and dispatch-stage are NOT allowed targets (they're audit-only / terminal).
+   `max_attempts=2` shares the unified attempt counter described above. `severities_to_reprompt` matches the indie floor for the auditor-feedback policy.
+
+   `allowed_targets` is DERIVED at runtime from the active pipeline composition rather than hardcoded so the spec stays valid for any stage shape. The runner exposes `pipelineComposition.allowedReprompTargets()`: every stage in the composition EXCEPT the terminal stage (dispatch-stage in the 5-stage default) and any stage flagged as audit-only (review-stage in the 5-stage default; the `audit_only: true` flag on the PlanningStage interface is the seam) is an allowed target. Org-ceiling deployments that compose additional stages (legal-review, perf-benchmark) automatically get them as re-prompt targets. The string literal `"derive-from-pipeline-composition"` is the policy-atom signal that the runner should derive at startup; deployments that want to explicitly narrow the set write a higher-priority atom with a literal `string[]` of stage names.
 
 ### Stage-adapter change: dispatch finding scoping
 
@@ -107,7 +109,7 @@ Today, `auditReview` (in `examples/planning-stages/review/index.ts`) emits findi
 
 ## Failure modes + guards
 
-1. **Cycle**: A finding from plan-stage targets brainstorm-stage; brainstorm emits revised output; plan-stage runs again; plan-stage emits ANOTHER critical finding targeting brainstorm again. Guard: unified `attempt` counter caps the total re-runs per pipeline. The cross-stage `max_attempts=2` plus the intra-stage `max_attempts=2` plus the validator-retry `max_attempts=2` are all CUMULATIVE through the runner's existing attempt-counter machinery. The pipeline cannot loop more than max(all three) total times regardless of which re-prompt path fires.
+1. **Cycle**: A finding from plan-stage targets brainstorm-stage; brainstorm emits revised output; plan-stage runs again; plan-stage emits ANOTHER critical finding targeting brainstorm again. Guard: the runner's unified pipeline-attempt counter (see Mechanism section) caps total re-runs at `max(intra-stage cap, cross-stage cap, validator cap)`. With indie defaults all three caps equal 2, so the cycle terminates at 2 total iterations regardless of which mechanism fired. The pipeline cannot exceed `max(all three)` total iterations even if every mechanism contributes findings.
 
 2. **Forward target**: A finding from plan-stage targets dispatch-stage (downstream). Reject at the runner: dispatch is downstream, not upstream; targeting it is a config error. Emit a runner-level critical finding so the operator sees the misconfiguration.
 
@@ -117,13 +119,20 @@ Today, `auditReview` (in `examples/planning-stages/review/index.ts`) emits findi
 
 5. **STOP sentinel**: Each stage iteration checks the kill-switch at the top of its loop, per `inv-kill-switch-first`. Cross-stage re-prompt does NOT bypass the STOP check; the runner re-enters the stage loop normally.
 
-6. **Citation drift across re-runs**: When plan-stage re-runs after a dispatch-stage finding, the verified-cited-atom-id set is re-derived from the upstream brainstorm + spec atoms. If those atoms changed between the original plan-stage run and the re-run (they shouldn't, since brainstorm/spec ran before plan in the original pass), the runner uses the LATEST seed atom set. This matches today's behavior for intra-stage re-prompt.
+6. **Citation drift across re-runs**: Citation drift is EXPECTED for cross-stage re-prompts because the re-prompt mechanism is DESIGNED to produce new upstream output. When a finding from plan-stage targets brainstorm-stage with feedback, brainstorm-stage re-runs WITH `priorAuditFindings` populated and emits a brainstorm atom that differs from the original. The downstream stages then need to re-resolve their citations against the new upstream atom set.
+
+   Resolution policy (RFC-style; option A is the indie-floor default):
+   - **(A) Invalidate-and-re-derive (default)**: When a cross-stage re-prompt fires, the runner walks every stage between the re-prompt target (inclusive) and the original auditing stage (exclusive). For each stage in the walk, the runner discards the prior `verifiedCitedAtomIds` set computed from upstream and re-derives it from the LATEST upstream atoms in scope (those produced by the most recent re-run). The new plan-stage run gets a `verifiedCitedAtomIds` set that reflects the new brainstorm. Plan-stage emits cited_atom_ids grounded in the new set; any prior cited_atom_ids that no longer exist in the new set are dropped (since they referenced the prior, now-superseded brainstorm atoms). The dispatch-stage audit then walks the new plan's citations against the new verified set; a fabricated citation in the new plan still emits a critical finding (existing behavior).
+   - **(B) Deterministic remapping with fallback (deferred to a follow-up spec)**: An optional substrate layer maps prior atom-ids to new ones when content is structurally similar (e.g. same purpose, same target_path). Not in scope for v1.
+   - **(C) Preserve old atom-id set**: Rejected as a default because it would let plan-stage cite atoms the new brainstorm did not produce, creating audit-trail confusion.
+
+   For the v1 implementation, option (A) is the contract. The runner annotates each re-run with metadata `verified_cited_atom_ids_origin: 'derived-from-rerun-<target-stage>-attempt-<n>'` so the Console projection and the audit trail show explicitly which run's upstream the citations were resolved against.
 
 ## Indie floor vs org ceiling
 
-- **Indie floor**: ships `pol-cross-stage-reprompt-default` with `max_attempts=2`, `severities_to_reprompt=['critical']`, `allowed_targets=['brainstorm-stage','spec-stage','plan-stage']`. A solo developer sees a drafter-refusal trigger one re-plan attempt; if the second drafter run also refuses, the pipeline halts and surfaces both refusal notes for HIL. Cost-bound by the existing per-stage cap.
+- **Indie floor**: ships `pol-cross-stage-reprompt-default` with `max_attempts=2`, `severities_to_reprompt=['critical']`, `allowed_targets='derive-from-pipeline-composition'` (resolves to brainstorm/spec/plan in the 5-stage default; review and dispatch excluded because they carry `audit_only:true` and terminal flags respectively). A solo developer sees a drafter-refusal trigger one re-plan attempt; if the second drafter run also refuses, the pipeline halts and surfaces both refusal notes for HIL. Cost-bound by the existing per-stage cap.
 
-- **Org ceiling**: registers a higher-priority `pol-cross-stage-reprompt-<scope>` atom to raise `max_attempts` to 3 or 4, OR narrow `allowed_targets` (e.g. drop brainstorm-stage to prevent expensive re-survey). Substrate is one mechanism; deployments tune via canon edits, no framework release needed.
+- **Org ceiling**: registers a higher-priority `pol-cross-stage-reprompt-<scope>` atom to raise `max_attempts` (still bounded by the unified counter described in Mechanism), OR narrow `allowed_targets` to a literal `string[]` (e.g. drop brainstorm-stage to prevent expensive re-survey), OR widen `severities_to_reprompt` to include 'major'. Substrate is one mechanism; deployments tune via canon edits, no framework release needed.
 
 ## Visibility (operator north-star)
 
@@ -146,7 +155,7 @@ Threading: each cross-stage re-prompt atom carries `provenance.derived_from` of 
 - `dev-indie-floor-org-ceiling` (indie default + org dials)
 - `dev-governance-before-autonomy` (deterministic re-prompt rules first, then raise the autonomy dial)
 - `inv-kill-switch-first` (re-prompt loops still respect STOP)
-- `dev-actor-to-actor-deliberation-preserves-context` (memory entry; this spec makes the agent-to-agent thread the operator asked for)
+- The "agent-to-agent deliberation preserves context" pattern (operator-stated 2026-05-12 in `feedback_agent_to_agent_deliberation_preserves_context.md` memory; not yet a canon directive). Phase 2 is the substrate mechanism that supports this pattern; if and when the operator promotes the pattern to L3 canon, this spec is the implementation reference. Until then, treat this as a local design choice that aligns with the memory-recorded preference rather than a load-bearing canon citation.
 
 ## Out of scope
 
@@ -171,7 +180,7 @@ The implementation lives in a follow-up plan document:
 
 - **PR6**: E2E Playwright test: file an intent likely to be refused (drafter-refusal-prone scope), watch /pipelines/<id> render the cross-stage deliberation, confirm pipeline reaches dispatched=1 on the second attempt.
 
-Each PR is independent of the next at the substrate seam level; implementation can stop mid-arc and the codebase stays compileable.
+Each PR is independently TESTABLE via unit tests, but full integration follows a dependency chain: PR1 (schema additive change) -> PR2 (canon policy + reader) -> PR3 (runner branching + unified attempt counter) -> PR4 (auditDispatch sets reprompt_target on drafter-refusal findings, depends on PR1 + PR3) -> PR5 (Console rendering, depends on PR3 emitting the cross-stage-reprompt atom) -> PR6 (E2E test, depends on PR1-PR5 integrated). The codebase REMAINS COMPILEABLE at every PR boundary: PR1's additive optional field does not break existing AuditFinding consumers; PR3's runner change ships behind a feature gate that defaults to off until PR4's adapter sets the new field; PR5 is a pure UI addition. Stopping mid-arc leaves a working system; full visibility-of-handoffs only lands when PR5 ships.
 
 ## Operator-pre-authorization
 
