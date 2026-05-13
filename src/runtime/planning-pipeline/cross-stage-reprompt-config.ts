@@ -58,7 +58,7 @@ export interface CrossStageRePromptConfig {
    * in a single run. Shares the runner's unified attempt counter with
    * the intra-stage re-prompt cap and the validator-retry cap: total
    * pipeline iterations per stage = max(all three caps). With the
-   * indie default of 2 on each, the pipeline budget is 2 total
+   * default of 2 on each cap, the pipeline budget is 2 total
    * attempts per stage regardless of which mechanism fires.
    */
   readonly max_attempts: number;
