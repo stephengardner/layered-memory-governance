@@ -88,6 +88,20 @@ import {
 const MAX_REASON = 4096;
 
 /**
+ * Cap on the drafter-notes prefix embedded in a drafter-refusal audit
+ * finding's message. The drafter's verbatim notes can run multiple KB
+ * (the dogfeed-12 example was ~3.5KB) and we do not want a single
+ * audit finding to dominate the runner's pipeline-audit-finding atom
+ * payload. The full notes remain on the upstream code-author-invoked
+ * observation atom (cited via cited_atom_ids) so an operator with a
+ * truncated message can read the full context one click away.
+ */
+const MAX_DRAFTER_NOTES_PREFIX = 1024;
+
+/** Page size for the host.atoms.query walk in the drafter-refusal audit. */
+const DRAFTER_REFUSAL_QUERY_PAGE_SIZE = 200;
+
+/**
  * Reject any directive-markup token an LLM (or a malformed upstream
  * review-stage) might smuggle into the gating reason to re-prompt a
  * downstream consumer. Conservative: a literal occurrence of the
@@ -139,30 +153,161 @@ export function buildPipelineScopedPlanFilter(
 }
 
 /**
- * Audit a dispatch-record payload. Emits a critical finding when
- * dispatch_status is 'gated' so the runner halts; returns no findings
- * for 'completed'. Extracted as a top-level export so the agentic
- * dispatch-stage adapter can re-use the same audit logic (per the
- * dev-extract-at-n-2 canon dedup floor; the closure form duplicated
- * across single-shot + agentic would drift).
+ * Walk the atom store for code-author-invoked observation atoms whose
+ * executor terminated as a silent-skip no-op with the
+ * 'drafter-emitted-empty-diff' reason AND which trace back to the
+ * supplied pipeline via the upstream plan atom's
+ * provenance.derived_from chain.
+ *
+ * Pipeline scoping: an observation atom is in-scope when its
+ * `metadata.plan_id` resolves to a plan atom whose
+ * provenance.derived_from chain includes the pipelineId. Walks one
+ * level (observation -> plan -> pipeline) which matches how the
+ * drafter wires the chain today; deeper transitive chains are out of
+ * scope here and would need a separate substrate change.
+ *
+ * Performance: pages the host.atoms.query for `type=['observation']`
+ * to bound memory at a fixed DRAFTER_REFUSAL_QUERY_PAGE_SIZE; the
+ * audit hot path runs once per dispatch-stage tick (terminal stage),
+ * not every pipeline tick. The total observation count is bounded by
+ * the number of code-author dispatches the deployment has ever run,
+ * which on the indie-floor is small. Org-ceiling deployments that
+ * want a tighter scan-cost can swap the AtomStore with a typed-index
+ * adapter; the audit logic is unchanged.
+ *
+ * Returns the list of in-scope refusal observations + their plan ids
+ * so the caller can mint one AuditFinding per refusal.
+ */
+async function findDrafterRefusalsForPipeline(
+  host: StageContext['host'],
+  pipelineId: AtomId,
+): Promise<ReadonlyArray<{ observation: Atom; planId: AtomId }>> {
+  const refusals: Array<{ observation: Atom; planId: AtomId }> = [];
+  let cursor: string | undefined = undefined;
+  // Bound the walk: terminate when the AtomStore reports nextCursor
+  // is null (no more pages). The page count is also bounded by the
+  // total observation atom count, which on the indie floor is small.
+  // The do/while shape keeps the first-page case explicit.
+  do {
+    const page = await host.atoms.query(
+      { type: ['observation'] },
+      DRAFTER_REFUSAL_QUERY_PAGE_SIZE,
+      cursor,
+    );
+    for (const atom of page.atoms) {
+      const meta = atom.metadata as Record<string, unknown> | undefined;
+      if (meta === undefined) continue;
+      if (meta['kind'] !== 'code-author-invoked') continue;
+      const executorResult = meta['executor_result'] as
+        | Record<string, unknown>
+        | undefined;
+      if (executorResult === undefined) continue;
+      if (executorResult['kind'] !== 'noop') continue;
+      if (executorResult['reason'] !== 'drafter-emitted-empty-diff') continue;
+
+      // Pipeline scoping: resolve plan_id -> plan atom, check that
+      // the plan's provenance.derived_from chain includes the
+      // current pipelineId. Drop the observation when either step
+      // fails (missing plan, plan derived from a different pipeline).
+      const planIdRaw = meta['plan_id'];
+      if (typeof planIdRaw !== 'string') continue;
+      const planId = planIdRaw as AtomId;
+      const plan = await host.atoms.get(planId);
+      if (plan === null) continue;
+      const derivedFrom = plan.provenance?.derived_from ?? [];
+      let inScope = false;
+      for (const id of derivedFrom) {
+        if (String(id) === String(pipelineId)) {
+          inScope = true;
+          break;
+        }
+      }
+      if (!inScope) continue;
+      refusals.push({ observation: atom, planId });
+    }
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return refusals;
+}
+
+/**
+ * Build the per-refusal AuditFinding shape. Extracted so the
+ * notes-truncation rule is centralized; future audit categories that
+ * want the same prefix-truncation pattern have a single seam to
+ * inherit (currently N=1 + a documented future seam, so not yet
+ * extracted to a shared helper).
+ */
+function buildDrafterRefusalFinding(
+  observation: Atom,
+  planId: AtomId,
+): AuditFinding {
+  const meta = observation.metadata as Record<string, unknown>;
+  const executorResult = meta['executor_result'] as Record<string, unknown>;
+  const reason = String(executorResult['reason'] ?? 'drafter-emitted-empty-diff');
+  const notesRaw = executorResult['notes'];
+  const notes = typeof notesRaw === 'string' ? notesRaw : '';
+  const notesPrefix = notes.slice(0, MAX_DRAFTER_NOTES_PREFIX);
+  const truncated = notes.length > MAX_DRAFTER_NOTES_PREFIX;
+  const message =
+    `Drafter refused plan ${planId}: ${reason}. Notes: ${notesPrefix}`
+    + (truncated ? '... (truncated)' : '');
+  return {
+    severity: 'critical' as const,
+    category: 'dispatch-drafter-refusal',
+    message,
+    cited_atom_ids: [observation.id, planId] as ReadonlyArray<AtomId>,
+    cited_paths: [],
+  };
+}
+
+/**
+ * Audit a dispatch-record payload. Emits findings on two paths:
+ *
+ *   (1) A critical 'dispatch-gated' finding when dispatch_status is
+ *       'gated'. The runner halts on critical findings; gated
+ *       dispatch means the upstream review-report was not clean and
+ *       no operator-acked pipeline-resume atom was present.
+ *
+ *   (2) A critical 'dispatch-drafter-refusal' finding per
+ *       pipeline-scoped code-author-invoked observation whose
+ *       executor terminated as a silent-skip no-op with
+ *       reason='drafter-emitted-empty-diff'. Without this finding the
+ *       pipeline shows as "succeeded" on /pipelines/<id> when the
+ *       drafter actually refused to ship any diff; operator-stated
+ *       visibility requirement (2026-05-12).
+ *
+ * Extracted as a top-level export so the agentic dispatch-stage
+ * adapter can re-use the same audit logic (per the dev-extract-at-n-2
+ * canon dedup floor; the closure form duplicated across single-shot
+ * + agentic would drift).
  */
 export async function auditDispatch(
   output: DispatchRecordPayload,
-  _ctx: StageContext,
+  ctx: StageContext,
 ): Promise<ReadonlyArray<AuditFinding>> {
-  if (output.dispatch_status !== 'gated') return [];
-  return [
-    {
-      severity: 'critical' as const,
-      category: 'dispatch-gated',
-      message:
-        output.gating_reason
-        ?? 'Dispatch stage gated; upstream review-report is not clean and '
-          + 'no operator-acked pipeline-resume atom is present.',
-      cited_atom_ids: [] as ReadonlyArray<AtomId>,
-      cited_paths: [],
-    },
-  ];
+  if (output.dispatch_status === 'gated') {
+    return [
+      {
+        severity: 'critical' as const,
+        category: 'dispatch-gated',
+        message:
+          output.gating_reason
+          ?? 'Dispatch stage gated; upstream review-report is not clean and '
+            + 'no operator-acked pipeline-resume atom is present.',
+        cited_atom_ids: [] as ReadonlyArray<AtomId>,
+        cited_paths: [],
+      },
+    ];
+  }
+
+  // dispatch_status === 'completed'. Walk for drafter-refusal
+  // observations; the pipeline runner halts on the resulting critical
+  // findings so /pipelines/<id> surfaces the refusal instead of
+  // misreporting the pipeline as succeeded.
+  const refusals = await findDrafterRefusalsForPipeline(ctx.host, ctx.pipelineId);
+  return refusals.map(({ observation, planId }) =>
+    buildDrafterRefusalFinding(observation, planId),
+  );
 }
 
 /**
