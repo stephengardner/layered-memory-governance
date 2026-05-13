@@ -1,24 +1,19 @@
 /**
  * Cross-stage re-prompt canon-policy reader.
  *
- * Mirrors the shape of `./auditor-feedback-reprompt-config.ts` so the
- * two tunable substrate knobs (intra-stage re-prompt, cross-stage re-
- * prompt) reuse one read pattern. The dial -- HOW MANY cross-stage
- * re-prompts the pipeline may issue, WHICH severities trigger them,
- * and WHICH upstream stages are valid targets -- belongs in canon,
- * not constants. Lifting it from a hardcoded floor to a policy atom
- * lets deployments tune the cadence at scope boundaries without a
- * framework release.
+ * Defines three tunable knobs for cross-stage re-prompts: how many
+ * the pipeline may issue, which finding severities trigger them, and
+ * which upstream stages are valid targets. Mirrors the shape of
+ * `./auditor-feedback-reprompt-config.ts` so the two re-prompt knobs
+ * reuse one read pattern.
  *
- * Substrate purity: the reader is mechanism-only. It scans canon
- * directive atoms for
+ * The reader scans canon directive atoms for
  * `metadata.policy.subject === 'cross-stage-reprompt-default'`,
- * matching the L3-only read shape of `readAuditorFeedbackRePromptPolicy`
- * so future maintainers see one pattern, not two.
+ * matching the L3-only read shape of `readAuditorFeedbackRePromptPolicy`.
  *
  * Resolution chain at the call site (runner's audit block):
- *   1. canon policy atom (this reader): preferred, deployment-tunable
- *   2. hardcoded default (HARDCODED_DEFAULT below): indie-floor floor
+ *   1. canon policy atom (this reader): preferred path
+ *   2. hardcoded default (HARDCODED_DEFAULT below): baseline fallback
  *
  * Loud-fail-recoverable at the layer boundary: when a policy atom
  * EXISTS but its payload is malformed, the reader logs a warning to
@@ -87,14 +82,14 @@ export interface CrossStageRePromptConfig {
 }
 
 /**
- * Hardcoded floor used when no canon atom resolves. Matches the
- * spec section 'Indie floor vs org ceiling': at most one cross-stage
- * re-prompt (max_attempts=2 means attempt 1 + attempt 2), triggered
- * only on a critical finding, with the allowed-targets set derived
- * from the active pipeline composition.
+ * Hardcoded fallback used when no canon atom resolves. Baseline
+ * behavior: at most one cross-stage re-prompt (max_attempts=2 means
+ * attempt 1 + attempt 2), triggered only on a critical finding, with
+ * the allowed-targets set derived from the active pipeline
+ * composition.
  *
  * Exported so the bootstrap script (and any test that wants to assert
- * the seeded canon matches the hardcoded floor) reads a single
+ * the seeded canon matches the hardcoded fallback) reads a single
  * constant rather than duplicating the numbers.
  */
 export const HARDCODED_DEFAULT: CrossStageRePromptConfig = {
