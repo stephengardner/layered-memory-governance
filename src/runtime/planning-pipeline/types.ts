@@ -167,13 +167,10 @@ export interface AuditFinding {
    * When omitted, undefined, or equal to the auditing stage's own name,
    * the existing intra-stage re-prompt behavior applies.
    *
-   * Phase 2 of the cross-stage deliberation spec
-   * (docs/superpowers/specs/2026-05-12-cross-stage-reprompt-deliberation-design.md):
-   * this field is additive and back-compat. Stage adapters that omit
-   * reprompt_target observe identical behavior to before; adapters that
-   * set it opt into the cross-stage re-prompt path. Runner machinery
-   * for the cross-stage routing ships in subsequent PRs of the same
-   * spec arc; this PR only widens the type.
+   * This field is additive and back-compatible. Stage adapters that
+   * omit `reprompt_target` preserve existing behavior; adapters that
+   * set it opt into target-directed re-prompt semantics when supported
+   * by the runner.
    */
   readonly reprompt_target?: string;
 }
