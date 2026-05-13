@@ -392,6 +392,62 @@ describe('auditDispatch - drafter-refusal finding', () => {
     expect(findings.length).toBe(0);
   });
 
+  it('skips observations whose plan_id resolves to a non-plan atom (type guard)', async () => {
+    const host = createMemoryHost();
+    // Seed an atom under PLAN_ID whose `type` is NOT 'plan'. The
+    // observation references it via plan_id; without the type guard
+    // the audit would walk provenance on a non-plan artifact and
+    // emit a false refusal finding.
+    const nonPlan: Atom = {
+      schema_version: 1,
+      id: PLAN_ID,
+      content: 'unrelated observation that happens to share an id',
+      type: 'observation',
+      layer: 'L1',
+      provenance: {
+        kind: 'agent-observed',
+        source: { agent_id: 'cto-actor' },
+        derived_from: [PIPELINE_ID],
+      },
+      confidence: 0.9,
+      created_at: '2026-05-12T22:00:00.000Z' as Time,
+      last_reinforced_at: '2026-05-12T22:00:00.000Z' as Time,
+      expires_at: null,
+      supersedes: [],
+      superseded_by: [],
+      scope: 'project',
+      signals: {
+        agrees_with: [],
+        conflicts_with: [],
+        validation_status: 'unchecked',
+        last_validated_at: null,
+      },
+      principal_id: 'cto-actor' as PrincipalId,
+      taint: 'clean',
+      metadata: {},
+    };
+    await host.atoms.put(nonPlan);
+    await seedDrafterRefusalObservation(
+      host,
+      OBSERVATION_ID,
+      PLAN_ID,
+      'notes that should be ignored because plan_id resolves to a non-plan atom',
+    );
+
+    const findings = await auditDispatch(
+      {
+        dispatch_status: 'completed',
+        scanned: 1,
+        dispatched: 1,
+        failed: 0,
+        cost_usd: 0,
+      },
+      ctx(host),
+    );
+
+    expect(findings.length).toBe(0);
+  });
+
   it('emits ONE finding per drafter-refusal observation when multiple exist for the same pipeline', async () => {
     const host = createMemoryHost();
     const planAId = 'plan-refusal-A' as AtomId;

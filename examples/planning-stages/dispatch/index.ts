@@ -214,6 +214,14 @@ async function findDrafterRefusalsForPipeline(
       const planId = planIdRaw as AtomId;
       const plan = await host.atoms.get(planId);
       if (plan === null) continue;
+      // Type guard: a non-plan atom with matching provenance must not
+      // produce a false refusal finding. The drafter writes plan atoms
+      // upstream and observation atoms reference them via plan_id, but
+      // an attacker (or a future code path) could land an atom of any
+      // type under that id. Skip non-plan atoms before reading
+      // provenance so the audit cannot be tricked into halting the
+      // pipeline on the wrong artifact.
+      if (plan.type !== 'plan') continue;
       const derivedFrom = plan.provenance?.derived_from ?? [];
       let inScope = false;
       for (const id of derivedFrom) {
