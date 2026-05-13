@@ -159,6 +159,23 @@ export interface AuditFinding {
   readonly message: string;
   readonly cited_atom_ids: ReadonlyArray<AtomId>;
   readonly cited_paths: ReadonlyArray<string>;
+  /**
+   * Optional re-prompt target stage name. When set to an upstream stage
+   * name (any stage that ran earlier in the pipeline composition), the
+   * pipeline runner re-invokes THAT stage with this finding folded into
+   * its priorAuditFindings instead of re-running the auditing stage.
+   * When omitted, undefined, or equal to the auditing stage's own name,
+   * the existing intra-stage re-prompt behavior applies.
+   *
+   * Phase 2 of the cross-stage deliberation spec
+   * (docs/superpowers/specs/2026-05-12-cross-stage-reprompt-deliberation-design.md):
+   * this field is additive and back-compat. Stage adapters that omit
+   * reprompt_target observe identical behavior to before; adapters that
+   * set it opt into the cross-stage re-prompt path. Runner machinery
+   * for the cross-stage routing ships in subsequent PRs of the same
+   * spec arc; this PR only widens the type.
+   */
+  readonly reprompt_target?: string;
 }
 
 export interface StageContext {
