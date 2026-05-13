@@ -159,6 +159,20 @@ export interface AuditFinding {
   readonly message: string;
   readonly cited_atom_ids: ReadonlyArray<AtomId>;
   readonly cited_paths: ReadonlyArray<string>;
+  /**
+   * Optional re-prompt target stage name. When set to an upstream stage
+   * name (any stage that ran earlier in the pipeline composition), the
+   * pipeline runner re-invokes THAT stage with this finding folded into
+   * its priorAuditFindings instead of re-running the auditing stage.
+   * When omitted, undefined, or equal to the auditing stage's own name,
+   * the existing intra-stage re-prompt behavior applies.
+   *
+   * This field is additive and back-compatible. Stage adapters that
+   * omit `reprompt_target` preserve existing behavior; adapters that
+   * set it opt into target-directed re-prompt semantics when supported
+   * by the runner.
+   */
+  readonly reprompt_target?: string;
 }
 
 export interface StageContext {
