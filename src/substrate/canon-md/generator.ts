@@ -69,6 +69,7 @@ const TYPE_ORDER: ReadonlyArray<AtomType> = [
   'pipeline-audit-finding',
   'pipeline-failed',
   'pipeline-resume',
+  'pipeline-cross-stage-reprompt',
   // Operator-initiated terminal record; positioned alongside the
   // other pipeline lifecycle atoms so the deterministic-ordering
   // guarantee covers it when a debug tooling path explicitly dumps

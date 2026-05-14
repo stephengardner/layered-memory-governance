@@ -870,6 +870,22 @@ export function mkPipelineCrossStageRepromptAtom(
       'mkPipelineCrossStageRepromptAtom: sourceRoots must be non-empty (provenance directive)',
     );
   }
+  if (!input.sourceRoots.includes(input.pipelineId)) {
+    throw new Error(
+      'mkPipelineCrossStageRepromptAtom: sourceRoots must include pipelineId '
+        + 'so the provenance chain stays attached to the pipeline subgraph',
+    );
+  }
+  if (input.finding.cited_atom_ids.length > MAX_CITED_LIST) {
+    throw new Error(
+      `mkPipelineCrossStageRepromptAtom: finding.cited_atom_ids capped at ${MAX_CITED_LIST}`,
+    );
+  }
+  if (input.finding.cited_paths.length > MAX_CITED_LIST) {
+    throw new Error(
+      `mkPipelineCrossStageRepromptAtom: finding.cited_paths capped at ${MAX_CITED_LIST}`,
+    );
+  }
   // Bound the message to keep atom storage bounded. Truncate with an
   // explicit marker so the trim is visible to audit consumers rather
   // than silently disappearing.

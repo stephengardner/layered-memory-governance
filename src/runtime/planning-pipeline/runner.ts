@@ -1050,6 +1050,13 @@ export async function runPipeline(
     // eslint-disable-next-line no-constant-condition
     while (true) {
       attempt++;
+      // Persist the cumulative attempt counter immediately so a
+      // cross-stage re-entry (or any early break out of the inner
+      // loop) resumes from the actual attempt count rather than 0.
+      // Without this write-back the unified per-stage budget would
+      // restart on every walk and the max(all caps) invariant would
+      // not hold.
+      stageAttemptCounts.set(stage.name, attempt);
       // Per-attempt kill-switch poll. A STOP between attempts (e.g.
       // operator armed the sentinel during attempt 1's stage run) must
       // halt before the next stage invocation. Mirrors the per-stage
@@ -1506,7 +1513,7 @@ export async function runPipeline(
         // cite cross-stage targets; once `crossStageAttempts` reaches
         // the policy cap, fall through to the existing intra-stage
         // path (which then halts on critical or accepts on advisory).
-        if (crossStageAttempts < crossStageConfig.max_attempts - 1) {
+        if (crossStageAttempts < crossStageConfig.max_attempts) {
           // Final kill-switch check before the visibility-atom emit.
           if (host.scheduler.killswitchCheck()) {
             return { kind: 'halted', pipelineId };

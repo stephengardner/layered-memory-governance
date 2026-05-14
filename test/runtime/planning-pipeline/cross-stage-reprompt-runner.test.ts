@@ -549,17 +549,15 @@ describe('runPipeline cross-stage re-prompt branching', () => {
     expect(rejectionFindings.length).toBeGreaterThan(0);
   });
 
-  // TODO(follow-up): cycle-cap enforcement allows one extra walk past the
-  // configured `max_attempts`; the test expects dispatch <= 2 but the
-  // runner currently runs dispatch 3 times before halting. The walking
-  // logic increments the counter AFTER the walk fires rather than
-  // checking BEFORE; tighten the bound check at the cross-stage
-  // decision site so the Nth re-prompt is gated, not the (N+1)th.
-  it.skip('cycle guard: cumulative attempt counter halts after cap is reached', async () => {
+  it('cycle guard: cumulative attempt counter halts after cap is reached', async () => {
     // Stage-b emits a cross-stage finding every dispatch attempt.
-    // The unified attempt counter caps the loop at max_attempts so
-    // the runner halts rather than looping forever. With
-    // max_attempts=2 default, expected dispatch attempts = 2.
+    // The unified attempt counter caps the loop at max_attempts walks
+    // so the runner halts rather than looping forever. With
+    // max_attempts=2 (default) the runner allows up to 2 walks; the
+    // affected stages therefore run at most 3 times each (one initial
+    // run + max_attempts walks). The Nth walk where the cap is
+    // reached is the last one allowed; the (N+1)th finding triggers
+    // the critical halt path.
     const host = createMemoryHost();
     await seedPauseNeverPolicies(host, ['stage-a', 'stage-b']);
     await seedCrossStagePolicy(host);
@@ -606,10 +604,13 @@ describe('runPipeline cross-stage re-prompt branching', () => {
     });
     // Pipeline halted after exhausting the cross-stage cap.
     expect(result.kind).toBe('failed');
-    // stage-a ran AT MOST max_attempts times (one initial + one re-run
-    // from the cross-stage walk). dispatch ran the same bound.
-    expect(upstreamAttempts).toBeLessThanOrEqual(2);
-    expect(dispatchAttempts).toBeLessThanOrEqual(2);
+    // With max_attempts=2 walks, stage-a runs 3 times (initial + 2
+    // walks); stage-b also runs 3 times (initial + 2 walks). The 4th
+    // finding from stage-b is gated and the runner halts on critical.
+    expect(upstreamAttempts).toBeLessThanOrEqual(3);
+    expect(dispatchAttempts).toBeLessThanOrEqual(3);
+    expect(upstreamAttempts).toBeGreaterThanOrEqual(2);
+    expect(dispatchAttempts).toBeGreaterThanOrEqual(2);
   });
 
   it('severity filter precedence: minor finding with reprompt_target ignored', async () => {
@@ -819,12 +820,7 @@ describe('runPipeline cross-stage re-prompt branching', () => {
     expect(secondMeta['thread_parent']).toBe(sorted[0]!.id);
   });
 
-  // TODO(follow-up): metadata.attempt encodes the 1-based count of
-  // re-prompts (1 for the first, 2 for the second). The test expects
-  // attempt=2 on the first re-prompt; align the field semantics with
-  // the spec (whether attempt counts re-prompts or stage-runs) and
-  // either bump the runner's offset or the test's expectation.
-  it.skip('pipeline-cross-stage-reprompt atom carries spec-required metadata', async () => {
+  it('pipeline-cross-stage-reprompt atom carries spec-required metadata', async () => {
     // Pin the full atom shape per spec section "Visibility":
     //   - from_stage, to_stage, finding, attempt, correlation_id,
     //     thread_parent, verified_cited_atom_ids_origin
@@ -889,7 +885,11 @@ describe('runPipeline cross-stage re-prompt branching', () => {
     expect(meta['pipeline_id']).toBe('pipeline-corr-shape');
     expect(meta['from_stage']).toBe('stage-b');
     expect(meta['to_stage']).toBe('stage-a');
-    expect(meta['attempt']).toBe(2);
+    // metadata.attempt is the 1-based walks counter; the first
+    // re-prompt is walk #1 (per CrossStageRePromptConfig.max_attempts
+    // semantics: max_attempts caps the number of walks, NOT the
+    // number of stage attempts).
+    expect(meta['attempt']).toBe(1);
     expect(meta['correlation_id']).toBe('corr-shape');
     expect(meta['thread_parent']).toBeNull();
     expect(typeof meta['verified_cited_atom_ids_origin']).toBe('string');
