@@ -51,6 +51,7 @@ import {
   mkDispatchRecordAtom,
   mkPipelineAtom,
   mkPipelineAuditFindingAtom,
+  mkPipelineCrossStageRepromptAtom,
   mkPipelineFailedAtom,
   mkPipelineStageEventAtom,
   mkPlanOutputAtoms,
@@ -84,6 +85,12 @@ import {
   HARDCODED_DEFAULT as PLAN_STAGE_VALIDATOR_RETRY_HARDCODED_DEFAULT,
   readPlanStageValidatorRetryPolicy,
 } from './plan-stage-validator-retry-config.js';
+import {
+  DERIVE_FROM_PIPELINE_COMPOSITION,
+  HARDCODED_DEFAULT as CROSS_STAGE_REPROMPT_HARDCODED_DEFAULT,
+  readCrossStageRePromptPolicy,
+  type CrossStageRePromptConfig,
+} from './cross-stage-reprompt-config.js';
 
 /**
  * Bound on the number of stages a single pipeline run may walk.
@@ -165,6 +172,157 @@ async function findPipelineAbandonAtom(
   // pipeline-abandoned atoms. The bound is generous enough that a
   // realistic abandon-atom volume cannot trip it.
   return null;
+}
+
+/**
+ * Resolve the cross-stage allowed-targets set for the run.
+ *
+ * The policy.allowed_targets field carries either the literal string
+ * `'derive-from-pipeline-composition'` (the runner derives the set
+ * from the active composition) OR an explicit `string[]` (the
+ * operator narrowed the surface via a higher-priority canon atom).
+ *
+ * Derive-from-composition returns every stage name present in the
+ * composition. The runner separately enforces "target must be upstream
+ * of the auditing stage" at decision time; that rule is composition-
+ * order dependent and applies regardless of whether the operator
+ * narrowed the broad allowlist.
+ *
+ * Substrate purity: the helper accepts the composition as input rather
+ * than re-reading a stage-policy atom. Callers pass the same `stages`
+ * array the runner walks, so the derived set stays in lock-step with
+ * the run's actual composition (a stage that swaps for a custom
+ * adapter at run time still surfaces here).
+ */
+function resolveAllowedCrossStageTargets(
+  allowedTargets: typeof DERIVE_FROM_PIPELINE_COMPOSITION | ReadonlyArray<string>,
+  stages: ReadonlyArray<PlanningStage>,
+): ReadonlySet<string> {
+  if (allowedTargets === DERIVE_FROM_PIPELINE_COMPOSITION) {
+    return new Set(stages.map((s) => s.name));
+  }
+  return new Set(allowedTargets);
+}
+
+/**
+ * Discriminated decision result for the runner's cross-stage finding
+ * routing. Returns the target stage name + the finding that drove the
+ * decision when the cross-stage path applies; returns the explicit
+ * rejection reason when the target is malformed (self / forward /
+ * unknown / not-in-allowlist); returns `intra-stage` when no
+ * cross-stage finding applies (the existing intra-stage path runs).
+ */
+type CrossStageRoute =
+  | {
+      readonly kind: 'cross-stage';
+      readonly targetStageName: string;
+      readonly targetStageIndex: number;
+      readonly finding: AuditFinding;
+    }
+  | {
+      readonly kind: 'reject';
+      readonly reason:
+        | 'cross-stage-target-invalid-forward'
+        | 'cross-stage-target-invalid-unknown'
+        | 'cross-stage-target-invalid-not-allowed';
+      readonly finding: AuditFinding;
+    }
+  | { readonly kind: 'intra-stage' };
+
+/**
+ * Decide whether any of the findings the just-finished stage produced
+ * should route through the cross-stage re-prompt path. Pure: takes
+ * findings + composition context + resolved policy, returns a
+ * discriminated decision. The runner is the integration layer that
+ * acts on the decision; this helper never reads canon or writes atoms.
+ *
+ * Decision rules (in order):
+ *
+ * 1. If the gate is off (no policy atom seeded) -> 'intra-stage'.
+ *    Findings carrying reprompt_target are ignored for routing.
+ * 2. Filter findings by severity: only severities in
+ *    `severities_to_reprompt` are candidates. Per spec section
+ *    "Severity filter interaction with `reprompt_target`": the severity
+ *    filter applies BEFORE target routing. Below-floor findings carry
+ *    their reprompt_target as advisory metadata but never trigger a
+ *    cross-stage walk.
+ * 3. Among severity-eligible findings: a finding with no
+ *    reprompt_target OR with reprompt_target equal to the auditing
+ *    stage's own name is a self-target -> routed to intra-stage.
+ * 4. A finding whose target is forward of the auditing stage (downstream
+ *    or current) -> reject with 'forward' reason.
+ * 5. A finding whose target is not in the composition -> reject with
+ *    'unknown' reason.
+ * 6. A finding whose target is upstream BUT not in the allowed-targets
+ *    set (operator narrowed via explicit string[]) -> reject with
+ *    'not-allowed' reason.
+ * 7. The first finding that passes all checks -> route to that target.
+ *    Multiple cross-stage findings in one audit are processed in order;
+ *    the first valid one wins. The remaining findings stay as
+ *    pipeline-audit-finding atoms for visibility but do not retrigger
+ *    another walk in the same audit pass.
+ */
+function decideCrossStageRoute(
+  findings: ReadonlyArray<AuditFinding>,
+  auditingStageName: string,
+  auditingStageIndex: number,
+  stages: ReadonlyArray<PlanningStage>,
+  stageNameSet: ReadonlySet<string>,
+  allowedTargets: ReadonlySet<string>,
+  config: CrossStageRePromptConfig,
+  gateActive: boolean,
+): CrossStageRoute {
+  if (!gateActive) {
+    return { kind: 'intra-stage' };
+  }
+  // Severity filter precedence: only findings whose severity is in
+  // severities_to_reprompt are candidates for cross-stage routing.
+  const severityFiltered = findings.filter((f) =>
+    config.severities_to_reprompt.includes(f.severity),
+  );
+  if (severityFiltered.length === 0) {
+    return { kind: 'intra-stage' };
+  }
+  // Walk severity-eligible findings; first valid cross-stage target
+  // wins. Findings without a reprompt_target (or self-target) route
+  // to the intra-stage path on this audit pass; subsequent passes
+  // run the same decision afresh.
+  let intraStageCandidatePresent = false;
+  for (const finding of severityFiltered) {
+    const target = finding.reprompt_target;
+    if (target === undefined || target === auditingStageName) {
+      intraStageCandidatePresent = true;
+      continue;
+    }
+    if (!stageNameSet.has(target)) {
+      return { kind: 'reject', reason: 'cross-stage-target-invalid-unknown', finding };
+    }
+    const targetIndex = stages.findIndex((s) => s.name === target);
+    // Equal or greater: forward of the auditing stage (or self after
+    // the auditing-stage-name equality check above). Forward target
+    // is a config error; reject and surface to the operator.
+    if (targetIndex >= auditingStageIndex) {
+      return { kind: 'reject', reason: 'cross-stage-target-invalid-forward', finding };
+    }
+    // Upstream + in-composition; check the operator-narrowed
+    // allow list.
+    if (!allowedTargets.has(target)) {
+      return { kind: 'reject', reason: 'cross-stage-target-invalid-not-allowed', finding };
+    }
+    return {
+      kind: 'cross-stage',
+      targetStageName: target,
+      targetStageIndex: targetIndex,
+      finding,
+    };
+  }
+  // No valid cross-stage target found among severity-eligible findings
+  // (all candidates were self-target or undefined). Route to intra-stage.
+  // intraStageCandidatePresent is read here only as defensive
+  // documentation -- the for-loop walked every eligible finding and
+  // never returned, so we fell through.
+  void intraStageCandidatePresent;
+  return { kind: 'intra-stage' };
 }
 
 export type PipelineResult =
@@ -388,12 +546,18 @@ export async function runPipeline(
   // outputAtomId. Extracted at N=2 per the repo's duplication-floor
   // canon; reduces drift across the kill-switch / claim-before-mutate
   // / HIL fixes that touch these emit sites.
+  //
+  // stageEntryIndex (optional) folds the cross-stage re-entry counter
+  // into the event atom id when a stage is re-entered via a cross-stage
+  // walk; without the discriminator the second entry's events would
+  // collide on the deterministic atom id with the first entry's events.
   async function emitStageEvent(
     stageName: string,
     transition: 'enter' | 'exit-success' | 'exit-failure' | 'hil-pause' | 'hil-resume',
     durationMs: number,
     costUsd: number,
     outputAtomId?: AtomId,
+    stageEntryIndex?: number,
   ): Promise<void> {
     await host.atoms.put(
       mkPipelineStageEventAtom({
@@ -406,6 +570,7 @@ export async function runPipeline(
         durationMs,
         costUsd,
         ...(outputAtomId !== undefined ? { outputAtomId } : {}),
+        ...(stageEntryIndex !== undefined ? { stageEntryIndex } : {}),
       }),
     );
   }
@@ -497,6 +662,100 @@ export async function runPipeline(
   const validatorRetryConfig: PlanStageValidatorRetryConfig =
     (await readPlanStageValidatorRetryPolicy(host))
     ?? PLAN_STAGE_VALIDATOR_RETRY_HARDCODED_DEFAULT;
+
+  // Resolve the cross-stage re-prompt config ONCE per pipeline run.
+  // The runner consumes the policy via `readCrossStageRePromptPolicy`;
+  // a null return (no atom seeded OR malformed payload) means the
+  // cross-stage path is DORMANT for this run. Findings carrying a
+  // `reprompt_target` field are then routed through the existing
+  // intra-stage path (or treated as critical-halt) instead of jumping
+  // back upstream. The gate becomes active only when a deployment
+  // seeds the policy atom via the bootstrap script; this preserves
+  // backward compatibility with pre-policy pipelines and pins the
+  // gate's resolution to a canon edit rather than a framework change.
+  // The hardcoded default is intentionally NOT used as a fallback here:
+  // unlike the auditor-feedback and validator-retry policies (whose
+  // hardcoded floors mirror existing behavior), the cross-stage path
+  // is a NEW behavior that defaults to off so existing deployments
+  // do not silently change shape on upgrade.
+  const crossStageConfigOrNull: CrossStageRePromptConfig | null =
+    await readCrossStageRePromptPolicy(host);
+  const crossStageGateActive = crossStageConfigOrNull !== null;
+  // Effective config: when the gate is active use the policy; otherwise
+  // an empty placeholder that satisfies the type but never fires
+  // because `crossStageGateActive` short-circuits every consumer first.
+  const crossStageConfig: CrossStageRePromptConfig =
+    crossStageConfigOrNull ?? CROSS_STAGE_REPROMPT_HARDCODED_DEFAULT;
+  // Derive the allowed-targets set from the pipeline composition when
+  // the policy carries the `derive-from-pipeline-composition` literal;
+  // otherwise normalize the explicit string[]. Computed ONCE per run
+  // so the set is stable across cross-stage walks even when stages
+  // re-execute. The derive-from-composition path returns every stage
+  // name in the composition; the runner enforces the "must be upstream
+  // of the auditing stage" rule at decision time (a self-target or
+  // forward-target finding routes through the rejection path rather
+  // than the cross-stage path), so the derived set is the broad
+  // allowlist rather than the per-stage upstream slice.
+  const allAllowedCrossStageTargets: ReadonlySet<string> = resolveAllowedCrossStageTargets(
+    crossStageConfig.allowed_targets,
+    stages,
+  );
+  // The set of stage names present in the active composition. Used to
+  // distinguish "target stage is unknown (not in composition)" from
+  // "target stage is known but downstream/self". A finding citing an
+  // unknown target routes through the rejection path with a distinct
+  // category so the operator sees a misconfiguration rather than a
+  // legitimate forward-target attempt.
+  const stageNameSet: ReadonlySet<string> = new Set(stages.map((s) => s.name));
+  // Cumulative cross-stage attempt counter across the entire pipeline
+  // run. Each successful cross-stage re-prompt increments this; the
+  // counter caps at crossStageConfig.max_attempts. Per spec, the cap
+  // is shared with the intra-stage and validator-retry caps via
+  // `max(all three)`, but each mechanism still tracks its own counter
+  // so the operator sees which limit was reached if multiple fire.
+  let crossStageAttempts = 0;
+  // Thread-parent pointer for the deliberation chain. The first
+  // cross-stage re-prompt in the run has thread_parent=null (root); each
+  // subsequent re-prompt points at the immediately prior re-prompt's
+  // atom id. Renderers walk this field to reconstruct the chain.
+  let lastCrossStageRepromptAtomId: AtomId | null = null;
+  // Seeded priorAuditFindings for the next stage iteration when a
+  // cross-stage re-prompt fires. The runner stores the cross-stage
+  // finding here so the target stage's next StageInput carries it
+  // forward; once the target stage consumes the findings the slot is
+  // cleared so subsequent stages on the same walk start fresh.
+  let crossStageInjectedFindings: ReadonlyArray<AuditFinding> = [];
+  // Stage-name -> injection target. The runner only injects findings
+  // into the FIRST stage of the cross-stage walk (the target stage);
+  // intermediate stages between target and the original auditing stage
+  // run with empty priorAuditFindings so their prompts do not see
+  // upstream feedback noise. Cleared after the target stage consumes
+  // the injection.
+  let crossStageInjectionTarget: string | null = null;
+  // Sentinel signaling the upcoming stage iteration is an intentional
+  // cross-stage walk back to an upstream index. The claim-before-mutate
+  // peer-index guard normally treats `peerIndex > i` as a sign that a
+  // concurrent tick advanced ahead, but a cross-stage walk legitimately
+  // resets `i` backwards. The flag bypasses the guard for exactly one
+  // iteration (the target stage's re-entry) and clears immediately.
+  let crossStageWalkPending = false;
+  // Per-stage re-entry counter. A cross-stage walk re-enters a stage
+  // that already emitted an enter event; the second enter would
+  // collide on the deterministic atom id without a discriminator.
+  // This counter increments each time a stage is entered across the
+  // entire pipeline run (including cross-stage re-entries) so the
+  // emitStageEvent helper can append it to the atom id when > 1.
+  const stageEntryCounts = new Map<string, number>();
+  // Unified per-stage attempt counter shared across intra-stage and
+  // cross-stage retry paths. Tracks the cumulative number of LLM
+  // invocations for a single stage across the entire pipeline run.
+  // The inner attempt loop seeds `attempt` from this counter at the
+  // start of each outer-loop iteration so a stage that already ran
+  // N times via cross-stage walks resumes its intra-stage retry
+  // budget at N rather than 0. Mirrors the spec section "Cumulative
+  // attempt budget semantics": a stage's total iterations across all
+  // mechanisms cannot exceed `max(all caps)`.
+  const stageAttemptCounts = new Map<string, number>();
 
   for (let i = startIdx; i < stages.length; i++) {
     const stage = stages[i]!;
@@ -614,11 +873,23 @@ export async function runPipeline(
     // best-effort: file/memory adapters serialise calls in practice
     // and avoid the race; a multi-process adapter must add a native
     // conditional update.
+    //
+    // Cross-stage walk: the runner intentionally resets `i` backwards
+    // to re-invoke an upstream stage; in that case peerIndex (the
+    // stage we just finished) is strictly greater than i (the target
+    // we're walking back to), and the guard would treat this as a
+    // race-loss false positive. The `crossStageWalkPending` sentinel
+    // bypasses the guard for exactly one iteration (the target re-entry).
     const freshMeta = (fresh.metadata as Record<string, unknown>) ?? {};
     const peerIndex = freshMeta.current_stage_index;
-    if (typeof peerIndex === 'number' && peerIndex > i) {
+    if (
+      typeof peerIndex === 'number'
+      && peerIndex > i
+      && !crossStageWalkPending
+    ) {
       return { kind: 'halted', pipelineId };
     }
+    crossStageWalkPending = false;
 
     await host.atoms.update(pipelineId, {
       pipeline_state: 'running',
@@ -633,7 +904,14 @@ export async function runPipeline(
     if (typeof claimedIndex !== 'number' || claimedIndex !== i) {
       return { kind: 'halted', pipelineId };
     }
-    await emitStageEvent(stage.name, 'enter', 0, 0);
+    // Per-stage entry counter: every enter event increments the count
+    // for this stage. The first entry has count=1 (no id suffix per
+    // safeAttemptIndexSuffix's >= 2 floor); subsequent entries via
+    // cross-stage walks pass count >= 2 and the helper appends the
+    // -re-entry-<n> suffix to disambiguate atom ids.
+    const stageEntryIndex = (stageEntryCounts.get(stage.name) ?? 0) + 1;
+    stageEntryCounts.set(stage.name, stageEntryIndex);
+    await emitStageEvent(stage.name, 'enter', 0, 0, undefined, stageEntryIndex);
 
     const t0 = Date.now();
     // Resolve the per-stage hang deadline. The contract on
@@ -700,7 +978,23 @@ export async function runPipeline(
     // individual cost would have passed a per-attempt check. Two
     // $0.60 attempts under a $1.00 cap together exceed the cap on the
     // second attempt and halt via the existing budget-overflow path.
+    // Seed the first attempt's priorAuditFindings from a pending
+    // cross-stage injection when this stage is the cross-stage walk's
+    // target. The injection target is the FIRST stage in the walk
+    // (per spec citation-drift section, option A): intermediate stages
+    // between the target and the original auditing stage run with
+    // empty priorAuditFindings so their prompts do not see upstream
+    // feedback noise. After consumption the injection slot clears so
+    // a subsequent walk pointing at the same stage seeds afresh.
     let priorAuditFindings: ReadonlyArray<AuditFinding> = [];
+    if (
+      crossStageInjectionTarget !== null
+      && crossStageInjectionTarget === stage.name
+    ) {
+      priorAuditFindings = crossStageInjectedFindings;
+      crossStageInjectedFindings = [];
+      crossStageInjectionTarget = null;
+    }
     // Prior validator (schema) error. Empty string on attempt 1; on
     // subsequent attempts (after a recoverable schema-validation
     // failure) it carries the runner-constructed prefix shape
@@ -729,15 +1023,40 @@ export async function runPipeline(
     // keeping auditor-feedback at 2), the other dial's cap still
     // gates its own decision via decideRePromptAction /
     // decideValidatorRetryAction.
+    // Unified cap is the max of all three mechanisms. When cross-stage
+    // is gate-active its cap participates; otherwise it does not raise
+    // the cap above the intra-stage / validator caps.
     const maxAttempts = Math.max(
       1,
       auditorFeedbackConfig.max_attempts,
       validatorRetryConfig.max_attempts,
+      crossStageGateActive ? crossStageConfig.max_attempts : 1,
     );
-    let attempt = 0;
+    // Seed `attempt` from the unified per-stage counter so a stage
+    // that already ran N times via cross-stage walks resumes its
+    // intra-stage retry budget at N rather than 0. A first entry
+    // starts at 0; a re-entry via cross-stage walk that already
+    // consumed K attempts starts at K so the next attempt is K+1
+    // and the cap check fires after the unified budget is spent.
+    let attempt = stageAttemptCounts.get(stage.name) ?? 0;
+    // Sentinel raised by the inner attempt loop when a cross-stage
+    // re-prompt fires. The cross-stage path mutates `i` to point at
+    // the target stage's index minus 1 (so the for-loop's increment
+    // lands on the target) and signals via this flag to bypass the
+    // post-audit path (HIL gate, plan-auto-approve, exit-success).
+    // The outer-for `continue` carries the i-mutation through to the
+    // next iteration.
+    let crossStageContinue = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       attempt++;
+      // Persist the cumulative attempt counter immediately so a
+      // cross-stage re-entry (or any early break out of the inner
+      // loop) resumes from the actual attempt count rather than 0.
+      // Without this write-back the unified per-stage budget would
+      // restart on every walk and the max(all caps) invariant would
+      // not hold.
+      stageAttemptCounts.set(stage.name, attempt);
       // Per-attempt kill-switch poll. A STOP between attempts (e.g.
       // operator armed the sentinel during attempt 1's stage run) must
       // halt before the next stage invocation. Mirrors the per-stage
@@ -779,7 +1098,7 @@ export async function runPipeline(
         if (host.scheduler.killswitchCheck()) {
           return { kind: 'halted', pipelineId };
         }
-        await emitStageEvent(stage.name, 'exit-failure', Date.now() - tAttempt, 0);
+        await emitStageEvent(stage.name, 'exit-failure', Date.now() - tAttempt, 0, undefined, stageEntryIndex);
         return await failPipeline(host, pipelineId, options, now, stage.name, cause, i);
       }
       // Re-check the kill switch on the success path before any post-run
@@ -840,7 +1159,7 @@ export async function runPipeline(
             && failedStageCap !== undefined
             && toUsdMicros(stageAttemptCostUsd) > toUsdMicros(failedStageCap)
           ) {
-            await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+            await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd, undefined, stageEntryIndex);
             return await failPipeline(
               host,
               pipelineId,
@@ -855,7 +1174,7 @@ export async function runPipeline(
             pipelineCostCapUsd !== null
             && toUsdMicros(totalCostUsd) > toUsdMicros(pipelineCostCapUsd)
           ) {
-            await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+            await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd, undefined, stageEntryIndex);
             return await failPipeline(
               host,
               pipelineId,
@@ -904,6 +1223,7 @@ export async function runPipeline(
                 costUsd: output.cost_usd,
                 attemptIndex: attempt + 1,
                 validatorErrorMessage: boundedCause,
+                stageEntryIndex,
               }),
             );
             // Seed the next attempt's validator-feedback. The
@@ -925,7 +1245,7 @@ export async function runPipeline(
           // schema-validation halt path. The cause string is the same
           // one the runner has used since PR #293; audit walks remain
           // backward-compatible.
-          await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+          await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd, undefined, stageEntryIndex);
           return await failPipeline(
             host,
             pipelineId,
@@ -967,7 +1287,7 @@ export async function runPipeline(
         && stageCap !== undefined
         && toUsdMicros(stageAttemptCostUsd) > toUsdMicros(stageCap)
       ) {
-        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd, undefined, stageEntryIndex);
         return await failPipeline(
           host,
           pipelineId,
@@ -984,7 +1304,7 @@ export async function runPipeline(
         pipelineCostCapUsd !== null &&
         toUsdMicros(totalCostUsd) > toUsdMicros(pipelineCostCapUsd)
       ) {
-        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd, undefined, stageEntryIndex);
         return await failPipeline(
           host,
           pipelineId,
@@ -1042,13 +1362,18 @@ export async function runPipeline(
             // that re-prompts produces distinct per-attempt atoms
             // rather than colliding on the canonical id shape.
             attemptIndex: attempt,
+            // stageEntryIndex propagates the cross-stage walk counter
+            // so a re-entered stage's output atom does not collide
+            // with the first entry's output. >= 2 stamps the suffix;
+            // 1 (or absent) preserves the historical id shape.
+            stageEntryIndex,
           },
         );
         stageOutputAtomId = persisted.anchorId;
         persistedPlanAtomIds = persisted.planAtomIds;
       } catch (err) {
         const cause = err instanceof Error ? err.message : String(err);
-        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd);
+        await emitStageEvent(stage.name, 'exit-failure', durationMs, output.cost_usd, undefined, stageEntryIndex);
         return await failPipeline(
           host,
           pipelineId,
@@ -1105,9 +1430,213 @@ export async function runPipeline(
               // colliding on the canonical id. Attempt 1 omits the
               // suffix; attempt 2+ appends `-attempt-<n>`.
               attemptIndex: attempt,
+              // Stamp the stage-entry index so a recurring finding
+              // across cross-stage re-entries produces distinct atoms.
+              stageEntryIndex,
             }),
           );
         }
+      }
+
+      // Cross-stage re-prompt decision. Runs BEFORE the intra-stage
+      // auditor-feedback decision so a finding directing the runner
+      // upstream short-circuits the per-stage retry path. When the
+      // gate is off (no policy atom seeded) decideCrossStageRoute
+      // returns 'intra-stage' and the existing flow runs unchanged.
+      const crossStageRoute = decideCrossStageRoute(
+        findings,
+        stage.name,
+        i,
+        stages,
+        stageNameSet,
+        allAllowedCrossStageTargets,
+        crossStageConfig,
+        crossStageGateActive,
+      );
+      if (crossStageRoute.kind === 'reject') {
+        // The auditor cited a target the runner cannot honor (forward,
+        // unknown, or not-allowed). Emit a runner-level
+        // pipeline-audit-finding atom so the operator sees the
+        // misconfiguration in the audit trail; then halt the pipeline
+        // via the existing critical-audit path. The original finding
+        // already landed via the per-stage audit-finding loop above;
+        // this additional atom carries the runner's rejection reason
+        // distinctly so a console projection can render the
+        // misconfiguration alongside the upstream finding.
+        if (host.scheduler.killswitchCheck()) {
+          return { kind: 'halted', pipelineId };
+        }
+        await host.atoms.put(
+          mkPipelineAuditFindingAtom({
+            pipelineId,
+            stageName: stage.name,
+            principalId: options.principal,
+            correlationId: options.correlationId,
+            now: now(),
+            severity: 'critical',
+            category: crossStageRoute.reason,
+            message:
+              `Cross-stage finding from '${stage.name}' cited target '`
+              + `${crossStageRoute.finding.reprompt_target ?? ''}' which is `
+              + `${crossStageRoute.reason === 'cross-stage-target-invalid-forward'
+                  ? 'downstream of the auditing stage'
+                  : crossStageRoute.reason === 'cross-stage-target-invalid-unknown'
+                    ? 'not in the active pipeline composition'
+                    : 'outside the configured allowed_targets set'}.`,
+            citedAtomIds: crossStageRoute.finding.cited_atom_ids,
+            citedPaths: crossStageRoute.finding.cited_paths,
+            attemptIndex: attempt,
+            stageEntryIndex,
+          }),
+        );
+        await emitStageEvent(
+          stage.name,
+          'exit-failure',
+          durationMs,
+          output.cost_usd,
+          stageOutputAtomId,
+          stageEntryIndex,
+        );
+        return await failPipeline(
+          host,
+          pipelineId,
+          options,
+          now,
+          stage.name,
+          crossStageRoute.reason,
+          i,
+        );
+      }
+      if (crossStageRoute.kind === 'cross-stage') {
+        // Cross-stage walk: cap check first. The cumulative counter
+        // bounds the loop regardless of how many distinct findings
+        // cite cross-stage targets; once `crossStageAttempts` reaches
+        // the policy cap, fall through to the existing intra-stage
+        // path (which then halts on critical or accepts on advisory).
+        if (crossStageAttempts < crossStageConfig.max_attempts) {
+          // Final kill-switch check before the visibility-atom emit.
+          if (host.scheduler.killswitchCheck()) {
+            return { kind: 'halted', pipelineId };
+          }
+          // Build the cross-stage visibility atom. The atom carries
+          // every metadata field the spec section "Visibility" lists:
+          // from_stage/to_stage names, the finding payload, the
+          // cumulative attempt counter, the chain pointer, and the
+          // verified-cited-atom-ids origin label per the citation-drift
+          // posture (option A: re-derive from the latest upstream).
+          const newCrossStageAttempts = crossStageAttempts + 1;
+          // Verified-cited-atom-ids origin annotation. Mirrors the
+          // spec section "Citation drift across re-runs" option A.
+          // The runner re-derives verifiedCitedAtomIds from the latest
+          // upstream atoms when the target stage re-runs; this label
+          // marks the run's upstream the citations are about to be
+          // resolved against. Format:
+          // `derived-from-rerun-<target-stage>-attempt-<n>`.
+          const verifiedCitedAtomIdsOrigin =
+            `derived-from-rerun-${crossStageRoute.targetStageName}-attempt-${newCrossStageAttempts}`;
+          // Build the finding shape persisted on the atom. Forward
+          // the original finding fields plus the target so the atom
+          // is self-contained for audit consumers.
+          const findingShape = {
+            severity: crossStageRoute.finding.severity,
+            category: crossStageRoute.finding.category,
+            message: crossStageRoute.finding.message,
+            cited_atom_ids: crossStageRoute.finding.cited_atom_ids.map(String),
+            cited_paths: [...crossStageRoute.finding.cited_paths],
+            reprompt_target: crossStageRoute.targetStageName,
+          };
+          // Source roots: pipeline atom is the canonical taint root.
+          // The auditing stage's output atom (when persisted) is the
+          // proximate observation source for the finding. Both feed
+          // derived_from so taint cascade walks reach the persisted
+          // signal that produced the re-prompt.
+          const sourceRoots: AtomId[] = [pipelineId];
+          if (stageOutputAtomId !== undefined) {
+            sourceRoots.push(stageOutputAtomId);
+          }
+          const repromptAtom = mkPipelineCrossStageRepromptAtom({
+            pipelineId,
+            principalId: options.principal,
+            correlationId: options.correlationId,
+            now: now(),
+            fromStage: stage.name,
+            toStage: crossStageRoute.targetStageName,
+            finding: findingShape,
+            attempt: newCrossStageAttempts,
+            threadParent: lastCrossStageRepromptAtomId,
+            sourceRoots,
+            verifiedCitedAtomIdsOrigin,
+          });
+          await host.atoms.put(repromptAtom);
+          lastCrossStageRepromptAtomId = repromptAtom.id;
+          crossStageAttempts = newCrossStageAttempts;
+          // Seed the target stage's priorAuditFindings injection slot.
+          // Only the target stage receives the findings; intermediate
+          // stages run fresh per spec citation-drift option A.
+          crossStageInjectionTarget = crossStageRoute.targetStageName;
+          crossStageInjectedFindings = [crossStageRoute.finding];
+          // Reset the priorOutput accumulation to the point BEFORE
+          // the target stage so the target's StageInput.priorOutput
+          // reflects the upstream chain rather than the just-finished
+          // stage's value. Trim priorOutputAtomIds to the target
+          // stage's index minus 1 (the prior-anchor of the target).
+          // When targetStageIndex === 0 the target is the first stage;
+          // priorOutput is reset to null and priorOutputAtomIds emptied.
+          if (crossStageRoute.targetStageIndex > 0) {
+            priorOutputAtomIds.length = crossStageRoute.targetStageIndex;
+            const priorAnchor = priorOutputAtomIds[crossStageRoute.targetStageIndex - 1];
+            if (priorAnchor !== undefined) {
+              const priorAnchorAtom = await host.atoms.get(priorAnchor);
+              if (priorAnchorAtom !== null) {
+                const meta = priorAnchorAtom.metadata as Record<string, unknown> | undefined;
+                priorOutput = meta?.['stage_output'] ?? null;
+              } else {
+                priorOutput = null;
+              }
+            } else {
+              priorOutput = null;
+            }
+          } else {
+            priorOutput = null;
+            priorOutputAtomIds.length = 0;
+          }
+          // Emit an exit-success event for the current stage so the
+          // audit chain records the stage completed (its output is
+          // persisted; the cross-stage walk is the runner's decision
+          // to re-evaluate upstream, not a stage failure).
+          const exitAtomIdForCross = stageOutputAtomId ?? output.atom_id;
+          await emitStageEvent(
+            stage.name,
+            'exit-success',
+            durationMs,
+            output.cost_usd,
+            exitAtomIdForCross,
+            stageEntryIndex,
+          );
+          // Subtract 1 from i so the for-loop's post-increment lands
+          // on the target stage's index. The next iteration runs
+          // stages[targetStageIndex].
+          i = crossStageRoute.targetStageIndex - 1;
+          // Signal the upcoming claim-before-mutate iteration is an
+          // intentional walk-back so the peer-index guard does not
+          // treat it as a race-loss. Cleared after exactly one
+          // iteration; subsequent normal forward advancement re-engages
+          // the guard.
+          crossStageWalkPending = true;
+          // Set the outer continuation flag so the per-stage state
+          // (output, findings, durationMs, etc.) is not consumed by
+          // the post-audit path below. The sentinel + break-out-of-
+          // inner-loop pattern is the cleanest way to skip ALL of
+          // (HIL gate, plan-auto-approve, exit-success / exit-failure)
+          // without duplicating return paths.
+          crossStageContinue = true;
+          break;
+        }
+        // Cap exhausted: fall through to the existing intra-stage
+        // path. With a cross-stage cap of N, the Nth re-prompt has
+        // already fired and crossStageAttempts === max_attempts - 1
+        // means the next walk would exceed the cap; the runner
+        // accepts the current findings via the existing flow.
       }
 
       // Auditor-feedback re-prompt decision. The pure decision helper
@@ -1150,6 +1679,7 @@ export async function runPipeline(
             ...(stageOutputAtomId !== undefined ? { outputAtomId: stageOutputAtomId } : {}),
             attemptIndex: attempt + 1,
             findingsSummary: summary,
+            stageEntryIndex,
           }),
         );
         // Seed the next attempt's findings. The pure decision helper
@@ -1174,6 +1704,17 @@ export async function runPipeline(
       // through to the post-audit path (HIL gate, plan auto-approve,
       // exit-success / exit-failure event).
       break;
+    }
+    // Cross-stage walk: the inner attempt loop already emitted the
+    // visibility atom, recorded the exit-success event for the current
+    // stage, mutated `i` to point at the target stage's index - 1,
+    // and seeded the target stage's priorAuditFindings injection. The
+    // outer-loop continue carries the i-mutation forward; bypass the
+    // post-audit path (HIL gate, plan-auto-approve, terminal events)
+    // since the runner is jumping back to upstream rather than
+    // advancing.
+    if (crossStageContinue) {
+      continue;
     }
     // From here on, `output` / `stageOutputAtomId` / `findings` /
     // `durationMs` reflect the LAST attempt's results (which is the
@@ -1204,6 +1745,7 @@ export async function runPipeline(
         durationMs,
         output.cost_usd,
         stageOutputAtomId,
+        stageEntryIndex,
       );
       return await failPipeline(
         host,
@@ -1236,6 +1778,7 @@ export async function runPipeline(
         durationMs,
         output.cost_usd,
         stageOutputAtomId,
+        stageEntryIndex,
       );
       return { kind: 'hil-paused', pipelineId, stageName: stage.name };
     }
@@ -1271,6 +1814,7 @@ export async function runPipeline(
           durationMs,
           output.cost_usd,
           stageOutputAtomId,
+          stageEntryIndex,
         );
         return await failPipeline(
           host,
@@ -1296,6 +1840,7 @@ export async function runPipeline(
       durationMs,
       output.cost_usd,
       exitAtomId,
+      stageEntryIndex,
     );
 
     priorOutput = output.value;
@@ -1391,6 +1936,14 @@ async function persistStageOutput(
      * pre-loop pipelines stay round-trippable.
      */
     attemptIndex?: number;
+    /**
+     * 1-based re-entry counter for cross-stage walks. Mirrors the
+     * attemptIndex shape: >= 2 appends `-re-entry-<n>` to the
+     * persisted stage-output atom id so re-entered stages produce
+     * distinct atoms rather than colliding with the first entry's
+     * output. Omitted (or 1) preserves the historical id shape.
+     */
+    stageEntryIndex?: number;
   },
 ): Promise<PersistStageOutputResult> {
   // Build baseInput with extraMetadata only when present so the typed
@@ -1411,6 +1964,7 @@ async function persistStageOutput(
     value,
     ...(ctx.extraMetadata !== undefined ? { extraMetadata: ctx.extraMetadata } : {}),
     ...(ctx.attemptIndex !== undefined ? { attemptIndex: ctx.attemptIndex } : {}),
+    ...(ctx.stageEntryIndex !== undefined ? { stageEntryIndex: ctx.stageEntryIndex } : {}),
   };
   switch (atomType) {
     case 'brainstorm-output': {
@@ -1440,6 +1994,7 @@ async function persistStageOutput(
         value,
         ...(ctx.extraMetadata !== undefined ? { extraMetadata: ctx.extraMetadata } : {}),
         ...(ctx.attemptIndex !== undefined ? { attemptIndex: ctx.attemptIndex } : {}),
+        ...(ctx.stageEntryIndex !== undefined ? { stageEntryIndex: ctx.stageEntryIndex } : {}),
       });
       if (planAtoms.length === 0) {
         // Plan-stage schema rejects empty plans arrays, so reaching
@@ -1523,6 +2078,13 @@ function mkGenericStageOutputAtom(input: {
    * policy via `MkStageOutputAtomBaseInput.attemptIndex`.
    */
   readonly attemptIndex?: number;
+  /**
+   * 1-based re-entry counter for cross-stage walks. Mirrors the
+   * typed helpers' shape: >= 2 appends `-re-entry-<n>` so a re-entered
+   * stage's generic output atom does not collide with the first
+   * entry's output. Stacks with the attempt suffix when both fire.
+   */
+  readonly stageEntryIndex?: number;
 }): Atom {
   // Build a minimal Atom inline to avoid threading a fifth mint
   // helper through atom-shapes.ts for the generic case. Mirrors the
@@ -1538,7 +2100,11 @@ function mkGenericStageOutputAtom(input: {
   const attemptSuffix = validatedAttempt !== undefined
     ? `-attempt-${validatedAttempt}`
     : '';
-  const id = `stage-output-${input.stageName}-${input.pipelineId}-${input.correlationId}${attemptSuffix}` as AtomId;
+  const validatedEntryIndex = safeAttemptIndexSuffix(input.stageEntryIndex);
+  const entrySuffix = validatedEntryIndex !== undefined
+    ? `-re-entry-${validatedEntryIndex}`
+    : '';
+  const id = `stage-output-${input.stageName}-${input.pipelineId}-${input.correlationId}${attemptSuffix}${entrySuffix}` as AtomId;
   return {
     schema_version: 1,
     id,
@@ -1590,6 +2156,12 @@ function mkGenericStageOutputAtom(input: {
       // safeAttemptIndexSuffix for fail-closed validation).
       ...(validatedAttempt !== undefined
         ? { attempt_index: validatedAttempt }
+        : {}),
+      // Mirrors the attempt_index posture for the cross-stage re-entry
+      // counter; the stamp lands on metadata.stage_entry_index for
+      // audit-walk filtering when >= 2.
+      ...(validatedEntryIndex !== undefined
+        ? { stage_entry_index: validatedEntryIndex }
         : {}),
     },
   };

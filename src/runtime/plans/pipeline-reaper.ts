@@ -336,8 +336,9 @@ export async function markPipelineReaped(
  * walk can isolate root-level reaps from cascade reaps. Accepts any
  * non-`pipeline` atom type that participates in the pipeline subgraph
  * (`pipeline-stage-event`, `pipeline-audit-finding`, `pipeline-failed`,
- * `pipeline-resume`, `brainstorm-output`, `spec-output`, `review-report`,
- * `dispatch-record`, `spec`, `agent-session`, `agent-turn`).
+ * `pipeline-resume`, `pipeline-cross-stage-reprompt`, `brainstorm-output`,
+ * `spec-output`, `review-report`, `dispatch-record`, `spec`,
+ * `agent-session`, `agent-turn`).
  *
  * Idempotent on a second call (early return when `metadata.reaped_at`
  * is already set).
@@ -467,6 +468,7 @@ const SUBGRAPH_CHILD_TYPES_LIST: ReadonlyArray<AtomType> = [
   'pipeline-audit-finding',
   'pipeline-failed',
   'pipeline-resume',
+  'pipeline-cross-stage-reprompt',
   'brainstorm-output',
   'spec-output',
   'review-report',

@@ -157,12 +157,12 @@ export type AtomType =
   // reaper at TTL (see the convention block on `AtomPatch.metadata`).
   // The 'pipeline' atom is the subgraph root; its children
   // ('pipeline-stage-event', 'pipeline-audit-finding',
-  // 'pipeline-failed', 'pipeline-resume', 'brainstorm-output',
-  // 'spec-output', 'review-report', 'dispatch-record') cascade-reap
-  // when the root reaps. The 'spec' type is reaped on the same TTL
-  // as the pipeline whose plan-stage produced it. None of these
-  // types are deleted; reaping is a leaf metadata write
-  // (`reaped_at` + `reaped_reason`) plus a confidence floor.
+  // 'pipeline-failed', 'pipeline-resume', 'pipeline-cross-stage-reprompt',
+  // 'brainstorm-output', 'spec-output', 'review-report',
+  // 'dispatch-record') cascade-reap when the root reaps. The 'spec' type
+  // is reaped on the same TTL as the pipeline whose plan-stage produced
+  // it. None of these types are deleted; reaping is a leaf metadata
+  // write (`reaped_at` + `reaped_reason`) plus a confidence floor.
   | 'spec'
   | 'brainstorm-output'
   | 'spec-output'
@@ -173,6 +173,22 @@ export type AtomType =
   | 'pipeline-audit-finding'
   | 'pipeline-failed'
   | 'pipeline-resume'
+  // Cross-stage re-prompt visibility atom. Written by the planning
+  // pipeline runner when an auditor's finding directs the runner to
+  // re-invoke an upstream stage instead of the current stage. The
+  // metadata fields (`from_stage`, `to_stage`, `finding`, `attempt`,
+  // `correlation_id`, `thread_parent`, `verified_cited_atom_ids_origin`)
+  // give consoles and audit walks enough state to render the
+  // back-and-forth deliberation thread between stages without
+  // re-walking pipeline-stage-event atoms. `thread_parent` carries
+  // the previous cross-stage re-prompt atom id in the same pipeline
+  // (or null for the first re-prompt in the chain) so renderers
+  // reconstruct the chain via a single field rather than scanning
+  // provenance. provenance.derived_from carries the source roots:
+  // the pipeline atom id plus the source observation atom id (the
+  // atom that carried the finding), per the substrate's
+  // "every atom must carry provenance" contract.
+  | 'pipeline-cross-stage-reprompt'
   // Operator-initiated pipeline kill. Written by the Console
   // `/api/pipeline.abandon` route handler (or any future authoring
   // path that respects the `pol-pipeline-abandon` canon gate); the

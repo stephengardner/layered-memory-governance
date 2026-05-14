@@ -364,6 +364,17 @@ export interface MkPipelineStageEventAtomInput {
    * runner truncates with an explicit marker.
    */
   readonly validatorErrorMessage?: string;
+  /**
+   * 1-based re-entry counter for cross-stage walks. Set when a stage
+   * is re-entered AFTER its first entry within the same pipeline run
+   * (a cross-stage re-prompt walked the runner back to an upstream
+   * stage and is now re-running it). When >= 2 the helper appends
+   * `-re-entry-<n>` to the atom id so the second / third / Nth entry
+   * does not collide with the first; metadata.stage_entry_index
+   * stamps the same value. Absent (or 1) preserves the existing id
+   * shape so pre-cross-stage pipelines stay round-trippable.
+   */
+  readonly stageEntryIndex?: number;
 }
 
 export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): Atom {
@@ -504,7 +515,19 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
   } else if (input.transition === 'validator-retry-after-failure' && input.attemptIndex !== undefined) {
     idTail = `${input.transition}-${input.attemptIndex}`;
   }
-  const id = `pipeline-stage-event-${input.pipelineId}-${input.stageName}-${idTail}-${input.correlationId}` as AtomId;
+  // Cross-stage re-entry suffix. When a stage is re-entered via a
+  // cross-stage walk (stageEntryIndex >= 2) the suffix discriminates
+  // the second / third / Nth enter-exit event pair from the first.
+  // Absent (or 1) preserves the historical id shape so the first
+  // entry's events remain at the canonical id. Applies to ALL
+  // transitions so the second entry's enter/exit/retry events all
+  // stamp distinct ids; otherwise enter on the second entry would
+  // collide with enter on the first.
+  const validatedEntryIndex = safeAttemptIndexSuffix(input.stageEntryIndex);
+  const entrySuffix = validatedEntryIndex !== undefined
+    ? `-re-entry-${validatedEntryIndex}`
+    : '';
+  const id = `pipeline-stage-event-${input.pipelineId}-${input.stageName}-${idTail}-${input.correlationId}${entrySuffix}` as AtomId;
   return baseAtom({
     id,
     type: 'pipeline-stage-event',
@@ -558,6 +581,9 @@ export function mkPipelineStageEventAtom(input: MkPipelineStageEventAtomInput): 
       ...(input.validatorErrorMessage !== undefined
         ? { validator_error_message: input.validatorErrorMessage }
         : {}),
+      ...(validatedEntryIndex !== undefined
+        ? { stage_entry_index: validatedEntryIndex }
+        : {}),
     },
   });
 }
@@ -587,6 +613,16 @@ export interface MkPipelineAuditFindingAtomInput {
    * filtering by attempt.
    */
   readonly attemptIndex?: number;
+  /**
+   * 1-based re-entry counter for cross-stage walks. Mirrors the
+   * stage-event atom's shape: when a stage is re-entered via a
+   * cross-stage walk and emits findings on the second / third / Nth
+   * entry, the suffix discriminates the per-entry atoms. Without
+   * this discriminator, two entries that emitted findings with the
+   * same {severity, category, messageDigest} would collide on the
+   * deterministic id. Absent (or 1) preserves the existing id shape.
+   */
+  readonly stageEntryIndex?: number;
 }
 
 export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInput): Atom {
@@ -616,7 +652,11 @@ export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInpu
   const attemptSuffix = validatedAttempt !== undefined
     ? `-attempt-${validatedAttempt}`
     : '';
-  const id = `pipeline-audit-finding-${input.pipelineId}-${input.stageName}-${input.correlationId}-${input.severity}-${input.category}-${messageDigest}${attemptSuffix}` as AtomId;
+  const validatedEntryIndex = safeAttemptIndexSuffix(input.stageEntryIndex);
+  const entrySuffix = validatedEntryIndex !== undefined
+    ? `-re-entry-${validatedEntryIndex}`
+    : '';
+  const id = `pipeline-audit-finding-${input.pipelineId}-${input.stageName}-${input.correlationId}-${input.severity}-${input.category}-${messageDigest}${attemptSuffix}${entrySuffix}` as AtomId;
   return baseAtom({
     id,
     type: 'pipeline-audit-finding',
@@ -635,6 +675,9 @@ export function mkPipelineAuditFindingAtom(input: MkPipelineAuditFindingAtomInpu
       cited_paths: [...input.citedPaths],
       ...(validatedAttempt !== undefined
         ? { attempt_index: validatedAttempt }
+        : {}),
+      ...(validatedEntryIndex !== undefined
+        ? { stage_entry_index: validatedEntryIndex }
         : {}),
     },
   });
@@ -704,6 +747,188 @@ export function mkPipelineResumeAtom(input: MkPipelineResumeAtomInput): Atom {
       pipeline_id: input.pipelineId,
       stage_name: input.stageName,
       resumer_principal_id: String(input.resumerPrincipalId),
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// pipeline-cross-stage-reprompt atom (one per cross-stage re-prompt event)
+//
+// Written by the runner when an auditor's finding directs re-invocation
+// of an upstream stage rather than the current stage. The atom is the
+// visibility surface for the back-and-forth deliberation thread: the
+// metadata fields carry enough state for a Console or audit consumer
+// to render the FROM -> TO handoff without re-walking the per-stage
+// event chain.
+//
+// `thread_parent` is the chain pointer used by the Console renderer:
+// the first re-prompt in a chain has `thread_parent: null` (root); each
+// subsequent re-prompt within the same pipeline points at the
+// immediately prior re-prompt atom's id. Renderers walk the chain via
+// this field rather than scanning derived_from, which keeps
+// derived_from as a flat unordered set of taint roots and
+// thread_parent as a render-only ordering hint.
+// ---------------------------------------------------------------------------
+
+/**
+ * Shape of the finding payload embedded under metadata.finding on a
+ * pipeline-cross-stage-reprompt atom. Mirrors the AuditFinding
+ * interface but materialised as a JSON-serialisable record so the
+ * persisted shape round-trips through the AtomStore unchanged.
+ */
+export interface CrossStageRepromptFindingShape {
+  readonly severity: 'critical' | 'major' | 'minor';
+  readonly category: string;
+  readonly message: string;
+  readonly cited_atom_ids: ReadonlyArray<string>;
+  readonly cited_paths: ReadonlyArray<string>;
+  readonly reprompt_target: string;
+}
+
+export interface MkPipelineCrossStageRepromptAtomInput {
+  readonly pipelineId: AtomId;
+  readonly principalId: PrincipalId;
+  readonly correlationId: string;
+  readonly now: Time;
+  /** Auditing stage that emitted the finding. */
+  readonly fromStage: string;
+  /** Upstream stage the runner is about to re-invoke. */
+  readonly toStage: string;
+  /** Finding payload preserved verbatim on metadata. */
+  readonly finding: CrossStageRepromptFindingShape;
+  /**
+   * Cumulative pipeline attempt counter at re-prompt time. Mirrors
+   * the unified attempt counter the runner increments across every
+   * retry mechanism so a single field captures "which iteration was
+   * I on when this re-prompt fired".
+   */
+  readonly attempt: number;
+  /**
+   * Atom id of the immediately prior cross-stage re-prompt atom in
+   * the same pipeline, or `null` for the first re-prompt in the
+   * chain. Renderers walk this field to reconstruct the deliberation
+   * thread; substrate persists it on metadata.thread_parent so a
+   * single read drives the rendering.
+   */
+  readonly threadParent: AtomId | null;
+  /**
+   * Source-roots for the re-prompt event. MUST include the pipeline
+   * atom id; SHOULD include the source observation atom id (the atom
+   * that carried the finding, e.g. the upstream stage-output atom
+   * the finding's cited_atom_ids reference). Mirrors the derived_from
+   * shape used elsewhere in the pipeline subgraph: a flat unordered
+   * set of taint roots.
+   */
+  readonly sourceRoots: ReadonlyArray<AtomId>;
+  /**
+   * Annotation per spec citation-drift option A: when the cross-stage
+   * walk re-invokes the target stage, the runner re-derives
+   * verifiedCitedAtomIds from the latest upstream atoms in scope. This
+   * field labels which run's upstream the citations were resolved
+   * against so the Console projection and audit trail show explicitly
+   * "the re-runs after this re-prompt grounded against attempt-N of
+   * stage-X".
+   */
+  readonly verifiedCitedAtomIdsOrigin: string;
+}
+
+/**
+ * Maximum bytes of the persisted finding.message field. Bounds an
+ * over-long auditor emission so the visibility atom cannot grow past
+ * sane sizes. Mirrors the per-finding cap in
+ * `auditor-feedback-reprompt.ts`; truncation marker preserved so the
+ * trim is visible to audit consumers.
+ */
+const MAX_CROSS_STAGE_FINDING_MESSAGE_LEN = 4096;
+
+export function mkPipelineCrossStageRepromptAtom(
+  input: MkPipelineCrossStageRepromptAtomInput,
+): Atom {
+  if (input.fromStage.length === 0) {
+    throw new Error(
+      'mkPipelineCrossStageRepromptAtom: fromStage must be non-empty',
+    );
+  }
+  if (input.toStage.length === 0) {
+    throw new Error(
+      'mkPipelineCrossStageRepromptAtom: toStage must be non-empty',
+    );
+  }
+  if (input.fromStage === input.toStage) {
+    throw new Error(
+      'mkPipelineCrossStageRepromptAtom: fromStage and toStage must differ '
+        + '(self-target findings route through the intra-stage path, not here)',
+    );
+  }
+  if (!Number.isInteger(input.attempt) || input.attempt < 1) {
+    throw new Error(
+      `mkPipelineCrossStageRepromptAtom: attempt must be a positive integer (got ${input.attempt})`,
+    );
+  }
+  if (input.sourceRoots.length === 0) {
+    throw new Error(
+      'mkPipelineCrossStageRepromptAtom: sourceRoots must be non-empty (provenance directive)',
+    );
+  }
+  if (!input.sourceRoots.includes(input.pipelineId)) {
+    throw new Error(
+      'mkPipelineCrossStageRepromptAtom: sourceRoots must include pipelineId '
+        + 'so the provenance chain stays attached to the pipeline subgraph',
+    );
+  }
+  if (input.finding.cited_atom_ids.length > MAX_CITED_LIST) {
+    throw new Error(
+      `mkPipelineCrossStageRepromptAtom: finding.cited_atom_ids capped at ${MAX_CITED_LIST}`,
+    );
+  }
+  if (input.finding.cited_paths.length > MAX_CITED_LIST) {
+    throw new Error(
+      `mkPipelineCrossStageRepromptAtom: finding.cited_paths capped at ${MAX_CITED_LIST}`,
+    );
+  }
+  // Bound the message to keep atom storage bounded. Truncate with an
+  // explicit marker so the trim is visible to audit consumers rather
+  // than silently disappearing.
+  const TRUNCATION_MARKER = '... [truncated]';
+  const boundedMessage = input.finding.message.length > MAX_CROSS_STAGE_FINDING_MESSAGE_LEN
+    ? `${input.finding.message.slice(
+        0,
+        MAX_CROSS_STAGE_FINDING_MESSAGE_LEN - TRUNCATION_MARKER.length,
+      )}${TRUNCATION_MARKER}`
+    : input.finding.message;
+  // Atom id folds in the attempt counter so a pipeline that emits
+  // multiple cross-stage re-prompts produces distinct atoms (one per
+  // re-prompt) rather than colliding on the canonical
+  // {pipelineId, fromStage, toStage} key. The attempt counter is the
+  // discriminator because the unified counter is the only field
+  // guaranteed to advance between re-prompts (the from/to pair may
+  // recur exactly when a recurring root cause keeps the loop alive
+  // until the cap fires).
+  const id = `pipeline-cross-stage-reprompt-${input.pipelineId}-${input.fromStage}-${input.toStage}-attempt-${input.attempt}-${input.correlationId}` as AtomId;
+  return baseAtom({
+    id,
+    type: 'pipeline-cross-stage-reprompt',
+    content: `${input.fromStage} -> ${input.toStage}: ${input.finding.category}`,
+    principalId: input.principalId,
+    correlationId: input.correlationId,
+    now: input.now,
+    derivedFrom: [...input.sourceRoots],
+    metadata: {
+      pipeline_id: input.pipelineId,
+      correlation_id: input.correlationId,
+      from_stage: input.fromStage,
+      to_stage: input.toStage,
+      attempt: input.attempt,
+      thread_parent: input.threadParent,
+      verified_cited_atom_ids_origin: input.verifiedCitedAtomIdsOrigin,
+      finding: {
+        severity: input.finding.severity,
+        category: input.finding.category,
+        message: boundedMessage,
+        cited_atom_ids: [...input.finding.cited_atom_ids],
+        cited_paths: [...input.finding.cited_paths],
+        reprompt_target: input.finding.reprompt_target,
+      },
     },
   });
 }
@@ -829,6 +1054,16 @@ export interface MkStageOutputAtomBaseInput {
    * with a re-prompt suffix appends `-attempt-<index>` for index >= 2.
    */
   readonly attemptIndex?: number;
+  /**
+   * 1-based re-entry counter for cross-stage walks. When a stage is
+   * re-entered via a cross-stage re-prompt and produces a fresh
+   * stage-output, the persisted atom would collide on the canonical
+   * `<typePrefix>-<pipelineId>-<stageSlug>-<correlationId>` id with
+   * the first entry's output. The suffix `-re-entry-<n>` (n >= 2)
+   * discriminates the per-entry atoms; absent or 1 preserves the
+   * historical id shape.
+   */
+  readonly stageEntryIndex?: number;
 }
 
 /**
@@ -896,6 +1131,16 @@ function buildStageOutputMetadata(
     ...((): Record<string, unknown> => {
       const suffix = safeAttemptIndexSuffix(input.attemptIndex);
       return suffix !== undefined ? { attempt_index: suffix } : {};
+    })(),
+    // Stamp stage_entry_index when >= 2 so an audit walk can sort
+    // multiple per-entry atoms produced by the cross-stage re-prompt
+    // walk without re-parsing the atom id suffix. Omitted on entry 1
+    // (or absent) so existing single-entry consumers do not see a
+    // spurious field on pre-cross-stage atoms; mirrors the
+    // attempt_index posture.
+    ...((): Record<string, unknown> => {
+      const suffix = safeAttemptIndexSuffix(input.stageEntryIndex);
+      return suffix !== undefined ? { stage_entry_index: suffix } : {};
     })(),
   };
 }
@@ -991,11 +1236,20 @@ function stageOutputAtomId(
   // to the historical first-attempt id rather than corrupting the id.
   // Substrate posture: opt-in suffix, default-back-compat,
   // fail-closed on malformed input.
-  const suffix = safeAttemptIndexSuffix(input.attemptIndex);
-  if (suffix !== undefined) {
-    return `${base}-attempt-${suffix}` as AtomId;
-  }
-  return base as AtomId;
+  const attemptSfx = safeAttemptIndexSuffix(input.attemptIndex);
+  const attemptPart = attemptSfx !== undefined
+    ? `-attempt-${attemptSfx}`
+    : '';
+  // Cross-stage re-entry suffix mirrors the attempt suffix shape: the
+  // canonical id appends `-re-entry-<n>` when the stage was re-entered
+  // (stageEntryIndex >= 2). Stacks with -attempt-<n> when both fire
+  // (a re-entered stage that internally re-prompts) so each
+  // {entry, attempt} pair produces a distinct atom.
+  const entrySfx = safeAttemptIndexSuffix(input.stageEntryIndex);
+  const entryPart = entrySfx !== undefined
+    ? `-re-entry-${entrySfx}`
+    : '';
+  return `${base}${attemptPart}${entryPart}` as AtomId;
 }
 
 // ---------------------------------------------------------------------------
@@ -1127,6 +1381,14 @@ export interface MkPlanOutputAtomsInput {
    * lands on `metadata.attempt_index` for audit-walk filtering.
    */
   readonly attemptIndex?: number;
+  /**
+   * 1-based re-entry counter for cross-stage walks. Mirrors
+   * `MkStageOutputAtomBaseInput.stageEntryIndex`: when the plan-stage
+   * is re-entered via a cross-stage walk and emits fresh plan atoms,
+   * the suffix `-re-entry-<n>` (n >= 2) discriminates the per-entry
+   * atoms. Absent or 1 preserves the historical id shape.
+   */
+  readonly stageEntryIndex?: number;
 }
 
 interface PlanEntryLike {
@@ -1256,8 +1518,15 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
     const attemptSuffix = validatedAttempt !== undefined
       ? `-attempt-${validatedAttempt}`
       : '';
+    // Cross-stage re-entry suffix mirrors the attempt suffix shape.
+    // Stacks with -attempt-<n> when both fire so each
+    // {entry, attempt} pair produces a distinct plan atom.
+    const validatedEntryIndex = safeAttemptIndexSuffix(input.stageEntryIndex);
+    const entrySuffix = validatedEntryIndex !== undefined
+      ? `-re-entry-${validatedEntryIndex}`
+      : '';
     const id =
-      `plan-${slug}-${input.principalId}-${input.pipelineId}-${i}${attemptSuffix}` as AtomId;
+      `plan-${slug}-${input.principalId}-${input.pipelineId}-${i}${attemptSuffix}${entrySuffix}` as AtomId;
 
     // Build derived_from: start with the runner-supplied chain
     // (pipelineId + prior stage outputs) and append the plan entry's
@@ -1361,6 +1630,12 @@ export function mkPlanOutputAtoms(input: MkPlanOutputAtomsInput): ReadonlyArray<
         // it. Mirrors buildStageOutputMetadata's same posture.
         ...(validatedAttempt !== undefined
           ? { attempt_index: validatedAttempt }
+          : {}),
+        // Stamp stage_entry_index when >= 2 so an audit walk can sort
+        // multiple per-entry plan atoms produced by the cross-stage
+        // re-prompt walk. Mirrors the attempt_index posture.
+        ...(validatedEntryIndex !== undefined
+          ? { stage_entry_index: validatedEntryIndex }
           : {}),
       },
     });
